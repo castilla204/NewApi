@@ -1,0 +1,80 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>newApi</name>
+    </assembly>
+    <members>
+        <member name="T:DataLayer.Migrations.modificandouserteelfono">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.modificandouserteelfono.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.modificandouserteelfono.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.modificandouserteelfono.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:DataLayer.Migrations.nuevonextexecution">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.nuevonextexecution.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.nuevonextexecution.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.nuevonextexecution.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:DataLayer.Migrations.AddingField">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.AddingField.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.AddingField.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.AddingField.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:DataLayer.Migrations.AddingNotification">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.AddingNotification.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.AddingNotification.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.AddingNotification.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:DataLayer.Migrations.AddingNotifications">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.AddingNotifications.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.AddingNotifications.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.AddingNotifications.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:DataLayer.Migrations.Notificationss">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.Notificationss.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.Notificationss.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:DataLayer.Migrations.Notificationss.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+    </members>
+</doc>

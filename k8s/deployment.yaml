@@ -19,6 +19,17 @@ spec:
         image: erizo9/newapi:latest
         ports:
         - containerPort: 80
+        env:
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: "/etc/credentials/cloudcredential.json"  # Ruta donde se montará el archivo
+        volumeMounts:
+        - name: credentials-volume
+          mountPath: "/etc/credentials"  # Carpeta donde se montará el Secret
+          readOnly: true
+      volumes:
+      - name: credentials-volume
+        secret:
+          secretName: newapi-credentials  # Nombre del Secret que creaste
 
 ---
 apiVersion: v1

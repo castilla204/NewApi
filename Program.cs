@@ -60,8 +60,8 @@ if (builder.Environment.IsDevelopment())
 }
 else
 {
-    // Producción: postgres-svc, base atrapo, contraseña desde variable de entorno
-    builder.Configuration["ConnectionStrings:PostgresConnection"] = $"Host=postgres-svc;Port=5432;Username=admin;Password={Environment.GetEnvironmentVariable("POSTGRES_PASSWORD")};Database=atrapo";
+    // Producción: postgres-svc, base atrapo, contraseña desde Google Cloud Secret Manager
+    builder.Configuration["ConnectionStrings:PostgresConnection"] = $"Host=postgres-svc;Port=5432;Username=admin;Password={GetSecretValue("postgres-password")};Database=atrapo";
 }
 
 // Add services to the container

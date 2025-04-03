@@ -21,6 +21,8 @@ spec:
         env:
         - name: GOOGLE_APPLICATION_CREDENTIALS
           value: "/etc/credentials/cloudcredential.json"
+        - name: ASPNETCORE_ENVIRONMENT  # Añadido para forzar Production
+          value: "Production"
         volumeMounts:
         - name: credentials-volume
           mountPath: "/etc/credentials"

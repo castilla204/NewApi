@@ -17,11 +17,19 @@ spec:
       - name: new-api
         image: erizo9/newapi:latest
         ports:
-        - containerPort: 7124  # Puerto real de la app
+        - containerPort: 7124
         env:
+        - name: RABBITMQ_HOSTNAME
+          value: "rabbitmq-svc"
+        - name: RABBITMQ_PORT
+          value: "5672"
+        - name: RABBITMQ_USERNAME
+          value: "admin"
+        - name: RABBITMQ_PASSWORD
+          value: "Pedrohabo1//"
         - name: GOOGLE_APPLICATION_CREDENTIALS
           value: "/etc/credentials/cloudcredential.json"
-        - name: ASPNETCORE_ENVIRONMENT  # Añadido para forzar Production
+        - name: ASPNETCORE_ENVIRONMENT
           value: "Production"
         volumeMounts:
         - name: credentials-volume
@@ -31,7 +39,6 @@ spec:
       - name: credentials-volume
         secret:
           secretName: newapi-credentials
-
 ---
 apiVersion: v1
 kind: Service
@@ -40,12 +47,11 @@ metadata:
   namespace: default
 spec:
   ports:
-  - port: 80  # Puerto externo del servicio
-    targetPort: 7124  # Puerto real del pod
+  - port: 80
+    targetPort: 7124
   selector:
     app: new-api
   type: NodePort
-
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

@@ -55,12 +55,10 @@ builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-
 // Configurar la cadena de conexión según el entorno
 if (builder.Environment.IsDevelopment())
 {
-    // Desarrollo: localhost, base grup, contraseña fija
     builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=localhost;Port=5432;Username=postgres;Password=coche109;Database=grup";
 }
 else
 {
-    // Producción: postgres-svc, base atrapo, contraseña desde Google Cloud Secret Manager
     builder.Configuration["ConnectionStrings:PostgresConnection"] = $"Host=postgres-svc;Port=5432;Username=admin;Password={GetSecretValue("postgres-password")};Database=atrapo";
 }
 
@@ -108,12 +106,17 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 // Configure RabbitMQ
 builder.Services.AddSingleton<IConnectionFactory>(sp =>
-    new ConnectionFactory
+{
+    var config = builder.Configuration;
+    var isDevelopment = builder.Environment.IsDevelopment();
+    return new ConnectionFactory
     {
-        HostName = builder.Configuration["RabbitMQ:HostName"] ?? "localhost",
-        UserName = builder.Configuration["RabbitMQ:UserName"] ?? "guest",
-        Password = builder.Configuration["RabbitMQ:Password"] ?? "guest"
-    });
+        HostName = isDevelopment ? "localhost" : config["RABBITMQ_HOSTNAME"] ?? "rabbitmq-svc",
+        Port = int.Parse(config["RABBITMQ_PORT"] ?? "5672"),
+        UserName = config["RABBITMQ_USERNAME"] ?? "admin",
+        Password = config["RABBITMQ_PASSWORD"] ?? "Pedrohabo1//"
+    };
+});
 
 // Configure CORS
 builder.Services.AddCors(options =>
@@ -165,6 +168,6 @@ app.UseAuthorization();
 
 app.MapControllers();
 
-app.Urls.Add("http://0.0.0.0:7124");  // Para acceso en red local
+app.Urls.Add("http://0.0.0.0:7124");
 
 app.Run();

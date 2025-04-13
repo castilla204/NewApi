@@ -16,6 +16,7 @@ spec:
       containers:
       - name: new-api
         image: erizo9/newapi:latest
+        imagePullPolicy: Always
         ports:
         - containerPort: 7124
         env:
@@ -51,7 +52,7 @@ spec:
     targetPort: 7124
   selector:
     app: new-api
-  type: NodePort
+  type: ClusterIP
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -72,3 +73,29 @@ spec:
       target:
         type: Utilization
         averageUtilization: 70
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: new-api-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: api.atrapo.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: new-api-svc
+            port:
+              number: 80
+  tls:
+  - hosts:
+    - api.atrapo.io
+    secretName: new-api-ssl

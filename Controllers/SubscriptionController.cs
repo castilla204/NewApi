@@ -226,7 +226,7 @@ namespace newApi.Controllers
                 }
 
                 var priceId = request.IsYearly ? plan.StripePriceIdYearly : plan.StripePriceIdMonthly;
-                var domain = "https://900b-62-175-125-211.ngrok-free.app";
+                var domain = "https://atrapo.io";
 
                 if (string.IsNullOrEmpty(priceId))
                 {

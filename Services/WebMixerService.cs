@@ -1,8 +1,6 @@
-﻿using DataLayer.Models;
-using DataLayer.Models.DTOs;
-using newApi.DataLayer.Models;
-using newApi.RabbitMQ;
-using AdModel = DataLayer.Models.AdModel;
+﻿using newApi.RabbitMQ;
+using newApi.ScrapperGateway.DataLayer.Models.DTOs;
+using AdModel = newApi.ScrapperGateway.DataLayer.Models.AdModel;
 
 namespace newApi.Services
 {

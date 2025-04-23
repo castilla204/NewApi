@@ -1,6 +1,6 @@
-﻿using DataLayer.Models;
-using DataLayer.Models.PostGresModels;
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
+using newApi.ScrapperGateway.DataLayer.Models;
+using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
 
 namespace newApi.Services
 {

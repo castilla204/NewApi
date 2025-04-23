@@ -1,8 +1,8 @@
 ﻿using AutoMapper;
-using DataLayer.Models;
-using DataLayer.Models.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using newApi.ScrapperGateway.DataLayer.Models;
+using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using System.Security.Claims;
 
 namespace newApi.Controllers

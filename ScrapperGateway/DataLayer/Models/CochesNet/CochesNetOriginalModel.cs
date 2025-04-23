@@ -1,5 +1,4 @@
-﻿
-namespace ScrapperGateway.Models.CochesNet
+﻿namespace newApi.ScrapperGateway.DataLayer.Models.CochesNet
 {
     public class Location
     {

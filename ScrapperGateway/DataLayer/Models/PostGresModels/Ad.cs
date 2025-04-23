@@ -1,4 +1,4 @@
-﻿namespace DataLayer.Models.PostGresModels
+﻿namespace newApi.ScrapperGateway.DataLayer.Models.PostGresModels
 {
     public class Ad
     {

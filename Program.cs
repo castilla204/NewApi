@@ -7,10 +7,9 @@ using System.Text;
 using RabbitMQ.Client;
 using newApi.RabbitMQ;
 using newApi.Services;
-using DataLayer.Models;
 using DataLayer;
-using newApi.DataLayer;
 using Google.Apis.Auth.OAuth2;
+using newApi.ScrapperGateway.DataLayer.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -56,6 +55,7 @@ builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-
 if (builder.Environment.IsDevelopment())
 {
     builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=localhost;Port=5432;Username=postgres;Password=coche109;Database=grup";
+    //builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=185.166.39.4;Port=30000;Username=admin;Password=__REDACTED_CREDENTIAL__;Database=atrapo";
 }
 else
 {
@@ -141,7 +141,7 @@ builder.Services.AddScoped<ISubscriptionService, newApi.Services.SubscriptionSer
 builder.Services.AddHttpClient();
 
 // Register AutoMapper
-builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly, typeof(PlatformMappingProfile).Assembly, typeof(CategoryMappingProfile).Assembly);
+builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly, typeof(PlatformMappingProfile).Assembly, typeof(newApi.ScrapperGateway.DataLayer.CategoryMappingProfile).Assembly);
 
 var app = builder.Build();
 

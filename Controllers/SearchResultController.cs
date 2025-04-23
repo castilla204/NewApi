@@ -2,11 +2,10 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using DataLayer.Models.PostGresModels;
-using DataLayer.Models;
 using System.Security.Claims;
-using newApi.DataLayer.Models;
-using AdModel = DataLayer.Models.AdModel;
+using AdModel = newApi.ScrapperGateway.DataLayer.Models.AdModel;
+using newApi.ScrapperGateway.DataLayer.Models;
+using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
 
 
 namespace newApi.Controllers

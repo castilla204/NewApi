@@ -1,8 +1,6 @@
-﻿using DataLayer.Models;
-using newApi.DataLayer.Models;
-using newApi.RabbitMQ;
+﻿using newApi.RabbitMQ;
 using Newtonsoft.Json;
-using AdModel = DataLayer.Models.AdModel;
+using AdModel = newApi.ScrapperGateway.DataLayer.Models.AdModel;
 
 namespace newApi.Services
 {

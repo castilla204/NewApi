@@ -1,7 +1,5 @@
-﻿using DataLayer.Models;
-using DataLayer.Models.DTOs;
-using newApi.DataLayer.Models;
-using AdModel = DataLayer.Models.AdModel;
+﻿using newApi.ScrapperGateway.DataLayer.Models.DTOs;
+using AdModel = newApi.ScrapperGateway.DataLayer.Models.AdModel;
 
 namespace newApi.Services
 {

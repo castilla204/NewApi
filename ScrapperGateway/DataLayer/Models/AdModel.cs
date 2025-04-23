@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace DataLayer.Models
+namespace newApi.ScrapperGateway.DataLayer.Models
 {
     public class AdModel
     {

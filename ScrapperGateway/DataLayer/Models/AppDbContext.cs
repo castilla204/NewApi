@@ -1,11 +1,25 @@
-﻿using DataLayer.Models.PostGresModels;
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
+using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
 
-namespace DataLayer.Models
+namespace newApi.ScrapperGateway.DataLayer.Models
 {
     public class AppDbContext : DbContext
     {
-        public AppDbContext(DbContextOptions options) : base(options) { }
+        public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+
+
+        //PARA HACER LAS MIGRACIONES PARA PRODUCCION Y DESARROLLOO
+
+
+        //protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+        //{
+        //    if (!optionsBuilder.IsConfigured)
+        //    {
+        //        //optionsBuilder.UseNpgsql("Host=localhost;Port=5432;Username=postgres;Password=coche109;Database=grup");
+        //        optionsBuilder.UseNpgsql("Host=185.166.39.4;Port=30000;Username=admin;Password=__REDACTED_CREDENTIAL__;Database=atrapo");
+        //    }
+        //}
+        //public AppDbContext(DbContextOptions options) : base(options) { }
 
         public DbSet<User> Users { get; set; }
         public DbSet<Ad> Ads { get; set; }
@@ -21,6 +35,12 @@ namespace DataLayer.Models
         public DbSet<SubscriptionPlan> SubscriptionPlans { get; set; }
         public DbSet<UserSubscription> UserSubscriptions { get; set; }
         public DbSet<Notification> Notifications { get; set; }
+
+        public DbSet<UserSetting> UserSettings { get; set; }
+        public DbSet<SystemSetting> SystemSettings { get; set; }
+        public DbSet<AI> AIs { get; set; }
+        public DbSet<Log> Logs { get; set; }
+
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -142,7 +162,46 @@ namespace DataLayer.Models
                 .OnDelete(DeleteBehavior.Cascade);
 
 
-            //Notifications
+            modelBuilder.Entity<UserSetting>()
+             .HasOne(us => us.User)
+             .WithOne(u => u.Settings)
+             .HasForeignKey<UserSetting>(us => us.UserId)
+             .OnDelete(DeleteBehavior.Cascade);
+
+            // UserSetting - AI relationship
+            modelBuilder.Entity<UserSetting>()
+                .HasOne(us => us.AI)
+                .WithMany()
+                .HasForeignKey(us => us.AIId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // SystemSetting - AI relationship
+            modelBuilder.Entity<SystemSetting>()
+                .HasOne(ss => ss.AI)
+                .WithMany()
+                .HasForeignKey(ss => ss.AIId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // SystemSetting configuration
+            modelBuilder.Entity<SystemSetting>()
+                .HasIndex(ss => ss.Id)
+                .IsUnique();
+
+            // AI configuration
+            modelBuilder.Entity<AI>()
+                .HasIndex(ai => ai.Name)
+                .IsUnique();
+
+            // Log - User relationship
+            modelBuilder.Entity<Log>()
+                .HasOne(l => l.User)
+                .WithMany()
+                .HasForeignKey(l => l.UserId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // Index for performance on Logs
+            modelBuilder.Entity<Log>()
+                .HasIndex(l => l.CreatedAt);
 
 
 

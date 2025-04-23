@@ -1,8 +1,8 @@
 ﻿using AutoMapper;
-using DataLayer.Models.DTOs;
-using DataLayer.Models.PostGresModels;
+using newApi.ScrapperGateway.DataLayer.Models.DTOs;
+using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
 
-namespace newApi.DataLayer
+namespace newApi.ScrapperGateway.DataLayer.Models
 {
     public class PlatformMappingProfile : Profile
     {

@@ -1,14 +1,15 @@
 ﻿using AutoMapper;
-using ScrapperGateway.Models.Wallapop;
-using DataLayer.Models;
 
-namespace DataLayer.Mapping
+using newApi.ScrapperGateway.DataLayer.Models;
+using newApi.ScrapperGateway.DataLayer.Models.MilAnuncios;
+
+namespace newApi.ScrapperGateway.DataLayer
 {
     public class MilAdsMappingProfile : Profile
     {
         public MilAdsMappingProfile()
         {
-            CreateMap<Models.MilAnuncios.Root, AdModel>()
+            CreateMap<Root, AdModel>()
                 .ForMember(dest => dest.id, opt => opt.MapFrom(src => src.id))
                 .ForMember(dest => dest.description, opt => opt.MapFrom(src => src.description))
                 .ForMember(dest => dest.title, opt => opt.MapFrom(src => src.title))

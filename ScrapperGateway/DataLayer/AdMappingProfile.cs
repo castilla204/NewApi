@@ -1,6 +1,6 @@
 ﻿using AutoMapper;
-using DataLayer.Models.PostGresModels;
-using DataLayer.Models;
+using newApi.ScrapperGateway.DataLayer.Models;
+using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
 
 public class AdMappingProfile : Profile
 {

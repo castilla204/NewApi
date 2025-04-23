@@ -1,12 +1,13 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using DataLayer.Models.PostGresModels;
-using DataLayer.Models.DTOs;
-using DataLayer.Models;
+
 using System.Security.Claims;
 using newApi.Services;
 using newApi.Services;
+using newApi.ScrapperGateway.DataLayer.Models.DTOs;
+using newApi.ScrapperGateway.DataLayer.Models;
+using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
 
 namespace newApi.Controllers
 {

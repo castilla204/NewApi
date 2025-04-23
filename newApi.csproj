@@ -32,17 +32,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<!--<ProjectReference Include="..\ScrapperGateway\DataLayer\DataLayer.csproj" />-->
-	</ItemGroup>
-
-	<ItemGroup>
-		<Compile Include="DataLayer\Models\PostGresModels\**\*.cs" />
-		<Compile Include="DataLayer\Models\DTOs\**\*.cs" />
-	</ItemGroup>
-
-	<ItemGroup>
 	  <Compile Remove="Controllers\AISearchController.cs" />
-	  <Compile Remove="DataLayer\AdMappingProfile.cs" />
 	  <Compile Remove="Services\GPTService.cs.cs" />
 	  <Compile Remove="Services\IGPTService.cs" />
 	</ItemGroup>

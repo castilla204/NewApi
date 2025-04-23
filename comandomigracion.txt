@@ -1,1 +1,3 @@
-﻿dotnet ef migrations add InitialCreate --context DataLayer.Models.AppDbContext --project ../ScrapperGateway/DataLayer/DataLayer.csproj --startup-project newApi.csproj
+﻿dotnet ef migrations add actualizandodbproduccion2
+
+ dotnet ef database update

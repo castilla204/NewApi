@@ -1,8 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using DataLayer.Models;
-using DataLayer.Models.DTOs;
-using DataLayer.Models.DTOs;
 using newApi.Services;
+using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 
 namespace newApi.Controllers
 {

@@ -1,5 +1,4 @@
-﻿
-namespace ScrapperGateway.Models.Vinted
+﻿namespace newApi.ScrapperGateway.DataLayer.Models.Vinted
 {
     public class Exposure
     {

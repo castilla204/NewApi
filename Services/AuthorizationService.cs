@@ -1,6 +1,6 @@
 ﻿using System.Security.Claims;
-using DataLayer.Models;
 using Microsoft.EntityFrameworkCore;
+using newApi.ScrapperGateway.DataLayer.Models;
 
 namespace newApi.Services
 {

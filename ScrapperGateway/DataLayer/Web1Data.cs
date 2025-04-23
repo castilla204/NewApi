@@ -6,9 +6,9 @@ using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using AutoMapper;
-using ScrapperGateway.Models.CochesNet;
 
-namespace DataLayer
+
+namespace newApi.ScrapperGateway.DataLayer
 {
     public class Web1Data : IWeb1Data
     {
@@ -120,7 +120,7 @@ namespace DataLayer
 
                 var jsonResponse = await response.Content.ReadAsStringAsync();
                 var jsonObject = JObject.Parse(jsonResponse);
-                var cochesNetList = jsonObject["items"].ToObject<List<ScrapperGateway.Models.CochesNet.Root>>();
+                var cochesNetList = jsonObject["items"].ToObject<List<newApi.ScrapperGateway.DataLayer.Models.CochesNet.Root>>();
 
 
                 //HAY QUE HACER BIEN EL MAPEO

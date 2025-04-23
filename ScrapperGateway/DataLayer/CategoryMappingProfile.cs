@@ -1,8 +1,8 @@
 ﻿using AutoMapper;
-using DataLayer.Models.DTOs;
-using DataLayer.Models.PostGresModels;
+using newApi.ScrapperGateway.DataLayer.Models.DTOs;
+using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
 
-namespace DataLayer.Mapping
+namespace newApi.ScrapperGateway.DataLayer
 {
     public class CategoryMappingProfile : Profile
     {

@@ -1,7 +1,6 @@
-﻿using DataLayer.Models.PostGresModels;
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 
-namespace DataLayer.Models.DTOs
+namespace newApi.ScrapperGateway.DataLayer.Models.DTOs
 {
     public class CreateSearchDto
     {
@@ -10,7 +9,7 @@ namespace DataLayer.Models.DTOs
         public string? Description { get; set; }
         public bool IsActive { get; set; }
         public DateTime StartDate { get; set; }
-        
+
     }
 
 

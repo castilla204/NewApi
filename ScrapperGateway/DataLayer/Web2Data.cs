@@ -5,10 +5,10 @@ using Newtonsoft.Json;
 using System.Collections.Generic;
 using System.Net;
 using AutoMapper;
-using ScrapperGateway.Models.Vinted;
 using System.Linq;
+using newApi.ScrapperGateway.DataLayer.Models.Vinted;
 
-namespace DataLayer
+namespace newApi.ScrapperGateway.DataLayer
 {
     public class Web2Data : IWeb2Data
     {
@@ -99,6 +99,6 @@ namespace DataLayer
 
     public class VintedResponse
     {
-        public List<ScrapperGateway.Models.Vinted.Root> items { get; set; }
+        public List<Root> items { get; set; }
     }
 }

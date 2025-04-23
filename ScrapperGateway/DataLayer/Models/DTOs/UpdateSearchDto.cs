@@ -1,6 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 
-namespace DataLayer.Models.DTOs
+namespace newApi.ScrapperGateway.DataLayer.Models.DTOs
 {
     public class UpdateSearchDto
     {

@@ -1,6 +1,7 @@
-﻿using System.ComponentModel.DataAnnotations;
+﻿
+using System.ComponentModel.DataAnnotations;
 
-namespace DataLayer.Models.PostGresModels
+namespace newApi.ScrapperGateway.DataLayer.Models.PostGresModels
 {
     public class SubscriptionPlan
     {
@@ -8,8 +9,12 @@ namespace DataLayer.Models.PostGresModels
         public int Id { get; set; }
         public string Name { get; set; }
         public string Description { get; set; }
+        public string imageUrl { get; set; }
         public decimal PriceMonthly { get; set; }
         public decimal PriceYearly { get; set; }
+        public bool HumanFilter { get; set; }
+        public bool AdvanceIAModels { get; set; }
+        public bool AdvancedAdImagesAnalysis { get; set; }
         public int MaxSearches { get; set; }
         public int MinSearchInterval { get; set; }
         public string? StripePriceIdMonthly { get; set; }

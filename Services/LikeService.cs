@@ -1,7 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using DataLayer.Models.PostGresModels;
-using DataLayer.Models;
+using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
+using newApi.ScrapperGateway.DataLayer.Models;
 
 namespace newApi.Services;
 

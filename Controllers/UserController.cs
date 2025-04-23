@@ -3,14 +3,14 @@ using System.Security.Claims;
 using System.IdentityModel.Tokens.Jwt;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
-using DataLayer.Models.PostGresModels;
-using DataLayer.Models;
 using Microsoft.EntityFrameworkCore;
 using Google.Apis.Auth;
 using Twilio;
 using Twilio.Rest.Verify.V2.Service;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
+using newApi.ScrapperGateway.DataLayer.Models;
+using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
 
 [Route("api/[controller]")]
 [ApiController]

@@ -1,7 +1,7 @@
 ﻿using System;
 using System.ComponentModel.DataAnnotations;
 
-namespace DataLayer.Models.PostGresModels
+namespace newApi.ScrapperGateway.DataLayer.Models.DTOs
 {
     public class SearchResultDto
     {

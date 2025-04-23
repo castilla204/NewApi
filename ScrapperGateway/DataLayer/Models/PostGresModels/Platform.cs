@@ -1,6 +1,6 @@
 ﻿using System.Collections.Generic;
 
-namespace DataLayer.Models.PostGresModels
+namespace newApi.ScrapperGateway.DataLayer.Models.PostGresModels
 {
     public class Platform
     {
@@ -8,7 +8,7 @@ namespace DataLayer.Models.PostGresModels
         public string Name { get; set; }
         public string Description { get; set; }
         public string ImageUrl { get; set; }
-        public string PlatformWebsiteUrl { get; set; }  
+        public string PlatformWebsiteUrl { get; set; }
         public bool IsActive { get; set; }
         public virtual ICollection<Ad> Ads { get; set; }
         public ICollection<SearchParameterPlatform> SearchParameterPlatforms { get; set; }

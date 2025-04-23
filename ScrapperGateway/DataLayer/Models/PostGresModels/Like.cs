@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace DataLayer.Models.PostGresModels
+namespace newApi.ScrapperGateway.DataLayer.Models.PostGresModels
 {
 
     public class Like

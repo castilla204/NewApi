@@ -3,12 +3,12 @@ using Newtonsoft.Json.Linq;
 using System.Net.Http.Headers;
 using System.Reflection;
 using System.Text;
-using ScrapperGateway.Models.Wallapop;
 using AutoMapper;
-using DataLayer.Models;
 using System.Net;
+using newApi.ScrapperGateway.DataLayer.Models.Wallapop;
+using newApi.ScrapperGateway.DataLayer.Models;
 
-namespace DataLayer
+namespace newApi.ScrapperGateway.DataLayer
 {
     public class Web3Data : IWeb3Data
     {
@@ -26,7 +26,7 @@ namespace DataLayer
             mpid = GenerateMPID();
             // Comment out proxy usage and create a regular HttpClient
             //client = CreateHttpClientWithProxy(); // <--------------------------------------  Si esta descomentada se usa el proxy y la de abajo comentarla en ese caso
-            client = new HttpClient();            
+            client = new HttpClient();
             SetupHttpClient();
         }
 
@@ -152,7 +152,7 @@ namespace DataLayer
                     var data = JObject.Parse(json);
 
                     // deserealizar al objeto original
-                    var pageAnuncios = JsonConvert.DeserializeObject<List<ScrapperGateway.Models.Wallapop.Root>>(data["search_objects"].ToString());
+                    var pageAnuncios = JsonConvert.DeserializeObject<List<Root>>(data["search_objects"].ToString());
 
 
 

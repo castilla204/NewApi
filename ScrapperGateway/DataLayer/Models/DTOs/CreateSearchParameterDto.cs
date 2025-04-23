@@ -1,4 +1,4 @@
-﻿namespace DataLayer.Models.DTOs
+﻿namespace newApi.ScrapperGateway.DataLayer.Models.DTOs
 {
     public class CreateSearchParameterDto
     {

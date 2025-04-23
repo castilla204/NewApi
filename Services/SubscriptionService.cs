@@ -1,5 +1,5 @@
-﻿using DataLayer.Models;
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
+using newApi.ScrapperGateway.DataLayer.Models;
 
 namespace newApi.Services
 {

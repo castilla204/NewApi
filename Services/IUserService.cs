@@ -1,4 +1,4 @@
-﻿using DataLayer.Models.PostGresModels;
+﻿using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
 
 namespace newApi.Services
 {

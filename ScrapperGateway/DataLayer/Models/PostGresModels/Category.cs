@@ -1,6 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 
-namespace DataLayer.Models.PostGresModels
+namespace newApi.ScrapperGateway.DataLayer.Models.PostGresModels
 {
     public class Category
     {
@@ -9,8 +9,8 @@ namespace DataLayer.Models.PostGresModels
         public string Name { get; set; }
         public int? ParentId { get; set; }
         public bool IsActive { get; set; }
-        public DateTime CreatedAt { get; set; }
-        public DateTime UpdatedAt { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
         // Navigation properties
         public virtual Category Parent { get; set; }

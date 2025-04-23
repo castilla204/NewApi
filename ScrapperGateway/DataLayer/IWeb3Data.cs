@@ -3,10 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using static DataLayer.Web3Data;
+using static newApi.ScrapperGateway.DataLayer.Web3Data;
 
 
-namespace DataLayer
+namespace newApi.ScrapperGateway.DataLayer
 {
     public interface IWeb3Data
     {

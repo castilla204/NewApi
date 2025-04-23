@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace DataLayer.Models.DTOs
+namespace newApi.ScrapperGateway.DataLayer.Models.DTOs
 {
     public class NotificationDto
     {

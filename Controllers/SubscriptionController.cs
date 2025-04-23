@@ -1,13 +1,13 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using DataLayer.Models;
-using DataLayer.Models.DTOs;
 using Stripe;
 using Stripe.Checkout;
 using System.Text.Json;
 using System.Security.Claims;
-using DataLayer.Models.PostGresModels;
+using newApi.ScrapperGateway.DataLayer.Models;
+using newApi.ScrapperGateway.DataLayer.Models.DTOs;
+using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
 
 namespace newApi.Controllers
 {

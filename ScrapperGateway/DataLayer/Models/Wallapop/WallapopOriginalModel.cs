@@ -1,4 +1,4 @@
-﻿namespace ScrapperGateway.Models.Wallapop
+﻿namespace newApi.ScrapperGateway.DataLayer.Models.Wallapop
 {
 
     public class Flags

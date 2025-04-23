@@ -1,6 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 
-namespace DataLayer.Models.PostGresModels
+namespace newApi.ScrapperGateway.DataLayer.Models.PostGresModels
 {
     public class User
     {
@@ -14,12 +14,12 @@ namespace DataLayer.Models.PostGresModels
         public bool PhoneVerified { get; set; }
         public DateTime CreatedAt { get; set; }
         public bool IsBlocked { get; set; }
-        //navigation
+
+        // Navigation properties
         public ICollection<Search> Searches { get; set; }
         public ICollection<Like> Likes { get; set; }
         public ICollection<UserSubscription> UserSubscriptions { get; set; }
-
-        // Relación con SubscriptionPlan (Un usuario tiene un solo plan)
+        public UserSetting Settings { get; set; }
         public int? SubscriptionPlanId { get; set; }
         public virtual SubscriptionPlan SubscriptionPlan { get; set; }
     }

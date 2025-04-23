@@ -1,20 +1,21 @@
 ﻿using AutoMapper;
-using ScrapperGateway.Models.Wallapop;
+using newApi.ScrapperGateway.DataLayer.Models;
+using newApi.ScrapperGateway.DataLayer.Models.Wallapop;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace DataLayer.Mapping
+namespace newApi.ScrapperGateway.DataLayer
 {
     public class WallapopMappingProfile : Profile
     {
         public WallapopMappingProfile()
         {
-            CreateMap<ScrapperGateway.Models.Wallapop.Root, DataLayer.Models.AdModel>()
+            CreateMap<Root, AdModel>()
                 .ForMember(dest => dest.id, opt => opt.MapFrom(src => src.id))
                 .ForMember(dest => dest.description, opt => opt.MapFrom(src => src.description))
                 .ForMember(dest => dest.title, opt => opt.MapFrom(src => src.title))
-                .ForMember(dest => dest.url, opt => opt.MapFrom(src => !string.IsNullOrEmpty(src.web_slug)? $"https://www.wallapop.com/item/{src.web_slug}": string.Empty))
+                .ForMember(dest => dest.url, opt => opt.MapFrom(src => !string.IsNullOrEmpty(src.web_slug) ? $"https://www.wallapop.com/item/{src.web_slug}" : string.Empty))
                 .ForMember(dest => dest.price, opt => opt.MapFrom(src => src.price))
                 .ForMember(dest => dest.images, opt => opt.MapFrom(src => src.images.Select(img => img.original).ToList()))
                 .ForMember(dest => dest.Adscore, opt => opt.MapFrom(src => 0)) // Ajusta esto según tu lógica para calcular Adscore

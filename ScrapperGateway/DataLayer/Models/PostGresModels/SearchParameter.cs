@@ -1,7 +1,7 @@
 ﻿using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 
-namespace DataLayer.Models.PostGresModels
+namespace newApi.ScrapperGateway.DataLayer.Models.PostGresModels
 {
     public class SearchParameter
     {
@@ -12,6 +12,7 @@ namespace DataLayer.Models.PostGresModels
         public string Latitude { get; set; }
         public string Longitude { get; set; }
         public bool ShippingAvailable { get; set; }
+        public bool StrictMatchOnly { get; set; }
         public int? Category { get; set; }
         public int? LocationRange { get; set; }
         public int? MinPrice { get; set; }

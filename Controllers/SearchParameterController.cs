@@ -84,6 +84,7 @@ namespace newApi.Controllers
                     Latitude = searchParameterDto.Latitude,
                     Longitude = searchParameterDto.Longitude,
                     ShippingAvailable = searchParameterDto.ShippingAvailable,
+                    StrictMatchOnly = searchParameterDto.StrictMatchOnly,
                     Category = searchParameterDto.Category,
                     LocationRange = searchParameterDto.LocationRange,
                     MinPrice = searchParameterDto.MinPrice,

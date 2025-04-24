@@ -4,16 +4,16 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
-using newApi.ScrapperGateway.DataLayer.Models;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
+using newApi.ScrapperGateway.DataLayer.Models;
 
 #nullable disable
 
 namespace DataLayer.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20250323201836_AddingNotification")]
-    partial class AddingNotification
+    [Migration("20250423163453_actualizandodb")]
+    partial class actualizandodb
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -25,7 +25,39 @@ namespace DataLayer.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.Ad", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.AI", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.ToTable("AIs");
+                });
+
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Ad", b =>
                 {
                     b.Property<string>("Id")
                         .HasColumnType("text");
@@ -124,7 +156,7 @@ namespace DataLayer.Migrations
                     b.ToTable("Ads");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.Category", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Category", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -155,7 +187,7 @@ namespace DataLayer.Migrations
                     b.ToTable("Categories");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.Like", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Like", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -182,7 +214,87 @@ namespace DataLayer.Migrations
                     b.ToTable("Likes");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.Platform", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Log", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Details")
+                        .HasColumnType("text");
+
+                    b.Property<string>("LogLevel")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Source")
+                        .HasColumnType("text");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("Logs");
+                });
+
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Notification", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ImageUrl")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("Read")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("ReadAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Url")
+                        .HasColumnType("text");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("Notifications");
+                });
+
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Platform", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -214,7 +326,7 @@ namespace DataLayer.Migrations
                     b.ToTable("Platforms");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.PlatformCategoryMapping", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.PlatformCategoryMapping", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -250,7 +362,7 @@ namespace DataLayer.Migrations
                     b.ToTable("PlatformCategoryMappings");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.Search", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Search", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -301,7 +413,7 @@ namespace DataLayer.Migrations
                     b.ToTable("Searches");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.SearchParameter", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SearchParameter", b =>
                 {
                     b.Property<int>("SearchParameterId")
                         .ValueGeneratedOnAdd()
@@ -345,6 +457,9 @@ namespace DataLayer.Migrations
                     b.Property<bool>("ShippingAvailable")
                         .HasColumnType("boolean");
 
+                    b.Property<bool>("StrictMatchOnly")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("UserSearch")
                         .IsRequired()
                         .HasColumnType("text");
@@ -356,7 +471,7 @@ namespace DataLayer.Migrations
                     b.ToTable("SearchParameters");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.SearchParameterPlatform", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SearchParameterPlatform", b =>
                 {
                     b.Property<int>("SearchParameterId")
                         .HasColumnType("integer");
@@ -371,7 +486,7 @@ namespace DataLayer.Migrations
                     b.ToTable("SearchParameterPlatforms");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.SearchResult", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SearchResult", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -398,7 +513,7 @@ namespace DataLayer.Migrations
                     b.ToTable("SearchResults");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.SearchResultFiltered", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SearchResultFiltered", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -431,7 +546,7 @@ namespace DataLayer.Migrations
                     b.ToTable("SearchResultsFiltered");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.SubscriptionPlan", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SubscriptionPlan", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -439,12 +554,21 @@ namespace DataLayer.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<bool>("AdvanceIAModels")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("AdvancedAdImagesAnalysis")
+                        .HasColumnType("boolean");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Description")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<bool>("HumanFilter")
+                        .HasColumnType("boolean");
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
@@ -474,12 +598,53 @@ namespace DataLayer.Migrations
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("imageUrl")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.HasKey("Id");
 
                     b.ToTable("SubscriptionPlans");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.User", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SystemSetting", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("AIId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsEmailNotificationEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsWhatsAppNotificationEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Theme")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AIId");
+
+                    b.HasIndex("Id")
+                        .IsUnique();
+
+                    b.ToTable("SystemSettings");
+                });
+
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.User", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -524,7 +689,47 @@ namespace DataLayer.Migrations
                     b.ToTable("Users");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.UserSubscription", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.UserSetting", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("AIId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsEmailEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsWhatsAppEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Theme")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AIId");
+
+                    b.HasIndex("UserId")
+                        .IsUnique();
+
+                    b.ToTable("UserSettings");
+                });
+
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.UserSubscription", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -570,9 +775,9 @@ namespace DataLayer.Migrations
                     b.ToTable("UserSubscriptions");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.Ad", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Ad", b =>
                 {
-                    b.HasOne("DataLayer.Models.PostGresModels.Platform", "Platform")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Platform", "Platform")
                         .WithMany("Ads")
                         .HasForeignKey("PlatformId")
                         .OnDelete(DeleteBehavior.Restrict)
@@ -581,9 +786,9 @@ namespace DataLayer.Migrations
                     b.Navigation("Platform");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.Category", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Category", b =>
                 {
-                    b.HasOne("DataLayer.Models.PostGresModels.Category", "Parent")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Category", "Parent")
                         .WithMany("Subcategories")
                         .HasForeignKey("ParentId")
                         .OnDelete(DeleteBehavior.Restrict);
@@ -591,15 +796,15 @@ namespace DataLayer.Migrations
                     b.Navigation("Parent");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.Like", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Like", b =>
                 {
-                    b.HasOne("DataLayer.Models.PostGresModels.Ad", "Ad")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Ad", "Ad")
                         .WithMany("Likes")
                         .HasForeignKey("AdId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("DataLayer.Models.PostGresModels.User", "User")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.User", "User")
                         .WithMany("Likes")
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -610,15 +815,34 @@ namespace DataLayer.Migrations
                     b.Navigation("User");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.PlatformCategoryMapping", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Log", b =>
                 {
-                    b.HasOne("DataLayer.Models.PostGresModels.Category", "Category")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Notification", b =>
+                {
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.PlatformCategoryMapping", b =>
+                {
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Category", "Category")
                         .WithMany("PlatformCategoryMappings")
                         .HasForeignKey("CategoryId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("DataLayer.Models.PostGresModels.Platform", "Platform")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Platform", "Platform")
                         .WithMany()
                         .HasForeignKey("PlatformId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -629,13 +853,13 @@ namespace DataLayer.Migrations
                     b.Navigation("Platform");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.Search", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Search", b =>
                 {
-                    b.HasOne("DataLayer.Models.PostGresModels.SubscriptionPlan", null)
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SubscriptionPlan", null)
                         .WithMany("Searches")
                         .HasForeignKey("SubscriptionPlanId");
 
-                    b.HasOne("DataLayer.Models.PostGresModels.User", "User")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.User", "User")
                         .WithMany("Searches")
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -644,9 +868,9 @@ namespace DataLayer.Migrations
                     b.Navigation("User");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.SearchParameter", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SearchParameter", b =>
                 {
-                    b.HasOne("DataLayer.Models.PostGresModels.Search", "Search")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Search", "Search")
                         .WithMany("SearchParameters")
                         .HasForeignKey("SearchId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -655,15 +879,15 @@ namespace DataLayer.Migrations
                     b.Navigation("Search");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.SearchParameterPlatform", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SearchParameterPlatform", b =>
                 {
-                    b.HasOne("DataLayer.Models.PostGresModels.Platform", "Platform")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Platform", "Platform")
                         .WithMany("SearchParameterPlatforms")
                         .HasForeignKey("PlatformId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("DataLayer.Models.PostGresModels.SearchParameter", "SearchParameter")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SearchParameter", "SearchParameter")
                         .WithMany("SearchParameterPlatforms")
                         .HasForeignKey("SearchParameterId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -674,15 +898,15 @@ namespace DataLayer.Migrations
                     b.Navigation("SearchParameter");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.SearchResult", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SearchResult", b =>
                 {
-                    b.HasOne("DataLayer.Models.PostGresModels.Ad", "Ad")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Ad", "Ad")
                         .WithMany()
                         .HasForeignKey("AdId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("DataLayer.Models.PostGresModels.Search", "Search")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Search", "Search")
                         .WithMany("SearchResults")
                         .HasForeignKey("SearchId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -693,15 +917,15 @@ namespace DataLayer.Migrations
                     b.Navigation("Search");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.SearchResultFiltered", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SearchResultFiltered", b =>
                 {
-                    b.HasOne("DataLayer.Models.PostGresModels.Ad", "Ad")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Ad", "Ad")
                         .WithMany()
                         .HasForeignKey("AdId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("DataLayer.Models.PostGresModels.Search", "Search")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Search", "Search")
                         .WithMany()
                         .HasForeignKey("SearchId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -712,9 +936,19 @@ namespace DataLayer.Migrations
                     b.Navigation("Search");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.User", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SystemSetting", b =>
                 {
-                    b.HasOne("DataLayer.Models.PostGresModels.SubscriptionPlan", "SubscriptionPlan")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.AI", "AI")
+                        .WithMany()
+                        .HasForeignKey("AIId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("AI");
+                });
+
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.User", b =>
+                {
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SubscriptionPlan", "SubscriptionPlan")
                         .WithMany("Users")
                         .HasForeignKey("SubscriptionPlanId")
                         .OnDelete(DeleteBehavior.SetNull);
@@ -722,15 +956,33 @@ namespace DataLayer.Migrations
                     b.Navigation("SubscriptionPlan");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.UserSubscription", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.UserSetting", b =>
                 {
-                    b.HasOne("DataLayer.Models.PostGresModels.SubscriptionPlan", "SubscriptionPlan")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.AI", "AI")
+                        .WithMany()
+                        .HasForeignKey("AIId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.User", "User")
+                        .WithOne("Settings")
+                        .HasForeignKey("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.UserSetting", "UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("AI");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.UserSubscription", b =>
+                {
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SubscriptionPlan", "SubscriptionPlan")
                         .WithMany("UserSubscriptions")
                         .HasForeignKey("SubscriptionPlanId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("DataLayer.Models.PostGresModels.User", "User")
+                    b.HasOne("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.User", "User")
                         .WithMany("UserSubscriptions")
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -741,38 +993,38 @@ namespace DataLayer.Migrations
                     b.Navigation("User");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.Ad", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Ad", b =>
                 {
                     b.Navigation("Likes");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.Category", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Category", b =>
                 {
                     b.Navigation("PlatformCategoryMappings");
 
                     b.Navigation("Subcategories");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.Platform", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Platform", b =>
                 {
                     b.Navigation("Ads");
 
                     b.Navigation("SearchParameterPlatforms");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.Search", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.Search", b =>
                 {
                     b.Navigation("SearchParameters");
 
                     b.Navigation("SearchResults");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.SearchParameter", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SearchParameter", b =>
                 {
                     b.Navigation("SearchParameterPlatforms");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.SubscriptionPlan", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.SubscriptionPlan", b =>
                 {
                     b.Navigation("Searches");
 
@@ -781,11 +1033,14 @@ namespace DataLayer.Migrations
                     b.Navigation("Users");
                 });
 
-            modelBuilder.Entity("DataLayer.Models.PostGresModels.User", b =>
+            modelBuilder.Entity("newApi.ScrapperGateway.DataLayer.Models.PostGresModels.User", b =>
                 {
                     b.Navigation("Likes");
 
                     b.Navigation("Searches");
+
+                    b.Navigation("Settings")
+                        .IsRequired();
 
                     b.Navigation("UserSubscriptions");
                 });

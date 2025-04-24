@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using newApi.ScrapperGateway.DataLayer.Models;
 using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
+using Google.Api;
 
 [Route("api/[controller]")]
 [ApiController]
@@ -194,6 +195,7 @@ public class UserController : ControllerBase
         }
     }
 
+
     [Authorize]
     [HttpPost("verify-code")]
     public async Task<IActionResult> VerifyCode([FromBody] VerifyCodeRequest request)
@@ -317,6 +319,19 @@ public class UserController : ControllerBase
                 };
 
                 _context.Users.Add(user);
+                await _context.SaveChangesAsync(); // Save first to get the user ID
+
+                // Create default UserSettings for the new user
+                var userSettings = new UserSetting
+                {
+                    UserId = user.Id,
+                    IsWhatsAppEnabled = true,
+                    IsEmailEnabled = true,
+                    Theme = "light",
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                };
+                _context.UserSettings.Add(userSettings);
                 await _context.SaveChangesAsync();
             }
 
@@ -370,6 +385,10 @@ public class UserController : ControllerBase
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
 }
+
+
+
+
 
 public class GoogleAuthDto
 {

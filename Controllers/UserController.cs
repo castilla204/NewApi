@@ -321,6 +321,9 @@ public class UserController : ControllerBase
                 _context.Users.Add(user);
                 await _context.SaveChangesAsync(); // Save first to get the user ID
 
+
+                _logger.LogTrace("Antes de crear user settings");
+                Console.WriteLine("creando user settings....");
                 // Create default UserSettings for the new user
                 var userSettings = new UserSetting
                 {
@@ -332,6 +335,9 @@ public class UserController : ControllerBase
                     UpdatedAt = DateTime.UtcNow
                 };
                 _context.UserSettings.Add(userSettings);
+
+                Console.WriteLine("UserSettings Creadas");
+
                 await _context.SaveChangesAsync();
             }
 

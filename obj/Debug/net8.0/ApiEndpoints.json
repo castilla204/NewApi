@@ -19,7 +19,7 @@
     "Parameters": [
       {
         "Name": "createDto",
-        "Type": "DataLayer.Models.DTOs.CreateCategoryDto",
+        "Type": "newApi.ScrapperGateway.DataLayer.Models.DTOs.CreateCategoryDto",
         "IsRequired": true
       }
     ],
@@ -40,7 +40,7 @@
       },
       {
         "Name": "updateDto",
-        "Type": "DataLayer.Models.DTOs.UpdateCategoryDto",
+        "Type": "newApi.ScrapperGateway.DataLayer.Models.DTOs.UpdateCategoryDto",
         "IsRequired": true
       }
     ],
@@ -166,7 +166,7 @@
     "Parameters": [
       {
         "Name": "searchDto",
-        "Type": "DataLayer.Models.DTOs.CreateSearchDto",
+        "Type": "newApi.ScrapperGateway.DataLayer.Models.DTOs.CreateSearchDto",
         "IsRequired": true
       }
     ],
@@ -213,7 +213,7 @@
       },
       {
         "Name": "updateDto",
-        "Type": "DataLayer.Models.DTOs.UpdateSearchDto",
+        "Type": "newApi.ScrapperGateway.DataLayer.Models.DTOs.UpdateSearchDto",
         "IsRequired": true
       }
     ],
@@ -318,7 +318,7 @@
       },
       {
         "Name": "searchParameterDto",
-        "Type": "DataLayer.Models.DTOs.CreateSearchParameterDto",
+        "Type": "newApi.ScrapperGateway.DataLayer.Models.DTOs.CreateSearchParameterDto",
         "IsRequired": true
       }
     ],
@@ -339,7 +339,7 @@
       },
       {
         "Name": "updateDto",
-        "Type": "DataLayer.Models.DTOs.UpdateSearchParameterDto",
+        "Type": "newApi.ScrapperGateway.DataLayer.Models.DTOs.UpdateSearchParameterDto",
         "IsRequired": true
       }
     ],
@@ -450,7 +450,7 @@
     "Parameters": [
       {
         "Name": "request",
-        "Type": "DataLayer.Models.DTOs.ConfirmSubscriptionDto",
+        "Type": "newApi.ScrapperGateway.DataLayer.Models.DTOs.ConfirmSubscriptionDto",
         "IsRequired": true
       }
     ],
@@ -466,7 +466,7 @@
     "Parameters": [
       {
         "Name": "request",
-        "Type": "DataLayer.Models.DTOs.CreateSubscriptionDto",
+        "Type": "newApi.ScrapperGateway.DataLayer.Models.DTOs.CreateSubscriptionDto",
         "IsRequired": true
       }
     ],
@@ -603,6 +603,32 @@
     "ReturnTypes": []
   },
   {
+    "ContainingType": "newApi.Controllers.newApi.Controllers.UserSettingsController",
+    "Method": "GetSettings",
+    "RelativePath": "api/UserSettings",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "newApi.Controllers.newApi.Controllers.UserSettingsController",
+    "Method": "UpdateSettings",
+    "RelativePath": "api/UserSettings",
+    "HttpMethod": "PUT",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "request",
+        "Type": "newApi.Controllers.newApi.Controllers.UpdateSettingsRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
     "ContainingType": "newApi.Controllers.WeatherForecastController",
     "Method": "Get",
     "RelativePath": "WeatherForecast",
@@ -633,7 +659,7 @@
     "Parameters": [
       {
         "Name": "request",
-        "Type": "DataLayer.Models.DTOs.SearchRequestDto",
+        "Type": "newApi.ScrapperGateway.DataLayer.Models.DTOs.SearchRequestDto",
         "IsRequired": true
       }
     ],

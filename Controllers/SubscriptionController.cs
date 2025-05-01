@@ -32,7 +32,99 @@ namespace newApi.Controllers
             _logger.LogInformation("Stripe API Key and Webhook Secret configured");
         }
 
-        [HttpPost("webhook")]
+        [HttpPost("cancel")]
+        public async Task<IActionResult> CancelSubscription()
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                _logger.LogInformation("Processing cancellation request for user {UserId}", userId);
+
+                // Get active subscription
+                var subscription = await _context.UserSubscriptions
+                    .Include(us => us.User)
+                    .FirstOrDefaultAsync(us => us.UserId == userId && us.Status == "active");
+
+                if (subscription == null)
+                {
+                    _logger.LogInformation("No active subscription found for user {UserId}", userId);
+                    return NotFound(new { message = "No active subscription found" });
+                }
+
+                // Check if already pending cancellation
+                if (subscription.Status == "pending_cancellation")
+                {
+                    _logger.LogInformation("Subscription already pending cancellation for user {UserId}", userId);
+                    return Ok(new
+                    {
+                        message = "Subscription is already set to cancel at the end of the billing period",
+                        status = subscription.Status,
+                        endDate = subscription.EndDate
+                    });
+                }
+
+                // Mark subscription to cancel at period end in Stripe
+                if (!string.IsNullOrEmpty(subscription.StripeSubscriptionId))
+                {
+                    var stripeService = new SubscriptionService();
+                    try
+                    {
+                        var updateOptions = new SubscriptionUpdateOptions
+                        {
+                            CancelAtPeriodEnd = true
+                        };
+                        var updatedSubscription = await stripeService.UpdateAsync(subscription.StripeSubscriptionId, updateOptions);
+                        _logger.LogInformation("Subscription {StripeSubscriptionId} marked to cancel at period end for user {UserId}", subscription.StripeSubscriptionId, userId);
+
+                        // Update subscription status in database
+                        subscription.Status = "pending_cancellation";
+                        subscription.UpdatedAt = DateTime.UtcNow;
+                        // EndDate remains unchanged as it already reflects the end of the billing period
+                    }
+                    catch (StripeException ex)
+                    {
+                        _logger.LogError(ex, "Stripe error marking subscription {StripeSubscriptionId} for cancellation: {StripeError}", subscription.StripeSubscriptionId, ex.StripeError?.Message);
+                        return BadRequest(new { message = "Failed to process cancellation in Stripe" });
+                    }
+                }
+
+                // Use transaction for database updates
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Database error saving cancellation for user {UserId}", userId);
+                    throw;
+                }
+
+                _logger.LogInformation("Subscription cancellation scheduled successfully for user {UserId}, endDate={EndDate}", userId, subscription.EndDate);
+                return Ok(new
+                {
+                    message = "Subscription will cancel at the end of the billing period",
+                    status = subscription.Status,
+                    endDate = subscription.EndDate
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing cancellation for user {UserId}");
+                return StatusCode(500, new { message = "Failed to process subscription cancellation" });
+            }
+        }
+    
+
+    [HttpPost("webhook")]
         [AllowAnonymous]
         public async Task<IActionResult> HandleStripeWebhook()
         {
@@ -398,70 +490,6 @@ namespace newApi.Controllers
             }
         }
 
-        [HttpPost("confirm-subscription")]
-        public async Task<IActionResult> ConfirmSubscription([FromBody] ConfirmSubscriptionDto request)
-        {
-            _logger.LogInformation("ConfirmSubscription endpoint invoked with request: {Request}", JsonSerializer.Serialize(request));
-
-            try
-            {
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
-                    return Unauthorized(new { message = "Invalid user identification" });
-                }
-
-                _logger.LogInformation("Authenticated user: userId={UserId}", userId);
-
-                var user = await _context.Users.FindAsync(userId);
-                if (user == null)
-                {
-                    _logger.LogError("User not found for userId={UserId}", userId);
-                    return NotFound(new { message = "User not found" });
-                }
-
-                _logger.LogInformation("Found user: userId={UserId}, email={Email}", user.Id, user.Email);
-
-                var plan = await _context.SubscriptionPlans.FindAsync(request.PlanId);
-                if (plan == null)
-                {
-                    _logger.LogError("Subscription plan not found for planId={PlanId}", request.PlanId);
-                    return NotFound(new { message = "Subscription plan not found" });
-                }
-
-                _logger.LogInformation("Found subscription plan: planId={PlanId}, name={PlanName}", plan.Id, plan.Name);
-
-                // Update user's subscription plan
-                user.SubscriptionPlanId = request.PlanId;
-                _logger.LogInformation("Updated user's subscription plan to planId={PlanId}", request.PlanId);
-
-                // Create user subscription record
-                var userSubscription = new UserSubscription
-                {
-                    UserId = userId,
-                    SubscriptionPlanId = request.PlanId,
-                    IsYearly = request.IsYearly,
-                    StartDate = DateTime.UtcNow,
-                    EndDate = DateTime.UtcNow.AddMonths(request.IsYearly ? 12 : 1),
-                    Status = "active",
-                    StripeSubscriptionId = request.StripeSubscriptionId
-                };
-
-                _logger.LogInformation("Creating new UserSubscription: userId={UserId}, planId={PlanId}, isYearly={IsYearly}, subscriptionId={SubscriptionId}", userId, request.PlanId, request.IsYearly, request.StripeSubscriptionId);
-
-                _context.UserSubscriptions.Add(userSubscription);
-                await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Successfully confirmed subscription for userId={UserId}", userId);
-                return Ok(new { message = "Subscription confirmed successfully" });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error confirming subscription: {ErrorMessage}", ex.Message);
-                return StatusCode(500, new { message = "Failed to confirm subscription" });
-            }
-        }
 
         [HttpGet("plans")]
         public async Task<IActionResult> GetSubscriptionPlans()

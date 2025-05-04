@@ -2,9 +2,9 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using AutoMapper;
-using newApi.ScrapperGateway.DataLayer.Models.DTOs;
-using newApi.ScrapperGateway.DataLayer.Models;
-using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models.DTOs;
+using newApi.DataLayer.Models;
 
 namespace newApi.Controllers
 {

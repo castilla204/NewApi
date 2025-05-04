@@ -1,4 +1,4 @@
-﻿using AdModel = newApi.ScrapperGateway.DataLayer.Models.AdModel;
+﻿using AdModel = newApi.DataLayer.Models.AdModel;
 namespace newApi.Services
 {
     public interface IScrapperService

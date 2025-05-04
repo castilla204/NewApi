@@ -5,9 +5,9 @@ using Stripe;
 using Stripe.Checkout;
 using System.Text.Json;
 using System.Security.Claims;
-using newApi.ScrapperGateway.DataLayer.Models;
-using newApi.ScrapperGateway.DataLayer.Models.DTOs;
-using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models;
+using newApi.DataLayer.Models.DTOs;
 
 namespace newApi.Controllers
 {

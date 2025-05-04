@@ -5,6 +5,7 @@
     using Microsoft.EntityFrameworkCore;
     using System.Security.Claims;
     using global::newApi.ScrapperGateway.DataLayer.Models;
+    using global::newApi.DataLayer.Models;
 
     namespace newApi.Controllers
     {

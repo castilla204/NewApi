@@ -9,7 +9,9 @@ using newApi.RabbitMQ;
 using newApi.Services;
 using DataLayer;
 using Google.Apis.Auth.OAuth2;
-using newApi.ScrapperGateway.DataLayer.Models;
+using Google.Cloud.Storage.V1;
+using newApi.DataLayer.Models;
+using newApi.DataLayer;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -50,6 +52,7 @@ builder.Configuration["Stripe:WebhookSecret"] = GetSecretValue("stripe-webhook-s
 builder.Configuration["Twilio:AccountSid"] = GetSecretValue("twilio-account-sid");
 builder.Configuration["Twilio:AuthToken"] = GetSecretValue("twilio-auth-token");
 builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-verification-service-sid");
+builder.Configuration["GoogleCloud:BucketName"] = "atrapobucket";
 
 // Configurar la cadena de conexión según el entorno
 if (builder.Environment.IsDevelopment())
@@ -59,7 +62,8 @@ if (builder.Environment.IsDevelopment())
 }
 else
 {
-    builder.Configuration["ConnectionStrings:PostgresConnection"] = $"Host=postgres-svc;Port=5432;Username=admin;Password={GetSecretValue("postgres-password")};Database=atrapo";
+    builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=localhost;Port=5432;Username=postgres;Password=coche109;Database=grup";
+    //builder.Configuration["ConnectionStrings:PostgresConnection"] = $"Host=postgres-svc;Port=5432;Username=admin;Password={GetSecretValue("postgres-password")};Database=atrapo";
 }
 
 // Add services to the container
@@ -104,6 +108,9 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("PostgresConnection")));
 
+
+builder.Services.AddSingleton(StorageClient.Create());
+
 // Configure RabbitMQ
 builder.Services.AddSingleton<IConnectionFactory>(sp =>
 {
@@ -141,7 +148,7 @@ builder.Services.AddScoped<ISubscriptionService, newApi.Services.SubscriptionSer
 builder.Services.AddHttpClient();
 
 // Register AutoMapper
-builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly, typeof(PlatformMappingProfile).Assembly, typeof(newApi.ScrapperGateway.DataLayer.CategoryMappingProfile).Assembly);
+builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly, typeof(PlatformMappingProfile).Assembly, typeof(CategoryMappingProfile).Assembly);
 
 var app = builder.Build();
 

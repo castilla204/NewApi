@@ -7,7 +7,10 @@ using newApi.Services;
 using newApi.Services;
 using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using newApi.ScrapperGateway.DataLayer.Models;
-using newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models;
+using newApi.DataLayer.Models.DTOs;
 
 namespace newApi.Controllers
 {
@@ -57,7 +60,7 @@ namespace newApi.Controllers
                         Description = s.Description,
                         Frequency = s.Frequency,
                         IsActive = s.IsActive,
-                        IsRevised = s.isRevised,
+                        IsRevised = s.IsRevised,
                         LastExecution = s.LastExecution,
                         CreatedAt = s.CreatedAt,
                         StartDate = s.StartDate,
@@ -97,7 +100,7 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Search not found" });
                 }
 
-                search.isRevised = true;
+                search.IsRevised = true;
                 await _context.SaveChangesAsync();
 
                 return Ok(new { message = "Search marked as revised" });
@@ -192,7 +195,7 @@ namespace newApi.Controllers
                         Description = s.Description,
                         Frequency = s.Frequency,
                         IsActive = s.IsActive,
-                        IsRevised = s.isRevised,
+                        IsRevised = s.IsRevised,
                         LastExecution = s.LastExecution,
                         CreatedAt = s.CreatedAt,
                         StartDate = s.StartDate,
@@ -342,7 +345,7 @@ namespace newApi.Controllers
                     Description = search.Description,
                     Frequency = search.Frequency,
                     IsActive = search.IsActive,
-                    IsRevised = search.isRevised,
+                    IsRevised = search.IsRevised,
                     LastExecution = search.LastExecution,
                     CreatedAt = search.CreatedAt,
                     StartDate = search.StartDate,

@@ -1,13 +1,12 @@
 ﻿namespace newApi.Controllers
 {
     using global::newApi.ScrapperGateway.DataLayer.Models;
-    using global::newApi.ScrapperGateway.DataLayer.Models.PostGresModels;
+    using global::newApi.DataLayer.Models.PostGresModels;
     using Microsoft.AspNetCore.Authorization;
     using Microsoft.AspNetCore.Mvc;
     using Microsoft.EntityFrameworkCore;
     using System.Security.Claims;
-
-
+    using global::newApi.DataLayer.Models;
 
     namespace newApi.Controllers
     {

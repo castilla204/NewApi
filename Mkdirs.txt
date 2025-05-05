@@ -1,0 +1,11 @@
+﻿mkdir -p api/Controllers
+mkdir -p api/RabbitMQ
+mkdir -p api/Services
+mkdir -p api/DataLayer
+mkdir -p api/DataLayer/Models
+mkdir -p api/DataLayer/Models/CochesNet
+mkdir -p api/DataLayer/Models/DTOs
+mkdir -p api/DataLayer/Models/MiAnuncios
+mkdir -p api/DataLayer/Models/PostGresModels
+mkdir -p api/DataLayer/Models/Vinted
+mkdir -p api/DataLayer/Models/Wallapop

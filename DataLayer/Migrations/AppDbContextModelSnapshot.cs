@@ -716,7 +716,7 @@ namespace DataLayer.Migrations
                     b.ToTable("SearchResultsFiltered");
                 });
 
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchService", b =>
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchServiceImage", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -724,29 +724,25 @@ namespace DataLayer.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
-                    b.Property<int>("CategoryId")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("Conditions")
-                        .IsRequired()
-                        .HasColumnType("text");
-
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<int>("ExpertProfileId")
-                        .HasColumnType("integer");
+                    b.Property<string>("ImageObjectName")
+                        .IsRequired()
+                        .HasColumnType("text");
 
-                    b.Property<decimal>("Price")
-                        .HasColumnType("numeric");
+                    b.Property<string>("ImageUrl")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("SearchServiceId")
+                        .HasColumnType("integer");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CategoryId");
+                    b.HasIndex("SearchServiceId");
 
-                    b.HasIndex("ExpertProfileId");
-
-                    b.ToTable("SearchServices");
+                    b.ToTable("SearchServiceImages");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SubscriptionPlan", b =>
@@ -981,6 +977,42 @@ namespace DataLayer.Migrations
                     b.ToTable("UserSubscriptions");
                 });
 
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.newApi.DataLayer.Models.PostGresModels.SearchService", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("CategoryId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Conditions")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("DurationInHours")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("ExpertProfileId")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal>("Price")
+                        .HasColumnType("numeric");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CategoryId");
+
+                    b.HasIndex("ExpertProfileId");
+
+                    b.ToTable("SearchServices");
+                });
+
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Ad", b =>
                 {
                     b.HasOne("newApi.DataLayer.Models.PostGresModels.Platform", "Platform")
@@ -1150,7 +1182,7 @@ namespace DataLayer.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("newApi.DataLayer.Models.PostGresModels.SearchService", "SearchService")
+                    b.HasOne("newApi.DataLayer.Models.PostGresModels.newApi.DataLayer.Models.PostGresModels.SearchService", "SearchService")
                         .WithMany("SearchHires")
                         .HasForeignKey("SearchServiceId")
                         .OnDelete(DeleteBehavior.Restrict)
@@ -1233,23 +1265,15 @@ namespace DataLayer.Migrations
                     b.Navigation("Search");
                 });
 
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchService", b =>
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchServiceImage", b =>
                 {
-                    b.HasOne("newApi.DataLayer.Models.PostGresModels.Category", "Category")
-                        .WithMany()
-                        .HasForeignKey("CategoryId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("newApi.DataLayer.Models.PostGresModels.ExpertProfile", "ExpertProfile")
-                        .WithMany("SearchServices")
-                        .HasForeignKey("ExpertProfileId")
+                    b.HasOne("newApi.DataLayer.Models.PostGresModels.newApi.DataLayer.Models.PostGresModels.SearchService", "SearchService")
+                        .WithMany("Images")
+                        .HasForeignKey("SearchServiceId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.Navigation("Category");
-
-                    b.Navigation("ExpertProfile");
+                    b.Navigation("SearchService");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SystemSetting", b =>
@@ -1309,6 +1333,25 @@ namespace DataLayer.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.newApi.DataLayer.Models.PostGresModels.SearchService", b =>
+                {
+                    b.HasOne("newApi.DataLayer.Models.PostGresModels.Category", "Category")
+                        .WithMany()
+                        .HasForeignKey("CategoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("newApi.DataLayer.Models.PostGresModels.ExpertProfile", "ExpertProfile")
+                        .WithMany("SearchServices")
+                        .HasForeignKey("ExpertProfileId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Category");
+
+                    b.Navigation("ExpertProfile");
+                });
+
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Ad", b =>
                 {
                     b.Navigation("Likes");
@@ -1353,11 +1396,6 @@ namespace DataLayer.Migrations
                     b.Navigation("SearchParameterPlatforms");
                 });
 
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchService", b =>
-                {
-                    b.Navigation("SearchHires");
-                });
-
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SubscriptionPlan", b =>
                 {
                     b.Navigation("Searches");
@@ -1392,6 +1430,13 @@ namespace DataLayer.Migrations
                         .IsRequired();
 
                     b.Navigation("UserSubscriptions");
+                });
+
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.newApi.DataLayer.Models.PostGresModels.SearchService", b =>
+                {
+                    b.Navigation("Images");
+
+                    b.Navigation("SearchHires");
                 });
 #pragma warning restore 612, 618
         }

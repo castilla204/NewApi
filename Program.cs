@@ -58,12 +58,10 @@ builder.Configuration["GoogleCloud:BucketName"] = "atrapobucket";
 if (builder.Environment.IsDevelopment())
 {
     builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=localhost;Port=5432;Username=postgres;Password=coche109;Database=grup";
-    //builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=185.166.39.4;Port=30000;Username=admin;Password=__REDACTED_CREDENTIAL__;Database=atrapo";
 }
 else
 {
     builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=localhost;Port=5432;Username=postgres;Password=coche109;Database=grup";
-    //builder.Configuration["ConnectionStrings:PostgresConnection"] = $"Host=postgres-svc;Port=5432;Username=admin;Password={GetSecretValue("postgres-password")};Database=atrapo";
 }
 
 // Add services to the container
@@ -79,6 +77,11 @@ builder.Services.AddSwaggerGen(c =>
         Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey
     });
 });
+
+builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly,
+    typeof(PlatformMappingProfile).Assembly,
+    typeof(CategoryMappingProfile).Assembly,
+    typeof(UserMappingProfile).Assembly);
 
 // Configure JWT Authentication
 builder.Services.AddAuthentication(options =>
@@ -108,7 +111,7 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("PostgresConnection")));
 
-
+// Configure Google Cloud Storage
 builder.Services.AddSingleton(StorageClient.Create());
 
 // Configure RabbitMQ
@@ -145,6 +148,14 @@ builder.Services.AddScoped<ILikeService, LikeService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IAuthorizationServices, AuthorizationServices>();
 builder.Services.AddScoped<ISubscriptionService, newApi.Services.SubscriptionService>();
+builder.Services.AddScoped<ISearchHireService, SearchHireService>();
+builder.Services.AddScoped<ISearchServiceService, SearchServiceService>();
+
+// Register Service Implementations
+builder.Services.AddScoped<UserService>();
+builder.Services.AddScoped<SearchServiceService>();
+builder.Services.AddScoped<SearchHireService>();
+
 builder.Services.AddHttpClient();
 
 // Register AutoMapper
@@ -155,7 +166,7 @@ var app = builder.Build();
 // Configure Stripe
 StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"];
 
-// Habilita Swagger solo en el entorno de desarrollo
+// Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();

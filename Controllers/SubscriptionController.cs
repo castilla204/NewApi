@@ -8,6 +8,7 @@ using System.Security.Claims;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
+using Google.Api;
 
 namespace newApi.Controllers
 {
@@ -32,6 +33,9 @@ namespace newApi.Controllers
             _logger.LogInformation("Stripe API Key and Webhook Secret configured");
         }
 
+
+
+        #region recurrentpaymentsendpoints
         [HttpPost("cancel")]
         public async Task<IActionResult> CancelSubscription()
         {
@@ -122,128 +126,128 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Failed to process subscription cancellation" });
             }
         }
-    
 
-    [HttpPost("webhook")]
-        [AllowAnonymous]
-        public async Task<IActionResult> HandleStripeWebhook()
-        {
-            _logger.LogInformation("Webhook endpoint invoked");
 
-            var json = await new StreamReader(Request.Body).ReadToEndAsync();
-            var signatureHeader = Request.Headers["Stripe-Signature"];
-            _logger.LogInformation("Received webhook request with signature: {SignatureHeader}", signatureHeader);
+        //[HttpPost("webhook")]
+        //[AllowAnonymous]
+        //public async Task<IActionResult> HandleStripeWebhook()
+        //{
+        //    _logger.LogInformation("Webhook endpoint invoked");
 
-            if (string.IsNullOrEmpty(_webhookSecret))
-            {
-                _logger.LogError("Webhook secret is not configured");
-                return BadRequest(new { error = "Webhook secret is not configured" });
-            }
+        //    var json = await new StreamReader(Request.Body).ReadToEndAsync();
+        //    var signatureHeader = Request.Headers["Stripe-Signature"];
+        //    _logger.LogInformation("Received webhook request with signature: {SignatureHeader}", signatureHeader);
 
-            if (string.IsNullOrEmpty(signatureHeader))
-            {
-                _logger.LogError("No signature header found in webhook request");
-                return BadRequest(new { error = "No signature header found" });
-            }
+        //    if (string.IsNullOrEmpty(_webhookSecret))
+        //    {
+        //        _logger.LogError("Webhook secret is not configured");
+        //        return BadRequest(new { error = "Webhook secret is not configured" });
+        //    }
 
-            try
-            {
-                _logger.LogInformation("Attempting to construct Stripe event with signature: {SignatureHeader}", signatureHeader);
+        //    if (string.IsNullOrEmpty(signatureHeader))
+        //    {
+        //        _logger.LogError("No signature header found in webhook request");
+        //        return BadRequest(new { error = "No signature header found" });
+        //    }
 
-                var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, _webhookSecret);
+        //    try
+        //    {
+        //        _logger.LogInformation("Attempting to construct Stripe event with signature: {SignatureHeader}", signatureHeader);
 
-                _logger.LogInformation("Event constructed successfully. Type: {EventType}, ID: {EventId}", stripeEvent.Type, stripeEvent.Id);
+        //        var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, _webhookSecret);
 
-                switch (stripeEvent.Type)
-                {
-                    case EventTypes.CheckoutSessionCompleted:
-                        _logger.LogInformation("Processing event: checkout.session.completed");
-                        var session = stripeEvent.Data.Object as Session;
-                        if (session == null)
-                        {
-                            _logger.LogError("Failed to cast event data to Session object");
-                            return BadRequest();
-                        }
+        //        _logger.LogInformation("Event constructed successfully. Type: {EventType}, ID: {EventId}", stripeEvent.Type, stripeEvent.Id);
 
-                        _logger.LogInformation("Session details: ID={SessionId}, CustomerEmail={CustomerEmail}", session.Id, session.CustomerEmail);
+        //        switch (stripeEvent.Type)
+        //        {
+        //            case EventTypes.CheckoutSessionCompleted:
+        //                _logger.LogInformation("Processing event: checkout.session.completed");
+        //                var session = stripeEvent.Data.Object as Session;
+        //                if (session == null)
+        //                {
+        //                    _logger.LogError("Failed to cast event data to Session object");
+        //                    return BadRequest();
+        //                }
 
-                        // Extract metadata
-                        if (!int.TryParse(session.Metadata["userId"], out int userId) ||
-                            !int.TryParse(session.Metadata["planId"], out int planId) ||
-                            !bool.TryParse(session.Metadata["isYearly"], out bool isYearly))
-                        {
-                            _logger.LogError("Invalid metadata in Stripe session. Metadata: {Metadata}", JsonSerializer.Serialize(session.Metadata));
-                            return BadRequest();
-                        }
+        //                _logger.LogInformation("Session details: ID={SessionId}, CustomerEmail={CustomerEmail}", session.Id, session.CustomerEmail);
 
-                        _logger.LogInformation("Extracted metadata: userId={UserId}, planId={PlanId}, isYearly={IsYearly}", userId, planId, isYearly);
+        //                // Extract metadata
+        //                if (!int.TryParse(session.Metadata["userId"], out int userId) ||
+        //                    !int.TryParse(session.Metadata["planId"], out int planId) ||
+        //                    !bool.TryParse(session.Metadata["isYearly"], out bool isYearly))
+        //                {
+        //                    _logger.LogError("Invalid metadata in Stripe session. Metadata: {Metadata}", JsonSerializer.Serialize(session.Metadata));
+        //                    return BadRequest();
+        //                }
 
-                        await HandleCheckoutSessionCompleted(userId, planId, isYearly, session.SubscriptionId);
-                        break;
+        //                _logger.LogInformation("Extracted metadata: userId={UserId}, planId={PlanId}, isYearly={IsYearly}", userId, planId, isYearly);
 
-                    case EventTypes.CustomerSubscriptionUpdated:
-                        _logger.LogInformation("Processing event: customer.subscription.updated");
-                        var subscription = stripeEvent.Data.Object as Subscription;
-                        if (subscription == null)
-                        {
-                            _logger.LogError("Failed to cast event data to Subscription object");
-                            return BadRequest();
-                        }
-                        await HandleSubscriptionUpdated(subscription);
-                        break;
+        //                await HandleCheckoutSessionCompleted(userId, planId, isYearly, session.SubscriptionId);
+        //                break;
 
-                    case EventTypes.CustomerSubscriptionDeleted:
-                        _logger.LogInformation("Processing event: customer.subscription.deleted");
-                        var deletedSubscription = stripeEvent.Data.Object as Subscription;
-                        if (deletedSubscription == null)
-                        {
-                            _logger.LogError("Failed to cast event data to Subscription object");
-                            return BadRequest();
-                        }
-                        await HandleSubscriptionCanceled(deletedSubscription);
-                        break;
+        //            case EventTypes.CustomerSubscriptionUpdated:
+        //                _logger.LogInformation("Processing event: customer.subscription.updated");
+        //                var subscription = stripeEvent.Data.Object as Subscription;
+        //                if (subscription == null)
+        //                {
+        //                    _logger.LogError("Failed to cast event data to Subscription object");
+        //                    return BadRequest();
+        //                }
+        //                await HandleSubscriptionUpdated(subscription);
+        //                break;
 
-                    case EventTypes.InvoicePaymentSucceeded:
-                        _logger.LogInformation("Processing event: invoice.payment_succeeded");
-                        var invoice = stripeEvent.Data.Object as Invoice;
-                        if (invoice == null)
-                        {
-                            _logger.LogError("Failed to cast event data to Invoice object");
-                            return BadRequest();
-                        }
-                        await HandlePaymentSucceeded(invoice);
-                        break;
+        //            case EventTypes.CustomerSubscriptionDeleted:
+        //                _logger.LogInformation("Processing event: customer.subscription.deleted");
+        //                var deletedSubscription = stripeEvent.Data.Object as Subscription;
+        //                if (deletedSubscription == null)
+        //                {
+        //                    _logger.LogError("Failed to cast event data to Subscription object");
+        //                    return BadRequest();
+        //                }
+        //                await HandleSubscriptionCanceled(deletedSubscription);
+        //                break;
 
-                    case EventTypes.InvoicePaymentFailed:
-                        _logger.LogInformation("Processing event: invoice.payment_failed");
-                        var failedInvoice = stripeEvent.Data.Object as Invoice;
-                        if (failedInvoice == null)
-                        {
-                            _logger.LogError("Failed to cast event data to Invoice object");
-                            return BadRequest();
-                        }
-                        await HandlePaymentFailed(failedInvoice);
-                        break;
+        //            case EventTypes.InvoicePaymentSucceeded:
+        //                _logger.LogInformation("Processing event: invoice.payment_succeeded");
+        //                var invoice = stripeEvent.Data.Object as Invoice;
+        //                if (invoice == null)
+        //                {
+        //                    _logger.LogError("Failed to cast event data to Invoice object");
+        //                    return BadRequest();
+        //                }
+        //                await HandlePaymentSucceeded(invoice);
+        //                break;
 
-                    default:
-                        _logger.LogWarning("Unhandled event type: {EventType}", stripeEvent.Type);
-                        break;
-                }
+        //            case EventTypes.InvoicePaymentFailed:
+        //                _logger.LogInformation("Processing event: invoice.payment_failed");
+        //                var failedInvoice = stripeEvent.Data.Object as Invoice;
+        //                if (failedInvoice == null)
+        //                {
+        //                    _logger.LogError("Failed to cast event data to Invoice object");
+        //                    return BadRequest();
+        //                }
+        //                await HandlePaymentFailed(failedInvoice);
+        //                break;
 
-                _logger.LogInformation("Webhook processed successfully for event type: {EventType}", stripeEvent.Type);
-                return Ok();
-            }
-            catch (StripeException e)
-            {
-                _logger.LogError(e, "Stripe webhook error: {ErrorMessage}", e.Message);
-                return BadRequest(new { error = e.Message });
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "General webhook error: {ErrorMessage}", e.Message);
-                return StatusCode(500, new { error = "Internal server error" });
-            }
-        }
+        //            default:
+        //                _logger.LogWarning("Unhandled event type: {EventType}", stripeEvent.Type);
+        //                break;
+        //        }
+
+        //        _logger.LogInformation("Webhook processed successfully for event type: {EventType}", stripeEvent.Type);
+        //        return Ok();
+        //    }
+        //    catch (StripeException e)
+        //    {
+        //        _logger.LogError(e, "Stripe webhook error: {ErrorMessage}", e.Message);
+        //        return BadRequest(new { error = e.Message });
+        //    }
+        //    catch (Exception e)
+        //    {
+        //        _logger.LogError(e, "General webhook error: {ErrorMessage}", e.Message);
+        //        return StatusCode(500, new { error = "Internal server error" });
+        //    }
+        //}
 
         private async Task HandleCheckoutSessionCompleted(int userId, int planId, bool isYearly, string subscriptionId)
         {
@@ -652,5 +656,479 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Failed to retrieve current subscription" });
             }
         }
+
+        #endregion
+
+        #region systemforindividualpayments + stripeconnect
+
+
+        [HttpPost("expert-onboarding")]
+        [Authorize(Roles = "Expert")]
+        public async Task<IActionResult> CreateExpertOnboarding()
+        {
+            _logger.LogInformation("CreateExpertOnboarding endpoint invoked");
+
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var expertProfile = await _context.ExpertProfiles
+                    .FirstOrDefaultAsync(ep => ep.UserId == userId);
+
+                if (expertProfile == null)
+                {
+                    _logger.LogError("Expert profile not found for userId={UserId}", userId);
+                    return NotFound(new { message = "Expert profile not found" });
+                }
+
+                if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                {
+                    _logger.LogInformation("Expert already has a Stripe account: userId={UserId}, stripeAccountId={StripeAccountId}", userId, expertProfile.StripeAccountId);
+                    return BadRequest(new { message = "Expert already registered with Stripe" });
+                }
+
+                var accountOptions = new AccountCreateOptions
+                {
+                    Type = "express",
+                    Country = "ES", // Ajusta según el país de tus expertos
+                    Email = User.FindFirst(ClaimTypes.Email)?.Value,
+                    Capabilities = new AccountCapabilitiesOptions
+                    {
+                        Transfers = new AccountCapabilitiesTransfersOptions { Requested = true }
+                    },
+                    BusinessType = "individual",
+                    Metadata = new Dictionary<string, string>
+            {
+                { "userId", userId.ToString() }
+            }
+                };
+
+                var accountService = new AccountService();
+                Account account;
+                try
+                {
+                    account = await accountService.CreateAsync(accountOptions);
+                    _logger.LogInformation("Stripe account created for userId={UserId}, accountId={AccountId}", userId, account.Id);
+                }
+                catch (StripeException ex)
+                {
+                    _logger.LogError(ex, "Stripe error creating account for userId={UserId}: {ErrorMessage}", userId, ex.Message);
+                    return StatusCode(500, new { message = "Failed to create Stripe account" });
+                }
+
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    expertProfile.StripeAccountId = account.Id;
+                    await _context.SaveChangesAsync();
+
+                    var linkOptions = new AccountLinkCreateOptions
+                    {
+                        Account = account.Id,
+                        RefreshUrl = "https://atrapo.io/refresh-onboarding",
+                        ReturnUrl = "https://atrapo.io/complete-onboarding",
+                        Type = "account_onboarding",
+                        Collect = "eventually_due" // Corregido de "eventually" a "eventually_due"
+                    };
+
+                    var linkService = new AccountLinkService();
+                    AccountLink accountLink;
+                    try
+                    {
+                        accountLink = await linkService.CreateAsync(linkOptions);
+                        _logger.LogInformation("Onboarding link created for userId={UserId}, url={Url}", userId, accountLink.Url);
+                    }
+                    catch (StripeException ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Stripe error creating onboarding link for userId={UserId}: {ErrorMessage}", userId, ex.Message);
+                        return StatusCode(500, new { message = "Failed to create onboarding link" });
+                    }
+
+                    await transaction.CommitAsync();
+                    return Ok(new { url = accountLink.Url });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Database error saving Stripe account for userId={UserId}", userId);
+                    return StatusCode(500, new { message = "Failed to save Stripe account" });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating expert onboarding: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to process expert onboarding" });
+            }
+        }
+
+
+
+        [HttpPost("load-money")]
+    public async Task<IActionResult> LoadMoney([FromBody] LoadMoneyDto request)
+    {
+        _logger.LogInformation("LoadMoney endpoint invoked with amount: {Amount}", request.Amount);
+
+        try
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            {
+                _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                return Unauthorized(new { message = "Invalid user identification" });
+            }
+
+            if (request.Amount <= 0 || request.Amount > 1000) // Límite razonable para evitar errores
+            {
+                _logger.LogError("Invalid amount: {Amount}", request.Amount);
+                return BadRequest(new { message = "Amount must be between 0.01 and 1000" });
+            }
+
+            var user = await _context.Users.FindAsync(userId);
+            if (user == null)
+            {
+                _logger.LogError("User not found for userId={UserId}", userId);
+                return NotFound(new { message = "User not found" });
+            }
+
+            var domain = "https://atrapo.io";
+            var options = new SessionCreateOptions
+            {
+                PaymentMethodTypes = new List<string> { "card" },
+                LineItems = new List<SessionLineItemOptions>
+                    {
+                        new SessionLineItemOptions
+                        {
+                            PriceData = new SessionLineItemPriceDataOptions
+                            {
+                                Currency = "eur",
+                                UnitAmount = (long)(request.Amount * 100), // Convertir a centavos
+                                ProductData = new SessionLineItemPriceDataProductDataOptions
+                                {
+                                    Name = "Load Money"
+                                }
+                            },
+                            Quantity = 1
+                        }
+                    },
+                Mode = "payment",
+                SuccessUrl = domain + "/success",
+                CancelUrl = domain + "/cancel",
+                CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value,
+                Metadata = new Dictionary<string, string>
+                    {
+                        { "userId", userId.ToString() },
+                        { "amount", request.Amount.ToString() }
+                    }
+            };
+
+            _logger.LogInformation("Creating Stripe Checkout session for userId={UserId}, amount={Amount}", userId, request.Amount);
+
+            var service = new SessionService();
+            Session session;
+            try
+            {
+                session = await service.CreateAsync(options);
+                _logger.LogInformation("Stripe Checkout session created: sessionId={SessionId}, url={SessionUrl}", session.Id, session.Url);
+            }
+            catch (StripeException e)
+            {
+                _logger.LogError(e, "Stripe error creating checkout session: {ErrorMessage}", e.Message);
+                return StatusCode(500, new { message = e.Message });
+            }
+
+            return Ok(new { url = session.Url });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating load money session: {ErrorMessage}", ex.Message);
+            return StatusCode(500, new { message = "Failed to create load money session" });
+        }
     }
+
+        [HttpPost("webhook")]
+        [AllowAnonymous]
+        public async Task<IActionResult> HandleStripeWebhook()
+        {
+            var json = await new StreamReader(Request.Body).ReadToEndAsync();
+            var signatureHeader = Request.Headers["Stripe-Signature"];
+
+            try
+            {
+                // Usa el secreto de firma cargado desde la configuración
+                var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, _webhookSecret);
+
+                if (stripeEvent.Type == "checkout.session.completed")
+                {
+                    var session = stripeEvent.Data.Object as Session;
+                    if (session != null && session.Mode == "payment")
+                    {
+                        if (int.TryParse(session.Metadata["userId"], out int userId) &&
+                            decimal.TryParse(session.Metadata["amount"], out decimal amount))
+                        {
+                            await HandleLoadMoneyCompleted(userId, amount);
+                        }
+                        else
+                        {
+                            _logger.LogError("Invalid metadata in session: userId={UserId}, amount={Amount}",
+                                session.Metadata["userId"], session.Metadata["amount"]);
+                            return BadRequest(new { error = "Invalid metadata" });
+                        }
+                    }
+                }
+
+                return Ok();
+            }
+            catch (StripeException e)
+            {
+                _logger.LogError(e, "Stripe webhook error: {ErrorMessage}", e.Message);
+                return BadRequest(new { error = e.Message });
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "General webhook error: {ErrorMessage}", e.Message);
+                return StatusCode(500, new { error = "Internal server error" });
+            }
+        }
+
+        [HttpPost("hire-service")]
+    public async Task<IActionResult> HireService([FromBody] HireServiceDto request)
+    {
+        _logger.LogInformation("HireService endpoint invoked for searchServiceId={SearchServiceId}", request.SearchServiceId);
+
+        try
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            {
+                _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                return Unauthorized(new { message = "Invalid user identification" });
+            }
+
+            var service = await _context.SearchServices
+                .Include(ss => ss.ExpertProfile)
+                .ThenInclude(ep => ep.User)
+                .FirstOrDefaultAsync(ss => ss.Id == request.SearchServiceId);
+
+            if (service == null)
+            {
+                _logger.LogError("Service not found for searchServiceId={SearchServiceId}", request.SearchServiceId);
+                return NotFound(new { message = "Service not found" });
+            }
+
+            var user = await _context.Users.FindAsync(userId);
+            if (user == null)
+            {
+                _logger.LogError("User not found for userId={UserId}", userId);
+                return NotFound(new { message = "User not found" });
+            }
+
+            if (user.Balance < service.Price)
+            {
+                _logger.LogError("Insufficient balance for userId={UserId}, balance={Balance}, required={Price}", userId, user.Balance, service.Price);
+                return BadRequest(new { message = "Insufficient balance" });
+            }
+
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                user.Balance -= service.Price;
+                var financialTransaction = new FinancialTransaction
+                {
+                    UserId = userId,
+                    Amount = -service.Price,
+                    TransactionType = "ServicePayment",
+                    RelatedEntityType = "SearchHire",
+                    RelatedEntityId = null, // Se actualizará tras crear SearchHire
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                var searchHire = new SearchHire
+                {
+                    ClientId = userId,
+                    ExpertId = service.ExpertProfile.UserId,
+                    SearchServiceId = service.Id,
+                    SearchId = request.SearchId,
+                    Status = "pending",
+                    Amount = service.Price,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.SearchHires.Add(searchHire);
+                await _context.SaveChangesAsync();
+
+                financialTransaction.RelatedEntityId = searchHire.Id;
+                _context.FinancialTransactions.Add(financialTransaction);
+                await _context.SaveChangesAsync();
+
+                await transaction.CommitAsync();
+                _logger.LogInformation("Service hired successfully: searchHireId={SearchHireId}, userId={UserId}", searchHire.Id, userId);
+
+                return Ok(new { message = "Service hired successfully", searchHireId = searchHire.Id });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogError(ex, "Database error hiring service for userId={UserId}", userId);
+                return StatusCode(500, new { message = "Failed to hire service" });
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error hiring service: {ErrorMessage}", ex.Message);
+            return StatusCode(500, new { message = "Failed to hire service" });
+        }
+    }
+
+    [HttpPost("complete-service")]
+    public async Task<IActionResult> CompleteService([FromBody] CompleteServiceDto request)
+    {
+        _logger.LogInformation("CompleteService endpoint invoked for searchHireId={SearchHireId}", request.SearchHireId);
+
+        try
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            {
+                _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                return Unauthorized(new { message = "Invalid user identification" });
+            }
+
+            var searchHire = await _context.SearchHires
+                .Include(sh => sh.Expert)
+                .ThenInclude(e => e.ExpertProfile)
+                .FirstOrDefaultAsync(sh => sh.Id == request.SearchHireId && sh.ExpertId == userId);
+
+            if (searchHire == null)
+            {
+                _logger.LogError("SearchHire not found or user is not the expert for searchHireId={SearchHireId}, userId={UserId}", request.SearchHireId, userId);
+                return NotFound(new { message = "Service not found or unauthorized" });
+            }
+
+            if (searchHire.Status != "pending")
+            {
+                _logger.LogError("Service is not in pending status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
+                return BadRequest(new { message = "Service is not pending" });
+            }
+
+            var commissionRate = 0.1m; // 10% commission
+            var amountToExpert = searchHire.Amount * (1 - commissionRate);
+            var amountInCents = (long)(amountToExpert * 100); // Convertir a centavos
+
+            var expertStripeAccountId = searchHire.Expert.ExpertProfile.StripeAccountId;
+            if (string.IsNullOrEmpty(expertStripeAccountId))
+            {
+                _logger.LogError("Expert has no Stripe account for searchHireId={SearchHireId}, expertId={ExpertId}", searchHire.Id, searchHire.ExpertId);
+                return BadRequest(new { message = "Expert has no Stripe account configured" });
+            }
+
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                var transferOptions = new TransferCreateOptions
+                {
+                    Amount = amountInCents,
+                    Currency = "eur",
+                    Destination = expertStripeAccountId,
+                    Metadata = new Dictionary<string, string>
+                        {
+                            { "searchHireId", searchHire.Id.ToString() }
+                        }
+                };
+
+                var transferService = new TransferService();
+                var transfer = await transferService.CreateAsync(transferOptions);
+                _logger.LogInformation("Transfer created for searchHireId={SearchHireId}, transferId={TransferId}, amount={Amount}", searchHire.Id, transfer.Id, amountToExpert);
+
+                searchHire.ExpertTransferId = transfer.Id;
+                searchHire.Status = "completed";
+                searchHire.CompletedAt = DateTime.UtcNow;
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                _logger.LogInformation("Service completed successfully: searchHireId={SearchHireId}, transferId={TransferId}", searchHire.Id, transfer.Id);
+                return Ok(new { message = "Service completed and payment transferred", transferId = transfer.Id });
+            }
+            catch (StripeException ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", searchHire.Id, ex.Message);
+                return StatusCode(500, new { message = "Failed to process payment to expert" });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogError(ex, "Database error completing service for searchHireId={SearchHireId}", searchHire.Id);
+                return StatusCode(500, new { message = "Failed to complete service" });
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error completing service: {ErrorMessage}", ex.Message);
+            return StatusCode(500, new { message = "Failed to complete service" });
+        }
+    }
+
+    private async Task HandleLoadMoneyCompleted(int userId, decimal amount)
+    {
+        _logger.LogInformation("Handling load money completed for userId={UserId}, amount={Amount}", userId, amount);
+
+        var user = await _context.Users.FindAsync(userId);
+        if (user == null)
+        {
+            _logger.LogError("User not found for userId={UserId}", userId);
+            return;
+        }
+
+        using var transaction = await _context.Database.BeginTransactionAsync();
+        try
+        {
+            user.Balance += amount;
+            var financialTransaction = new FinancialTransaction
+            {
+                UserId = userId,
+                Amount = amount,
+                TransactionType = "Deposit",
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.FinancialTransactions.Add(financialTransaction);
+            await _context.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            _logger.LogInformation("Balance updated successfully for userId={UserId}, new balance={Balance}", userId, user.Balance);
+        }
+        catch (Exception ex)
+        {
+            await transaction.RollbackAsync();
+            _logger.LogError(ex, "Database error updating balance for userId={UserId}", userId);
+            throw;
+        }
+    }
+    #endregion
+}
+
+public class LoadMoneyDto
+{
+    public decimal Amount { get; set; }
+}
+
+public class HireServiceDto
+{
+    public int SearchServiceId { get; set; }
+    public int SearchId { get; set; }
+}
+
+public class CompleteServiceDto
+{
+    public int SearchHireId { get; set; }
+}
+
+
 }

@@ -27,54 +27,6 @@ namespace newApi.Controllers
             StripeConfiguration.ApiKey = configuration["Stripe:SecretKey"];
         }
 
-        [HttpPost("create-checkout-session/{serviceId}")]
-        public async Task<IActionResult> CreateCheckoutSession(int serviceId)
-        {
-            try
-            {
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                {
-                    return Unauthorized(new { message = "Invalid user identification" });
-                }
-
-                var session = await _searchHireService.CreateCheckoutSession(userId, serviceId);
-                if (session == null)
-                {
-                    return BadRequest(new { message = "Failed to create checkout session" });
-                }
-
-                return Ok(new { url = session.Url });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error creating checkout session");
-                return StatusCode(500, new { message = "Failed to create checkout session" });
-            }
-        }
-
-        [HttpPost("webhook")]
-        [AllowAnonymous]
-        public async Task<IActionResult> HandleStripeWebhook()
-        {
-            var json = await new StreamReader(HttpContext.Request.Body).ReadToEndAsync();
-            var stripeEvent = EventUtility.ConstructEvent(
-                json,
-                Request.Headers["Stripe-Signature"],
-                _configuration["Stripe:WebhookSecret"]
-            );
-
-            if (stripeEvent.Type == "checkout.session.completed")
-            {
-                var session = stripeEvent.Data.Object as Stripe.Checkout.Session;
-                if (session == null) return BadRequest();
-
-                var success = await _searchHireService.HandleCheckoutSession(session);
-                if (!success) return BadRequest();
-            }
-
-            return Ok();
-        }
 
         [HttpGet("client")]
         public async Task<IActionResult> GetClientHires()

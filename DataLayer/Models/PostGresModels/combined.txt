@@ -1,0 +1,605 @@
+// --- Contenido de AI.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class AI
+    {
+        [Key]
+        public int Id { get; set; }
+        [Required]
+        public string Name { get; set; }
+        public string? Description { get; set; }
+        public bool IsActive { get; set; } = true;
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    }
+}
+
+
+// --- Contenido de Ad.cs ---
+﻿namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class Ad
+    {
+        public string Id { get; set; }  // Cambiado de int a string para reflejar el tipo de identificador
+        public string Description { get; set; }
+        public string Title { get; set; }
+        public string Url { get; set; }
+        public decimal? Price { get; set; }
+        public string[] Images { get; set; }
+        public int? AdScore { get; set; }
+        public int? FinalScore { get; set; }
+        public string[] GoodThings { get; set; }
+        public string[] BadThings { get; set; }
+        public DateTimeOffset? PublishDate { get; set; }
+        public string Category { get; set; }
+        public int? CategoryId { get; set; }
+        public string Province { get; set; }
+        public int? ProvinceId { get; set; }
+        public string City { get; set; }
+        public int? CityId { get; set; }
+        public bool Highlighted { get; set; }
+        public bool IsNew { get; set; }
+        public bool IsReserved { get; set; }
+        public string Slug { get; set; }
+        public string SellerType { get; set; }
+        public string[] Tags { get; set; }
+        public int PlatformId { get; set; }
+        public virtual Platform Platform { get; set; }
+        public DateTimeOffset? UpdateDate { get; set; }
+        public DateTimeOffset? ScrappedDate { get; set; }
+        public virtual ICollection<Like> Likes { get; set; }
+    }
+}
+
+// --- Contenido de Category.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class Category
+    {
+        [Key]
+        public int Id { get; set; }
+        public string Name { get; set; }
+        public int? ParentId { get; set; }
+        public bool IsActive { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+        // Navigation properties
+        public virtual Category Parent { get; set; }
+        public virtual ICollection<Category> Subcategories { get; set; }
+        public virtual ICollection<PlatformCategoryMapping> PlatformCategoryMappings { get; set; }
+    }
+}
+
+// --- Contenido de Dispute.cs ---
+﻿namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class Dispute
+    {
+        // Identificador único de la disputa
+        public int Id { get; set; }
+        // Clave foránea a la contratación asociada
+        public int SearchHireId { get; set; }
+        // Clave foránea al usuario que reporta
+        public int ReporterId { get; set; }
+        // Razón del reporte
+        public string Reason { get; set; }
+        // Estado de la disputa (Pending, Resolved)
+        public string Status { get; set; }
+        // Resolución de la disputa (Refunded, PaidToExpert)
+        public string Resolution { get; set; }
+        // Comentarios del administrador sobre la resolución
+        public string AdminComments { get; set; }
+        // Fecha de creación de la disputa
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        // Relación con la contratación
+        public virtual SearchHire SearchHire { get; set; }
+        // Relación con el usuario que reporta
+        public virtual User Reporter { get; set; }
+    }
+}
+
+
+// --- Contenido de ExpertProfile.cs ---
+﻿namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class ExpertProfile
+    {
+        public int Id { get; set; }
+        public int UserId { get; set; }
+        public string ProfilePictureUrl { get; set; }
+        public string ProfilePictureObjectName { get; set; }
+        public string Description { get; set; }
+        public string StripeAccountId { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public virtual User User { get; set; }
+        public virtual ICollection<newApi.DataLayer.Models.PostGresModels.SearchService> SearchServices { get; set; }
+    }
+}
+
+
+// --- Contenido de Like.cs ---
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+
+    public class Like
+    {
+        public int Id { get; set; }
+        public int UserId { get; set; }
+        public string AdId { get; set; } // Cambiado a string para coincidir con el tipo Id de Ad
+        public DateTime CreatedAt { get; set; }
+
+        public User User { get; set; }
+        public Ad Ad { get; set; }
+    }
+}
+
+
+// --- Contenido de Log.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class Log
+    {
+        [Key]
+        public int Id { get; set; }
+        public string LogLevel { get; set; }
+        public string Message { get; set; }
+        public string? Details { get; set; }
+        public int? UserId { get; set; }
+        public string? Source { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public virtual User? User { get; set; }
+
+    }
+}
+
+
+// --- Contenido de Notification.cs ---
+﻿using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class Notification
+    {
+        [Key]
+        public Guid Id { get; set; }
+        public string Title { get; set; }
+        public string Message { get; set; }
+        public string Type { get; set; }
+        public string? Url { get; set; }
+        public string? ImageUrl { get; set; }
+        public int? UserId { get; set; }
+        public bool Read { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime? ReadAt { get; set; }
+        public virtual User User { get; set; }
+    }
+}
+
+
+// --- Contenido de Platform.cs ---
+﻿using System.Collections.Generic;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class Platform
+    {
+        public int Id { get; set; }
+        public string Name { get; set; }
+        public string Description { get; set; }
+        public string ImageUrl { get; set; }
+        public string PlatformWebsiteUrl { get; set; }
+        public bool IsActive { get; set; }
+        public virtual ICollection<Ad> Ads { get; set; }
+        public ICollection<SearchParameterPlatform> SearchParameterPlatforms { get; set; }
+    }
+}
+
+
+// --- Contenido de PlatformCategoryMapping.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class PlatformCategoryMapping
+    {
+        [Key]
+        public int Id { get; set; }
+        public int PlatformId { get; set; }
+        public int CategoryId { get; set; }
+        public string UrlParameter { get; set; }
+        public bool IsActive { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+
+        // Navigation properties
+        public virtual Platform Platform { get; set; }
+        public virtual Category Category { get; set; }
+    }
+}
+
+// --- Contenido de Review.cs ---
+﻿namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class Review
+    {
+        // Identificador único de la reseña
+        public int Id { get; set; }
+        // Clave foránea al usuario que deja la reseña
+        public int ReviewerId { get; set; }
+        // Clave foránea al usuario experto reseñado
+        public int ExpertId { get; set; }
+        // Puntuación de la reseña (ej. 1 a 5)
+        public int Score { get; set; }
+        // Descripción de la reseña
+        public string Description { get; set; }
+        // Imágenes asociadas a la reseña
+        public string[] Images { get; set; }
+        // Fecha de creación de la reseña
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        // Relación con el revisor
+        public virtual User Reviewer { get; set; }
+        // Relación con el experto
+        public virtual User Expert { get; set; }
+    }
+
+}
+
+
+// --- Contenido de Search.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class Search
+    {
+        [Key]
+        public int Id { get; set; }
+        public int UserId { get; set; }
+        // Nuevo campo: Clave foránea opcional al usuario experto que realiza la búsqueda
+        public int? ExpertId { get; set; }
+        public int Frequency { get; set; }
+        public string Title { get; set; }
+        public string? Description { get; set; }
+        public bool IsActive { get; set; }
+        public DateTime LastExecution { get; set; }
+        public DateTime NextExecution { get; set; }
+        public bool IsRevised { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime StartDate { get; set; }
+
+        public virtual User User { get; set; }
+        // Nueva relación: Experto que realiza la búsqueda
+        public virtual User Expert { get; set; }
+        // Nueva relación: Contratación asociada a la búsqueda
+        public virtual SearchHire SearchHire { get; set; }
+        public virtual ICollection<SearchParameter> SearchParameters { get; set; }
+        public virtual ICollection<SearchResult> SearchResults { get; set; }
+    }
+}
+
+// --- Contenido de SearchHire.cs ---
+﻿namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class SearchHire
+    {
+        // Identificador único de la contratación
+        public int Id { get; set; }
+        // Clave foránea al usuario cliente
+        public int ClientId { get; set; }
+        // Clave foránea al usuario experto
+        public int ExpertId { get; set; }
+        // Clave foránea al servicio contratado
+        public int SearchServiceId { get; set; }
+        // Clave foránea a la búsqueda asociada
+        public int SearchId { get; set; }
+        // Estado de la contratación (Pending, InProgress, Completed, Disputed)
+        public string Status { get; set; }
+        // ID de la transacción de Stripe para el pago
+        public string StripeTransactionId { get; set; }
+        // Monto pagado por el servicio
+        public decimal Amount { get; set; }
+        // Fecha de creación de la contratación
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        // Fecha de finalización de la contratación (opcional)
+        public DateTime? CompletedAt { get; set; }
+
+        // Relación con el cliente
+        public virtual User Client { get; set; }
+        // Relación con el experto
+        public virtual User Expert { get; set; }
+        // Relación con el servicio contratado
+        public virtual newApi.DataLayer.Models.PostGresModels.SearchService SearchService { get; set; }
+        // Relación con la búsqueda asociada
+        public virtual Search Search { get; set; }
+        // Colección de disputas asociadas a la contratación
+        public virtual ICollection<Dispute> Disputes { get; set; }
+    }
+}
+
+
+// --- Contenido de SearchParameter.cs ---
+﻿using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class SearchParameter
+    {
+        [Key]
+        public int SearchParameterId { get; set; }
+        public string Keywords { get; set; }
+        public string UserSearch { get; set; }
+        public string Latitude { get; set; }
+        public string Longitude { get; set; }
+        public bool ShippingAvailable { get; set; }
+        public bool StrictMatchOnly { get; set; }
+        public int? Category { get; set; }
+        public int? LocationRange { get; set; }
+        public int? MinPrice { get; set; }
+        public int? MaxPrice { get; set; }
+        public int? BrandId { get; set; }
+        public int? ModelId { get; set; }
+
+        public int SearchId { get; set; }
+        public Search Search { get; set; }
+        //muchos a muchos para plataformas
+        public ICollection<SearchParameterPlatform> SearchParameterPlatforms { get; set; }
+    }
+}
+
+
+// --- Contenido de SearchParameterPlatform.cs ---
+﻿namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class SearchParameterPlatform
+    {
+        //tabla muchos a muchos para las plataformas
+        public int SearchParameterId { get; set; }
+        public SearchParameter SearchParameter { get; set; }
+        public int PlatformId { get; set; }
+        public Platform Platform { get; set; }
+    }
+}
+
+
+// --- Contenido de SearchResult.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class SearchResult
+    {
+        [Key]
+        public int Id { get; set; }
+        public int SearchId { get; set; }
+        public string AdId { get; set; }
+        public DateTime FoundAt { get; set; } = DateTime.UtcNow;
+        public Search Search { get; set; }
+        public Ad Ad { get; set; }
+    }
+}
+
+// --- Contenido de SearchResultFiltered.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class SearchResultFiltered
+    {
+        [Key]
+        public int Id { get; set; }
+        public int SearchId { get; set; }
+        public string AdId { get; set; }
+        public DateTime FilteredAt { get; set; } = DateTime.UtcNow;
+        public bool IsVisible { get; set; } = true;
+        public string? FilterNotes { get; set; }
+
+        // Navigation properties
+        public Search Search { get; set; }
+        public Ad Ad { get; set; }
+    }
+}
+
+// --- Contenido de SearchService.cs ---
+﻿namespace newApi.DataLayer.Models.PostGresModels
+{
+    namespace newApi.DataLayer.Models.PostGresModels
+    {
+        public class SearchService
+        {
+            public int Id { get; set; }
+            public int ExpertProfileId { get; set; }
+            public int CategoryId { get; set; }
+            public decimal Price { get; set; }
+            public string Conditions { get; set; }
+            public int DurationInHours { get; set; }
+            public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+            public virtual ExpertProfile ExpertProfile { get; set; }
+            public virtual Category Category { get; set; }
+            public virtual ICollection<SearchHire> SearchHires { get; set; }
+            public virtual ICollection<SearchServiceImage> Images { get; set; } = new List<SearchServiceImage>();
+        }
+    }
+}
+
+
+// --- Contenido de SearchServiceImage.cs ---
+﻿using newApi.DataLayer.Models.PostGresModels.newApi.DataLayer.Models.PostGresModels;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class SearchServiceImage
+    {
+        public int Id { get; set; }
+        public int SearchServiceId { get; set; }
+        public string ImageUrl { get; set; }
+        public string ImageObjectName { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        public virtual SearchService SearchService { get; set; }
+    }
+}
+
+
+// --- Contenido de SubscriptionPlan.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class SubscriptionPlan
+    {
+        [Key]
+        public int Id { get; set; }
+        public string Name { get; set; }
+        public string Description { get; set; }
+        public string imageUrl { get; set; }
+        public decimal PriceMonthly { get; set; }
+        public decimal PriceYearly { get; set; }
+        public bool HumanFilter { get; set; }
+        public bool AdvanceIAModels { get; set; }
+        public bool AdvancedAdImagesAnalysis { get; set; }
+        public int MaxSearches { get; set; }
+        public int MinSearchInterval { get; set; }
+        public string? StripePriceIdMonthly { get; set; }
+        public string? StripePriceIdYearly { get; set; }
+        public bool IsActive { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+
+        // Navigation properties
+        public virtual ICollection<User> Users { get; set; }
+        public virtual ICollection<UserSubscription> UserSubscriptions { get; set; }
+        public virtual ICollection<Search> Searches { get; set; }
+    }
+}
+
+// --- Contenido de SystemSetting.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class SystemSetting
+    {
+        [Key]
+        public int Id { get; set; }
+        public bool IsWhatsAppNotificationEnabled { get; set; } = true;
+        public bool IsEmailNotificationEnabled { get; set; } = true;
+        public string Theme { get; set; } = "light";
+        public int? AIId { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+        public virtual AI AI { get; set; }
+    }
+}
+
+
+// --- Contenido de User.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+namespace newApi.DataLayer.Models.PostGresModels
+{
+
+    public enum UserRole
+    {
+        Client,
+        Expert
+    }
+    public class User
+    {
+        public int Id { get; set; }
+        public string Name { get; set; }
+        public string Email { get; set; }
+        public string? Password { get; set; }
+        public string GoogleId { get; set; }
+        public string? PhoneNumber { get; set; }
+        public bool PhoneVerified { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public bool IsBlocked { get; set; }
+        public UserRole Role { get; set; } // Nueva propiedad
+
+        public virtual ExpertProfile ExpertProfile { get; set; }
+        public virtual ICollection<Search> Searches { get; set; }
+        public virtual ICollection<Search> ExpertSearches { get; set; }
+        public virtual ICollection<Like> Likes { get; set; }
+        public virtual ICollection<UserSubscription> UserSubscriptions { get; set; }
+        public virtual ICollection<SearchHire> SearchHiresAsClient { get; set; }
+        public virtual ICollection<SearchHire> SearchHiresAsExpert { get; set; }
+        public virtual ICollection<Review> ReviewsGiven { get; set; }
+        public virtual ICollection<Review> ReviewsReceived { get; set; }
+        public virtual ICollection<Dispute> DisputesReported { get; set; }
+        public virtual UserSetting Settings { get; set; }
+        public int? SubscriptionPlanId { get; set; }
+        public virtual SubscriptionPlan SubscriptionPlan { get; set; }
+    }
+}
+
+// --- Contenido de UserSetting.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class UserSetting
+    {
+        [Key]
+        public int Id { get; set; }
+        public int UserId { get; set; }
+        public bool IsWhatsAppEnabled { get; set; } = true;
+        public bool IsEmailEnabled { get; set; } = true;
+        public string Theme { get; set; } = "light";
+        public int? AIId { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+
+        public virtual User User { get; set; }
+        public virtual AI AI { get; set; }
+    }
+}
+
+
+// --- Contenido de UserSuscription.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class UserSubscription
+    {
+        [Key]
+        public int Id { get; set; }
+        public int UserId { get; set; }
+        public int SubscriptionPlanId { get; set; }
+        public bool IsYearly { get; set; }
+        public DateTime StartDate { get; set; }
+        public DateTime EndDate { get; set; }
+        public string Status { get; set; } // active, cancelled, expired
+        public string StripeSubscriptionId { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+        // Navigation properties
+        public virtual User User { get; set; }
+        public virtual SubscriptionPlan SubscriptionPlan { get; set; }
+    }
+}
+

@@ -7,7 +7,7 @@
         public string ProfilePictureUrl { get; set; }
         public string ProfilePictureObjectName { get; set; }
         public string Description { get; set; }
-        public string StripeAccountId { get; set; }
+        public string? StripeAccountId { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public virtual User User { get; set; }
         public virtual ICollection<newApi.DataLayer.Models.PostGresModels.SearchService> SearchServices { get; set; }

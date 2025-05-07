@@ -232,6 +232,7 @@ namespace newApi.Services
             {
                 Id = expertProfile.Id,
                 ProfilePictureUrl = expertProfile.ProfilePictureUrl,
+                StripeAccountId = expertProfile.StripeAccountId,
                 Description = expertProfile.Description,
                 CreatedAt = expertProfile.CreatedAt,
                 User = new UserDto

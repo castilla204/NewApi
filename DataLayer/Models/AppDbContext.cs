@@ -11,7 +11,6 @@ namespace newApi.DataLayer.Models
     {
         public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
-        // Entidades existentes
         public DbSet<User> Users { get; set; }
         public DbSet<Ad> Ads { get; set; }
         public DbSet<Like> Likes { get; set; }
@@ -30,20 +29,18 @@ namespace newApi.DataLayer.Models
         public DbSet<SystemSetting> SystemSettings { get; set; }
         public DbSet<AI> AIs { get; set; }
         public DbSet<Log> Logs { get; set; }
-
-        // Entidades para la funcionalidad de buscadores
         public DbSet<ExpertProfile> ExpertProfiles { get; set; }
         public DbSet<SearchService> SearchServices { get; set; }
-        public DbSet<SearchServiceImage> SearchServiceImages { get; set; } // Nueva entidad
+        public DbSet<SearchServiceImage> SearchServiceImages { get; set; }
         public DbSet<SearchHire> SearchHires { get; set; }
         public DbSet<Review> Reviews { get; set; }
         public DbSet<Dispute> Disputes { get; set; }
+        public DbSet<FinancialTransaction> FinancialTransactions { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
 
-            // Configuraciones existentes (sin cambios)
             modelBuilder.Entity<Like>()
                 .HasOne(l => l.User)
                 .WithMany(u => u.Likes)
@@ -182,7 +179,6 @@ namespace newApi.DataLayer.Models
             modelBuilder.Entity<Log>()
                 .HasIndex(l => l.CreatedAt);
 
-            // Configuraciones para la funcionalidad de buscadores
             modelBuilder.Entity<Search>()
                 .HasOne(s => s.Expert)
                 .WithMany(u => u.ExpertSearches)
@@ -260,6 +256,12 @@ namespace newApi.DataLayer.Models
                 .WithMany(u => u.DisputesReported)
                 .HasForeignKey(d => d.ReporterId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<FinancialTransaction>()
+                .HasOne(ft => ft.User)
+                .WithMany(u => u.FinancialTransactions)
+                .HasForeignKey(ft => ft.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
         }
     }
 }

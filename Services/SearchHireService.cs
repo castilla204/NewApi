@@ -20,75 +20,6 @@ namespace newApi.Services
             _logger = logger;
         }
 
-        public async Task<Session> CreateCheckoutSession(int userId, int serviceId)
-        {
-            var service = await _context.SearchServices
-                .Include(s => s.ExpertProfile)
-                .FirstOrDefaultAsync(s => s.Id == serviceId);
-
-            if (service == null || service.ExpertProfile.UserId == userId)
-                return null;
-
-            var options = new SessionCreateOptions
-            {
-                PaymentMethodTypes = new List<string> { "card" },
-                LineItems = new List<SessionLineItemOptions>
-                {
-                    new SessionLineItemOptions
-                    {
-                        PriceData = new SessionLineItemPriceDataOptions
-                        {
-                            Currency = "eur",
-                            UnitAmount = (long)(service.Price * 100),
-                            ProductData = new SessionLineItemPriceDataProductDataOptions
-                            {
-                                Name = $"Search Service - {service.DurationInHours}h",
-                                Description = service.Conditions
-                            }
-                        },
-                        Quantity = 1
-                    }
-                },
-                Mode = "payment",
-                SuccessUrl = $"{_domain}/hire/success?session_id={{CHECKOUT_SESSION_ID}}",
-                CancelUrl = $"{_domain}/hire/cancel",
-                Metadata = new Dictionary<string, string>
-                {
-                    { "serviceId", serviceId.ToString() },
-                    { "clientId", userId.ToString() },
-                    { "expertId", service.ExpertProfile.UserId.ToString() }
-                }
-            };
-
-            return await new SessionService().CreateAsync(options);
-        }
-
-        public async Task<bool> HandleCheckoutSession(Session session)
-        {
-            if (!int.TryParse(session.Metadata["serviceId"], out int serviceId) ||
-                !int.TryParse(session.Metadata["clientId"], out int clientId) ||
-                !int.TryParse(session.Metadata["expertId"], out int expertId))
-                return false;
-
-            var service = await _context.SearchServices.FindAsync(serviceId);
-            if (service == null)
-                return false;
-
-            var searchHire = new SearchHire
-            {
-                ClientId = clientId,
-                ExpertId = expertId,
-                SearchServiceId = serviceId,
-                Status = "Pending",
-                StripeTransactionId = session.PaymentIntentId,
-                Amount = service.Price,
-                CreatedAt = DateTime.UtcNow
-            };
-
-            await _context.SearchHires.AddAsync(searchHire);
-            await _context.SaveChangesAsync();
-            return true;
-        }
 
         public async Task<IEnumerable<SearchHireResponseDto>> GetClientHires(int userId)
         {
@@ -146,7 +77,7 @@ namespace newApi.Services
                 SearchServiceId = hire.SearchServiceId,
                 SearchId = hire.SearchId,
                 Status = hire.Status,
-                StripeTransactionId = hire.StripeTransactionId,
+                ExpertTransferId = hire.ExpertTransferId,
                 Amount = hire.Amount,
                 CreatedAt = hire.CreatedAt,
                 CompletedAt = hire.CompletedAt,

@@ -250,7 +250,6 @@ namespace DataLayer.Migrations
                         .HasColumnType("text");
 
                     b.Property<string>("StripeAccountId")
-                        .IsRequired()
                         .HasColumnType("text");
 
                     b.Property<int>("UserId")
@@ -262,6 +261,40 @@ namespace DataLayer.Migrations
                         .IsUnique();
 
                     b.ToTable("ExpertProfiles");
+                });
+
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.FinancialTransaction", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("numeric");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("RelatedEntityId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("RelatedEntityType")
+                        .HasColumnType("text");
+
+                    b.Property<string>("TransactionType")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("FinancialTransactions");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Like", b =>
@@ -555,6 +588,9 @@ namespace DataLayer.Migrations
                     b.Property<int>("ExpertId")
                         .HasColumnType("integer");
 
+                    b.Property<string>("ExpertTransferId")
+                        .HasColumnType("text");
+
                     b.Property<int>("SearchId")
                         .HasColumnType("integer");
 
@@ -562,10 +598,6 @@ namespace DataLayer.Migrations
                         .HasColumnType("integer");
 
                     b.Property<string>("Status")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("StripeTransactionId")
                         .IsRequired()
                         .HasColumnType("text");
 
@@ -851,6 +883,9 @@ namespace DataLayer.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<decimal>("Balance")
+                        .HasColumnType("numeric");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -1058,6 +1093,17 @@ namespace DataLayer.Migrations
                     b.HasOne("newApi.DataLayer.Models.PostGresModels.User", "User")
                         .WithOne("ExpertProfile")
                         .HasForeignKey("newApi.DataLayer.Models.PostGresModels.ExpertProfile", "UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.FinancialTransaction", b =>
+                {
+                    b.HasOne("newApi.DataLayer.Models.PostGresModels.User", "User")
+                        .WithMany("FinancialTransactions")
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
@@ -1413,6 +1459,8 @@ namespace DataLayer.Migrations
                         .IsRequired();
 
                     b.Navigation("ExpertSearches");
+
+                    b.Navigation("FinancialTransactions");
 
                     b.Navigation("Likes");
 

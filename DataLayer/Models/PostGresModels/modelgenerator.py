@@ -3,7 +3,7 @@ import os
 
 # Usar la carpeta donde está el script
 folder_path = os.path.dirname(os.path.abspath(__file__))
-output_file = "combined.cs"  # Cambiado a .cs
+output_file = "combined.txt"  # Cambiado a .txt
 
 # Lista para almacenar el contenido
 combined_content = []
@@ -14,7 +14,7 @@ print(f"Buscando archivos .cs en: {folder_path}")
 
 # Recorre todos los archivos en la carpeta
 for filename in sorted(os.listdir(folder_path)):
-    # Solo procesa archivos .cs (excepto el archivo de salida)
+    # Solo procesa archivos .cs (excepto el archivo de salida anterior)
     if filename.lower().endswith(".cs") and filename != output_file:
         files_found.append(filename)
         file_path = os.path.join(folder_path, filename)

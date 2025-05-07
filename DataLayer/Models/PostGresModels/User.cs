@@ -1,7 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 namespace newApi.DataLayer.Models.PostGresModels
 {
-
     public enum UserRole
     {
         Client,
@@ -18,8 +17,8 @@ namespace newApi.DataLayer.Models.PostGresModels
         public bool PhoneVerified { get; set; }
         public DateTime CreatedAt { get; set; }
         public bool IsBlocked { get; set; }
-        public UserRole Role { get; set; } // Nueva propiedad
-
+        public UserRole Role { get; set; }
+        public decimal Balance { get; set; } = 0m; 
         public virtual ExpertProfile ExpertProfile { get; set; }
         public virtual ICollection<Search> Searches { get; set; }
         public virtual ICollection<Search> ExpertSearches { get; set; }
@@ -33,5 +32,6 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual UserSetting Settings { get; set; }
         public int? SubscriptionPlanId { get; set; }
         public virtual SubscriptionPlan SubscriptionPlan { get; set; }
+        public virtual ICollection<FinancialTransaction> FinancialTransactions { get; set; }
     }
 }

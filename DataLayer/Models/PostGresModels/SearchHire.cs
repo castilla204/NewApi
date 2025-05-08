@@ -12,6 +12,8 @@
         public decimal Amount { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime? CompletedAt { get; set; }
+        public DateTime? CompletionDeadline { get; set; } // Plazo para finalización
+        public bool? ClientApproved { get; set; } // Null: no revisado, True: aprobado, False: disputado
         public virtual User Client { get; set; }
         public virtual User Expert { get; set; }
         public virtual newApi.DataLayer.Models.PostGresModels.SearchService SearchService { get; set; }

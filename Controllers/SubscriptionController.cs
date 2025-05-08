@@ -661,7 +661,6 @@ namespace newApi.Controllers
 
         #region systemforindividualpayments + stripeconnect
 
-
         [HttpPost("expert-onboarding")]
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> CreateExpertOnboarding()
@@ -695,7 +694,7 @@ namespace newApi.Controllers
                 var accountOptions = new AccountCreateOptions
                 {
                     Type = "express",
-                    Country = "ES", // Ajusta según el país de tus expertos
+                    Country = "ES",
                     Email = User.FindFirst(ClaimTypes.Email)?.Value,
                     Capabilities = new AccountCapabilitiesOptions
                     {
@@ -703,9 +702,9 @@ namespace newApi.Controllers
                     },
                     BusinessType = "individual",
                     Metadata = new Dictionary<string, string>
-            {
-                { "userId", userId.ToString() }
-            }
+                    {
+                        { "userId", userId.ToString() }
+                    }
                 };
 
                 var accountService = new AccountService();
@@ -733,7 +732,7 @@ namespace newApi.Controllers
                         RefreshUrl = "https://atrapo.io/refresh-onboarding",
                         ReturnUrl = "https://atrapo.io/complete-onboarding",
                         Type = "account_onboarding",
-                        Collect = "eventually_due" // Corregido de "eventually" a "eventually_due"
+                        Collect = "eventually_due"
                     };
 
                     var linkService = new AccountLinkService();
@@ -767,47 +766,45 @@ namespace newApi.Controllers
             }
         }
 
-
-
         [HttpPost("load-money")]
-    public async Task<IActionResult> LoadMoney([FromBody] LoadMoneyDto request)
-    {
-        _logger.LogInformation("LoadMoney endpoint invoked with amount: {Amount}", request.Amount);
-
-        try
+        public async Task<IActionResult> LoadMoney([FromBody] LoadMoneyDto request)
         {
-            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-            {
-                _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
-                return Unauthorized(new { message = "Invalid user identification" });
-            }
+            _logger.LogInformation("LoadMoney endpoint invoked with amount: {Amount}", request.Amount);
 
-            if (request.Amount <= 0 || request.Amount > 1000) // Límite razonable para evitar errores
+            try
             {
-                _logger.LogError("Invalid amount: {Amount}", request.Amount);
-                return BadRequest(new { message = "Amount must be between 0.01 and 1000" });
-            }
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
 
-            var user = await _context.Users.FindAsync(userId);
-            if (user == null)
-            {
-                _logger.LogError("User not found for userId={UserId}", userId);
-                return NotFound(new { message = "User not found" });
-            }
+                if (request.Amount <= 0 || request.Amount > 1000)
+                {
+                    _logger.LogError("Invalid amount: {Amount}", request.Amount);
+                    return BadRequest(new { message = "Amount must be between 0.01 and 1000" });
+                }
 
-            var domain = "https://atrapo.io";
-            var options = new SessionCreateOptions
-            {
-                PaymentMethodTypes = new List<string> { "card" },
-                LineItems = new List<SessionLineItemOptions>
+                var user = await _context.Users.FindAsync(userId);
+                if (user == null)
+                {
+                    _logger.LogError("User not found for userId={UserId}", userId);
+                    return NotFound(new { message = "User not found" });
+                }
+
+                var domain = "https://atrapo.io";
+                var options = new SessionCreateOptions
+                {
+                    PaymentMethodTypes = new List<string> { "card" },
+                    LineItems = new List<SessionLineItemOptions>
                     {
                         new SessionLineItemOptions
                         {
                             PriceData = new SessionLineItemPriceDataOptions
                             {
                                 Currency = "eur",
-                                UnitAmount = (long)(request.Amount * 100), // Convertir a centavos
+                                UnitAmount = (long)(request.Amount * 100),
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {
                                     Name = "Load Money"
@@ -816,40 +813,38 @@ namespace newApi.Controllers
                             Quantity = 1
                         }
                     },
-                Mode = "payment",
-                SuccessUrl = domain + "/success",
-                CancelUrl = domain + "/cancel",
-                CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value,
-                Metadata = new Dictionary<string, string>
+                    Mode = "payment",
+                    SuccessUrl = domain + "/success",
+                    CancelUrl = domain + "/cancel",
+                    CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value,
+                    Metadata = new Dictionary<string, string>
                     {
                         { "userId", userId.ToString() },
                         { "amount", request.Amount.ToString() }
                     }
-            };
+                };
 
-            _logger.LogInformation("Creating Stripe Checkout session for userId={UserId}, amount={Amount}", userId, request.Amount);
+                var service = new SessionService();
+                Session session;
+                try
+                {
+                    session = await service.CreateAsync(options);
+                    _logger.LogInformation("Stripe Checkout session created: sessionId={SessionId}, url={SessionUrl}", session.Id, session.Url);
+                }
+                catch (StripeException e)
+                {
+                    _logger.LogError(e, "Stripe error creating checkout session: {ErrorMessage}", e.Message);
+                    return StatusCode(500, new { message = e.Message });
+                }
 
-            var service = new SessionService();
-            Session session;
-            try
-            {
-                session = await service.CreateAsync(options);
-                _logger.LogInformation("Stripe Checkout session created: sessionId={SessionId}, url={SessionUrl}", session.Id, session.Url);
+                return Ok(new { url = session.Url });
             }
-            catch (StripeException e)
+            catch (Exception ex)
             {
-                _logger.LogError(e, "Stripe error creating checkout session: {ErrorMessage}", e.Message);
-                return StatusCode(500, new { message = e.Message });
+                _logger.LogError(ex, "Error creating load money session: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to create load money session" });
             }
-
-            return Ok(new { url = session.Url });
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error creating load money session: {ErrorMessage}", ex.Message);
-            return StatusCode(500, new { message = "Failed to create load money session" });
-        }
-    }
 
         [HttpPost("webhook")]
         [AllowAnonymous]
@@ -857,29 +852,68 @@ namespace newApi.Controllers
         {
             var json = await new StreamReader(Request.Body).ReadToEndAsync();
             var signatureHeader = Request.Headers["Stripe-Signature"];
+            _logger.LogInformation("Received webhook with signature: {SignatureHeader}", signatureHeader);
 
             try
             {
-                // Usa el secreto de firma cargado desde la configuración
                 var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, _webhookSecret);
+                _logger.LogInformation("Event constructed successfully: type={EventType}, id={EventId}", stripeEvent.Type, stripeEvent.Id);
 
-                if (stripeEvent.Type == "checkout.session.completed")
+                switch (stripeEvent.Type)
                 {
-                    var session = stripeEvent.Data.Object as Session;
-                    if (session != null && session.Mode == "payment")
-                    {
-                        if (int.TryParse(session.Metadata["userId"], out int userId) &&
-                            decimal.TryParse(session.Metadata["amount"], out decimal amount))
+                    case "checkout.session.completed":
+                        var session = stripeEvent.Data.Object as Session;
+                        if (session != null && session.Mode == "payment")
                         {
-                            await HandleLoadMoneyCompleted(userId, amount);
+                            if (int.TryParse(session.Metadata["userId"], out int userId) &&
+                                decimal.TryParse(session.Metadata["amount"], out decimal amount))
+                            {
+                                await HandleLoadMoneyCompleted(userId, amount);
+                            }
+                            else
+                            {
+                                _logger.LogError("Invalid metadata for load-money: userId={UserId}, amount={Amount}",
+                                    session.Metadata["userId"], session.Metadata["amount"]);
+                                return BadRequest(new { error = "Invalid metadata" });
+                            }
                         }
-                        else
+                        break;
+
+                    case "account.updated":
+                        var account = stripeEvent.Data.Object as Account;
+                        if (account != null)
                         {
-                            _logger.LogError("Invalid metadata in session: userId={UserId}, amount={Amount}",
-                                session.Metadata["userId"], session.Metadata["amount"]);
-                            return BadRequest(new { error = "Invalid metadata" });
+                            var expertProfile = await _context.ExpertProfiles
+                                .FirstOrDefaultAsync(ep => ep.StripeAccountId == account.Id);
+                            if (expertProfile != null)
+                            {
+                                bool isAccountEnabled = account.ChargesEnabled && account.PayoutsEnabled;
+                                _logger.LogInformation("Account updated for expert userId={UserId}, accountId={AccountId}, enabled={Enabled}",
+                                    expertProfile.UserId, account.Id, isAccountEnabled);
+                                await _context.SaveChangesAsync();
+                            }
                         }
-                    }
+                        break;
+
+                    case "transfer.failed":
+                        var transfer = stripeEvent.Data.Object as Transfer;
+                        if (transfer != null)
+                        {
+                            var searchHire = await _context.SearchHires
+                                .FirstOrDefaultAsync(sh => sh.ExpertTransferId == transfer.Id);
+                            if (searchHire != null)
+                            {
+                                searchHire.Status = "transfer_failed";
+                                await _context.SaveChangesAsync();
+                                _logger.LogError("Transfer failed for searchHireId={SearchHireId}, transferId={TransferId}",
+                                    searchHire.Id, transfer.Id);
+                            }
+                        }
+                        break;
+
+                    default:
+                        _logger.LogWarning("Unhandled event type: {EventType}", stripeEvent.Type);
+                        break;
                 }
 
                 return Ok();
@@ -897,238 +931,548 @@ namespace newApi.Controllers
         }
 
         [HttpPost("hire-service")]
-    public async Task<IActionResult> HireService([FromBody] HireServiceDto request)
-    {
-        _logger.LogInformation("HireService endpoint invoked for searchServiceId={SearchServiceId}", request.SearchServiceId);
-
-        try
+        public async Task<IActionResult> HireService([FromBody] HireServiceDto request)
         {
-            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            _logger.LogInformation("HireService endpoint invoked for searchServiceId={SearchServiceId}", request.SearchServiceId);
+
+            try
             {
-                _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
-                return Unauthorized(new { message = "Invalid user identification" });
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var service = await _context.SearchServices
+                    .Include(ss => ss.ExpertProfile)
+                    .ThenInclude(ep => ep.User)
+                    .FirstOrDefaultAsync(ss => ss.Id == request.SearchServiceId);
+
+                if (service == null)
+                {
+                    _logger.LogError("Service not found for searchServiceId={SearchServiceId}", request.SearchServiceId);
+                    return NotFound(new { message = "Service not found" });
+                }
+
+                var user = await _context.Users.FindAsync(userId);
+                if (user == null)
+                {
+                    _logger.LogError("User not found for userId={UserId}", userId);
+                    return NotFound(new { message = "User not found" });
+                }
+
+                if (user.Balance < service.Price)
+                {
+                    _logger.LogError("Insufficient balance for userId={UserId}, balance={Balance}, required={Price}", userId, user.Balance, service.Price);
+                    return BadRequest(new { message = "Insufficient balance" });
+                }
+
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    user.Balance -= service.Price;
+                    var financialTransaction = new FinancialTransaction
+                    {
+                        UserId = userId,
+                        Amount = -service.Price,
+                        TransactionType = "ServicePayment",
+                        RelatedEntityType = "SearchHire",
+                        RelatedEntityId = null,
+                        CreatedAt = DateTime.UtcNow
+                    };
+
+                    var searchHire = new SearchHire
+                    {
+                        ClientId = userId,
+                        ExpertId = service.ExpertProfile.UserId,
+                        SearchServiceId = service.Id,
+                        SearchId = request.SearchId,
+                        Status = "pending",
+                        Amount = service.Price,
+                        CreatedAt = DateTime.UtcNow,
+                        CompletionDeadline = DateTime.UtcNow.AddDays(7) // Ajusta según duración del servicio
+                    };
+
+                    _context.SearchHires.Add(searchHire);
+                    await _context.SaveChangesAsync();
+
+                    financialTransaction.RelatedEntityId = searchHire.Id;
+                    _context.FinancialTransactions.Add(financialTransaction);
+                    await _context.SaveChangesAsync();
+
+                    await transaction.CommitAsync();
+                    _logger.LogInformation("Service hired successfully: searchHireId={SearchHireId}, userId={UserId}", searchHire.Id, userId);
+
+                    return Ok(new { message = "Service hired successfully", searchHireId = searchHire.Id });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Database error hiring service for userId={UserId}", userId);
+                    return StatusCode(500, new { message = "Failed to hire service" });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error hiring service: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to hire service" });
+            }
+        }
+
+        [HttpPost("complete-service")]
+        public async Task<IActionResult> CompleteService([FromBody] CompleteServiceDto request)
+        {
+            _logger.LogInformation("CompleteService endpoint invoked for searchHireId={SearchHireId}", request.SearchHireId);
+
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Expert)
+                    .ThenInclude(e => e.ExpertProfile)
+                    .Include(sh => sh.Client)
+                    .FirstOrDefaultAsync(sh => sh.Id == request.SearchHireId);
+
+                if (searchHire == null)
+                {
+                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", request.SearchHireId);
+                    return NotFound(new { message = "Service not found" });
+                }
+
+                if (searchHire.ClientId != userId)
+                {
+                    _logger.LogError("User is not the client for searchHireId={SearchHireId}, userId={UserId}", searchHire.Id, userId);
+                    return Unauthorized(new { message = "Unauthorized to complete this service" });
+                }
+
+                if (searchHire.Status != "pending" && searchHire.Status != "awaiting_client_decision")
+                {
+                    _logger.LogError("Service cannot be approved in status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
+                    return BadRequest(new { message = "Service cannot be approved in current state" });
+                }
+
+                if (request.ClientApproved == null)
+                {
+                    _logger.LogError("ClientApproved is required for client action: searchHireId={SearchHireId}", searchHire.Id);
+                    return BadRequest(new { message = "ClientApproved is required" });
+                }
+
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    searchHire.ClientApproved = request.ClientApproved.Value;
+                    if (!searchHire.ClientApproved.Value)
+                    {
+                        searchHire.Status = "disputed";
+                        _logger.LogInformation("Client opened dispute for searchHireId={SearchHireId}", searchHire.Id);
+                    }
+                    else
+                    {
+                        await ProcessTransferToExpert(searchHire);
+                        searchHire.Status = "completed";
+                        searchHire.CompletedAt = DateTime.UtcNow;
+                        _logger.LogInformation("Client approved service, transfer completed for searchHireId={SearchHireId}", searchHire.Id);
+                    }
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    return Ok(new { message = searchHire.ClientApproved.Value ? "Service completed" : "Dispute opened" });
+                }
+                catch (StripeException ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", searchHire.Id, ex.Message);
+                    return StatusCode(500, new { message = "Failed to process payment to expert" });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Database error completing service for searchHireId={SearchHireId}", searchHire.Id);
+                    return StatusCode(500, new { message = "Failed to complete service" });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error completing service: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to complete service" });
+            }
+        }
+
+        [HttpPost("cancel-service")]
+        [Authorize(Roles = "Expert")]
+        public async Task<IActionResult> CancelService([FromBody] CancelServiceDto request)
+        {
+            _logger.LogInformation("CancelService endpoint invoked for searchHireId={SearchHireId}", request.SearchHireId);
+
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Client)
+                    .FirstOrDefaultAsync(sh => sh.Id == request.SearchHireId && sh.ExpertId == userId);
+
+                if (searchHire == null)
+                {
+                    _logger.LogError("SearchHire not found or user is not the expert for searchHireId={SearchHireId}, userId={UserId}", request.SearchHireId, userId);
+                    return NotFound(new { message = "Service not found or unauthorized" });
+                }
+
+                if (searchHire.Status != "pending")
+                {
+                    _logger.LogError("Service is not in pending status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
+                    return BadRequest(new { message = "Service is not pending" });
+                }
+
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    searchHire.Client.Balance += searchHire.Amount;
+                    var financialTransaction = new FinancialTransaction
+                    {
+                        UserId = searchHire.ClientId,
+                        Amount = searchHire.Amount,
+                        TransactionType = "Refund",
+                        RelatedEntityType = "SearchHire",
+                        RelatedEntityId = searchHire.Id,
+                        CreatedAt = DateTime.UtcNow
+                    };
+
+                    searchHire.Status = "cancelled";
+                    searchHire.CompletedAt = DateTime.UtcNow;
+
+                    _context.FinancialTransactions.Add(financialTransaction);
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    _logger.LogInformation("Service cancelled and refunded for searchHireId={SearchHireId}, clientId={ClientId}", searchHire.Id, searchHire.ClientId);
+                    return Ok(new { message = "Service cancelled and refunded" });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Database error cancelling service for searchHireId={SearchHireId}", searchHire.Id);
+                    return StatusCode(500, new { message = "Failed to cancel service" });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error cancelling service: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to cancel service" });
+            }
+        }
+
+        [HttpPost("dispute-service")]
+        public async Task<IActionResult> DisputeService([FromBody] DisputeServiceDto request)
+        {
+            _logger.LogInformation("DisputeService endpoint invoked for searchHireId={SearchHireId}", request.SearchHireId);
+
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var searchHire = await _context.SearchHires
+                    .FirstOrDefaultAsync(sh => sh.Id == request.SearchHireId && sh.ClientId == userId);
+
+                if (searchHire == null)
+                {
+                    _logger.LogError("SearchHire not found or user is not the client for searchHireId={SearchHireId}, userId={UserId}", request.SearchHireId, userId);
+                    return NotFound(new { message = "Service not found or unauthorized" });
+                }
+
+                if (searchHire.Status != "awaiting_client_decision")
+                {
+                    _logger.LogError("Service is not in awaiting_client_decision status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
+                    return BadRequest(new { message = "Service is not awaiting client decision" });
+                }
+
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    searchHire.Status = "disputed";
+                    searchHire.ClientApproved = false;
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    _logger.LogInformation("Dispute opened for searchHireId={SearchHireId}", searchHire.Id);
+                    return Ok(new { message = "Dispute opened" });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Database error disputing service for searchHireId={SearchHireId}", searchHire.Id);
+                    return StatusCode(500, new { message = "Failed to open dispute" });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error disputing service: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to open dispute" });
+            }
+        }
+
+        [HttpPost("resolve-dispute")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> ResolveDispute([FromBody] ResolveDisputeDto request)
+        {
+            _logger.LogInformation("ResolveDispute endpoint invoked for searchHireId={SearchHireId}", request.SearchHireId);
+
+            try
+            {
+                var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Client)
+                    .Include(sh => sh.Expert)
+                    .ThenInclude(e => e.ExpertProfile)
+                    .FirstOrDefaultAsync(sh => sh.Id == request.SearchHireId);
+
+                if (searchHire == null)
+                {
+                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", request.SearchHireId);
+                    return NotFound(new { message = "Service not found" });
+                }
+
+                if (searchHire.Status != "disputed")
+                {
+                    _logger.LogError("Service is not in disputed status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
+                    return BadRequest(new { message = "Service is not disputed" });
+                }
+
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    if (request.ResolveInFavorOfClient)
+                    {
+                        searchHire.Client.Balance += searchHire.Amount;
+                        var financialTransaction = new FinancialTransaction
+                        {
+                            UserId = searchHire.ClientId,
+                            Amount = searchHire.Amount,
+                            TransactionType = "Refund",
+                            RelatedEntityType = "SearchHire",
+                            RelatedEntityId = searchHire.Id,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        _context.FinancialTransactions.Add(financialTransaction);
+                        searchHire.Status = "cancelled";
+                        _logger.LogInformation("Dispute resolved in favor of client for searchHireId={SearchHireId}", searchHire.Id);
+                    }
+                    else
+                    {
+                        await ProcessTransferToExpert(searchHire);
+                        searchHire.Status = "completed";
+                        searchHire.CompletedAt = DateTime.UtcNow;
+                        _logger.LogInformation("Dispute resolved in favor of expert for searchHireId={SearchHireId}", searchHire.Id);
+                    }
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    return Ok(new { message = "Dispute resolved" });
+                }
+                catch (StripeException ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Stripe error resolving dispute for searchHireId={SearchHireId}: {ErrorMessage}", searchHire.Id, ex.Message);
+                    return StatusCode(500, new { message = "Failed to process dispute resolution" });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Database error resolving dispute for searchHireId={SearchHireId}", searchHire.Id);
+                    return StatusCode(500, new { message = "Failed to resolve dispute" });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error resolving dispute: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to resolve dispute" });
+            }
+        }
+
+        [HttpPost("process-expired-services")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> ProcessExpiredServices()
+        {
+            _logger.LogInformation("ProcessExpiredServices endpoint invoked");
+
+            try
+            {
+                var expiredHires = await _context.SearchHires
+                    .Include(sh => sh.Expert)
+                    .ThenInclude(e => e.ExpertProfile)
+                    .Include(sh => sh.Client)
+                    .Where(sh => sh.Status == "pending" && sh.CompletionDeadline <= DateTime.UtcNow)
+                    .ToListAsync();
+
+                _logger.LogInformation("Found {Count} expired SearchHires to process", expiredHires.Count);
+
+                foreach (var searchHire in expiredHires)
+                {
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
+                    {
+                        if (searchHire.Status != "pending")
+                        {
+                            _logger.LogWarning("SearchHireId={SearchHireId} is no longer in pending, skipping", searchHire.Id);
+                            await transaction.CommitAsync();
+                            continue;
+                        }
+
+                        searchHire.Status = "awaiting_client_decision";
+                        _logger.LogInformation("Moved searchHireId={SearchHireId} to awaiting_client_decision", searchHire.Id);
+
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Error processing searchHireId={SearchHireId}", searchHire.Id);
+                    }
+                }
+
+                return Ok(new { message = $"Processed {expiredHires.Count} expired services" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing expired services: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to process expired services" });
+            }
+        }
+
+        private async Task ProcessTransferToExpert(SearchHire searchHire)
+        {
+            var commissionRate = 0.1m;
+            var amountToExpert = searchHire.Amount * (1 - commissionRate);
+            var amountInCents = (long)(amountToExpert * 100);
+
+            var expertStripeAccountId = searchHire.Expert.ExpertProfile?.StripeAccountId;
+            if (string.IsNullOrEmpty(expertStripeAccountId))
+            {
+                _logger.LogError("Expert has no Stripe account for searchHireId={SearchHireId}, expertId={ExpertId}", searchHire.Id, searchHire.ExpertId);
+                throw new Exception("Expert has no Stripe account configured");
             }
 
-            var service = await _context.SearchServices
-                .Include(ss => ss.ExpertProfile)
-                .ThenInclude(ep => ep.User)
-                .FirstOrDefaultAsync(ss => ss.Id == request.SearchServiceId);
-
-            if (service == null)
+            var transferOptions = new TransferCreateOptions
             {
-                _logger.LogError("Service not found for searchServiceId={SearchServiceId}", request.SearchServiceId);
-                return NotFound(new { message = "Service not found" });
-            }
+                Amount = amountInCents,
+                Currency = "eur",
+                Destination = expertStripeAccountId,
+                Metadata = new Dictionary<string, string>
+                {
+                    { "searchHireId", searchHire.Id.ToString() }
+                }
+            };
+
+            var transferService = new TransferService();
+            var transfer = await transferService.CreateAsync(transferOptions);
+            searchHire.ExpertTransferId = transfer.Id;
+            _logger.LogInformation("Transfer created for searchHireId={SearchHireId}, transferId={TransferId}, amount={Amount}", searchHire.Id, transfer.Id, amountToExpert);
+
+            var financialTransaction = new FinancialTransaction
+            {
+                UserId = searchHire.ExpertId,
+                Amount = amountToExpert,
+                TransactionType = "Payout",
+                RelatedEntityType = "SearchHire",
+                RelatedEntityId = searchHire.Id,
+                CreatedAt = DateTime.UtcNow
+            };
+            _context.FinancialTransactions.Add(financialTransaction);
+        }
+
+        private async Task HandleLoadMoneyCompleted(int userId, decimal amount)
+        {
+            _logger.LogInformation("Handling load money completed for userId={UserId}, amount={Amount}", userId, amount);
 
             var user = await _context.Users.FindAsync(userId);
             if (user == null)
             {
                 _logger.LogError("User not found for userId={UserId}", userId);
-                return NotFound(new { message = "User not found" });
-            }
-
-            if (user.Balance < service.Price)
-            {
-                _logger.LogError("Insufficient balance for userId={UserId}, balance={Balance}, required={Price}", userId, user.Balance, service.Price);
-                return BadRequest(new { message = "Insufficient balance" });
+                return;
             }
 
             using var transaction = await _context.Database.BeginTransactionAsync();
             try
             {
-                user.Balance -= service.Price;
+                user.Balance += amount;
                 var financialTransaction = new FinancialTransaction
                 {
                     UserId = userId,
-                    Amount = -service.Price,
-                    TransactionType = "ServicePayment",
-                    RelatedEntityType = "SearchHire",
-                    RelatedEntityId = null, // Se actualizará tras crear SearchHire
+                    Amount = amount,
+                    TransactionType = "Deposit",
                     CreatedAt = DateTime.UtcNow
                 };
 
-                var searchHire = new SearchHire
-                {
-                    ClientId = userId,
-                    ExpertId = service.ExpertProfile.UserId,
-                    SearchServiceId = service.Id,
-                    SearchId = request.SearchId,
-                    Status = "pending",
-                    Amount = service.Price,
-                    CreatedAt = DateTime.UtcNow
-                };
-
-                _context.SearchHires.Add(searchHire);
-                await _context.SaveChangesAsync();
-
-                financialTransaction.RelatedEntityId = searchHire.Id;
                 _context.FinancialTransactions.Add(financialTransaction);
                 await _context.SaveChangesAsync();
-
                 await transaction.CommitAsync();
-                _logger.LogInformation("Service hired successfully: searchHireId={SearchHireId}, userId={UserId}", searchHire.Id, userId);
 
-                return Ok(new { message = "Service hired successfully", searchHireId = searchHire.Id });
+                _logger.LogInformation("Balance updated successfully for userId={UserId}, new balance={Balance}", userId, user.Balance);
             }
             catch (Exception ex)
             {
                 await transaction.RollbackAsync();
-                _logger.LogError(ex, "Database error hiring service for userId={UserId}", userId);
-                return StatusCode(500, new { message = "Failed to hire service" });
+                _logger.LogError(ex, "Database error updating balance for userId={UserId}", userId);
+                throw;
             }
         }
-        catch (Exception ex)
+
+        public class LoadMoneyDto
         {
-            _logger.LogError(ex, "Error hiring service: {ErrorMessage}", ex.Message);
-            return StatusCode(500, new { message = "Failed to hire service" });
+            public decimal Amount { get; set; }
         }
+
+        public class HireServiceDto
+        {
+            public int SearchServiceId { get; set; }
+            public int SearchId { get; set; }
+        }
+
+        public class CompleteServiceDto
+        {
+            public int SearchHireId { get; set; }
+            public bool? ClientApproved { get; set; }
+        }
+
+        public class CancelServiceDto
+        {
+            public int SearchHireId { get; set; }
+        }
+
+        public class DisputeServiceDto
+        {
+            public int SearchHireId { get; set; }
+        }
+
+        public class ResolveDisputeDto
+        {
+            public int SearchHireId { get; set; }
+            public bool ResolveInFavorOfClient { get; set; }
+        }
+        #endregion
     }
-
-    [HttpPost("complete-service")]
-    public async Task<IActionResult> CompleteService([FromBody] CompleteServiceDto request)
-    {
-        _logger.LogInformation("CompleteService endpoint invoked for searchHireId={SearchHireId}", request.SearchHireId);
-
-        try
-        {
-            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-            {
-                _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
-                return Unauthorized(new { message = "Invalid user identification" });
-            }
-
-            var searchHire = await _context.SearchHires
-                .Include(sh => sh.Expert)
-                .ThenInclude(e => e.ExpertProfile)
-                .FirstOrDefaultAsync(sh => sh.Id == request.SearchHireId && sh.ExpertId == userId);
-
-            if (searchHire == null)
-            {
-                _logger.LogError("SearchHire not found or user is not the expert for searchHireId={SearchHireId}, userId={UserId}", request.SearchHireId, userId);
-                return NotFound(new { message = "Service not found or unauthorized" });
-            }
-
-            if (searchHire.Status != "pending")
-            {
-                _logger.LogError("Service is not in pending status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
-                return BadRequest(new { message = "Service is not pending" });
-            }
-
-            var commissionRate = 0.1m; // 10% commission
-            var amountToExpert = searchHire.Amount * (1 - commissionRate);
-            var amountInCents = (long)(amountToExpert * 100); // Convertir a centavos
-
-            var expertStripeAccountId = searchHire.Expert.ExpertProfile.StripeAccountId;
-            if (string.IsNullOrEmpty(expertStripeAccountId))
-            {
-                _logger.LogError("Expert has no Stripe account for searchHireId={SearchHireId}, expertId={ExpertId}", searchHire.Id, searchHire.ExpertId);
-                return BadRequest(new { message = "Expert has no Stripe account configured" });
-            }
-
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                var transferOptions = new TransferCreateOptions
-                {
-                    Amount = amountInCents,
-                    Currency = "eur",
-                    Destination = expertStripeAccountId,
-                    Metadata = new Dictionary<string, string>
-                        {
-                            { "searchHireId", searchHire.Id.ToString() }
-                        }
-                };
-
-                var transferService = new TransferService();
-                var transfer = await transferService.CreateAsync(transferOptions);
-                _logger.LogInformation("Transfer created for searchHireId={SearchHireId}, transferId={TransferId}, amount={Amount}", searchHire.Id, transfer.Id, amountToExpert);
-
-                searchHire.ExpertTransferId = transfer.Id;
-                searchHire.Status = "completed";
-                searchHire.CompletedAt = DateTime.UtcNow;
-
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                _logger.LogInformation("Service completed successfully: searchHireId={SearchHireId}, transferId={TransferId}", searchHire.Id, transfer.Id);
-                return Ok(new { message = "Service completed and payment transferred", transferId = transfer.Id });
-            }
-            catch (StripeException ex)
-            {
-                await transaction.RollbackAsync();
-                _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", searchHire.Id, ex.Message);
-                return StatusCode(500, new { message = "Failed to process payment to expert" });
-            }
-            catch (Exception ex)
-            {
-                await transaction.RollbackAsync();
-                _logger.LogError(ex, "Database error completing service for searchHireId={SearchHireId}", searchHire.Id);
-                return StatusCode(500, new { message = "Failed to complete service" });
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error completing service: {ErrorMessage}", ex.Message);
-            return StatusCode(500, new { message = "Failed to complete service" });
-        }
-    }
-
-    private async Task HandleLoadMoneyCompleted(int userId, decimal amount)
-    {
-        _logger.LogInformation("Handling load money completed for userId={UserId}, amount={Amount}", userId, amount);
-
-        var user = await _context.Users.FindAsync(userId);
-        if (user == null)
-        {
-            _logger.LogError("User not found for userId={UserId}", userId);
-            return;
-        }
-
-        using var transaction = await _context.Database.BeginTransactionAsync();
-        try
-        {
-            user.Balance += amount;
-            var financialTransaction = new FinancialTransaction
-            {
-                UserId = userId,
-                Amount = amount,
-                TransactionType = "Deposit",
-                CreatedAt = DateTime.UtcNow
-            };
-
-            _context.FinancialTransactions.Add(financialTransaction);
-            await _context.SaveChangesAsync();
-            await transaction.CommitAsync();
-
-            _logger.LogInformation("Balance updated successfully for userId={UserId}, new balance={Balance}", userId, user.Balance);
-        }
-        catch (Exception ex)
-        {
-            await transaction.RollbackAsync();
-            _logger.LogError(ex, "Database error updating balance for userId={UserId}", userId);
-            throw;
-        }
-    }
-    #endregion
-}
-
-public class LoadMoneyDto
-{
-    public decimal Amount { get; set; }
-}
-
-public class HireServiceDto
-{
-    public int SearchServiceId { get; set; }
-    public int SearchId { get; set; }
-}
-
-public class CompleteServiceDto
-{
-    public int SearchHireId { get; set; }
 }
 
 
-}
+
+
+

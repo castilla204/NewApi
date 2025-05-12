@@ -329,6 +329,7 @@ namespace newApi.Controllers
 
                 var search = await _context.Searches
                     .Include(s => s.SearchParameters)
+                    .Include(s => s.SearchHire)
                     .FirstOrDefaultAsync(s => s.Id == searchId &&
                         (s.UserId == userId || _authService.IsAdmin(User)));
 
@@ -349,7 +350,13 @@ namespace newApi.Controllers
                     LastExecution = search.LastExecution,
                     CreatedAt = search.CreatedAt,
                     StartDate = search.StartDate,
-                    Category = search.SearchParameters.FirstOrDefault()?.Category ?? 0
+                    Category = search.SearchParameters.FirstOrDefault()?.Category ?? 0,
+                    SearchHire = search.SearchHire != null ? new SearchHireDto
+                    {
+                        Id = search.SearchHire.Id,
+                        ExpertId = search.SearchHire.ExpertId,
+                        Status = search.SearchHire.Status
+                    } : null
                 };
 
                 return Ok(searchDto);

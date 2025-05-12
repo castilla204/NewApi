@@ -660,7 +660,7 @@ namespace newApi.Controllers
         #endregion
 
         #region systemforindividualpayments + stripeconnect
-
+        // Crea una cuenta Stripe Connect para un experto y genera un enlace de onboarding.
         [HttpPost("expert-onboarding")]
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> CreateExpertOnboarding()
@@ -766,6 +766,7 @@ namespace newApi.Controllers
             }
         }
 
+        // Inicia una sesión de Stripe para que el usuario cargue dinero en su saldo.
         [HttpPost("load-money")]
         public async Task<IActionResult> LoadMoney([FromBody] LoadMoneyDto request)
         {
@@ -846,6 +847,8 @@ namespace newApi.Controllers
             }
         }
 
+
+        // Procesa eventos de Stripe (webhooks) para pagos, cuentas de expertos y transferencias.
         [HttpPost("webhook")]
         [AllowAnonymous]
         public async Task<IActionResult> HandleStripeWebhook()
@@ -929,6 +932,9 @@ namespace newApi.Controllers
                 return StatusCode(500, new { error = "Internal server error" });
             }
         }
+
+
+        // Contrata un servicio de un experto, deduciendo el costo del saldo del cliente.
 
         [HttpPost("hire-service")]
         public async Task<IActionResult> HireService([FromBody] HireServiceDto request)
@@ -1020,6 +1026,8 @@ namespace newApi.Controllers
             }
         }
 
+
+        // Permite al cliente aprobar o rechazar un servicio, iniciando pago o disputa.
         [HttpPost("complete-service")]
         public async Task<IActionResult> CompleteService([FromBody] CompleteServiceDto request)
         {
@@ -1075,7 +1083,7 @@ namespace newApi.Controllers
                     }
                     else
                     {
-                        await ProcessTransferToExpert(searchHire);
+                        await ProcessTransferToExpert(searchHire.Id);
                         searchHire.Status = "completed";
                         searchHire.CompletedAt = DateTime.UtcNow;
                         _logger.LogInformation("Client approved service, transfer completed for searchHireId={SearchHireId}", searchHire.Id);
@@ -1106,6 +1114,8 @@ namespace newApi.Controllers
             }
         }
 
+
+        // Cancela un servicio en estado pending, reembolsando al cliente.
         [HttpPost("cancel-service")]
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> CancelService([FromBody] CancelServiceDto request)
@@ -1175,6 +1185,8 @@ namespace newApi.Controllers
             }
         }
 
+
+        // Abre una disputa para un servicio en estado awaiting_client_decision.
         [HttpPost("dispute-service")]
         public async Task<IActionResult> DisputeService([FromBody] DisputeServiceDto request)
         {
@@ -1229,10 +1241,108 @@ namespace newApi.Controllers
             }
         }
 
+
+        // Finaliza un servicio en cualquier estado a favor del cliente o experto (admin only).
+        [HttpPost("force-finalize")]
+        public async Task<IActionResult> ForceFinalize([FromBody] ForceFinalizeDto request)
+        {
+            var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
+            if (adminEmail != "dcastillaa@gmail.com")
+            {
+                _logger.LogError("Unauthorized access attempt to force-finalize endpoint by email={Email}", adminEmail);
+                return Unauthorized(new { message = "Admin access required" });
+            }
+
+            _logger.LogInformation("ForceFinalize endpoint invoked for searchHireId={SearchHireId}, resolveInFavorOfClient={ResolveInFavorOfClient}",
+                request.SearchHireId, request.ResolveInFavorOfClient);
+
+            try
+            {
+                var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Client)
+                    .Include(sh => sh.Expert)
+                    .ThenInclude(e => e.ExpertProfile)
+                    .FirstOrDefaultAsync(sh => sh.Id == request.SearchHireId);
+
+                if (searchHire == null)
+                {
+                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", request.SearchHireId);
+                    return NotFound(new { message = "Service not found" });
+                }
+
+                // Skip status check to allow finalization at any time
+                _logger.LogInformation("Processing force-finalize for searchHireId={SearchHireId}, current status={Status}",
+                    searchHire.Id, searchHire.Status);
+
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    if (request.ResolveInFavorOfClient)
+                    {
+                        // Refund to client
+                        searchHire.Client.Balance += searchHire.Amount;
+                        var financialTransaction = new FinancialTransaction
+                        {
+                            UserId = searchHire.ClientId,
+                            Amount = searchHire.Amount,
+                            TransactionType = "Refund",
+                            RelatedEntityType = "SearchHire",
+                            RelatedEntityId = searchHire.Id,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        _context.FinancialTransactions.Add(financialTransaction);
+                        searchHire.Status = "cancelled";
+                        searchHire.CompletedAt = DateTime.UtcNow;
+                        _logger.LogInformation("Force-finalized in favor of client for searchHireId={SearchHireId}, refunded amount={Amount}",
+                            searchHire.Id, searchHire.Amount);
+                    }
+                    else
+                    {
+                        // Pay expert
+                        await ProcessTransferToExpert(searchHire.Id);
+                        searchHire.Status = "completed";
+                        searchHire.CompletedAt = DateTime.UtcNow;
+                        _logger.LogInformation("Force-finalized in favor of expert for searchHireId={SearchHireId}, transferred amount={Amount}",
+                            searchHire.Id, searchHire.Amount * (1 - 0.1m));
+                    }
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    return Ok(new { message = "Service finalized successfully" });
+                }
+                catch (StripeException ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Stripe error finalizing service for searchHireId={SearchHireId}: {ErrorMessage}",
+                        searchHire.Id, ex.Message);
+                    return StatusCode(500, new { message = "Failed to process service finalization" });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Database error finalizing service for searchHireId={SearchHireId}", searchHire.Id);
+                    return StatusCode(500, new { message = "Failed to finalize service" });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error finalizing service: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to finalize service" });
+            }
+        }
+
+
+        // Resuelve una disputa a favor del cliente o experto (admin only).
         [HttpPost("resolve-dispute")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> ResolveDispute([FromBody] ResolveDisputeDto request)
         {
+            var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
+            if (adminEmail != "dcastillaa@gmail.com")
+            {
+                return Unauthorized(new { message = "Admin access required" });
+            }
+
             _logger.LogInformation("ResolveDispute endpoint invoked for searchHireId={SearchHireId}", request.SearchHireId);
 
             try
@@ -1276,7 +1386,7 @@ namespace newApi.Controllers
                     }
                     else
                     {
-                        await ProcessTransferToExpert(searchHire);
+                        await ProcessTransferToExpert(searchHire.Id);
                         searchHire.Status = "completed";
                         searchHire.CompletedAt = DateTime.UtcNow;
                         _logger.LogInformation("Dispute resolved in favor of expert for searchHireId={SearchHireId}", searchHire.Id);
@@ -1307,10 +1417,17 @@ namespace newApi.Controllers
             }
         }
 
+        // Procesa servicios pending cuya fecha límite ha expirado (admin only).
         [HttpPost("process-expired-services")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> ProcessExpiredServices()
         {
+
+            var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
+            if (adminEmail != "dcastillaa@gmail.com")
+            {
+                return Unauthorized(new { message = "Admin access required" });
+            }
+
             _logger.LogInformation("ProcessExpiredServices endpoint invoked");
 
             try
@@ -1358,8 +1475,21 @@ namespace newApi.Controllers
             }
         }
 
-        private async Task ProcessTransferToExpert(SearchHire searchHire)
+
+        // Transfiere el pago al experto, aplicando una comisión y registrando la transacción.
+        private async Task ProcessTransferToExpert(int searchHireId)
         {
+            var searchHire = await _context.SearchHires
+                .Include(sh => sh.Expert)
+                .ThenInclude(e => e.ExpertProfile)
+                .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+
+            if (searchHire == null)
+            {
+                _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
+                throw new Exception("SearchHire not found");
+            }
+
             var commissionRate = 0.1m;
             var amountToExpert = searchHire.Amount * (1 - commissionRate);
             var amountInCents = (long)(amountToExpert * 100);
@@ -1367,7 +1497,7 @@ namespace newApi.Controllers
             var expertStripeAccountId = searchHire.Expert.ExpertProfile?.StripeAccountId;
             if (string.IsNullOrEmpty(expertStripeAccountId))
             {
-                _logger.LogError("Expert has no Stripe account for searchHireId={SearchHireId}, expertId={ExpertId}", searchHire.Id, searchHire.ExpertId);
+                _logger.LogError("Expert has no Stripe account for searchHireId={SearchHireId}, expertId={ExpertId}", searchHireId, searchHire.ExpertId);
                 throw new Exception("Expert has no Stripe account configured");
             }
 
@@ -1377,15 +1507,15 @@ namespace newApi.Controllers
                 Currency = "eur",
                 Destination = expertStripeAccountId,
                 Metadata = new Dictionary<string, string>
-                {
-                    { "searchHireId", searchHire.Id.ToString() }
-                }
+        {
+            { "searchHireId", searchHireId.ToString() }
+        }
             };
 
             var transferService = new TransferService();
             var transfer = await transferService.CreateAsync(transferOptions);
             searchHire.ExpertTransferId = transfer.Id;
-            _logger.LogInformation("Transfer created for searchHireId={SearchHireId}, transferId={TransferId}, amount={Amount}", searchHire.Id, transfer.Id, amountToExpert);
+            _logger.LogInformation("Transfer created for searchHireId={SearchHireId}, transferId={TransferId}, amount={Amount}", searchHireId, transfer.Id, amountToExpert);
 
             var financialTransaction = new FinancialTransaction
             {
@@ -1393,12 +1523,15 @@ namespace newApi.Controllers
                 Amount = amountToExpert,
                 TransactionType = "Payout",
                 RelatedEntityType = "SearchHire",
-                RelatedEntityId = searchHire.Id,
+                RelatedEntityId = searchHireId,
                 CreatedAt = DateTime.UtcNow
             };
             _context.FinancialTransactions.Add(financialTransaction);
+
+            await _context.SaveChangesAsync(); // Añadido para persistir cambios
         }
 
+        // Actualiza el saldo del usuario tras un pago exitoso para cargar dinero.
         private async Task HandleLoadMoneyCompleted(int userId, decimal amount)
         {
             _logger.LogInformation("Handling load money completed for userId={UserId}, amount={Amount}", userId, amount);
@@ -1463,6 +1596,11 @@ namespace newApi.Controllers
             public int SearchHireId { get; set; }
         }
 
+        public class ForceFinalizeDto
+        {
+            public int SearchHireId { get; set; }
+            public bool ResolveInFavorOfClient { get; set; }
+        }
         public class ResolveDisputeDto
         {
             public int SearchHireId { get; set; }

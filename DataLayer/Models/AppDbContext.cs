@@ -179,12 +179,6 @@ namespace newApi.DataLayer.Models
             modelBuilder.Entity<Log>()
                 .HasIndex(l => l.CreatedAt);
 
-            modelBuilder.Entity<Search>()
-                .HasOne(s => s.Expert)
-                .WithMany(u => u.ExpertSearches)
-                .HasForeignKey(s => s.ExpertId)
-                .OnDelete(DeleteBehavior.Restrict);
-
             modelBuilder.Entity<ExpertProfile>()
                 .HasOne(ep => ep.User)
                 .WithOne(u => u.ExpertProfile)

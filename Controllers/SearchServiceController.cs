@@ -82,6 +82,21 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
+                if (string.IsNullOrWhiteSpace(request.Conditions))
+                {
+                    return BadRequest(new { message = "El campo Condiciones es requerido" });
+                }
+
+                if (request.Price <= 0)
+                {
+                    return BadRequest(new { message = "El precio debe ser mayor que 0" });
+                }
+
+                if (request.DurationInHours <= 0)
+                {
+                    return BadRequest(new { message = "La duración debe ser mayor que 0" });
+                }
+
                 var (success, service, imageUrls) = await _searchServiceService.CreateSearchService(userId, request);
                 if (!success)
                 {

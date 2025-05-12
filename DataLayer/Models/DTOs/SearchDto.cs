@@ -19,5 +19,13 @@ namespace newApi.DataLayer.Models.DTOs
         public DateTime CreatedAt { get; set; }
         public DateTime StartDate { get; set; }
         public int Category { get; set; }
+        public SearchHireDto SearchHire { get; set; }
+    }
+
+    public class SearchHireDto
+    {
+        public int Id { get; set; }
+        public int ExpertId { get; set; }
+        public string Status { get; set; }
     }
 }

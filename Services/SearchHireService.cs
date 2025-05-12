@@ -20,31 +20,32 @@ namespace newApi.Services
             _logger = logger;
         }
 
-
         public async Task<IEnumerable<SearchHireResponseDto>> GetClientHires(int userId)
         {
-            return await _context.SearchHires
+            var hires = await _context.SearchHires
                 .Include(h => h.Client)
                 .Include(h => h.Expert)
                 .Include(h => h.SearchService)
                     .ThenInclude(s => s.Images)
                 .Where(h => h.ClientId == userId)
-                .Select(h => MapToResponseDto(h))
                 .OrderByDescending(h => h.CreatedAt)
                 .ToListAsync();
+
+            return hires.Select(MapToResponseDto).ToList();
         }
 
         public async Task<IEnumerable<SearchHireResponseDto>> GetExpertHires(int userId)
         {
-            return await _context.SearchHires
+            var hires = await _context.SearchHires
                 .Include(h => h.Client)
                 .Include(h => h.Expert)
                 .Include(h => h.SearchService)
                     .ThenInclude(s => s.Images)
                 .Where(h => h.ExpertId == userId)
-                .Select(h => MapToResponseDto(h))
                 .OrderByDescending(h => h.CreatedAt)
                 .ToListAsync();
+
+            return hires.Select(MapToResponseDto).ToList();
         }
 
         public async Task<bool> UpdateHireStatus(int userId, int hireId, string status)

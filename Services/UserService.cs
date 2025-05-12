@@ -200,6 +200,8 @@ namespace newApi.Services
             }
 
             var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
+            
+            // Update user role to Expert
             user.Role = UserRole.Expert;
 
             var expertProfile = new ExpertProfile

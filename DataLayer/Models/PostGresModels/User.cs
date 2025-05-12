@@ -21,7 +21,6 @@ namespace newApi.DataLayer.Models.PostGresModels
         public decimal Balance { get; set; } = 0m; 
         public virtual ExpertProfile ExpertProfile { get; set; }
         public virtual ICollection<Search> Searches { get; set; }
-        public virtual ICollection<Search> ExpertSearches { get; set; }
         public virtual ICollection<Like> Likes { get; set; }
         public virtual ICollection<UserSubscription> UserSubscriptions { get; set; }
         public virtual ICollection<SearchHire> SearchHiresAsClient { get; set; }

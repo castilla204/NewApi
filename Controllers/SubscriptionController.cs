@@ -3,15 +3,40 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Stripe;
 using Stripe.Checkout;
-using System.Text.Json;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Security.Claims;
-using newApi.DataLayer.Models.PostGresModels;
+using System.Text.Json;
+using System.Threading.Tasks;
 using newApi.DataLayer.Models;
+using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.DTOs;
-using Google.Api;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Google.Protobuf;
 
 namespace newApi.Controllers
 {
+    // Extension methods must be in a top-level static class
+    public static class SearchHireStatusExtensions
+    {
+        public static string ToStringValue(this SubscriptionController.SearchHireStatus status)
+        {
+            return status switch
+            {
+                SubscriptionController.SearchHireStatus.Pending => "pending",
+                SubscriptionController.SearchHireStatus.AwaitingClientDecision => "awaiting_client_decision",
+                SubscriptionController.SearchHireStatus.Disputed => "disputed",
+                SubscriptionController.SearchHireStatus.Completed => "completed",
+                SubscriptionController.SearchHireStatus.Cancelled => "cancelled",
+                SubscriptionController.SearchHireStatus.TransferFailed => "transfer_failed",
+                _ => throw new ArgumentException($"Unknown status: {status}")
+            };
+        }
+    }
+
     [Route("api/[controller]")]
     [ApiController]
     [Authorize]
@@ -21,6 +46,16 @@ namespace newApi.Controllers
         private readonly ILogger<SubscriptionController> _logger;
         private readonly IConfiguration _configuration;
         private readonly string _webhookSecret;
+
+        public enum SearchHireStatus
+        {
+            Pending,
+            AwaitingClientDecision,
+            Disputed,
+            Completed,
+            Cancelled,
+            TransferFailed
+        }
 
         public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration)
         {
@@ -33,9 +68,8 @@ namespace newApi.Controllers
             _logger.LogInformation("Stripe API Key and Webhook Secret configured");
         }
 
-
-
         #region recurrentpaymentsendpoints
+
         [HttpPost("cancel")]
         public async Task<IActionResult> CancelSubscription()
         {
@@ -50,7 +84,6 @@ namespace newApi.Controllers
 
                 _logger.LogInformation("Processing cancellation request for user {UserId}", userId);
 
-                // Get active subscription
                 var subscription = await _context.UserSubscriptions
                     .Include(us => us.User)
                     .FirstOrDefaultAsync(us => us.UserId == userId && us.Status == "active");
@@ -61,7 +94,6 @@ namespace newApi.Controllers
                     return NotFound(new { message = "No active subscription found" });
                 }
 
-                // Check if already pending cancellation
                 if (subscription.Status == "pending_cancellation")
                 {
                     _logger.LogInformation("Subscription already pending cancellation for user {UserId}", userId);
@@ -73,7 +105,6 @@ namespace newApi.Controllers
                     });
                 }
 
-                // Mark subscription to cancel at period end in Stripe
                 if (!string.IsNullOrEmpty(subscription.StripeSubscriptionId))
                 {
                     var stripeService = new SubscriptionService();
@@ -86,10 +117,8 @@ namespace newApi.Controllers
                         var updatedSubscription = await stripeService.UpdateAsync(subscription.StripeSubscriptionId, updateOptions);
                         _logger.LogInformation("Subscription {StripeSubscriptionId} marked to cancel at period end for user {UserId}", subscription.StripeSubscriptionId, userId);
 
-                        // Update subscription status in database
                         subscription.Status = "pending_cancellation";
                         subscription.UpdatedAt = DateTime.UtcNow;
-                        // EndDate remains unchanged as it already reflects the end of the billing period
                     }
                     catch (StripeException ex)
                     {
@@ -98,7 +127,6 @@ namespace newApi.Controllers
                     }
                 }
 
-                // Use transaction for database updates
                 using var transaction = await _context.Database.BeginTransactionAsync();
                 try
                 {
@@ -124,286 +152,6 @@ namespace newApi.Controllers
             {
                 _logger.LogError(ex, "Error processing cancellation for user {UserId}");
                 return StatusCode(500, new { message = "Failed to process subscription cancellation" });
-            }
-        }
-
-
-        //[HttpPost("webhook")]
-        //[AllowAnonymous]
-        //public async Task<IActionResult> HandleStripeWebhook()
-        //{
-        //    _logger.LogInformation("Webhook endpoint invoked");
-
-        //    var json = await new StreamReader(Request.Body).ReadToEndAsync();
-        //    var signatureHeader = Request.Headers["Stripe-Signature"];
-        //    _logger.LogInformation("Received webhook request with signature: {SignatureHeader}", signatureHeader);
-
-        //    if (string.IsNullOrEmpty(_webhookSecret))
-        //    {
-        //        _logger.LogError("Webhook secret is not configured");
-        //        return BadRequest(new { error = "Webhook secret is not configured" });
-        //    }
-
-        //    if (string.IsNullOrEmpty(signatureHeader))
-        //    {
-        //        _logger.LogError("No signature header found in webhook request");
-        //        return BadRequest(new { error = "No signature header found" });
-        //    }
-
-        //    try
-        //    {
-        //        _logger.LogInformation("Attempting to construct Stripe event with signature: {SignatureHeader}", signatureHeader);
-
-        //        var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, _webhookSecret);
-
-        //        _logger.LogInformation("Event constructed successfully. Type: {EventType}, ID: {EventId}", stripeEvent.Type, stripeEvent.Id);
-
-        //        switch (stripeEvent.Type)
-        //        {
-        //            case EventTypes.CheckoutSessionCompleted:
-        //                _logger.LogInformation("Processing event: checkout.session.completed");
-        //                var session = stripeEvent.Data.Object as Session;
-        //                if (session == null)
-        //                {
-        //                    _logger.LogError("Failed to cast event data to Session object");
-        //                    return BadRequest();
-        //                }
-
-        //                _logger.LogInformation("Session details: ID={SessionId}, CustomerEmail={CustomerEmail}", session.Id, session.CustomerEmail);
-
-        //                // Extract metadata
-        //                if (!int.TryParse(session.Metadata["userId"], out int userId) ||
-        //                    !int.TryParse(session.Metadata["planId"], out int planId) ||
-        //                    !bool.TryParse(session.Metadata["isYearly"], out bool isYearly))
-        //                {
-        //                    _logger.LogError("Invalid metadata in Stripe session. Metadata: {Metadata}", JsonSerializer.Serialize(session.Metadata));
-        //                    return BadRequest();
-        //                }
-
-        //                _logger.LogInformation("Extracted metadata: userId={UserId}, planId={PlanId}, isYearly={IsYearly}", userId, planId, isYearly);
-
-        //                await HandleCheckoutSessionCompleted(userId, planId, isYearly, session.SubscriptionId);
-        //                break;
-
-        //            case EventTypes.CustomerSubscriptionUpdated:
-        //                _logger.LogInformation("Processing event: customer.subscription.updated");
-        //                var subscription = stripeEvent.Data.Object as Subscription;
-        //                if (subscription == null)
-        //                {
-        //                    _logger.LogError("Failed to cast event data to Subscription object");
-        //                    return BadRequest();
-        //                }
-        //                await HandleSubscriptionUpdated(subscription);
-        //                break;
-
-        //            case EventTypes.CustomerSubscriptionDeleted:
-        //                _logger.LogInformation("Processing event: customer.subscription.deleted");
-        //                var deletedSubscription = stripeEvent.Data.Object as Subscription;
-        //                if (deletedSubscription == null)
-        //                {
-        //                    _logger.LogError("Failed to cast event data to Subscription object");
-        //                    return BadRequest();
-        //                }
-        //                await HandleSubscriptionCanceled(deletedSubscription);
-        //                break;
-
-        //            case EventTypes.InvoicePaymentSucceeded:
-        //                _logger.LogInformation("Processing event: invoice.payment_succeeded");
-        //                var invoice = stripeEvent.Data.Object as Invoice;
-        //                if (invoice == null)
-        //                {
-        //                    _logger.LogError("Failed to cast event data to Invoice object");
-        //                    return BadRequest();
-        //                }
-        //                await HandlePaymentSucceeded(invoice);
-        //                break;
-
-        //            case EventTypes.InvoicePaymentFailed:
-        //                _logger.LogInformation("Processing event: invoice.payment_failed");
-        //                var failedInvoice = stripeEvent.Data.Object as Invoice;
-        //                if (failedInvoice == null)
-        //                {
-        //                    _logger.LogError("Failed to cast event data to Invoice object");
-        //                    return BadRequest();
-        //                }
-        //                await HandlePaymentFailed(failedInvoice);
-        //                break;
-
-        //            default:
-        //                _logger.LogWarning("Unhandled event type: {EventType}", stripeEvent.Type);
-        //                break;
-        //        }
-
-        //        _logger.LogInformation("Webhook processed successfully for event type: {EventType}", stripeEvent.Type);
-        //        return Ok();
-        //    }
-        //    catch (StripeException e)
-        //    {
-        //        _logger.LogError(e, "Stripe webhook error: {ErrorMessage}", e.Message);
-        //        return BadRequest(new { error = e.Message });
-        //    }
-        //    catch (Exception e)
-        //    {
-        //        _logger.LogError(e, "General webhook error: {ErrorMessage}", e.Message);
-        //        return StatusCode(500, new { error = "Internal server error" });
-        //    }
-        //}
-
-        private async Task HandleCheckoutSessionCompleted(int userId, int planId, bool isYearly, string subscriptionId)
-        {
-            _logger.LogInformation("Handling checkout.session.completed for userId={UserId}, planId={PlanId}, isYearly={IsYearly}, subscriptionId={SubscriptionId}", userId, planId, isYearly, subscriptionId);
-
-            var user = await _context.Users.FindAsync(userId);
-            if (user == null)
-            {
-                _logger.LogError("User not found for userId={UserId}", userId);
-                return;
-            }
-
-            _logger.LogInformation("Found user: userId={UserId}, email={Email}", user.Id, user.Email);
-
-            user.SubscriptionPlanId = planId;
-            _logger.LogInformation("Updated user's subscription plan to planId={PlanId}", planId);
-
-            var userSubscription = new UserSubscription
-            {
-                UserId = userId,
-                SubscriptionPlanId = planId,
-                IsYearly = isYearly,
-                StartDate = DateTime.UtcNow,
-                EndDate = DateTime.UtcNow.AddMonths(isYearly ? 12 : 1),
-                Status = "active",
-                StripeSubscriptionId = subscriptionId
-            };
-
-            _logger.LogInformation("Creating new UserSubscription: userId={UserId}, planId={PlanId}, isYearly={IsYearly}, subscriptionId={SubscriptionId}", userId, planId, isYearly, subscriptionId);
-
-            _context.UserSubscriptions.Add(userSubscription);
-            await _context.SaveChangesAsync();
-
-            _logger.LogInformation("Successfully saved UserSubscription for userId={UserId}", userId);
-        }
-
-        private async Task HandleSubscriptionUpdated(Subscription subscription)
-        {
-            _logger.LogInformation("Handling subscription updated for subscriptionId={SubscriptionId}", subscription.Id);
-
-            var userSubscription = await _context.UserSubscriptions
-                .FirstOrDefaultAsync(us => us.StripeSubscriptionId == subscription.Id);
-
-            if (userSubscription != null)
-            {
-                _logger.LogInformation("Found UserSubscription: id={Id}, userId={UserId}", userSubscription.Id, userSubscription.UserId);
-
-                userSubscription.Status = subscription.Status;
-                userSubscription.UpdatedAt = DateTime.UtcNow;
-                await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Updated UserSubscription: id={Id}, new status={Status}", userSubscription.Id, subscription.Status);
-            }
-            else
-            {
-                _logger.LogWarning("No UserSubscription found for subscriptionId={SubscriptionId}", subscription.Id);
-            }
-        }
-
-        private async Task HandleSubscriptionCanceled(Subscription subscription)
-        {
-            _logger.LogInformation("Handling subscription canceled for subscriptionId={SubscriptionId}", subscription.Id);
-
-            var userSubscription = await _context.UserSubscriptions
-                .Include(us => us.User)
-                .FirstOrDefaultAsync(us => us.StripeSubscriptionId == subscription.Id);
-
-            if (userSubscription != null)
-            {
-                _logger.LogInformation("Found UserSubscription: id={Id}, userId={UserId}", userSubscription.Id, userSubscription.UserId);
-
-                userSubscription.Status = "cancelled";
-                userSubscription.EndDate = DateTime.UtcNow;
-                userSubscription.UpdatedAt = DateTime.UtcNow;
-
-                // Revert user to free plan
-                var freePlan = await _context.SubscriptionPlans
-                    .FirstOrDefaultAsync(p => p.PriceMonthly == 0);
-
-                if (freePlan != null)
-                {
-                    userSubscription.User.SubscriptionPlanId = freePlan.Id;
-                    _logger.LogInformation("Reverted user to free plan: planId={PlanId}", freePlan.Id);
-                }
-                else
-                {
-                    _logger.LogWarning("No free plan found to revert user");
-                }
-
-                await _context.SaveChangesAsync();
-                _logger.LogInformation("Updated UserSubscription to cancelled status: id={Id}", userSubscription.Id);
-            }
-            else
-            {
-                _logger.LogWarning("No UserSubscription found for subscriptionId={SubscriptionId}", subscription.Id);
-            }
-        }
-
-        private async Task HandlePaymentSucceeded(Invoice invoice)
-        {
-            if (string.IsNullOrEmpty(invoice.SubscriptionId))
-            {
-                _logger.LogWarning("Invoice has no subscriptionId, skipping payment succeeded handling");
-                return;
-            }
-
-            _logger.LogInformation("Handling payment succeeded for invoiceId={InvoiceId}, subscriptionId={SubscriptionId}", invoice.Id, invoice.SubscriptionId);
-
-            var userSubscription = await _context.UserSubscriptions
-                .FirstOrDefaultAsync(us => us.StripeSubscriptionId == invoice.SubscriptionId);
-
-            if (userSubscription != null)
-            {
-                _logger.LogInformation("Found UserSubscription: id={Id}, userId={UserId}", userSubscription.Id, userSubscription.UserId);
-
-                userSubscription.EndDate = userSubscription.IsYearly ?
-                    userSubscription.EndDate.AddYears(1) :
-                    userSubscription.EndDate.AddMonths(1);
-                userSubscription.UpdatedAt = DateTime.UtcNow;
-                await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Updated UserSubscription end date: id={Id}, new endDate={EndDate}", userSubscription.Id, userSubscription.EndDate);
-            }
-            else
-            {
-                _logger.LogWarning("No UserSubscription found for subscriptionId={SubscriptionId}", invoice.SubscriptionId);
-            }
-        }
-
-        private async Task HandlePaymentFailed(Invoice invoice)
-        {
-            if (string.IsNullOrEmpty(invoice.SubscriptionId))
-            {
-                _logger.LogWarning("Invoice has no subscriptionId, skipping payment failed handling");
-                return;
-            }
-
-            _logger.LogInformation("Handling payment failed for invoiceId={InvoiceId}, subscriptionId={SubscriptionId}", invoice.Id, invoice.SubscriptionId);
-
-            var userSubscription = await _context.UserSubscriptions
-                .Include(us => us.User)
-                .FirstOrDefaultAsync(us => us.StripeSubscriptionId == invoice.SubscriptionId);
-
-            if (userSubscription != null)
-            {
-                _logger.LogInformation("Found UserSubscription: id={Id}, userId={UserId}", userSubscription.Id, userSubscription.UserId);
-
-                userSubscription.Status = "payment_failed";
-                userSubscription.UpdatedAt = DateTime.UtcNow;
-                await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Updated UserSubscription to payment_failed status: id={Id}", userSubscription.Id);
-            }
-            else
-            {
-                _logger.LogWarning("No UserSubscription found for subscriptionId={SubscriptionId}", invoice.SubscriptionId);
             }
         }
 
@@ -479,9 +227,9 @@ namespace newApi.Controllers
                     _logger.LogError(e, "Stripe error creating checkout session: {ErrorMessage}", e.Message);
                     return StatusCode(500, new { message = e.Message });
                 }
-                catch (Exception e)
+                catch (Exception ex)
                 {
-                    _logger.LogError(e, "Error creating checkout session: {ErrorMessage}", e.Message);
+                    _logger.LogError(ex, "Error creating checkout session: {ErrorMessage}", ex.Message);
                     return StatusCode(500, new { message = "Failed to create checkout session" });
                 }
 
@@ -493,7 +241,6 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = ex.Message });
             }
         }
-
 
         [HttpGet("plans")]
         public async Task<IActionResult> GetSubscriptionPlans()
@@ -660,7 +407,7 @@ namespace newApi.Controllers
         #endregion
 
         #region systemforindividualpayments + stripeconnect
-        // Crea una cuenta Stripe Connect para un experto y genera un enlace de onboarding.
+
         [HttpPost("expert-onboarding")]
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> CreateExpertOnboarding()
@@ -766,7 +513,6 @@ namespace newApi.Controllers
             }
         }
 
-        // Inicia una sesión de Stripe para que el usuario cargue dinero en su saldo.
         [HttpPost("load-money")]
         public async Task<IActionResult> LoadMoney([FromBody] LoadMoneyDto request)
         {
@@ -847,8 +593,6 @@ namespace newApi.Controllers
             }
         }
 
-
-        // Procesa eventos de Stripe (webhooks) para pagos, cuentas de expertos y transferencias.
         [HttpPost("webhook")]
         [AllowAnonymous]
         public async Task<IActionResult> HandleStripeWebhook()
@@ -866,18 +610,32 @@ namespace newApi.Controllers
                 {
                     case "checkout.session.completed":
                         var session = stripeEvent.Data.Object as Session;
-                        if (session != null && session.Mode == "payment")
+                        if (session != null)
                         {
-                            if (int.TryParse(session.Metadata["userId"], out int userId) &&
-                                decimal.TryParse(session.Metadata["amount"], out decimal amount))
+                            if (session.Mode == "payment")
                             {
-                                await HandleLoadMoneyCompleted(userId, amount);
+                                if (int.TryParse(session.Metadata["userId"], out int userId) &&
+                                    decimal.TryParse(session.Metadata["amount"], out decimal amount))
+                                {
+                                    await HandleLoadMoneyCompleted(userId, amount);
+                                }
+                                else
+                                {
+                                    _logger.LogError("Invalid metadata for load-money: userId={UserId}, amount={Amount}",
+                                        session.Metadata["userId"], session.Metadata["amount"]);
+                                    return BadRequest(new { error = "Invalid metadata" });
+                                }
                             }
-                            else
+                            else if (session.Mode == "subscription")
                             {
-                                _logger.LogError("Invalid metadata for load-money: userId={UserId}, amount={Amount}",
-                                    session.Metadata["userId"], session.Metadata["amount"]);
-                                return BadRequest(new { error = "Invalid metadata" });
+                                if (!int.TryParse(session.Metadata["userId"], out int userId) ||
+                                    !int.TryParse(session.Metadata["planId"], out int planId) ||
+                                    !bool.TryParse(session.Metadata["isYearly"], out bool isYearly))
+                                {
+                                    _logger.LogError("Invalid metadata in Stripe session. Metadata: {Metadata}", JsonSerializer.Serialize(session.Metadata));
+                                    return BadRequest(new { error = "Invalid metadata" });
+                                }
+                                await HandleCheckoutSessionCompleted(userId, planId, isYearly, session.SubscriptionId);
                             }
                         }
                         break;
@@ -906,11 +664,43 @@ namespace newApi.Controllers
                                 .FirstOrDefaultAsync(sh => sh.ExpertTransferId == transfer.Id);
                             if (searchHire != null)
                             {
-                                searchHire.Status = "transfer_failed";
+                                searchHire.Status = SearchHireStatus.TransferFailed.ToStringValue();
                                 await _context.SaveChangesAsync();
                                 _logger.LogError("Transfer failed for searchHireId={SearchHireId}, transferId={TransferId}",
                                     searchHire.Id, transfer.Id);
                             }
+                        }
+                        break;
+
+                    case "customer.subscription.updated":
+                        var subscriptionUpdated = stripeEvent.Data.Object as Subscription;
+                        if (subscriptionUpdated != null)
+                        {
+                            await HandleSubscriptionUpdated(subscriptionUpdated);
+                        }
+                        break;
+
+                    case "customer.subscription.deleted":
+                        var subscriptionDeleted = stripeEvent.Data.Object as Subscription;
+                        if (subscriptionDeleted != null)
+                        {
+                            await HandleSubscriptionCanceled(subscriptionDeleted);
+                        }
+                        break;
+
+                    case "invoice.payment_succeeded":
+                        var invoiceSucceeded = stripeEvent.Data.Object as Invoice;
+                        if (invoiceSucceeded != null)
+                        {
+                            await HandlePaymentSucceeded(invoiceSucceeded);
+                        }
+                        break;
+
+                    case "invoice.payment_failed":
+                        var invoiceFailed = stripeEvent.Data.Object as Invoice;
+                        if (invoiceFailed != null)
+                        {
+                            await HandlePaymentFailed(invoiceFailed);
                         }
                         break;
 
@@ -932,9 +722,6 @@ namespace newApi.Controllers
                 return StatusCode(500, new { error = "Internal server error" });
             }
         }
-
-
-        // Contrata un servicio de un experto, deduciendo el costo del saldo del cliente.
 
         [HttpPost("hire-service")]
         public async Task<IActionResult> HireService([FromBody] HireServiceDto request)
@@ -994,10 +781,10 @@ namespace newApi.Controllers
                         ExpertId = service.ExpertProfile.UserId,
                         SearchServiceId = service.Id,
                         SearchId = request.SearchId,
-                        Status = "pending",
+                        Status = SearchHireStatus.Pending.ToStringValue(),
                         Amount = service.Price,
                         CreatedAt = DateTime.UtcNow,
-                        CompletionDeadline = DateTime.UtcNow.AddDays(7) // Ajusta según duración del servicio
+                        CompletionDeadline = DateTime.UtcNow.AddDays(7)
                     };
 
                     _context.SearchHires.Add(searchHire);
@@ -1026,8 +813,6 @@ namespace newApi.Controllers
             }
         }
 
-
-        // Permite al cliente aprobar o rechazar un servicio, iniciando pago o disputa.
         [HttpPost("complete-service")]
         public async Task<IActionResult> CompleteService([FromBody] CompleteServiceDto request)
         {
@@ -1060,7 +845,7 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Unauthorized to complete this service" });
                 }
 
-                if (searchHire.Status != "pending" && searchHire.Status != "awaiting_client_decision")
+                if (searchHire.Status != SearchHireStatus.Pending.ToStringValue() && searchHire.Status != SearchHireStatus.AwaitingClientDecision.ToStringValue())
                 {
                     _logger.LogError("Service cannot be approved in status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
                     return BadRequest(new { message = "Service cannot be approved in current state" });
@@ -1078,13 +863,13 @@ namespace newApi.Controllers
                     searchHire.ClientApproved = request.ClientApproved.Value;
                     if (!searchHire.ClientApproved.Value)
                     {
-                        searchHire.Status = "disputed";
+                        searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
                         _logger.LogInformation("Client opened dispute for searchHireId={SearchHireId}", searchHire.Id);
                     }
                     else
                     {
                         await ProcessTransferToExpert(searchHire.Id);
-                        searchHire.Status = "completed";
+                        searchHire.Status = SearchHireStatus.Completed.ToStringValue();
                         searchHire.CompletedAt = DateTime.UtcNow;
                         _logger.LogInformation("Client approved service, transfer completed for searchHireId={SearchHireId}", searchHire.Id);
                     }
@@ -1114,8 +899,6 @@ namespace newApi.Controllers
             }
         }
 
-
-        // Cancela un servicio en estado pending, reembolsando al cliente.
         [HttpPost("cancel-service")]
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> CancelService([FromBody] CancelServiceDto request)
@@ -1141,7 +924,7 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Service not found or unauthorized" });
                 }
 
-                if (searchHire.Status != "pending")
+                if (searchHire.Status != SearchHireStatus.Pending.ToStringValue())
                 {
                     _logger.LogError("Service is not in pending status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
                     return BadRequest(new { message = "Service is not pending" });
@@ -1161,7 +944,7 @@ namespace newApi.Controllers
                         CreatedAt = DateTime.UtcNow
                     };
 
-                    searchHire.Status = "cancelled";
+                    searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
                     searchHire.CompletedAt = DateTime.UtcNow;
 
                     _context.FinancialTransactions.Add(financialTransaction);
@@ -1185,8 +968,6 @@ namespace newApi.Controllers
             }
         }
 
-
-        // Abre una disputa para un servicio en estado awaiting_client_decision.
         [HttpPost("dispute-service")]
         public async Task<IActionResult> DisputeService([FromBody] DisputeServiceDto request)
         {
@@ -1210,7 +991,7 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Service not found or unauthorized" });
                 }
 
-                if (searchHire.Status != "awaiting_client_decision")
+                if (searchHire.Status != SearchHireStatus.AwaitingClientDecision.ToStringValue())
                 {
                     _logger.LogError("Service is not in awaiting_client_decision status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
                     return BadRequest(new { message = "Service is not awaiting client decision" });
@@ -1219,7 +1000,7 @@ namespace newApi.Controllers
                 using var transaction = await _context.Database.BeginTransactionAsync();
                 try
                 {
-                    searchHire.Status = "disputed";
+                    searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
                     searchHire.ClientApproved = false;
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
@@ -1241,8 +1022,6 @@ namespace newApi.Controllers
             }
         }
 
-
-        // Finaliza un servicio en cualquier estado a favor del cliente o experto (admin only).
         [HttpPost("force-finalize")]
         public async Task<IActionResult> ForceFinalize([FromBody] ForceFinalizeDto request)
         {
@@ -1270,7 +1049,6 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Service not found" });
                 }
 
-                // Skip status check to allow finalization at any time
                 _logger.LogInformation("Processing force-finalize for searchHireId={SearchHireId}, current status={Status}",
                     searchHire.Id, searchHire.Status);
 
@@ -1279,7 +1057,6 @@ namespace newApi.Controllers
                 {
                     if (request.ResolveInFavorOfClient)
                     {
-                        // Refund to client
                         searchHire.Client.Balance += searchHire.Amount;
                         var financialTransaction = new FinancialTransaction
                         {
@@ -1291,16 +1068,15 @@ namespace newApi.Controllers
                             CreatedAt = DateTime.UtcNow
                         };
                         _context.FinancialTransactions.Add(financialTransaction);
-                        searchHire.Status = "cancelled";
+                        searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
                         searchHire.CompletedAt = DateTime.UtcNow;
                         _logger.LogInformation("Force-finalized in favor of client for searchHireId={SearchHireId}, refunded amount={Amount}",
                             searchHire.Id, searchHire.Amount);
                     }
                     else
                     {
-                        // Pay expert
                         await ProcessTransferToExpert(searchHire.Id);
-                        searchHire.Status = "completed";
+                        searchHire.Status = SearchHireStatus.Completed.ToStringValue();
                         searchHire.CompletedAt = DateTime.UtcNow;
                         _logger.LogInformation("Force-finalized in favor of expert for searchHireId={SearchHireId}, transferred amount={Amount}",
                             searchHire.Id, searchHire.Amount * (1 - 0.1m));
@@ -1332,8 +1108,6 @@ namespace newApi.Controllers
             }
         }
 
-
-        // Resuelve una disputa a favor del cliente o experto (admin only).
         [HttpPost("resolve-dispute")]
         public async Task<IActionResult> ResolveDispute([FromBody] ResolveDisputeDto request)
         {
@@ -1359,7 +1133,7 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Service not found" });
                 }
 
-                if (searchHire.Status != "disputed")
+                if (searchHire.Status != SearchHireStatus.Disputed.ToStringValue())
                 {
                     _logger.LogError("Service is not in disputed status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
                     return BadRequest(new { message = "Service is not disputed" });
@@ -1381,13 +1155,13 @@ namespace newApi.Controllers
                             CreatedAt = DateTime.UtcNow
                         };
                         _context.FinancialTransactions.Add(financialTransaction);
-                        searchHire.Status = "cancelled";
+                        searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
                         _logger.LogInformation("Dispute resolved in favor of client for searchHireId={SearchHireId}", searchHire.Id);
                     }
                     else
                     {
                         await ProcessTransferToExpert(searchHire.Id);
-                        searchHire.Status = "completed";
+                        searchHire.Status = SearchHireStatus.Completed.ToStringValue();
                         searchHire.CompletedAt = DateTime.UtcNow;
                         _logger.LogInformation("Dispute resolved in favor of expert for searchHireId={SearchHireId}", searchHire.Id);
                     }
@@ -1417,11 +1191,9 @@ namespace newApi.Controllers
             }
         }
 
-        // Procesa servicios pending cuya fecha límite ha expirado (admin only).
         [HttpPost("process-expired-services")]
         public async Task<IActionResult> ProcessExpiredServices()
         {
-
             var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
             if (adminEmail != "dcastillaa@gmail.com")
             {
@@ -1436,7 +1208,7 @@ namespace newApi.Controllers
                     .Include(sh => sh.Expert)
                     .ThenInclude(e => e.ExpertProfile)
                     .Include(sh => sh.Client)
-                    .Where(sh => sh.Status == "pending" && sh.CompletionDeadline <= DateTime.UtcNow)
+                    .Where(sh => sh.Status == SearchHireStatus.Pending.ToStringValue() && sh.CompletionDeadline <= DateTime.UtcNow)
                     .ToListAsync();
 
                 _logger.LogInformation("Found {Count} expired SearchHires to process", expiredHires.Count);
@@ -1446,14 +1218,14 @@ namespace newApi.Controllers
                     using var transaction = await _context.Database.BeginTransactionAsync();
                     try
                     {
-                        if (searchHire.Status != "pending")
+                        if (searchHire.Status != SearchHireStatus.Pending.ToStringValue())
                         {
                             _logger.LogWarning("SearchHireId={SearchHireId} is no longer in pending, skipping", searchHire.Id);
                             await transaction.CommitAsync();
                             continue;
                         }
 
-                        searchHire.Status = "awaiting_client_decision";
+                        searchHire.Status = SearchHireStatus.AwaitingClientDecision.ToStringValue();
                         _logger.LogInformation("Moved searchHireId={SearchHireId} to awaiting_client_decision", searchHire.Id);
 
                         await _context.SaveChangesAsync();
@@ -1475,8 +1247,6 @@ namespace newApi.Controllers
             }
         }
 
-
-        // Transfiere el pago al experto, aplicando una comisión y registrando la transacción.
         private async Task ProcessTransferToExpert(int searchHireId)
         {
             var searchHire = await _context.SearchHires
@@ -1507,9 +1277,9 @@ namespace newApi.Controllers
                 Currency = "eur",
                 Destination = expertStripeAccountId,
                 Metadata = new Dictionary<string, string>
-        {
-            { "searchHireId", searchHireId.ToString() }
-        }
+                {
+                    { "searchHireId", searchHireId.ToString() }
+                }
             };
 
             var transferService = new TransferService();
@@ -1528,10 +1298,9 @@ namespace newApi.Controllers
             };
             _context.FinancialTransactions.Add(financialTransaction);
 
-            await _context.SaveChangesAsync(); // Añadido para persistir cambios
+            await _context.SaveChangesAsync();
         }
 
-        // Actualiza el saldo del usuario tras un pago exitoso para cargar dinero.
         private async Task HandleLoadMoneyCompleted(int userId, decimal amount)
         {
             _logger.LogInformation("Handling load money completed for userId={UserId}, amount={Amount}", userId, amount);
@@ -1569,6 +1338,165 @@ namespace newApi.Controllers
             }
         }
 
+        private async Task HandleCheckoutSessionCompleted(int userId, int planId, bool isYearly, string subscriptionId)
+        {
+            _logger.LogInformation("Handling checkout.session.completed for userId={UserId}, planId={PlanId}, isYearly={IsYearly}, subscriptionId={SubscriptionId}", userId, planId, isYearly, subscriptionId);
+
+            var user = await _context.Users.FindAsync(userId);
+            if (user == null)
+            {
+                _logger.LogError("User not found for userId={UserId}", userId);
+                return;
+            }
+
+            _logger.LogInformation("Found user: userId={UserId}, email={Email}", user.Id, user.Email);
+
+            user.SubscriptionPlanId = planId;
+            _logger.LogInformation("Updated user's subscription plan to planId={PlanId}", planId);
+
+            var userSubscription = new UserSubscription
+            {
+                UserId = userId,
+                SubscriptionPlanId = planId,
+                IsYearly = isYearly,
+                StartDate = DateTime.UtcNow,
+                EndDate = DateTime.UtcNow.AddMonths(isYearly ? 12 : 1),
+                Status = "active",
+                StripeSubscriptionId = subscriptionId
+            };
+
+            _logger.LogInformation("Creating new UserSubscription: userId={UserId}, planId={PlanId}, isYearly={IsYearly}, subscriptionId={SubscriptionId}", userId, planId, isYearly, subscriptionId);
+
+            _context.UserSubscriptions.Add(userSubscription);
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Successfully saved UserSubscription for userId={UserId}", userId);
+        }
+
+        private async Task HandleSubscriptionUpdated(Subscription subscription)
+        {
+            _logger.LogInformation("Handling subscription updated for subscriptionId={SubscriptionId}", subscription.Id);
+
+            var userSubscription = await _context.UserSubscriptions
+                .FirstOrDefaultAsync(us => us.StripeSubscriptionId == subscription.Id);
+
+            if (userSubscription != null)
+            {
+                _logger.LogInformation("Found UserSubscription: id={Id}, userId={UserId}", userSubscription.Id, userSubscription.UserId);
+
+                userSubscription.Status = subscription.Status;
+                userSubscription.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Updated UserSubscription: id={Id}, new status={Status}", userSubscription.Id, subscription.Status);
+            }
+            else
+            {
+                _logger.LogWarning("No UserSubscription found for subscriptionId={SubscriptionId}", subscription.Id);
+            }
+        }
+
+        private async Task HandleSubscriptionCanceled(Subscription subscription)
+        {
+            _logger.LogInformation("Handling subscription canceled for subscriptionId={SubscriptionId}", subscription.Id);
+
+            var userSubscription = await _context.UserSubscriptions
+                .Include(us => us.User)
+                .FirstOrDefaultAsync(us => us.StripeSubscriptionId == subscription.Id);
+
+            if (userSubscription != null)
+            {
+                _logger.LogInformation("Found UserSubscription: id={Id}, userId={UserId}", userSubscription.Id, userSubscription.UserId);
+
+                userSubscription.Status = "cancelled";
+                userSubscription.EndDate = DateTime.UtcNow;
+                userSubscription.UpdatedAt = DateTime.UtcNow;
+
+                var freePlan = await _context.SubscriptionPlans
+                    .FirstOrDefaultAsync(p => p.PriceMonthly == 0);
+
+                if (freePlan != null)
+                {
+                    userSubscription.User.SubscriptionPlanId = freePlan.Id;
+                    _logger.LogInformation("Reverted user to free plan: planId={PlanId}", freePlan.Id);
+                }
+                else
+                {
+                    _logger.LogWarning("No free plan found to revert user");
+                }
+
+                await _context.SaveChangesAsync();
+                _logger.LogInformation("Updated UserSubscription to cancelled status: id={Id}", userSubscription.Id);
+            }
+            else
+            {
+                _logger.LogWarning("No UserSubscription found for subscriptionId={SubscriptionId}", subscription.Id);
+            }
+        }
+
+        private async Task HandlePaymentSucceeded(Invoice invoice)
+        {
+            if (string.IsNullOrEmpty(invoice.SubscriptionId))
+            {
+                _logger.LogWarning("Invoice has no subscriptionId, skipping payment succeeded handling");
+                return;
+            }
+
+            _logger.LogInformation("Handling payment succeeded for invoiceId={InvoiceId}, subscriptionId={SubscriptionId}", invoice.Id, invoice.SubscriptionId);
+
+            var userSubscription = await _context.UserSubscriptions
+                .FirstOrDefaultAsync(us => us.StripeSubscriptionId == invoice.SubscriptionId);
+
+            if (userSubscription != null)
+            {
+                _logger.LogInformation("Found UserSubscription: id={Id}, userId={UserId}", userSubscription.Id, userSubscription.UserId);
+
+                userSubscription.EndDate = userSubscription.IsYearly ?
+                    userSubscription.EndDate.AddYears(1) :
+                    userSubscription.EndDate.AddMonths(1);
+                userSubscription.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Updated UserSubscription end date: id={Id}, new endDate={EndDate}", userSubscription.Id, userSubscription.EndDate);
+            }
+            else
+            {
+                _logger.LogWarning("No UserSubscription found for subscriptionId={SubscriptionId}", invoice.SubscriptionId);
+            }
+        }
+
+        private async Task HandlePaymentFailed(Invoice invoice)
+        {
+            if (string.IsNullOrEmpty(invoice.SubscriptionId))
+            {
+                _logger.LogWarning("Invoice has no subscriptionId, skipping payment failed handling");
+                return;
+            }
+
+            _logger.LogInformation("Handling payment failed for invoiceId={InvoiceId}, subscriptionId={SubscriptionId}", invoice.Id, invoice.SubscriptionId);
+
+            var userSubscription = await _context.UserSubscriptions
+                .Include(us => us.User)
+                .FirstOrDefaultAsync(us => us.StripeSubscriptionId == invoice.SubscriptionId);
+
+            if (userSubscription != null)
+            {
+                _logger.LogInformation("Found UserSubscription: id={Id}, userId={UserId}", userSubscription.Id, userSubscription.UserId);
+
+                userSubscription.Status = "payment_failed";
+                userSubscription.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Updated UserSubscription to payment_failed status: id={Id}", userSubscription.Id);
+            }
+            else
+            {
+                _logger.LogWarning("No UserSubscription found for subscriptionId={SubscriptionId}", invoice.SubscriptionId);
+            }
+        }
+
+        #endregion
+
         public class LoadMoneyDto
         {
             public decimal Amount { get; set; }
@@ -1601,16 +1529,40 @@ namespace newApi.Controllers
             public int SearchHireId { get; set; }
             public bool ResolveInFavorOfClient { get; set; }
         }
+
         public class ResolveDisputeDto
         {
             public int SearchHireId { get; set; }
             public bool ResolveInFavorOfClient { get; set; }
         }
-        #endregion
+
+        public class CreateSubscriptionDto
+        {
+            public int PlanId { get; set; }
+            public bool IsYearly { get; set; }
+        }
+
+        public class SubscriptionPlanDto
+        {
+            public int Id { get; set; }
+            public string Name { get; set; }
+            public string Description { get; set; }
+            public decimal PriceMonthly { get; set; }
+            public decimal PriceYearly { get; set; }
+            public int MaxSearches { get; set; }
+            public int MinSearchInterval { get; set; }
+            public bool IsActive { get; set; }
+        }
+
+        public class SubscriptionDetailsDto
+        {
+            public bool IsYearly { get; set; }
+            public DateTime? StartDate { get; set; }
+            public DateTime? EndDate { get; set; }
+            public string Status { get; set; }
+            public decimal Price { get; set; }
+            public string BillingPeriod { get; set; }
+            public DateTime? NextBillingDate { get; set; }
+        }
     }
 }
-
-
-
-
-

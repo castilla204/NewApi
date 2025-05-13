@@ -54,9 +54,6 @@ namespace newApi.Services
             if (hire == null || hire.ExpertId != userId)
                 return false;
 
-            var validStatuses = new[] { "InProgress", "Completed", "Cancelled" };
-            if (!validStatuses.Contains(status))
-                return false;
 
             hire.Status = status;
             if (status == "Completed")

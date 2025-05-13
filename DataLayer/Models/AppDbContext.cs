@@ -53,6 +53,7 @@ namespace newApi.DataLayer.Models
                 .HasForeignKey(l => l.AdId)
                 .OnDelete(DeleteBehavior.Cascade);
 
+
             modelBuilder.Entity<Search>()
                 .HasOne(s => s.User)
                 .WithMany(u => u.Searches)

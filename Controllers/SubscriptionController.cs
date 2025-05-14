@@ -991,6 +991,7 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Service not found or unauthorized" });
                 }
 
+
                 if (searchHire.Status != SearchHireStatus.AwaitingClientDecision.ToStringValue())
                 {
                     _logger.LogError("Service is not in awaiting_client_decision status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);

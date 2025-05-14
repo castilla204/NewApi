@@ -13,6 +13,7 @@ using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.DTOs;
 using newApi.ScrapperGateway.DataLayer.Models.DTOs.newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using static UserController;
+using Twilio;
 
 namespace newApi.Services
 {
@@ -23,6 +24,7 @@ namespace newApi.Services
         private readonly ILogger<UserService> _logger;
         private readonly StorageClient _storageClient;
         private readonly string _twilioVerificationServiceSid;
+        private readonly string _twilioauthToken;
 
         public UserService(
             AppDbContext context,
@@ -35,6 +37,7 @@ namespace newApi.Services
             _logger = logger;
             _storageClient = storageClient;
             _twilioVerificationServiceSid = configuration["Twilio:VerificationServiceSid"];
+            _twilioauthToken = configuration["Twilio:AuthToken"];
         }
 
         public async Task<User> GetUserAsync(int userId)
@@ -88,6 +91,8 @@ namespace newApi.Services
             var user = await _context.Users.FindAsync(userId);
             if (user == null || user.PhoneVerified)
                 return false;
+            TwilioClient.Init(_configuration["Twilio:AccountSid"], _twilioauthToken);
+
 
             await VerificationResource.CreateAsync(
                 to: phoneNumber,

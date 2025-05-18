@@ -13,10 +13,8 @@
         // Estado de la disputa (Pending, Resolved)
         public string Status { get; set; }
         // Resolución de la disputa (Refunded, PaidToExpert)
-        public string Resolution { get; set; }
+        public string? ResolutionComments { get; set; }
         // Comentarios del administrador sobre la resolución
-        public string AdminComments { get; set; }
-        // Fecha de creación de la disputa
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
         // Relación con la contratación

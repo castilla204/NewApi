@@ -293,7 +293,6 @@ namespace newApi.DataLayer.Models.PostGresModels
         public int Id { get; set; }
         public int UserId { get; set; }
         // Nuevo campo: Clave foránea opcional al usuario experto que realiza la búsqueda
-        public int? ExpertId { get; set; }
         public int Frequency { get; set; }
         public string Title { get; set; }
         public string? Description { get; set; }
@@ -305,8 +304,7 @@ namespace newApi.DataLayer.Models.PostGresModels
         public DateTime StartDate { get; set; }
 
         public virtual User User { get; set; }
-        // Nueva relación: Experto que realiza la búsqueda
-        public virtual User Expert { get; set; }
+
         // Nueva relación: Contratación asociada a la búsqueda
         public virtual SearchHire SearchHire { get; set; }
         public virtual ICollection<SearchParameter> SearchParameters { get; set; }
@@ -542,7 +540,6 @@ namespace newApi.DataLayer.Models.PostGresModels
         public decimal Balance { get; set; } = 0m; 
         public virtual ExpertProfile ExpertProfile { get; set; }
         public virtual ICollection<Search> Searches { get; set; }
-        public virtual ICollection<Search> ExpertSearches { get; set; }
         public virtual ICollection<Like> Likes { get; set; }
         public virtual ICollection<UserSubscription> UserSubscriptions { get; set; }
         public virtual ICollection<SearchHire> SearchHiresAsClient { get; set; }

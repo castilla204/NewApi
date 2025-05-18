@@ -15,11 +15,9 @@ using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.DTOs;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using Google.Protobuf;
 
 namespace newApi.Controllers
 {
-    // Extension methods must be in a top-level static class
     public static class SearchHireStatusExtensions
     {
         public static string ToStringValue(this SubscriptionController.SearchHireStatus status)
@@ -32,6 +30,7 @@ namespace newApi.Controllers
                 SubscriptionController.SearchHireStatus.Completed => "completed",
                 SubscriptionController.SearchHireStatus.Cancelled => "cancelled",
                 SubscriptionController.SearchHireStatus.TransferFailed => "transfer_failed",
+                SubscriptionController.SearchHireStatus.DisputeResolved => "dispute-resolved",
                 _ => throw new ArgumentException($"Unknown status: {status}")
             };
         }
@@ -54,7 +53,8 @@ namespace newApi.Controllers
             Disputed,
             Completed,
             Cancelled,
-            TransferFailed
+            TransferFailed,
+            DisputeResolved
         }
 
         public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration)
@@ -67,8 +67,6 @@ namespace newApi.Controllers
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
             _logger.LogInformation("Stripe API Key and Webhook Secret configured");
         }
-
-        #region recurrentpaymentsendpoints
 
         [HttpPost("cancel")]
         public async Task<IActionResult> CancelSubscription()
@@ -403,10 +401,6 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Failed to retrieve current subscription" });
             }
         }
-
-        #endregion
-
-        #region systemforindividualpayments + stripeconnect
 
         [HttpPost("expert-onboarding")]
         [Authorize(Roles = "Expert")]
@@ -788,7 +782,7 @@ namespace newApi.Controllers
                     };
 
                     _context.SearchHires.Add(searchHire);
-                    await _context.SaveChangesAsync();
+                     await _context.SaveChangesAsync();
 
                     financialTransaction.RelatedEntityId = searchHire.Id;
                     _context.FinancialTransactions.Add(financialTransaction);
@@ -982,6 +976,12 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
+                if (string.IsNullOrWhiteSpace(request.Reason))
+                {
+                    _logger.LogError("Dispute reason is required for searchHireId={SearchHireId}", request.SearchHireId);
+                    return BadRequest(new { message = "Dispute reason is required" });
+                }
+
                 var searchHire = await _context.SearchHires
                     .FirstOrDefaultAsync(sh => sh.Id == request.SearchHireId && sh.ClientId == userId);
 
@@ -990,7 +990,6 @@ namespace newApi.Controllers
                     _logger.LogError("SearchHire not found or user is not the client for searchHireId={SearchHireId}, userId={UserId}", request.SearchHireId, userId);
                     return NotFound(new { message = "Service not found or unauthorized" });
                 }
-
 
                 if (searchHire.Status != SearchHireStatus.AwaitingClientDecision.ToStringValue())
                 {
@@ -1003,11 +1002,22 @@ namespace newApi.Controllers
                 {
                     searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
                     searchHire.ClientApproved = false;
+
+                    var dispute = new DataLayer.Models.PostGresModels.Dispute
+                    {
+                        SearchHireId = searchHire.Id,
+                        ReporterId = userId,
+                        Reason = request.Reason,
+                        Status = "Pending",
+                        CreatedAt = DateTime.UtcNow
+                    };
+
+                    _context.Disputes.Add(dispute);
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
 
-                    _logger.LogInformation("Dispute opened for searchHireId={SearchHireId}", searchHire.Id);
-                    return Ok(new { message = "Dispute opened" });
+                    _logger.LogInformation("Dispute opened for searchHireId={SearchHireId}, disputeId={DisputeId}", searchHire.Id, dispute.Id);
+                    return Ok(new { message = "Dispute opened", disputeId = dispute.Id });
                 }
                 catch (Exception ex)
                 {
@@ -1115,6 +1125,7 @@ namespace newApi.Controllers
             var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
             if (adminEmail != "dcastillaa@gmail.com")
             {
+                _logger.LogError("Unauthorized access attempt to resolve-dispute endpoint by email={Email}", adminEmail);
                 return Unauthorized(new { message = "Admin access required" });
             }
 
@@ -1122,6 +1133,12 @@ namespace newApi.Controllers
 
             try
             {
+                if (string.IsNullOrWhiteSpace(request.Resolution))
+                {
+                    _logger.LogError("Resolution reason is required for searchHireId={SearchHireId}", request.SearchHireId);
+                    return BadRequest(new { message = "Resolution reason is required" });
+                }
+
                 var searchHire = await _context.SearchHires
                     .Include(sh => sh.Client)
                     .Include(sh => sh.Expert)
@@ -1140,9 +1157,21 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Service is not disputed" });
                 }
 
+                var dispute = await _context.Disputes
+                    .FirstOrDefaultAsync(d => d.SearchHireId == searchHire.Id && d.Status == "Pending");
+
+                if (dispute == null)
+                {
+                    _logger.LogError("No pending dispute found for searchHireId={SearchHireId}", searchHire.Id);
+                    return NotFound(new { message = "No pending dispute found" });
+                }
+
                 using var transaction = await _context.Database.BeginTransactionAsync();
                 try
                 {
+                    dispute.Status = "Resolved";
+                    dispute.ResolutionComments = request.Resolution;
+
                     if (request.ResolveInFavorOfClient)
                     {
                         searchHire.Client.Balance += searchHire.Amount;
@@ -1156,16 +1185,16 @@ namespace newApi.Controllers
                             CreatedAt = DateTime.UtcNow
                         };
                         _context.FinancialTransactions.Add(financialTransaction);
-                        searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
                         _logger.LogInformation("Dispute resolved in favor of client for searchHireId={SearchHireId}", searchHire.Id);
                     }
                     else
                     {
                         await ProcessTransferToExpert(searchHire.Id);
-                        searchHire.Status = SearchHireStatus.Completed.ToStringValue();
-                        searchHire.CompletedAt = DateTime.UtcNow;
                         _logger.LogInformation("Dispute resolved in favor of expert for searchHireId={SearchHireId}", searchHire.Id);
                     }
+
+                    searchHire.Status = SearchHireStatus.DisputeResolved.ToStringValue();
+                    searchHire.CompletedAt = DateTime.UtcNow;
 
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
@@ -1496,8 +1525,6 @@ namespace newApi.Controllers
             }
         }
 
-        #endregion
-
         public class LoadMoneyDto
         {
             public decimal Amount { get; set; }
@@ -1523,6 +1550,7 @@ namespace newApi.Controllers
         public class DisputeServiceDto
         {
             public int SearchHireId { get; set; }
+            public string Reason { get; set; }
         }
 
         public class ForceFinalizeDto
@@ -1535,6 +1563,7 @@ namespace newApi.Controllers
         {
             public int SearchHireId { get; set; }
             public bool ResolveInFavorOfClient { get; set; }
+            public string Resolution { get; set; }
         }
 
         public class CreateSubscriptionDto

@@ -12,6 +12,9 @@ using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Storage.V1;
 using newApi.DataLayer.Models;
 using newApi.DataLayer;
+using Hangfire;
+using Hangfire.PostgreSql;
+using Microsoft.Extensions.DependencyInjection;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -47,10 +50,8 @@ builder.Configuration["Jwt:Issuer"] = GetSecretValue("jwt-issuer");
 builder.Configuration["Jwt:Audience"] = GetSecretValue("jwt-audience");
 builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password");
 builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key");
-builder.Configuration["Stripe:SecretKey"] = "__REDACTED_STRIPE_SECRET__";  //el modo de prueba stripe
-//builder.Configuration["Stripe:SecretKey"] = GetSecretValue("stripe-secret-key"); 
-//builder.Configuration["Stripe:WebhookSecret"] = GetSecretValue("stripe-webhook-secret");
-builder.Configuration["Stripe:WebhookSecret"] = "__REDACTED_STRIPE_WEBHOOK__"; // webhook secret para pruebas
+builder.Configuration["Stripe:SecretKey"] = "__REDACTED_STRIPE_SECRET__";
+builder.Configuration["Stripe:WebhookSecret"] = "__REDACTED_STRIPE_WEBHOOK__";
 builder.Configuration["Twilio:AccountSid"] = GetSecretValue("twilio-account-sid");
 builder.Configuration["Twilio:AuthToken"] = GetSecretValue("twilio-auth-token");
 builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-verification-service-sid");
@@ -117,7 +118,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddSingleton(StorageClient.Create());
 
 // Configure RabbitMQ
-builder.Services.AddSingleton<IConnectionFactory>(sp =>
+builder.Services.AddSingleton<RabbitMQ.Client.IConnectionFactory>(sp =>
 {
     var config = builder.Configuration;
     var isDevelopment = builder.Environment.IsDevelopment();
@@ -141,6 +142,15 @@ builder.Services.AddCors(options =>
                .AllowAnyHeader();
     });
 });
+
+// Configure Hangfire
+builder.Services.AddHangfire(config => config
+    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    .UsePostgreSqlStorage(builder.Configuration.GetConnectionString("PostgresConnection")));
+
+builder.Services.AddHangfireServer(); // Add Hangfire server to process jobs
 
 // Register Services
 builder.Services.AddScoped<IRabbitMQService, RabbitMQService>();
@@ -167,6 +177,16 @@ var app = builder.Build();
 
 // Configure Stripe
 StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"];
+
+// Schedule recurring job with Hangfire
+app.UseHangfireDashboard("/hangfire"); // Optional: Access dashboard at /hangfire
+GlobalConfiguration.Configuration
+    .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()));
+
+RecurringJob.AddOrUpdate<ISubscriptionService>(
+    "process-expired-services",
+    service => service.ProcessExpiredServicesAsync(),
+    Cron.Hourly); // Runs every hour
 
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())

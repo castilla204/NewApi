@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using newApi.Controllers;
 using newApi.DataLayer.Models;
 
 namespace newApi.Services
@@ -55,6 +56,52 @@ namespace newApi.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error getting subscription limits for user {UserId}", userId);
+                throw;
+            }
+        }
+
+        public async Task ProcessExpiredServicesAsync()
+        {
+            try
+            {
+                var expiredHires = await _context.SearchHires
+                    .Include(sh => sh.Expert)
+                    .ThenInclude(e => e.ExpertProfile)
+                    .Include(sh => sh.Client)
+                    .Where(sh => sh.Status == SubscriptionController.SearchHireStatus.Pending.ToStringValue()
+                              && sh.CompletionDeadline <= DateTime.UtcNow)
+                    .ToListAsync();
+
+                _logger.LogInformation("Found {Count} expired SearchHires to process", expiredHires.Count);
+
+                foreach (var searchHire in expiredHires)
+                {
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
+                    {
+                        if (searchHire.Status != SubscriptionController.SearchHireStatus.Pending.ToStringValue())
+                        {
+                            _logger.LogWarning("SearchHireId={SearchHireId} is no longer in pending, skipping", searchHire.Id);
+                            await transaction.CommitAsync();
+                            continue;
+                        }
+
+                        searchHire.Status = SubscriptionController.SearchHireStatus.AwaitingClientDecision.ToStringValue();
+                        _logger.LogInformation("Moved searchHireId={SearchHireId} to awaiting_client_decision", searchHire.Id);
+
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Error processing searchHireId={SearchHireId}", searchHire.Id);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing expired services");
                 throw;
             }
         }

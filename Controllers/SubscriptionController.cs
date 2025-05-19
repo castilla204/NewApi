@@ -15,6 +15,8 @@ using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.DTOs;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using newApi.Services;
+using SubscriptionService = Stripe.SubscriptionService;
 
 namespace newApi.Controllers
 {
@@ -43,6 +45,7 @@ namespace newApi.Controllers
     {
         private readonly AppDbContext _context;
         private readonly ILogger<SubscriptionController> _logger;
+        private readonly ISubscriptionService _subscriptionService;
         private readonly IConfiguration _configuration;
         private readonly string _webhookSecret;
 
@@ -57,11 +60,12 @@ namespace newApi.Controllers
             DisputeResolved
         }
 
-        public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration)
+        public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService)
         {
             _logger = logger;
             _logger.LogInformation("Initializing SubscriptionController");
             _context = context;
+            _subscriptionService = subscriptionService;
             _configuration = configuration;
             _webhookSecret = _configuration["Stripe:WebhookSecret"];
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
@@ -1220,13 +1224,13 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Failed to resolve dispute" });
             }
         }
-
         [HttpPost("process-expired-services")]
         public async Task<IActionResult> ProcessExpiredServices()
         {
             var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
             if (adminEmail != "dcastillaa@gmail.com")
             {
+                _logger.LogError("Unauthorized access attempt by email={Email}", adminEmail);
                 return Unauthorized(new { message = "Admin access required" });
             }
 
@@ -1234,41 +1238,8 @@ namespace newApi.Controllers
 
             try
             {
-                var expiredHires = await _context.SearchHires
-                    .Include(sh => sh.Expert)
-                    .ThenInclude(e => e.ExpertProfile)
-                    .Include(sh => sh.Client)
-                    .Where(sh => sh.Status == SearchHireStatus.Pending.ToStringValue() && sh.CompletionDeadline <= DateTime.UtcNow)
-                    .ToListAsync();
-
-                _logger.LogInformation("Found {Count} expired SearchHires to process", expiredHires.Count);
-
-                foreach (var searchHire in expiredHires)
-                {
-                    using var transaction = await _context.Database.BeginTransactionAsync();
-                    try
-                    {
-                        if (searchHire.Status != SearchHireStatus.Pending.ToStringValue())
-                        {
-                            _logger.LogWarning("SearchHireId={SearchHireId} is no longer in pending, skipping", searchHire.Id);
-                            await transaction.CommitAsync();
-                            continue;
-                        }
-
-                        searchHire.Status = SearchHireStatus.AwaitingClientDecision.ToStringValue();
-                        _logger.LogInformation("Moved searchHireId={SearchHireId} to awaiting_client_decision", searchHire.Id);
-
-                        await _context.SaveChangesAsync();
-                        await transaction.CommitAsync();
-                    }
-                    catch (Exception ex)
-                    {
-                        await transaction.RollbackAsync();
-                        _logger.LogError(ex, "Error processing searchHireId={SearchHireId}", searchHire.Id);
-                    }
-                }
-
-                return Ok(new { message = $"Processed {expiredHires.Count} expired services" });
+                await _subscriptionService.ProcessExpiredServicesAsync();
+                return Ok(new { message = "Processed expired services" });
             }
             catch (Exception ex)
             {

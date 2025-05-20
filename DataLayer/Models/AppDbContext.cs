@@ -33,6 +33,7 @@ namespace newApi.DataLayer.Models
         public DbSet<SearchService> SearchServices { get; set; }
         public DbSet<SearchServiceImage> SearchServiceImages { get; set; }
         public DbSet<SearchHire> SearchHires { get; set; }
+        public DbSet<ReviewImage> ReviewImages { get; set; }
         public DbSet<Review> Reviews { get; set; }
         public DbSet<Dispute> Disputes { get; set; }
         public DbSet<FinancialTransaction> FinancialTransactions { get; set; }
@@ -239,6 +240,18 @@ namespace newApi.DataLayer.Models
                 .WithMany(u => u.ReviewsReceived)
                 .HasForeignKey(r => r.ExpertId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<Review>()
+                .HasOne(r => r.SearchHire)         
+                .WithMany()                        
+                .HasForeignKey(r => r.SearchHireId) 
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<ReviewImage>()
+                .HasOne(ri => ri.Review)
+                .WithMany(r => r.ImagesCollection)
+                .HasForeignKey(ri => ri.ReviewId)
+                .OnDelete(DeleteBehavior.Cascade);
 
             modelBuilder.Entity<Dispute>()
                 .HasOne(d => d.SearchHire)

@@ -17,26 +17,11 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using newApi.Services;
 using SubscriptionService = Stripe.SubscriptionService;
+using newApi.Common;
 
 namespace newApi.Controllers
 {
-    public static class SearchHireStatusExtensions
-    {
-        public static string ToStringValue(this SubscriptionController.SearchHireStatus status)
-        {
-            return status switch
-            {
-                SubscriptionController.SearchHireStatus.Pending => "pending",
-                SubscriptionController.SearchHireStatus.AwaitingClientDecision => "awaiting_client_decision",
-                SubscriptionController.SearchHireStatus.Disputed => "disputed",
-                SubscriptionController.SearchHireStatus.Completed => "completed",
-                SubscriptionController.SearchHireStatus.Cancelled => "cancelled",
-                SubscriptionController.SearchHireStatus.TransferFailed => "transfer_failed",
-                SubscriptionController.SearchHireStatus.DisputeResolved => "dispute-resolved",
-                _ => throw new ArgumentException($"Unknown status: {status}")
-            };
-        }
-    }
+   
 
     [Route("api/[controller]")]
     [ApiController]
@@ -49,16 +34,7 @@ namespace newApi.Controllers
         private readonly IConfiguration _configuration;
         private readonly string _webhookSecret;
 
-        public enum SearchHireStatus
-        {
-            Pending,
-            AwaitingClientDecision,
-            Disputed,
-            Completed,
-            Cancelled,
-            TransferFailed,
-            DisputeResolved
-        }
+      
 
         public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService)
         {

@@ -1,4 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using newApi.Common;
 using newApi.Controllers;
 using newApi.DataLayer.Models;
 
@@ -68,7 +70,7 @@ namespace newApi.Services
                     .Include(sh => sh.Expert)
                     .ThenInclude(e => e.ExpertProfile)
                     .Include(sh => sh.Client)
-                    .Where(sh => sh.Status == SubscriptionController.SearchHireStatus.Pending.ToStringValue()
+                    .Where(sh => sh.Status == SearchHireStatus.Pending.ToStringValue()
                               && sh.CompletionDeadline <= DateTime.UtcNow)
                     .ToListAsync();
 
@@ -79,14 +81,14 @@ namespace newApi.Services
                     using var transaction = await _context.Database.BeginTransactionAsync();
                     try
                     {
-                        if (searchHire.Status != SubscriptionController.SearchHireStatus.Pending.ToStringValue())
+                        if (searchHire.Status != SearchHireStatus.Pending.ToStringValue())
                         {
                             _logger.LogWarning("SearchHireId={SearchHireId} is no longer in pending, skipping", searchHire.Id);
                             await transaction.CommitAsync();
                             continue;
                         }
 
-                        searchHire.Status = SubscriptionController.SearchHireStatus.AwaitingClientDecision.ToStringValue();
+                        searchHire.Status = SearchHireStatus.AwaitingClientDecision.ToStringValue();
                         _logger.LogInformation("Moved searchHireId={SearchHireId} to awaiting_client_decision", searchHire.Id);
 
                         await _context.SaveChangesAsync();

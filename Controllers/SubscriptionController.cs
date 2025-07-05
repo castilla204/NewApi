@@ -1264,16 +1264,16 @@ namespace newApi.Controllers
             searchHire.ExpertTransferId = transfer.Id;
             _logger.LogInformation("Transfer created for searchHireId={SearchHireId}, transferId={TransferId}, amount={Amount}", searchHireId, transfer.Id, amountToExpert);
 
-            var financialTransaction = new FinancialTransaction
-            {
-                UserId = searchHire.ExpertId,
-                Amount = amountToExpert,
-                TransactionType = "Payout",
-                RelatedEntityType = "SearchHire",
-                RelatedEntityId = searchHireId,
-                CreatedAt = DateTime.UtcNow
-            };
-            _context.FinancialTransactions.Add(financialTransaction);
+            //var financialTransaction = new FinancialTransaction
+            //{
+            //    UserId = searchHire.ExpertId,
+            //    Amount = amountToExpert,
+            //    TransactionType = "Payout",
+            //    RelatedEntityType = "SearchHire",
+            //    RelatedEntityId = searchHireId,
+            //    CreatedAt = DateTime.UtcNow
+            //};
+            //_context.FinancialTransactions.Add(financialTransaction);
 
             await _context.SaveChangesAsync();
         }

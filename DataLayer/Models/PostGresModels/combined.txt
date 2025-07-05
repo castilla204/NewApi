@@ -91,10 +91,8 @@ namespace newApi.DataLayer.Models.PostGresModels
         // Estado de la disputa (Pending, Resolved)
         public string Status { get; set; }
         // Resolución de la disputa (Refunded, PaidToExpert)
-        public string Resolution { get; set; }
+        public string? ResolutionComments { get; set; }
         // Comentarios del administrador sobre la resolución
-        public string AdminComments { get; set; }
-        // Fecha de creación de la disputa
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
         // Relación con la contratación
@@ -258,29 +256,44 @@ namespace newApi.DataLayer.Models.PostGresModels
 {
     public class Review
     {
-        // Identificador único de la reseña
         public int Id { get; set; }
-        // Clave foránea al usuario que deja la reseña
         public int ReviewerId { get; set; }
-        // Clave foránea al usuario experto reseñado
         public int ExpertId { get; set; }
-        // Puntuación de la reseña (ej. 1 a 5)
+        public int SearchHireId { get; set; } // Clave foránea hacia SearchHire
         public int Score { get; set; }
-        // Descripción de la reseña
         public string Description { get; set; }
-        // Imágenes asociadas a la reseña
         public string[] Images { get; set; }
-        // Fecha de creación de la reseña
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
-        // Relación con el revisor
         public virtual User Reviewer { get; set; }
-        // Relación con el experto
         public virtual User Expert { get; set; }
+        public virtual SearchHire SearchHire { get; set; } // Propiedad de navegación
+
+        public virtual ICollection<ReviewImage> ImagesCollection { get; set; } = new List<ReviewImage>();
     }
 
 }
 
+
+// --- Contenido de ReviewImage.cs ---
+﻿using System;
+using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class ReviewImage
+    {
+        [Key]
+        public int Id { get; set; }
+        public int ReviewId { get; set; }
+        public string ImageUrl { get; set; }
+        public string ImageObjectName { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        // Propiedad de navegación
+        public virtual Review? Review { get; set; }
+    }
+}
 
 // --- Contenido de Search.cs ---
 ﻿using System.ComponentModel.DataAnnotations;
@@ -313,28 +326,31 @@ namespace newApi.DataLayer.Models.PostGresModels
 }
 
 // --- Contenido de SearchHire.cs ---
-﻿namespace newApi.DataLayer.Models.PostGresModels
+﻿using newApi.DataLayer.Models.PostGresModels.newApi.DataLayer.Models.PostGresModels;
+
+namespace newApi.DataLayer.Models.PostGresModels
 {
     public class SearchHire
     {
         public int Id { get; set; }
         public int ClientId { get; set; }
-        public int ExpertId { get; set; }
+        public int? ExpertId { get; set; } 
         public int SearchServiceId { get; set; }
         public int SearchId { get; set; }
         public string Status { get; set; }
-        public string? ExpertTransferId { get; set; } // ID de transferencia a experto
+        public string? ExpertTransferId { get; set; }
         public decimal Amount { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime? CompletedAt { get; set; }
-        public DateTime? CompletionDeadline { get; set; } // Plazo para finalización
-        public bool? ClientApproved { get; set; } // Null: no revisado, True: aprobado, False: disputado
+        public DateTime? CompletionDeadline { get; set; }
+        public bool? ClientApproved { get; set; }
         public virtual User Client { get; set; }
-        public virtual User Expert { get; set; }
-        public virtual newApi.DataLayer.Models.PostGresModels.SearchService SearchService { get; set; }
+        public virtual User? Expert { get; set; } 
+        public virtual SearchService SearchService { get; set; }
         public virtual Search Search { get; set; }
         public virtual ICollection<Dispute> Disputes { get; set; }
     }
+
 }
 
 
@@ -426,21 +442,23 @@ namespace newApi.DataLayer.Models.PostGresModels
 {
     namespace newApi.DataLayer.Models.PostGresModels
     {
-        public class SearchService
-        {
-            public int Id { get; set; }
-            public int ExpertProfileId { get; set; }
-            public int CategoryId { get; set; }
-            public decimal Price { get; set; }
-            public string Conditions { get; set; }
-            public int DurationInHours { get; set; }
-            public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+       public class SearchService
+{
+    public int Id { get; set; }
+    public int? ExpertProfileId { get; set; } // Made nullable
+    public int? AIId { get; set; } // New field for AI-driven services
+    public int CategoryId { get; set; }
+    public decimal Price { get; set; }
+    public string Conditions { get; set; }
+    public int DurationInHours { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public virtual ExpertProfile? ExpertProfile { get; set; } // Nullable
+    public virtual AI? AI { get; set; } // New navigation property
+    public virtual Category Category { get; set; }
+    public virtual ICollection<SearchHire> SearchHires { get; set; }
+    public virtual ICollection<SearchServiceImage> Images { get; set; } = new List<SearchServiceImage>();
+}
 
-            public virtual ExpertProfile ExpertProfile { get; set; }
-            public virtual Category Category { get; set; }
-            public virtual ICollection<SearchHire> SearchHires { get; set; }
-            public virtual ICollection<SearchServiceImage> Images { get; set; } = new List<SearchServiceImage>();
-        }
     }
 }
 

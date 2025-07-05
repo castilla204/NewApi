@@ -25,7 +25,7 @@ namespace newApi.DataLayer.Models.DTOs
     public class SearchHireDto
     {
         public int Id { get; set; }
-        public int ExpertId { get; set; }
+        public int? ExpertId { get; set; }
         public string Status { get; set; }
     }
 }

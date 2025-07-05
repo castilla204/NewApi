@@ -53,10 +53,17 @@ namespace newApi.Controllers
 
                 // Verificar que el searchHireId exista y que el usuario sea el cliente
                 var searchHire = await _context.SearchHires
+                    .Include(sh => sh.SearchService)
                     .FirstOrDefaultAsync(sh => sh.Id == searchHireId && sh.ClientId == userId);
                 if (searchHire == null)
                 {
                     return NotFound(new { message = "SearchHire not found or you are not authorized to review this hire" });
+                }
+
+                // Verificar que ExpertId no sea nulo (redundante pero para seguridad)
+                if (searchHire.ExpertId == null)
+                {
+                    return BadRequest(new { message = "Cannot create review: No expert associated with this service" });
                 }
 
                 // Verificar el estado del SearchHire
@@ -84,7 +91,7 @@ namespace newApi.Controllers
                 var review = new Review
                 {
                     ReviewerId = userId,
-                    ExpertId = searchHire.ExpertId,
+                    ExpertId = searchHire.ExpertId.Value, // Safe due to AIId and ExpertId checks
                     SearchHireId = searchHireId,
                     Score = reviewDto.Score,
                     Description = reviewDto.Description,
@@ -103,6 +110,11 @@ namespace newApi.Controllers
                     foreach (var imageFile in reviewDto.Images)
                     {
                         var extension = Path.GetExtension(imageFile.FileName).ToLowerInvariant();
+                        if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
+                        {
+                            return BadRequest(new { message = "Only JPG and PNG images are allowed" });
+                        }
+
                         var uniqueFileName = $"{Guid.NewGuid()}{extension}";
                         var objectName = $"reviews/{uniqueFileName}";
 
@@ -170,6 +182,13 @@ namespace newApi.Controllers
         {
             try
             {
+                // Verificar que el experto exista
+                var expertExists = await _context.Users.AnyAsync(u => u.Id == expertId && u.Role == UserRole.Expert);
+                if (!expertExists)
+                {
+                    return NotFound(new { message = "Expert not found" });
+                }
+
                 // Obtener todas las reseñas para el experto especificado
                 var reviews = await _context.Reviews
                     .Where(r => r.ExpertId == expertId)

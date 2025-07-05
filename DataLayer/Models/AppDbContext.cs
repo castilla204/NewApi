@@ -3,7 +3,7 @@ using Stripe;
 using Review = newApi.DataLayer.Models.PostGresModels.Review;
 using Dispute = newApi.DataLayer.Models.PostGresModels.Dispute;
 using newApi.DataLayer.Models.PostGresModels;
-using newApi.DataLayer.Models.PostGresModels.newApi.DataLayer.Models.PostGresModels;
+
 
 namespace newApi.DataLayer.Models
 {
@@ -188,16 +188,18 @@ namespace newApi.DataLayer.Models
                 .OnDelete(DeleteBehavior.Cascade);
 
             modelBuilder.Entity<SearchService>()
-                .HasOne(ss => ss.ExpertProfile)
-                .WithMany(ep => ep.SearchServices)
-                .HasForeignKey(ss => ss.ExpertProfileId)
-                .OnDelete(DeleteBehavior.Cascade);
+             .HasOne(ss => ss.ExpertProfile)
+             .WithMany(ep => ep.SearchServices)
+             .HasForeignKey(ss => ss.ExpertProfileId)
+             .OnDelete(DeleteBehavior.SetNull);
+
 
             modelBuilder.Entity<SearchService>()
-                .HasOne(ss => ss.Category)
-                .WithMany()
-                .HasForeignKey(ss => ss.CategoryId)
-                .OnDelete(DeleteBehavior.Restrict);
+            .HasOne(ss => ss.AI)
+            .WithMany()
+            .HasForeignKey(ss => ss.AIId)
+            .OnDelete(DeleteBehavior.SetNull);
+
 
             modelBuilder.Entity<SearchServiceImage>()
                 .HasOne(ssi => ssi.SearchService)
@@ -212,10 +214,10 @@ namespace newApi.DataLayer.Models
                 .OnDelete(DeleteBehavior.Restrict);
 
             modelBuilder.Entity<SearchHire>()
-                .HasOne(sh => sh.Expert)
-                .WithMany(u => u.SearchHiresAsExpert)
-                .HasForeignKey(sh => sh.ExpertId)
-                .OnDelete(DeleteBehavior.Restrict);
+                 .HasOne(sh => sh.Expert)
+                 .WithMany(u => u.SearchHiresAsExpert)
+                 .HasForeignKey(sh => sh.ExpertId)
+                 .OnDelete(DeleteBehavior.SetNull);
 
             modelBuilder.Entity<SearchHire>()
                 .HasOne(sh => sh.SearchService)

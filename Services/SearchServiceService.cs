@@ -4,7 +4,6 @@ using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Processing;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
-using newApi.DataLayer.Models.PostGresModels.newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.PostGresModels;
 
 namespace newApi.Services
@@ -30,15 +29,21 @@ namespace newApi.Services
 
         public async Task<IEnumerable<SearchServiceDetailDto>> GetAllServices()
         {
-            var services = await _context.SearchServices
-                .Include(ss => ss.Images)
-                .Include(ss => ss.ExpertProfile)
-                    .ThenInclude(ep => ep.User)
-                .Include(ss => ss.Category)
-                .Select(ss => MapToDetailDto(ss))
-                .ToListAsync();
+            try
+            {
+                var services = await _context.SearchServices
+                    .Include(ss => ss.Images)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                    .Include(ss => ss.Category)
+                    .Select(ss => MapToDetailDto(ss))
+                    .ToListAsync();
 
-            return services;
+                return services;
+            }catch(Exception ex)
+            {
+                throw ex;
+            }
         }
 
         public async Task<IEnumerable<SearchServiceResponseDto>> GetExpertServices(int expertId)

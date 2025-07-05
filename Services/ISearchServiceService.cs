@@ -1,5 +1,6 @@
 ﻿using newApi.DataLayer.Models.DTOs;
-using newApi.DataLayer.Models.PostGresModels.newApi.DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models.PostGresModels;
+
 
 namespace newApi.Services
 {

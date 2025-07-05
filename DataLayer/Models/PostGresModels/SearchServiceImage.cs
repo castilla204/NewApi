@@ -1,4 +1,4 @@
-﻿using newApi.DataLayer.Models.PostGresModels.newApi.DataLayer.Models.PostGresModels;
+﻿
 
 namespace newApi.DataLayer.Models.PostGresModels
 {

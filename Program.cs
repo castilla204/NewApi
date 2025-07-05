@@ -7,7 +7,6 @@ using System.Text;
 using RabbitMQ.Client;
 using newApi.RabbitMQ;
 using newApi.Services;
-using DataLayer;
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Storage.V1;
 using newApi.DataLayer.Models;
@@ -60,11 +59,13 @@ builder.Configuration["GoogleCloud:BucketName"] = "atrapobucket";
 // Configurar la cadena de conexión según el entorno
 if (builder.Environment.IsDevelopment())
 {
-    builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=localhost;Port=5432;Username=postgres;Password=coche109;Database=grup";
+    //builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=localhost;Port=5432;Username=postgres;Password=coche109;Database=grup";
+    builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=185.166.39.4;Port=30000;Username=admin;Password=__REDACTED_CREDENTIAL__;Database=atrapo";
 }
 else
 {
-    builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=localhost;Port=5432;Username=postgres;Password=coche109;Database=grup";
+    //builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=localhost;Port=5432;Username=postgres;Password=coche109;Database=grup";
+    builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=185.166.39.4;Port=30000;Username=admin;Password=__REDACTED_CREDENTIAL__;Database=atrapo";
 }
 
 // Add services to the container

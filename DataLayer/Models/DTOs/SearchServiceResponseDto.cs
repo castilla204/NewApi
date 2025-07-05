@@ -9,6 +9,6 @@
         public int DurationInHours { get; set; }
         public DateTime CreatedAt { get; set; }
         public List<string> ImageUrls { get; set; }
-        public ExpertProfileDto Expert { get; set; }
+        public ExpertProfileDto? Expert { get; set; }
     }
 }

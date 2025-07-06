@@ -11,9 +11,10 @@ using Twilio.Rest.Verify.V2.Service;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.DTOs;
+using newApi.ScrapperGateway.DataLayer.Models.DTOs;
+using Twilio;
 using newApi.ScrapperGateway.DataLayer.Models.DTOs.newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using static UserController;
-using Twilio;
 
 namespace newApi.Services
 {
@@ -93,7 +94,6 @@ namespace newApi.Services
                 return false;
             TwilioClient.Init(_configuration["Twilio:AccountSid"], _twilioauthToken);
 
-
             await VerificationResource.CreateAsync(
                 to: phoneNumber,
                 channel: "sms",
@@ -170,43 +170,69 @@ namespace newApi.Services
             int userId,
             BecomeExpertRequestDto request)
         {
+            _logger.LogInformation("Attempting to make user with ID {UserId} an expert", userId);
+
             var user = await _context.Users
                 .Include(u => u.ExpertProfile)
                 .FirstOrDefaultAsync(u => u.Id == userId);
 
-            if (user == null || user.Role == UserRole.Expert || user.ExpertProfile != null)
+            if (user == null)
+            {
+                _logger.LogWarning("User with ID {UserId} not found", userId);
                 return (false, null, null, null);
+            }
 
+            if (user.Role == UserRole.Expert)
+            {
+                _logger.LogWarning("User with ID {UserId} is already an expert", userId);
+                return (false, null, null, null);
+            }
+
+            if (user.ExpertProfile != null)
+            {
+                _logger.LogWarning("User with ID {UserId} already has an expert profile", userId);
+                return (false, null, null, null);
+            }
+
+            _logger.LogInformation("Processing profile picture upload for user ID {UserId}", userId);
             var bucketName = _configuration["GoogleCloud:BucketName"];
             var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
             var uniqueFileName = $"{Guid.NewGuid()}{extension}";
             var objectName = $"experts/{uniqueFileName}";
 
-            using (var inputStream = request.ProfilePicture.OpenReadStream())
-            using (var image = Image.Load(inputStream))
+            try
             {
-                image.Mutate(x => x.Resize(new ResizeOptions
+                using (var inputStream = request.ProfilePicture.OpenReadStream())
+                using (var image = Image.Load(inputStream))
                 {
-                    Size = new Size(200, 200),
-                    Mode = ResizeMode.Max
-                }));
+                    image.Mutate(x => x.Resize(new ResizeOptions
+                    {
+                        Size = new Size(200, 200),
+                        Mode = ResizeMode.Max
+                    }));
 
-                using (var outputStream = new MemoryStream())
-                {
-                    image.SaveAsJpeg(outputStream);
-                    outputStream.Position = 0;
-                    await _storageClient.UploadObjectAsync(
-                        bucket: bucketName,
-                        objectName: objectName,
-                        contentType: "image/jpeg",
-                        source: outputStream
-                    );
+                    using (var outputStream = new MemoryStream())
+                    {
+                        image.SaveAsJpeg(outputStream);
+                        outputStream.Position = 0;
+                        await _storageClient.UploadObjectAsync(
+                            bucket: bucketName,
+                            objectName: objectName,
+                            contentType: "image/jpeg",
+                            source: outputStream
+                        );
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error uploading profile picture for user ID {UserId}", userId);
+                return (false, null, null, null);
             }
 
             var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-            
-            // Update user role to Expert
+
+            _logger.LogInformation("Updating user role and creating expert profile for user ID {UserId}", userId);
             user.Role = UserRole.Expert;
 
             var expertProfile = new ExpertProfile
@@ -215,7 +241,7 @@ namespace newApi.Services
                 ProfilePictureUrl = imageUrl,
                 ProfilePictureObjectName = objectName,
                 Description = request.Description,
-                StripeAccountId = request.StripeAccountId,
+                StripeAccountId = null, // No guardar StripeAccountId, se genera en el onboarding
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -223,6 +249,7 @@ namespace newApi.Services
             await _context.SaveChangesAsync();
 
             var token = GenerateJwtToken(user);
+            _logger.LogInformation("Successfully created expert profile for user ID {UserId}", userId);
             return (true, token, user, expertProfile);
         }
 

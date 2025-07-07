@@ -10,7 +10,6 @@ namespace newApi.ScrapperGateway.DataLayer.Models.DTOs
         {
             public IFormFile ProfilePicture { get; set; }
             public string Description { get; set; }
-            public string StripeAccountId { get; set; }
         }
     }
 }

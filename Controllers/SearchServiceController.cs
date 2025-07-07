@@ -76,6 +76,36 @@ namespace newApi.Controllers
         {
             try
             {
+                // Log para inspeccionar el FormData recibido
+                foreach (var key in Request.Form.Keys)
+                {
+                    var values = Request.Form[key];
+                    if (key == "Images")
+                    {
+                        _logger.LogInformation("FormData key: {Key}, Files: {FileCount}", key, Request.Form.Files.Count);
+                        foreach (var file in Request.Form.Files)
+                        {
+                            _logger.LogInformation("Received file: {FileName}, {ContentType}, {FileSize} bytes",
+                                file.FileName, file.ContentType, file.Length);
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogInformation("FormData key: {Key}, Value: {Value}", key, values);
+                    }
+                }
+
+                _logger.LogInformation("Received request to create service with data: {RequestData}",
+                    new
+                    {
+                        request.ExpertProfileId,
+                        request.CategoryId,
+                        request.Price,
+                        request.Conditions,
+                        request.DurationInHours,
+                        ImageCount = request.Images?.Count ?? 0 // Cambiado de Length a Count
+                    });
+
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {

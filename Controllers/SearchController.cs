@@ -315,7 +315,6 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = ex.Message });
             }
         }
-
         [HttpGet("{searchId}")]
         public async Task<IActionResult> GetSearch(int searchId)
         {
@@ -331,7 +330,9 @@ namespace newApi.Controllers
                     .Include(s => s.SearchParameters)
                     .Include(s => s.SearchHire)
                     .FirstOrDefaultAsync(s => s.Id == searchId &&
-                        (s.UserId == userId || _authService.IsAdmin(User)));
+                        (s.UserId == userId || // User is the search owner
+                         _authService.IsAdmin(User) || // User is an admin
+                         (s.SearchHire != null && s.SearchHire.ExpertId == userId))); // User is the assigned expert
 
                 if (search == null)
                 {

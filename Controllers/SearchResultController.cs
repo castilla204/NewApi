@@ -54,16 +54,32 @@ namespace newApi.Controllers
         {
             try
             {
-                var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
-                if (adminEmail != "dcastillaa@gmail.com")
-                {
-                    return Unauthorized(new { message = "Admin access required" });
-                }
-
+                // Fetch the search
                 var search = await _context.Searches.FindAsync(searchId);
                 if (search == null)
                 {
                     return NotFound(new { message = "Search not found" });
+                }
+
+                // Get the authenticated user's ID and email from claims
+                var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
+
+                // Convert user ID to int (assuming User.Id is an int in the User model)
+                if (!int.TryParse(userIdString, out var userId))
+                {
+                    return Unauthorized(new { message = "Invalid user ID" });
+                }
+
+                // Check if the user is an admin or the expert associated with the search
+                var isAdmin = adminEmail == "dcastillaa@gmail.com";
+                var searchHire = await _context.SearchHires
+                    .FirstOrDefaultAsync(z => z.SearchId == searchId && z.ExpertId == userId);
+
+                // Authorize: Allow admins or the expert assigned to the search
+                if (!isAdmin && (searchHire == null || searchHire.ExpertId != userId))
+                {
+                    return Unauthorized(new { message = "Access denied. You must be an admin or the expert assigned to this search." });
                 }
 
                 // Create new ad
@@ -110,19 +126,19 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = ex.Message });
             }
         }
-    }
 
-    public class ManualAdRequest
-    {
-        public string Title { get; set; }
-        public string Description { get; set; }
-        public decimal Price { get; set; }
-        public string Url { get; set; }
-        public string[] Images { get; set; }
-        public string Category { get; set; }
-        public string Province { get; set; }
-        public string City { get; set; }
-        public string? SellerType { get; set; }
-        public int PlatformId { get; set; }
+        public class ManualAdRequest
+        {
+            public string Title { get; set; }
+            public string Description { get; set; }
+            public decimal Price { get; set; }
+            public string Url { get; set; }
+            public string[] Images { get; set; }
+            public string Category { get; set; }
+            public string Province { get; set; }
+            public string City { get; set; }
+            public string? SellerType { get; set; }
+            public int PlatformId { get; set; }
+        }
     }
 }

@@ -259,7 +259,7 @@ namespace newApi.DataLayer.Models.PostGresModels
         public int Id { get; set; }
         public int ReviewerId { get; set; }
         public int ExpertId { get; set; }
-        public int SearchHireId { get; set; } // Clave foránea hacia SearchHire
+        public int SearchHireId { get; set; } 
         public int Score { get; set; }
         public string Description { get; set; }
         public string[] Images { get; set; }
@@ -267,7 +267,7 @@ namespace newApi.DataLayer.Models.PostGresModels
 
         public virtual User Reviewer { get; set; }
         public virtual User Expert { get; set; }
-        public virtual SearchHire SearchHire { get; set; } // Propiedad de navegación
+        public virtual SearchHire SearchHire { get; set; } 
 
         public virtual ICollection<ReviewImage> ImagesCollection { get; set; } = new List<ReviewImage>();
     }
@@ -453,7 +453,6 @@ namespace newApi.DataLayer.Models.PostGresModels
     public int DurationInHours { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public virtual ExpertProfile? ExpertProfile { get; set; } // Nullable
-    public virtual AI? AI { get; set; } // New navigation property
     public virtual Category Category { get; set; }
     public virtual ICollection<SearchHire> SearchHires { get; set; }
     public virtual ICollection<SearchServiceImage> Images { get; set; } = new List<SearchServiceImage>();

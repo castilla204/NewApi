@@ -21,6 +21,7 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual SearchService SearchService { get; set; }
         public virtual Search Search { get; set; }
         public virtual ICollection<Dispute> Disputes { get; set; }
+        public virtual ICollection<Conversation> Conversations { get; set; } = new List<Conversation>();
     }
 
 }

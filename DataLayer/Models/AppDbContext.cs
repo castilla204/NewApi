@@ -4,7 +4,6 @@ using Review = newApi.DataLayer.Models.PostGresModels.Review;
 using Dispute = newApi.DataLayer.Models.PostGresModels.Dispute;
 using newApi.DataLayer.Models.PostGresModels;
 
-
 namespace newApi.DataLayer.Models
 {
     public class AppDbContext : DbContext
@@ -37,6 +36,9 @@ namespace newApi.DataLayer.Models
         public DbSet<Review> Reviews { get; set; }
         public DbSet<Dispute> Disputes { get; set; }
         public DbSet<FinancialTransaction> FinancialTransactions { get; set; }
+        public DbSet<ServiceType> ServiceTypes { get; set; }
+        public DbSet<Conversation> Conversations { get; set; } // Added
+        public DbSet<Message> Messages { get; set; } // Added
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -53,7 +55,6 @@ namespace newApi.DataLayer.Models
                 .WithMany(a => a.Likes)
                 .HasForeignKey(l => l.AdId)
                 .OnDelete(DeleteBehavior.Cascade);
-
 
             modelBuilder.Entity<Search>()
                 .HasOne(s => s.User)
@@ -188,18 +189,28 @@ namespace newApi.DataLayer.Models
                 .OnDelete(DeleteBehavior.Cascade);
 
             modelBuilder.Entity<SearchService>()
-             .HasOne(ss => ss.ExpertProfile)
-             .WithMany(ep => ep.SearchServices)
-             .HasForeignKey(ss => ss.ExpertProfileId)
-             .OnDelete(DeleteBehavior.SetNull);
-
+                .HasOne(ss => ss.ExpertProfile)
+                .WithMany(ep => ep.SearchServices)
+                .HasForeignKey(ss => ss.ExpertProfileId)
+                .OnDelete(DeleteBehavior.SetNull);
 
             modelBuilder.Entity<SearchService>()
-            .HasOne(ss => ss.AI)
-            .WithMany()
-            .HasForeignKey(ss => ss.AIId)
-            .OnDelete(DeleteBehavior.SetNull);
+                .HasOne(ss => ss.AI)
+                .WithMany()
+                .HasForeignKey(ss => ss.AIId)
+                .OnDelete(DeleteBehavior.SetNull);
 
+            modelBuilder.Entity<SearchService>()
+                .HasOne(ss => ss.Category)
+                .WithMany()
+                .HasForeignKey(ss => ss.CategoryId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<SearchService>()
+                .HasOne(ss => ss.ServiceType)
+                .WithMany()
+                .HasForeignKey(ss => ss.ServiceTypeId)
+                .OnDelete(DeleteBehavior.Restrict);
 
             modelBuilder.Entity<SearchServiceImage>()
                 .HasOne(ssi => ssi.SearchService)
@@ -214,10 +225,10 @@ namespace newApi.DataLayer.Models
                 .OnDelete(DeleteBehavior.Restrict);
 
             modelBuilder.Entity<SearchHire>()
-                 .HasOne(sh => sh.Expert)
-                 .WithMany(u => u.SearchHiresAsExpert)
-                 .HasForeignKey(sh => sh.ExpertId)
-                 .OnDelete(DeleteBehavior.SetNull);
+                .HasOne(sh => sh.Expert)
+                .WithMany(u => u.SearchHiresAsExpert)
+                .HasForeignKey(sh => sh.ExpertId)
+                .OnDelete(DeleteBehavior.SetNull);
 
             modelBuilder.Entity<SearchHire>()
                 .HasOne(sh => sh.SearchService)
@@ -244,9 +255,9 @@ namespace newApi.DataLayer.Models
                 .OnDelete(DeleteBehavior.Restrict);
 
             modelBuilder.Entity<Review>()
-                .HasOne(r => r.SearchHire)         
-                .WithMany()                        
-                .HasForeignKey(r => r.SearchHireId) 
+                .HasOne(r => r.SearchHire)
+                .WithMany()
+                .HasForeignKey(r => r.SearchHireId)
                 .OnDelete(DeleteBehavior.Restrict);
 
             modelBuilder.Entity<ReviewImage>()
@@ -272,6 +283,67 @@ namespace newApi.DataLayer.Models
                 .WithMany(u => u.FinancialTransactions)
                 .HasForeignKey(ft => ft.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<ServiceType>(entity =>
+            {
+                entity.Property(e => e.Name)
+                    .IsRequired()
+                    .HasMaxLength(100);
+                entity.Property(e => e.Description)
+                    .HasMaxLength(500);
+                entity.Property(e => e.IsActive)
+                    .HasDefaultValue(true);
+                entity.Property(e => e.CreatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.UpdatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+            });
+
+            modelBuilder.Entity<Conversation>(entity =>
+            {
+                entity.Property(e => e.CreatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.UpdatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.IsActive)
+                    .HasDefaultValue(true);
+
+                entity.HasOne(c => c.SearchHire)
+                    .WithMany(sh => sh.Conversations)
+                    .HasForeignKey(c => c.SearchHireId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(c => c.Client)
+                    .WithMany(u => u.ConversationsAsClient)
+                    .HasForeignKey(c => c.ClientId)
+                    .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(c => c.Expert)
+                    .WithMany(u => u.ConversationsAsExpert)
+                    .HasForeignKey(c => c.ExpertId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<Message>(entity =>
+            {
+                entity.Property(e => e.Content)
+                    .IsRequired()
+                    .HasMaxLength(5000);
+                entity.Property(e => e.SentAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.IsRead)
+                    .HasDefaultValue(false);
+
+                entity.HasOne(m => m.Conversation)
+                    .WithMany(c => c.Messages)
+                    .HasForeignKey(m => m.ConversationId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(m => m.Sender)
+                    .WithMany(u => u.MessagesSent)
+                    .HasForeignKey(m => m.SenderId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
         }
     }
 }

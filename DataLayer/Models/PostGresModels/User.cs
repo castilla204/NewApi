@@ -32,5 +32,8 @@ namespace newApi.DataLayer.Models.PostGresModels
         public int? SubscriptionPlanId { get; set; }
         public virtual SubscriptionPlan SubscriptionPlan { get; set; }
         public virtual ICollection<FinancialTransaction> FinancialTransactions { get; set; }
+        public virtual ICollection<Conversation> ConversationsAsClient { get; set; } = new List<Conversation>();
+        public virtual ICollection<Conversation> ConversationsAsExpert { get; set; } = new List<Conversation>(); 
+        public virtual ICollection<Message> MessagesSent { get; set; } = new List<Message>(); 
     }
 }

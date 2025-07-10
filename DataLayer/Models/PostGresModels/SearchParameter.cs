@@ -19,10 +19,11 @@ namespace newApi.DataLayer.Models.PostGresModels
         public int? MaxPrice { get; set; }
         public int? BrandId { get; set; }
         public int? ModelId { get; set; }
+        public int? ServiceTypeId { get; set; } // Added: Foreign key to ServiceType
 
         public int SearchId { get; set; }
-        public Search Search { get; set; }
-        //muchos a muchos para plataformas
-        public ICollection<SearchParameterPlatform> SearchParameterPlatforms { get; set; }
+        public virtual Search Search { get; set; }
+        public virtual ServiceType? ServiceType { get; set; } // Added: Navigation to ServiceType
+        public virtual ICollection<SearchParameterPlatform> SearchParameterPlatforms { get; set; }
     }
 }

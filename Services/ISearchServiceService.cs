@@ -1,4 +1,5 @@
-﻿using newApi.DataLayer.Models.DTOs;
+﻿using Google.Cloud.Storage.V1;
+using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
 
 
@@ -6,9 +7,16 @@ namespace newApi.Services
 {
     public interface ISearchServiceService
     {
-        Task<IEnumerable<SearchServiceDetailDto>> GetAllServices();
-        Task<IEnumerable<SearchServiceResponseDto>> GetExpertServices(int expertId);
+        Task<IEnumerable<SearchServiceDetailDto>> GetAllServices(int categoryId, int serviceTypeId);
+
+        Task<IEnumerable<SearchServiceResponseDto>> GetExpertServices(int expertId, int? serviceTypeId = null);
+
         Task<SearchServiceDetailDto> GetServiceById(int id);
-        Task<(bool success, SearchService service, List<string> imageUrls)> CreateSearchService(int userId, CreateSearchServiceRequestDto request);
+        Task<(bool Success, SearchService Service, List<string> ImageUrls)> CreateSearchService(
+            int userId,
+            CreateSearchServiceRequestDto request);
+
+    
+
     }
 }

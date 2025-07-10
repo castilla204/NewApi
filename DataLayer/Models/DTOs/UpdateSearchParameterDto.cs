@@ -14,6 +14,7 @@
         public int? MaxPrice { get; set; }
         public int? BrandId { get; set; }
         public int? ModelId { get; set; }
+        public int? ServiceTypeId { get; set; } 
         public List<int> PlatformIds { get; set; }
     }
 }

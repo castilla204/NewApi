@@ -2,6 +2,7 @@
 using Google.Cloud.Storage.V1;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Processing;
+using newApi.DataLayer;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
@@ -27,128 +28,195 @@ namespace newApi.Services
             _storageClient = storageClient;
         }
 
-        public async Task<IEnumerable<SearchServiceDetailDto>> GetAllServices()
+        public async Task<IEnumerable<SearchServiceDetailDto>> GetAllServices(int categoryId, int serviceTypeId)
         {
             try
             {
-                var services = await _context.SearchServices
+                _logger.LogInformation("Fetching services for CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}", categoryId, serviceTypeId);
+                IQueryable<SearchService> query = _context.SearchServices
+                    .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId);
+
+                query = query
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
                     .Include(ss => ss.Category)
+                    .Include(ss => ss.ServiceType);
+
+                var services = await query
                     .Select(ss => MapToDetailDto(ss))
                     .ToListAsync();
 
+                _logger.LogInformation("Retrieved {ServiceCount} services for CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}", services.Count, categoryId, serviceTypeId);
                 return services;
-            }catch(Exception ex)
+            }
+            catch (Exception ex)
             {
-                throw ex;
+                _logger.LogError(ex, "Error retrieving services with CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}", categoryId, serviceTypeId);
+                throw;
             }
         }
 
-        public async Task<IEnumerable<SearchServiceResponseDto>> GetExpertServices(int expertId)
+        public async Task<IEnumerable<SearchServiceResponseDto>> GetExpertServices(int expertId, int? serviceTypeId = null)
         {
-            
-            var services = await _context.SearchServices
-                .Where(ss => ss.ExpertProfile.Id == expertId)
-                .Include(ss => ss.Images)
-                .Include(ss => ss.ExpertProfile)
-                    .ThenInclude(ep => ep.User)
-                .Include(ss => ss.Category)
-                .Select(ss => MapToResponseDto(ss))
-                .ToListAsync();
+            try
+            {
+                _logger.LogInformation("Fetching expert services for ExpertId: {ExpertId}, ServiceTypeId: {ServiceTypeId}", expertId, serviceTypeId);
+                IQueryable<SearchService> query = _context.SearchServices
+                    .Where(ss => ss.ExpertProfileId == expertId);
 
+                if (serviceTypeId.HasValue)
+                {
+                    query = query.Where(ss => ss.ServiceTypeId == serviceTypeId.Value);
+                }
 
-            return services;
+                query = query
+                    .Include(ss => ss.Images)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                    .Include(ss => ss.Category)
+                    .Include(ss => ss.ServiceType);
+
+                var services = await query
+                    .Select(ss => MapToResponseDto(ss))
+                    .ToListAsync();
+
+                _logger.LogInformation("Retrieved {ServiceCount} expert services for ExpertId: {ExpertId}, ServiceTypeId: {ServiceTypeId}", services.Count, expertId, serviceTypeId);
+                return services;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving expert services for ExpertId: {ExpertId}, ServiceTypeId: {ServiceTypeId}", expertId, serviceTypeId);
+                throw;
+            }
         }
 
         public async Task<SearchServiceDetailDto> GetServiceById(int id)
         {
-            var service = await _context.SearchServices
-                .Include(ss => ss.Images)
-                .Include(ss => ss.ExpertProfile)
-                    .ThenInclude(ep => ep.User)
-                .Include(ss => ss.Category)
-                .FirstOrDefaultAsync(ss => ss.Id == id);
+            try
+            {
+                _logger.LogInformation("Fetching service with Id: {Id}", id);
+                var service = await _context.SearchServices
+                    .Include(ss => ss.Images)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                    .Include(ss => ss.Category)
+                    .Include(ss => ss.ServiceType)
+                    .FirstOrDefaultAsync(ss => ss.Id == id);
 
-            return service == null ? null : MapToDetailDto(service);
+                if (service == null)
+                {
+                    _logger.LogWarning("Service not found with Id: {Id}", id);
+                }
+                return service == null ? null : MapToDetailDto(service);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving service with Id: {Id}", id);
+                throw;
+            }
         }
 
-        public async Task<(bool success, SearchService service, List<string> imageUrls)> CreateSearchService(
+        public async Task<(bool Success, SearchService Service, List<string> ImageUrls)> CreateSearchService(
             int userId,
             CreateSearchServiceRequestDto request)
         {
-            var expertProfile = await _context.ExpertProfiles
-                .FirstOrDefaultAsync(ep => ep.Id == request.ExpertProfileId && ep.UserId == userId);
-
-            if (expertProfile == null)
-                return (false, null, null);
-
-            var category = await _context.Categories.FindAsync(request.CategoryId);
-            if (category == null)
-                return (false, null, null);
-
-            var searchService = new SearchService
+            try
             {
-                ExpertProfileId = request.ExpertProfileId,
-                CategoryId = request.CategoryId,
-                Price = request.Price,
-                Conditions = request.Conditions,
-                DurationInHours = request.DurationInHours,
-                CreatedAt = DateTime.UtcNow
-            };
+                _logger.LogInformation("Creating SearchService with ServiceTypeId: {ServiceTypeId}", request.ServiceTypeId);
 
-            _context.SearchServices.Add(searchService);
-            await _context.SaveChangesAsync();
-
-            var imageUrls = new List<string>();
-            if (request.Images != null && request.Images.Any())
-            {
-                var bucketName = _configuration["GoogleCloud:BucketName"];
-                foreach (var imageFile in request.Images)
+                var serviceTypeExists = await _context.ServiceTypes.AnyAsync(st => st.Id == request.ServiceTypeId);
+                if (!serviceTypeExists)
                 {
-                    var extension = Path.GetExtension(imageFile.FileName).ToLowerInvariant();
-                    var uniqueFileName = $"{Guid.NewGuid()}{extension}";
-                    var objectName = $"services/{uniqueFileName}";
-
-                    using (var inputStream = imageFile.OpenReadStream())
-                    using (var image = Image.Load(inputStream))
-                    {
-                        image.Mutate(x => x.Resize(new ResizeOptions
-                        {
-                            Size = new Size(200, 200),
-                            Mode = ResizeMode.Max
-                        }));
-
-                        using (var outputStream = new MemoryStream())
-                        {
-                            image.SaveAsJpeg(outputStream);
-                            outputStream.Position = 0;
-                            await _storageClient.UploadObjectAsync(
-                                bucket: bucketName,
-                                objectName: objectName,
-                                contentType: "image/jpeg",
-                                source: outputStream
-                            );
-                        }
-                    }
-
-                    var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-                    imageUrls.Add(imageUrl);
-
-                    var searchServiceImage = new SearchServiceImage
-                    {
-                        SearchServiceId = searchService.Id,
-                        ImageUrl = imageUrl,
-                        ImageObjectName = objectName,
-                        CreatedAt = DateTime.UtcNow
-                    };
-                    _context.SearchServiceImages.Add(searchServiceImage);
+                    _logger.LogError("Invalid ServiceTypeId: {ServiceTypeId}", request.ServiceTypeId);
+                    return (false, null, null);
                 }
-                await _context.SaveChangesAsync();
-            }
 
-            return (true, searchService, imageUrls);
+                var expertProfile = await _context.ExpertProfiles
+                    .FirstOrDefaultAsync(ep => ep.Id == request.ExpertProfileId && ep.UserId == userId);
+                if (expertProfile == null)
+                {
+                    _logger.LogError("ExpertProfileId {ExpertProfileId} not found or does not belong to user {UserId}", request.ExpertProfileId, userId);
+                    return (false, null, null);
+                }
+
+                var category = await _context.Categories.FindAsync(request.CategoryId);
+                if (category == null)
+                {
+                    _logger.LogError("Invalid CategoryId: {CategoryId}", request.CategoryId);
+                    return (false, null, null);
+                }
+
+                var searchService = new SearchService
+                {
+                    ExpertProfileId = request.ExpertProfileId,
+                    CategoryId = request.CategoryId,
+                    ServiceTypeId = request.ServiceTypeId,
+                    Price = request.Price,
+                    Conditions = request.Conditions,
+                    DurationInHours = request.DurationInHours,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.SearchServices.Add(searchService);
+                _logger.LogInformation("Attempting to save SearchService with ServiceTypeId: {ServiceTypeId}", searchService.ServiceTypeId);
+                await _context.SaveChangesAsync();
+                _logger.LogInformation("Successfully saved SearchService with Id: {ServiceId}", searchService.Id);
+
+                var imageUrls = new List<string>();
+                if (request.Images != null && request.Images.Any())
+                {
+                    var bucketName = _configuration["GoogleCloud:BucketName"];
+                    foreach (var imageFile in request.Images)
+                    {
+                        var extension = Path.GetExtension(imageFile.FileName).ToLowerInvariant();
+                        var uniqueFileName = $"{Guid.NewGuid()}{extension}";
+                        var objectName = $"services/{uniqueFileName}";
+
+                        using (var inputStream = imageFile.OpenReadStream())
+                        using (var image = Image.Load(inputStream))
+                        {
+                            image.Mutate(x => x.Resize(new ResizeOptions
+                            {
+                                Size = new Size(200, 200),
+                                Mode = ResizeMode.Max
+                            }));
+
+                            using (var outputStream = new MemoryStream())
+                            {
+                                image.SaveAsJpeg(outputStream);
+                                outputStream.Position = 0;
+                                await _storageClient.UploadObjectAsync(
+                                    bucket: bucketName,
+                                    objectName: objectName,
+                                    contentType: "image/jpeg",
+                                    source: outputStream
+                                );
+                            }
+                        }
+
+                        var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
+                        imageUrls.Add(imageUrl);
+
+                        var searchServiceImage = new SearchServiceImage
+                        {
+                            SearchServiceId = searchService.Id,
+                            ImageUrl = imageUrl,
+                            ImageObjectName = objectName,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        _context.SearchServiceImages.Add(searchServiceImage);
+                    }
+                    await _context.SaveChangesAsync();
+                }
+
+                return (true, searchService, imageUrls);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating search service with ServiceTypeId: {ServiceTypeId}", request.ServiceTypeId);
+                throw;
+            }
         }
 
         private static SearchServiceDetailDto MapToDetailDto(SearchService ss)
@@ -160,6 +228,8 @@ namespace newApi.Services
                 Id = ss.Id,
                 CategoryId = ss.CategoryId,
                 CategoryName = ss.Category?.Name ?? "Unknown Category",
+                ServiceTypeId = ss.ServiceTypeId,
+                ServiceTypeName = ss.ServiceType?.Name ?? "Unknown Service Type",
                 Price = ss.Price,
                 Conditions = ss.Conditions,
                 DurationInHours = ss.DurationInHours,
@@ -186,34 +256,33 @@ namespace newApi.Services
             return searchService;
         }
 
-
         private static SearchServiceResponseDto MapToResponseDto(SearchService ss)
         {
-            var searchserviceresponse = new SearchServiceResponseDto
+            var searchService = new SearchServiceResponseDto
             {
                 Id = ss.Id,
                 CategoryId = ss.CategoryId,
+                ServiceTypeId = ss.ServiceTypeId,
+                ServiceTypeName = ss.ServiceType?.Name ?? "Unknown Service Type",
                 Price = ss.Price,
                 Conditions = ss.Conditions,
                 DurationInHours = ss.DurationInHours,
                 CreatedAt = ss.CreatedAt,
-                ImageUrls = ss.Images.Select(i => i.ImageUrl).ToList(),
-                Expert = new ExpertProfileDto
+                ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>(),
+                Expert = ss.ExpertProfile == null ? null : new ExpertProfileDto
                 {
                     Id = ss.ExpertProfile.Id,
                     ProfilePictureUrl = ss.ExpertProfile.ProfilePictureUrl,
                     Description = ss.ExpertProfile.Description,
                     CreatedAt = ss.ExpertProfile.CreatedAt,
-                    User = new UserDto
+                    User = ss.ExpertProfile.User == null ? null : new UserDto
                     {
                         Name = ss.ExpertProfile.User.Name,
                         Email = ss.ExpertProfile.User.Email
                     }
                 }
             };
-
-
-            return searchserviceresponse;
+            return searchService;
         }
     }
 }

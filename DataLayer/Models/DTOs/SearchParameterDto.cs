@@ -1,11 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace newApi.DataLayer.Models.DTOs
+﻿namespace newApi.DataLayer.Models.DTOs
 {
     public class SearchParameterDto
     {
@@ -22,6 +15,7 @@ namespace newApi.DataLayer.Models.DTOs
         public int? MaxPrice { get; set; }
         public int? BrandId { get; set; }
         public int? ModelId { get; set; }
+        public int? ServiceTypeId { get; set; } 
         public int SearchId { get; set; }
         public List<int> PlatformIds { get; set; }
     }

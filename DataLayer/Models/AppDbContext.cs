@@ -37,8 +37,8 @@ namespace newApi.DataLayer.Models
         public DbSet<Dispute> Disputes { get; set; }
         public DbSet<FinancialTransaction> FinancialTransactions { get; set; }
         public DbSet<ServiceType> ServiceTypes { get; set; }
-        public DbSet<Conversation> Conversations { get; set; } // Added
-        public DbSet<Message> Messages { get; set; } // Added
+        public DbSet<Conversation> Conversations { get; set; }
+        public DbSet<Message> Messages { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -68,6 +68,12 @@ namespace newApi.DataLayer.Models
                 .HasForeignKey(sp => sp.SearchId)
                 .OnDelete(DeleteBehavior.Cascade);
 
+            modelBuilder.Entity<SearchParameter>()
+                .HasOne(sp => sp.ServiceType)
+                .WithMany()
+                .HasForeignKey(sp => sp.ServiceTypeId)
+                .OnDelete(DeleteBehavior.Restrict); // Added: SearchParameter-ServiceType relationship
+
             modelBuilder.Entity<SearchResult>()
                 .HasOne(sr => sr.Search)
                 .WithMany(s => s.SearchResults)
@@ -89,7 +95,7 @@ namespace newApi.DataLayer.Models
             modelBuilder.Entity<SearchResultFiltered>()
                 .HasOne(srf => srf.Ad)
                 .WithMany()
-                .HasForeignKey(sr => sr.AdId)
+                .HasForeignKey(srf => srf.AdId)
                 .OnDelete(DeleteBehavior.Cascade);
 
             modelBuilder.Entity<SearchParameterPlatform>()

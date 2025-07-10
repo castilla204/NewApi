@@ -28,6 +28,7 @@ namespace newApi.Controllers
             {
                 var searchParameter = await _context.SearchParameters
                     .Include(sp => sp.SearchParameterPlatforms)
+                    .Include(sp => sp.ServiceType) // Added: Include ServiceType
                     .FirstOrDefaultAsync(sp => sp.SearchId == searchId);
 
                 if (searchParameter == null)
@@ -43,12 +44,14 @@ namespace newApi.Controllers
                     Latitude = searchParameter.Latitude,
                     Longitude = searchParameter.Longitude,
                     ShippingAvailable = searchParameter.ShippingAvailable,
+                    StrictMatchOnly = searchParameter.StrictMatchOnly,
                     Category = searchParameter.Category,
                     LocationRange = searchParameter.LocationRange,
                     MinPrice = searchParameter.MinPrice,
                     MaxPrice = searchParameter.MaxPrice,
                     BrandId = searchParameter.BrandId,
                     ModelId = searchParameter.ModelId,
+                    ServiceTypeId = searchParameter.ServiceTypeId, // Added: ServiceTypeId
                     SearchId = searchParameter.SearchId,
                     PlatformIds = searchParameter.SearchParameterPlatforms
                         .Select(spp => spp.PlatformId)
@@ -75,7 +78,17 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Search not found" });
                 }
 
-                // Crea la entidad principal
+                // Validate ServiceTypeId
+                if (searchParameterDto.ServiceTypeId.HasValue)
+                {
+                    var serviceType = await _context.ServiceTypes.FindAsync(searchParameterDto.ServiceTypeId);
+                    if (serviceType == null)
+                    {
+                        return BadRequest(new { message = "Invalid ServiceTypeId" });
+                    }
+                }
+
+                // Create the main entity
                 var searchParameter = new SearchParameter
                 {
                     Keywords = searchParameterDto.Keywords,
@@ -90,13 +103,14 @@ namespace newApi.Controllers
                     MaxPrice = searchParameterDto.MaxPrice,
                     BrandId = searchParameterDto.BrandId,
                     ModelId = searchParameterDto.ModelId,
+                    ServiceTypeId = searchParameterDto.ServiceTypeId, // Added: ServiceTypeId
                     SearchId = searchId
                 };
 
                 await _context.SearchParameters.AddAsync(searchParameter);
                 await _context.SaveChangesAsync();
 
-                // Procesa las plataformas asociadas
+                // Process associated platforms
                 if (searchParameterDto.PlatformIds != null && searchParameterDto.PlatformIds.Any())
                 {
                     var platforms = await _context.Platforms
@@ -121,7 +135,7 @@ namespace newApi.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                return Ok();
+                return Ok(new { message = "Search parameter created successfully" });
             }
             catch (Exception ex)
             {
@@ -130,13 +144,13 @@ namespace newApi.Controllers
             }
         }
 
-
         [HttpGet]
         public async Task<IActionResult> GetAllSearchParameters()
         {
             try
             {
                 var parameterDtos = await _context.SearchParameters
+                    .Include(sp => sp.ServiceType) // Added: Include ServiceType
                     .Select(p => new SearchParameterDto
                     {
                         SearchParameterId = p.SearchParameterId,
@@ -145,14 +159,18 @@ namespace newApi.Controllers
                         Latitude = p.Latitude,
                         Longitude = p.Longitude,
                         ShippingAvailable = p.ShippingAvailable,
+                        StrictMatchOnly = p.StrictMatchOnly,
                         Category = p.Category,
                         LocationRange = p.LocationRange,
                         MinPrice = p.MinPrice,
                         MaxPrice = p.MaxPrice,
                         BrandId = p.BrandId,
                         ModelId = p.ModelId,
-                        SearchId = p.SearchId
-
+                        ServiceTypeId = p.ServiceTypeId, // Added: ServiceTypeId
+                        SearchId = p.SearchId,
+                        PlatformIds = p.SearchParameterPlatforms
+                            .Select(spp => spp.PlatformId)
+                            .ToList()
                     })
                     .ToListAsync();
 
@@ -179,18 +197,30 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Search parameter not found" });
                 }
 
+                // Validate ServiceTypeId
+                if (updateDto.ServiceTypeId.HasValue)
+                {
+                    var serviceType = await _context.ServiceTypes.FindAsync(updateDto.ServiceTypeId);
+                    if (serviceType == null)
+                    {
+                        return BadRequest(new { message = "Invalid ServiceTypeId" });
+                    }
+                }
+
                 // Update basic properties
                 searchParameter.Keywords = updateDto.Keywords;
                 searchParameter.UserSearch = updateDto.UserSearch;
                 searchParameter.Latitude = updateDto.Latitude;
                 searchParameter.Longitude = updateDto.Longitude;
                 searchParameter.ShippingAvailable = updateDto.ShippingAvailable;
+                searchParameter.StrictMatchOnly = updateDto.StrictMatchOnly;
                 searchParameter.Category = updateDto.Category;
                 searchParameter.LocationRange = updateDto.LocationRange;
                 searchParameter.MinPrice = updateDto.MinPrice;
                 searchParameter.MaxPrice = updateDto.MaxPrice;
                 searchParameter.BrandId = updateDto.BrandId;
                 searchParameter.ModelId = updateDto.ModelId;
+                searchParameter.ServiceTypeId = updateDto.ServiceTypeId; // Added: ServiceTypeId
 
                 // Update platform associations
                 if (updateDto.PlatformIds != null)

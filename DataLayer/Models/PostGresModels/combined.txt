@@ -75,6 +75,29 @@ namespace newApi.DataLayer.Models.PostGresModels
     }
 }
 
+// --- Contenido de Conversation.cs ---
+﻿using Twilio.TwiML.Messaging;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class Conversation
+    {
+        public int Id { get; set; }
+        public int SearchHireId { get; set; } // Ties the conversation to a specific SearchHire
+        public int ClientId { get; set; } // The client participating in the conversation
+        public int ExpertId { get; set; } // The expert participating in the conversation
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow; // Updated when new messages are added
+        public bool IsActive { get; set; } = true; // Allows closing/disabling conversations
+
+        // Navigation properties
+        public virtual SearchHire SearchHire { get; set; }
+        public virtual User Client { get; set; }
+        public virtual User Expert { get; set; }
+        public virtual ICollection<Message> Messages { get; set; } = new List<Message>();
+    }
+}
+
 // --- Contenido de Dispute.cs ---
 ﻿namespace newApi.DataLayer.Models.PostGresModels
 {
@@ -181,6 +204,24 @@ namespace newApi.DataLayer.Models.PostGresModels
     }
 }
 
+
+// --- Contenido de Message.cs ---
+﻿namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class Message
+    {
+        public int Id { get; set; }
+        public int ConversationId { get; set; } // Ties the message to a conversation
+        public int SenderId { get; set; } // The user (client or expert) who sent the message
+        public string Content { get; set; } // The message text
+        public DateTime SentAt { get; set; } = DateTime.UtcNow;
+        public bool IsRead { get; set; } = false; // Tracks if the message has been read
+
+        // Navigation properties
+        public virtual Conversation Conversation { get; set; }
+        public virtual User Sender { get; set; }
+    }
+}
 
 // --- Contenido de Notification.cs ---
 ﻿using System;
@@ -349,6 +390,7 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual SearchService SearchService { get; set; }
         public virtual Search Search { get; set; }
         public virtual ICollection<Dispute> Disputes { get; set; }
+        public virtual ICollection<Conversation> Conversations { get; set; } = new List<Conversation>();
     }
 
 }
@@ -376,14 +418,14 @@ namespace newApi.DataLayer.Models.PostGresModels
         public int? MaxPrice { get; set; }
         public int? BrandId { get; set; }
         public int? ModelId { get; set; }
+        public int? ServiceTypeId { get; set; } // Added: Foreign key to ServiceType
 
         public int SearchId { get; set; }
-        public Search Search { get; set; }
-        //muchos a muchos para plataformas
-        public ICollection<SearchParameterPlatform> SearchParameterPlatforms { get; set; }
+        public virtual Search Search { get; set; }
+        public virtual ServiceType? ServiceType { get; set; } // Added: Navigation to ServiceType
+        public virtual ICollection<SearchParameterPlatform> SearchParameterPlatforms { get; set; }
     }
 }
-
 
 // --- Contenido de SearchParameterPlatform.cs ---
 ﻿namespace newApi.DataLayer.Models.PostGresModels
@@ -446,6 +488,7 @@ namespace newApi.DataLayer.Models.PostGresModels
         public int? ExpertProfileId { get; set; }
         public int? AIId { get; set; }
         public int CategoryId { get; set; }
+        public int ServiceTypeId { get; set; }
         public decimal Price { get; set; }
         public string Conditions { get; set; }
         public int DurationInHours { get; set; }
@@ -453,6 +496,7 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual ExpertProfile? ExpertProfile { get; set; }
         public virtual AI? AI { get; set; } // Propiedad de navegación para AI
         public virtual Category Category { get; set; }
+        public virtual ServiceType ServiceType { get; set; }
         public virtual ICollection<SearchHire> SearchHires { get; set; }
         public virtual ICollection<SearchServiceImage> Images { get; set; } = new List<SearchServiceImage>();
     }
@@ -475,6 +519,20 @@ namespace newApi.DataLayer.Models.PostGresModels
     }
 }
 
+
+// --- Contenido de ServiceType.cs ---
+﻿namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class ServiceType
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } // e.g., "Web Search", "In-Person Review", "Web Search + In-Person Review"
+        public string Description { get; set; }
+        public bool IsActive { get; set; } = true;
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    }
+}
 
 // --- Contenido de SubscriptionPlan.cs ---
 ﻿using System.ComponentModel.DataAnnotations;
@@ -564,6 +622,9 @@ namespace newApi.DataLayer.Models.PostGresModels
         public int? SubscriptionPlanId { get; set; }
         public virtual SubscriptionPlan SubscriptionPlan { get; set; }
         public virtual ICollection<FinancialTransaction> FinancialTransactions { get; set; }
+        public virtual ICollection<Conversation> ConversationsAsClient { get; set; } = new List<Conversation>();
+        public virtual ICollection<Conversation> ConversationsAsExpert { get; set; } = new List<Conversation>(); 
+        public virtual ICollection<Message> MessagesSent { get; set; } = new List<Message>(); 
     }
 }
 

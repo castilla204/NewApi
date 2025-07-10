@@ -22,31 +22,42 @@ namespace newApi.Controllers
         }
 
         [HttpGet]
-        public async Task<IActionResult> GetAllServices()
+        public async Task<IActionResult> GetAllServices([FromQuery] int categoryId, [FromQuery] int serviceTypeId)
         {
             try
             {
-                var services = await _searchServiceService.GetAllServices();
+                if (categoryId <= 0)
+                {
+                    return BadRequest(new { message = "El ID de categoría es requerido y debe ser mayor que 0" });
+                }
+
+                if (serviceTypeId <= 0)
+                {
+                    return BadRequest(new { message = "El tipo de servicio es requerido y debe ser mayor que 0" });
+                }
+
+                var services = await _searchServiceService.GetAllServices(categoryId, serviceTypeId);
                 return Ok(services);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving search services");
+                _logger.LogError(ex, "Error retrieving services with CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}", categoryId, serviceTypeId);
                 return StatusCode(500, new { message = "Failed to retrieve services" });
             }
         }
 
         [HttpGet("expert/{expertId}")]
-        public async Task<IActionResult> GetExpertServices(int expertId)
+        public async Task<IActionResult> GetExpertServices(int expertId, [FromQuery] int? serviceTypeId)
         {
             try
             {
-                var services = await _searchServiceService.GetExpertServices(expertId);
+                var services = await _searchServiceService.GetExpertServices(expertId, serviceTypeId);
                 return Ok(services);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving expert services");
+                _logger.LogError(ex, "Error retrieving expert services for ExpertId: {ExpertId}, ServiceTypeId: {ServiceTypeId}",
+                    expertId, serviceTypeId);
                 return StatusCode(500, new { message = "Failed to retrieve expert services" });
             }
         }
@@ -65,7 +76,7 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving service");
+                _logger.LogError(ex, "Error retrieving service with Id: {Id}", id);
                 return StatusCode(500, new { message = "Failed to retrieve service" });
             }
         }
@@ -76,7 +87,6 @@ namespace newApi.Controllers
         {
             try
             {
-                // Log para inspeccionar el FormData recibido
                 foreach (var key in Request.Form.Keys)
                 {
                     var values = Request.Form[key];
@@ -100,16 +110,22 @@ namespace newApi.Controllers
                     {
                         request.ExpertProfileId,
                         request.CategoryId,
+                        request.ServiceTypeId,
                         request.Price,
                         request.Conditions,
                         request.DurationInHours,
-                        ImageCount = request.Images?.Count ?? 0 // Cambiado de Length a Count
+                        ImageCount = request.Images?.Count ?? 0
                     });
 
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
                     return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                if (request.ServiceTypeId <= 0)
+                {
+                    return BadRequest(new { message = "El tipo de servicio es requerido" });
                 }
 
                 if (string.IsNullOrWhiteSpace(request.Conditions))
@@ -130,7 +146,7 @@ namespace newApi.Controllers
                 var (success, service, imageUrls) = await _searchServiceService.CreateSearchService(userId, request);
                 if (!success)
                 {
-                    return BadRequest(new { message = "Failed to create service" });
+                    return BadRequest(new { message = "Failed to create service, possibly due to invalid ServiceTypeId, ExpertProfileId, or CategoryId" });
                 }
 
                 return Ok(new
@@ -141,6 +157,8 @@ namespace newApi.Controllers
                         service.Id,
                         service.ExpertProfileId,
                         service.CategoryId,
+                        service.ServiceTypeId,
+                        ServiceTypeName = service.ServiceType?.Name,
                         service.Price,
                         service.Conditions,
                         service.DurationInHours,
@@ -151,8 +169,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating search service");
-                return StatusCode(500, new { message = "Failed to create search service" });
+                _logger.LogError(ex, "Error creating search service with ServiceTypeId: {ServiceTypeId}", request.ServiceTypeId);
+                return StatusCode(500, new { message = "Failed to create search service", detail = ex.Message });
             }
         }
     }

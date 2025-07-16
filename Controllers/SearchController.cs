@@ -124,18 +124,21 @@ namespace newApi.Controllers
                 }
 
                 // Check subscription limits
-                var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
+                //var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
                 var activeSearchCount = await _context.Searches.CountAsync(s => s.UserId == userId && s.IsActive);
 
-                if (activeSearchCount >= subscriptionLimits.MaxSearches)
-                {
-                    return StatusCode(403, new { message = $"You've reached your plan's limit of {subscriptionLimits.MaxSearches} active searches" });
-                }
 
-                if (searchDto.Frequency < subscriptionLimits.MinSearchInterval)
-                {
-                    return StatusCode(403, new { message = $"Minimum search interval for your plan is {subscriptionLimits.MinSearchInterval} hours" });
-                }
+
+                //*****************************   UNCOMMENT TO ACTIVE SEARCH LIMITS BY SUBSCRIPTION *************************************
+                //if (activeSearchCount >= subscriptionLimits.MaxSearches)
+                //{
+                //    return StatusCode(403, new { message = $"You've reached your plan's limit of {subscriptionLimits.MaxSearches} active searches" });
+                //}
+
+                //if (searchDto.Frequency < subscriptionLimits.MinSearchInterval)
+                //{
+                //    return StatusCode(403, new { message = $"Minimum search interval for your plan is {subscriptionLimits.MinSearchInterval} hours" });
+                //}
 
                 // Verificar si el teléfono está verificado
                 var user = await _userService.GetUserAsync(userId);

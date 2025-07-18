@@ -14,6 +14,7 @@ using newApi.DataLayer;
 using Hangfire;
 using Hangfire.PostgreSql;
 using Microsoft.Extensions.DependencyInjection;
+using newApi.Controllers;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -206,7 +207,6 @@ app.UseCors("AllowAll");
 
 app.UseAuthentication();
 app.UseAuthorization();
-
 app.MapControllers();
 
 app.Urls.Add("http://0.0.0.0:7124");

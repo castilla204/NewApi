@@ -2,8 +2,14 @@
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using newApi.Services;
-using newApi.DataLayer.Models.DTOs;
+using newApi.DataLayer.Models;
+using newApi.DataLayer.Models.PostGresModels;
+using Microsoft.EntityFrameworkCore;
+using System.Threading.Tasks;
+using System;
+using System.Linq;
 using Stripe;
+using newApi.DataLayer.Models.DTOs;
 
 namespace newApi.Controllers
 {
@@ -13,21 +19,156 @@ namespace newApi.Controllers
     public class SearchHireController : ControllerBase
     {
         private readonly SearchHireService _searchHireService;
+        private readonly AppDbContext _context;
         private readonly ILogger<SearchHireController> _logger;
         private readonly IConfiguration _configuration;
 
         public SearchHireController(
             SearchHireService searchHireService,
+            AppDbContext context,
             ILogger<SearchHireController> logger,
             IConfiguration configuration)
         {
             _searchHireService = searchHireService;
+            _context = context;
             _logger = logger;
             _configuration = configuration;
             StripeConfiguration.ApiKey = configuration["Stripe:SecretKey"];
         }
 
+        // POST: api/searchhire
+        [HttpPost]
+        public async Task<IActionResult> CreateSearchHire([FromBody] CreateSearchHireDto dto)
+        {
+            try
+            {
+                if (!int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
+                {
+                    return Unauthorized(new { message = "Invalid or missing user ID in token" });
+                }
 
+                var search = await _context.Searches.FindAsync(dto.SearchId);
+                if (search == null)
+                {
+                    return NotFound(new { message = "Search not found" });
+                }
+
+                if (search.UserId != userId && !User.IsInRole("Admin"))
+                {
+                    return Unauthorized(new { message = "You are not authorized to create a search hire for this search" });
+                }
+
+                if (!dto.ExpertId.HasValue)
+                {
+                    return BadRequest(new { message = "Expert ID is required to create a search hire" });
+                }
+
+                var expert = await _context.Users
+                    .Include(u => u.ExpertProfile)
+                    .FirstOrDefaultAsync(u => u.Id == dto.ExpertId.Value);
+                if (expert == null || expert.Role != UserRole.Expert)
+                {
+                    return BadRequest(new { message = "Invalid or non-expert user specified" });
+                }
+
+                if (expert.ExpertProfile == null)
+                {
+                    return BadRequest(new { message = "Expert has no profile configured" });
+                }
+
+                // Get the search category, if available
+                var searchParameter = await _context.SearchParameters
+                    .Where(sp => sp.SearchId == dto.SearchId)
+                    .FirstOrDefaultAsync();
+                int? categoryId = searchParameter?.Category;
+
+                // Find a SearchService for the expert, preferably matching the search category
+                SearchService searchService;
+                if (categoryId.HasValue)
+                {
+                    searchService = await _context.SearchServices
+                        .Where(ss => ss.ExpertProfileId == expert.ExpertProfile.Id && ss.CategoryId == categoryId.Value)
+                        .FirstOrDefaultAsync();
+                }
+                else
+                {
+                    // Fallback to any SearchService for the expert
+                    searchService = await _context.SearchServices
+                        .Where(ss => ss.ExpertProfileId == expert.ExpertProfile.Id)
+                        .FirstOrDefaultAsync();
+                }
+
+                if (searchService == null)
+                {
+                    return BadRequest(new { message = "No suitable SearchService found for the expert" });
+                }
+
+                var searchHire = new SearchHire
+                {
+                    SearchId = dto.SearchId,
+                    ClientId = search.UserId,
+                    ExpertId = dto.ExpertId.Value,
+                    SearchServiceId = searchService.Id,
+                    Status = "pending",
+                    Amount = searchService.Price,
+                    CreatedAt = DateTime.UtcNow,
+                    Conversations = new List<Conversation>()
+                };
+
+                _context.SearchHires.Add(searchHire);
+
+                // Automatically create a Conversation
+                var conversation = new Conversation
+                {
+                    SearchHireId = searchHire.Id,
+                    ClientId = searchHire.ClientId,
+                    ExpertId = searchHire.ExpertId.Value,
+                    IsActive = true,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                    Messages = new List<Message>()
+                };
+
+                _context.Conversations.Add(conversation);
+                searchHire.Conversations.Add(conversation);
+
+                await _context.SaveChangesAsync();
+
+                return CreatedAtAction(nameof(GetSearchHire), new { id = searchHire.Id }, searchHire);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating search hire");
+                return StatusCode(500, new { message = "Failed to create search hire" });
+            }
+        }
+
+        // GET: api/searchhire/{id}
+        [HttpGet("{id}")]
+        public async Task<IActionResult> GetSearchHire(int id)
+        {
+            try
+            {
+                var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Search)
+                    .Include(sh => sh.Conversations)
+                    .FirstOrDefaultAsync(sh => sh.Id == id);
+
+                if (searchHire == null)
+                {
+                    return NotFound(new { message = "Search hire not found" });
+                }
+
+                return Ok(searchHire);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving search hire");
+                return StatusCode(500, new { message = "Failed to retrieve search hire" });
+            }
+        }
+
+        // GET: api/searchhire/client
         [HttpGet("client")]
         public async Task<IActionResult> GetClientHires()
         {
@@ -49,6 +190,7 @@ namespace newApi.Controllers
             }
         }
 
+        // GET: api/searchhire/expert
         [HttpGet("expert")]
         public async Task<IActionResult> GetExpertHires()
         {
@@ -70,6 +212,7 @@ namespace newApi.Controllers
             }
         }
 
+        // PUT: api/searchhire/{hireId}/status
         [HttpPut("{hireId}/status")]
         public async Task<IActionResult> UpdateHireStatus(int hireId, [FromBody] UpdateSearchHireStatusDto request)
         {
@@ -95,5 +238,11 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Failed to update status" });
             }
         }
+    }
+
+    public class CreateSearchHireDto
+    {
+        public int SearchId { get; set; }
+        public int? ExpertId { get; set; }
     }
 }

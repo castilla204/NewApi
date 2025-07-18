@@ -108,14 +108,14 @@ namespace newApi.Controllers
         [HttpPost("message")]
         public async Task<ActionResult<Message>> SendMessage([FromBody] SendMessageDto dto)
         {
-            if (!int.TryParse(User.FindFirst("id")?.Value, out var userId))
+            if (!int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
             {
                 return Unauthorized("Invalid or missing user ID in token");
             }
 
             var conversation = await _context.Conversations
                 .FirstOrDefaultAsync(c => c.Id == dto.ConversationId &&
-                                        (c.ClientId == userId || c.ExpertId == userId));
+                                       (c.ClientId == userId || c.ExpertId == userId));
 
             if (conversation == null)
             {
@@ -135,18 +135,16 @@ namespace newApi.Controllers
             conversation.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
-            // Broadcast message to the conversation group via SignalR
             await _hubContext.Clients.Group($"conversation-{dto.ConversationId}")
                 .SendAsync("ReceiveMessage", message);
 
             return Ok(message);
         }
 
-        // PUT: api/chat/message/{messageId}/read
         [HttpPut("message/{messageId}/read")]
         public async Task<ActionResult> MarkMessageAsRead(int messageId)
         {
-            if (!int.TryParse(User.FindFirst("id")?.Value, out var userId))
+            if (!int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
             {
                 return Unauthorized("Invalid or missing user ID in token");
             }
@@ -177,7 +175,7 @@ namespace newApi.Controllers
         }
     }
 
-    public class SendMessageDto
+        public class SendMessageDto
     {
         public int ConversationId { get; set; }
         public string Content { get; set; }

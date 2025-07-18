@@ -9,8 +9,8 @@ using newApi.RabbitMQ;
 using newApi.Services;
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Storage.V1;
-using newApi.DataLayer.Models;
 using newApi.DataLayer;
+using newApi.DataLayer.Models;
 using Hangfire;
 using Hangfire.PostgreSql;
 using Microsoft.Extensions.DependencyInjection;
@@ -60,12 +60,10 @@ builder.Configuration["GoogleCloud:BucketName"] = "atrapobucket";
 // Configurar la cadena de conexión según el entorno
 if (builder.Environment.IsDevelopment())
 {
-    //builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=localhost;Port=5432;Username=postgres;Password=coche109;Database=grup";
     builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=185.166.39.4;Port=30000;Username=admin;Password=Pedrohabo1//;Database=atrapo";
 }
 else
 {
-    //builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=localhost;Port=5432;Username=postgres;Password=coche109;Database=grup";
     builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=185.166.39.4;Port=30000;Username=admin;Password=Pedrohabo1//;Database=atrapo";
 }
 
@@ -87,6 +85,9 @@ builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly,
     typeof(PlatformMappingProfile).Assembly,
     typeof(CategoryMappingProfile).Assembly,
     typeof(UserMappingProfile).Assembly);
+
+// Configure SignalR
+builder.Services.AddSignalR();
 
 // Configure JWT Authentication
 builder.Services.AddAuthentication(options =>
@@ -152,7 +153,7 @@ builder.Services.AddHangfire(config => config
     .UseRecommendedSerializerSettings()
     .UsePostgreSqlStorage(builder.Configuration.GetConnectionString("PostgresConnection")));
 
-builder.Services.AddHangfireServer(); // Add Hangfire server to process jobs
+builder.Services.AddHangfireServer();
 
 // Register Services
 builder.Services.AddScoped<IRabbitMQService, RabbitMQService>();
@@ -165,7 +166,6 @@ builder.Services.AddScoped<ISubscriptionService, newApi.Services.SubscriptionSer
 builder.Services.AddScoped<ISearchHireService, SearchHireService>();
 builder.Services.AddScoped<ISearchServiceService, SearchServiceService>();
 
-// Register Service Implementations
 builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<SearchServiceService>();
 builder.Services.AddScoped<SearchHireService>();
@@ -181,14 +181,14 @@ var app = builder.Build();
 StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"];
 
 // Schedule recurring job with Hangfire
-app.UseHangfireDashboard("/hangfire"); // Optional: Access dashboard at /hangfire
+app.UseHangfireDashboard("/hangfire");
 GlobalConfiguration.Configuration
     .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()));
 
 RecurringJob.AddOrUpdate<ISubscriptionService>(
     "process-expired-services",
     service => service.ProcessExpiredServicesAsync(),
-    Cron.Hourly); // Runs every hour
+    Cron.Hourly);
 
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
@@ -204,10 +204,10 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("AllowAll");
-
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapHub<ChatHub>("/chatHub"); // Map SignalR Hub
 
 app.Urls.Add("http://0.0.0.0:7124");
 

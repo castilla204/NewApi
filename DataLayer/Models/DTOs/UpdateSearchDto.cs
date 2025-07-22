@@ -2,7 +2,7 @@
 
 namespace newApi.DataLayer.Models.DTOs
 {
-    public class UpdateSearchDto
+    public class UpdateSearchDtoo
     {
         [Required]
         public string Title { get; set; }

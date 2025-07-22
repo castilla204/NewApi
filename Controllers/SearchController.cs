@@ -4,13 +4,10 @@ using Microsoft.EntityFrameworkCore;
 
 using System.Security.Claims;
 using newApi.Services;
-using newApi.Services;
 using newApi.ScrapperGateway.DataLayer.Models.DTOs;
-using newApi.ScrapperGateway.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
-using newApi.DataLayer.Models.PostGresModels;
-using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
+using newApi.DataLayer.Models;
 
 namespace newApi.Controllers
 {
@@ -52,30 +49,45 @@ namespace newApi.Controllers
                 var searches = await _context.Searches
                     .Include(s => s.User)
                     .Include(s => s.SearchParameters)
-                    .Select(s => new SearchListDto
-                    {
-                        Id = s.Id,
-                        UserId = s.UserId,
-                        Title = s.Title,
-                        Description = s.Description,
-                        Frequency = s.Frequency,
-                        IsActive = s.IsActive,
-                        IsRevised = s.IsRevised,
-                        LastExecution = s.LastExecution,
-                        CreatedAt = s.CreatedAt,
-                        StartDate = s.StartDate,
-                        Category = s.SearchParameters.FirstOrDefault().Category ?? 0,
-                        User = new UserDto
-                        {
-                            Email = s.User.Email,
-                            Name = s.User.Name
-                        }
-                    })
-                    .OrderBy(s => s.IsRevised)
-                    .ThenBy(s => s.LastExecution)
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Expert)
+                        .ThenInclude(e => e.ExpertProfile)
                     .ToListAsync();
 
-                return Ok(searches);
+                var searchDtos = searches.Select(s => new SearchListDto
+                {
+                    Id = s.Id,
+                    UserId = s.UserId,
+                    Title = s.Title,
+                    Description = s.Description,
+                    Frequency = s.Frequency,
+                    IsActive = s.IsActive,
+                    IsRevised = s.IsRevised,
+                    LastExecution = s.LastExecution,
+                    CreatedAt = s.CreatedAt,
+                    StartDate = s.StartDate,
+                    Category = s.SearchParameters.FirstOrDefault()?.Category ?? 0,
+                    User = new UserDto
+                    {
+                        Email = s.User.Email,
+                        Name = s.User.Name
+                    },
+                    SearchHire = s.SearchHire != null ? new SearchHireDto
+                    {
+                        Id = s.SearchHire.Id,
+                        ExpertId = s.SearchHire.ExpertId ?? 0,
+                        Status = s.SearchHire.Status,
+                        Expert = s.SearchHire.Expert != null ? new UserDto
+                        {
+                            Name = s.SearchHire.Expert.Name,
+                            ProfilePictureUrl = s.SearchHire.Expert.ExpertProfile?.ProfilePictureUrl ?? "/default-avatar.png"
+                        } : null
+                    } : null
+                }).OrderBy(s => s.IsRevised)
+                  .ThenBy(s => s.LastExecution)
+                  .ToList();
+
+                return Ok(searchDtos);
             }
             catch (Exception ex)
             {
@@ -123,24 +135,19 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                // Check subscription limits
-                //var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
                 var activeSearchCount = await _context.Searches.CountAsync(s => s.UserId == userId && s.IsActive);
 
+                // Uncomment to active search limits by subscription
+                // var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
+                // if (activeSearchCount >= subscriptionLimits.MaxSearches)
+                // {
+                //     return StatusCode(403, new { message = $"You've reached your plan's limit of {subscriptionLimits.MaxSearches} active searches" });
+                // }
+                // if (searchDto.Frequency < subscriptionLimits.MinSearchInterval)
+                // {
+                //     return StatusCode(403, new { message = $"Minimum search interval for your plan is {subscriptionLimits.MinSearchInterval} hours" });
+                // }
 
-
-                //*****************************   UNCOMMENT TO ACTIVE SEARCH LIMITS BY SUBSCRIPTION *************************************
-                //if (activeSearchCount >= subscriptionLimits.MaxSearches)
-                //{
-                //    return StatusCode(403, new { message = $"You've reached your plan's limit of {subscriptionLimits.MaxSearches} active searches" });
-                //}
-
-                //if (searchDto.Frequency < subscriptionLimits.MinSearchInterval)
-                //{
-                //    return StatusCode(403, new { message = $"Minimum search interval for your plan is {subscriptionLimits.MinSearchInterval} hours" });
-                //}
-
-                // Verificar si el teléfono está verificado
                 var user = await _userService.GetUserAsync(userId);
                 if (user == null)
                 {
@@ -151,9 +158,10 @@ namespace newApi.Controllers
                 {
                     return StatusCode(403, new { message = "Phone verification required to create searches" });
                 }
+
                 var search = new Search
                 {
-                    UserId = int.Parse(userIdClaim),
+                    UserId = userId,
                     Frequency = searchDto.Frequency,
                     Title = searchDto.Title,
                     Description = searchDto.Description,
@@ -161,7 +169,6 @@ namespace newApi.Controllers
                     NextExecution = DateTime.UtcNow,
                     StartDate = searchDto.StartDate,
                     CreatedAt = DateTime.UtcNow
-
                 };
 
                 await _context.Searches.AddAsync(search);
@@ -187,24 +194,44 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                var searchDtos = await _context.Searches
+                var searches = await _context.Searches
                     .Where(s => s.UserId == userId)
                     .Include(s => s.SearchParameters)
-                    .Select(s => new SearchDto
-                    {
-                        Id = s.Id,
-                        UserId = s.UserId,
-                        Title = s.Title,
-                        Description = s.Description,
-                        Frequency = s.Frequency,
-                        IsActive = s.IsActive,
-                        IsRevised = s.IsRevised,
-                        LastExecution = s.LastExecution,
-                        CreatedAt = s.CreatedAt,
-                        StartDate = s.StartDate,
-                        Category = s.SearchParameters.FirstOrDefault().Category ?? 0
-                    })
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Expert)
+                        .ThenInclude(e => e.ExpertProfile)
                     .ToListAsync();
+
+                var searchDtos = searches.Select(s => new SearchListDto
+                {
+                    Id = s.Id,
+                    UserId = s.UserId,
+                    Title = s.Title,
+                    Description = s.Description,
+                    Frequency = s.Frequency,
+                    IsActive = s.IsActive,
+                    IsRevised = s.IsRevised,
+                    LastExecution = s.LastExecution,
+                    CreatedAt = s.CreatedAt,
+                    StartDate = s.StartDate,
+                    Category = s.SearchParameters.FirstOrDefault()?.Category ?? 0,
+                    User = new UserDto
+                    {
+                        Email = s.User.Email,
+                        Name = s.User.Name
+                    },
+                    SearchHire = s.SearchHire != null ? new SearchHireDto
+                    {
+                        Id = s.SearchHire.Id,
+                        ExpertId = s.SearchHire.ExpertId ?? 0,
+                        Status = s.SearchHire.Status,
+                        Expert = s.SearchHire.Expert != null ? new UserDto
+                        {
+                            Name = s.SearchHire.Expert.Name,
+                            ProfilePictureUrl = s.SearchHire.Expert.ExpertProfile?.ProfilePictureUrl ?? "/default-avatar.png"
+                        } : null
+                    } : null
+                }).ToList();
 
                 return Ok(searchDtos);
             }
@@ -226,13 +253,19 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                var search = await _context.Searches.FirstOrDefaultAsync(s =>
-                    s.Id == searchId && (s.UserId == userId || _authService.IsAdmin(User))
-                );
+                var search = await _context.Searches
+                    .Include(s => s.SearchHire)
+                    .FirstOrDefaultAsync(s => s.Id == searchId && (s.UserId == userId || _authService.IsAdmin(User)));
 
                 if (search == null)
                 {
                     return NotFound(new { message = "Search not found" });
+                }
+
+                // Verificar si SearchHire existe y su estado permite el cambio
+                if (search.SearchHire != null && !new[] { "pending", "awaiting_client_decision" }.Contains(search.SearchHire.Status))
+                {
+                    return BadRequest(new { message = "No se puede modificar el estado de una búsqueda finalizada" });
                 }
 
                 search.IsActive = !search.IsActive;
@@ -288,8 +321,7 @@ namespace newApi.Controllers
                 }
 
                 var search = await _context.Searches.FirstOrDefaultAsync(s =>
-                    s.Id == searchId && (s.UserId == userId || _authService.IsAdmin(User))
-                );
+                    s.Id == searchId && (s.UserId == userId || _authService.IsAdmin(User)));
 
                 if (search == null)
                 {
@@ -300,7 +332,6 @@ namespace newApi.Controllers
                 search.Description = updateDto.Description;
                 search.StartDate = updateDto.StartDate;
 
-                // Validate frequency against subscription limits
                 var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
                 if (updateDto.Frequency < subscriptionLimits.MinSearchInterval)
                 {
@@ -318,6 +349,7 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = ex.Message });
             }
         }
+
         [HttpGet("{searchId}")]
         public async Task<IActionResult> GetSearch(int searchId)
         {
@@ -332,6 +364,8 @@ namespace newApi.Controllers
                 var search = await _context.Searches
                     .Include(s => s.SearchParameters)
                     .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Expert)
+                        .ThenInclude(e => e.ExpertProfile)
                     .FirstOrDefaultAsync(s => s.Id == searchId &&
                         (s.UserId == userId || // User is the search owner
                          _authService.IsAdmin(User) || // User is an admin
@@ -342,7 +376,7 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Search not found" });
                 }
 
-                var searchDto = new SearchDto
+                var searchDto = new SearchListDto
                 {
                     Id = search.Id,
                     UserId = search.UserId,
@@ -355,11 +389,21 @@ namespace newApi.Controllers
                     CreatedAt = search.CreatedAt,
                     StartDate = search.StartDate,
                     Category = search.SearchParameters.FirstOrDefault()?.Category ?? 0,
+                    User = new UserDto
+                    {
+                        Email = search.User.Email,
+                        Name = search.User.Name
+                    },
                     SearchHire = search.SearchHire != null ? new SearchHireDto
                     {
                         Id = search.SearchHire.Id,
-                        ExpertId = search.SearchHire.ExpertId,
-                        Status = search.SearchHire.Status
+                        ExpertId = search.SearchHire.ExpertId ?? 0,
+                        Status = search.SearchHire.Status,
+                        Expert = search.SearchHire.Expert != null ? new UserDto
+                        {
+                            Name = search.SearchHire.Expert.Name,
+                            ProfilePictureUrl = search.SearchHire.Expert.ExpertProfile?.ProfilePictureUrl ?? "/default-avatar.png"
+                        } : null
                     } : null
                 };
 
@@ -373,5 +417,3 @@ namespace newApi.Controllers
         }
     }
 }
-
-

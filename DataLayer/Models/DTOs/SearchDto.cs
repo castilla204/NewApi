@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -22,10 +23,15 @@ namespace newApi.DataLayer.Models.DTOs
         public SearchHireDto SearchHire { get; set; }
     }
 
-    public class SearchHireDto
+    public class UpdateSearchDto
     {
-        public int Id { get; set; }
-        public int? ExpertId { get; set; }
-        public string Status { get; set; }
+        [Required]
+        public string Title { get; set; }
+        public string? Description { get; set; }
+        [Required]
+        public int Frequency { get; set; }
+        public DateTime StartDate { get; set; }
     }
+
+
 }

@@ -87,7 +87,16 @@ builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly,
     typeof(UserMappingProfile).Assembly);
 
 // Configure SignalR
-builder.Services.AddSignalR();
+builder.Services.AddSignalR(options =>
+{
+    options.EnableDetailedErrors = true;
+    options.KeepAliveInterval = TimeSpan.FromSeconds(10);
+    options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+})
+.AddJsonProtocol(options =>
+{
+    options.PayloadSerializerOptions.PropertyNamingPolicy = null;
+});
 
 // Configure JWT Authentication
 builder.Services.AddAuthentication(options =>
@@ -110,6 +119,19 @@ builder.Services.AddAuthentication(options =>
         IssuerSigningKey = new SymmetricSecurityKey(
             Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? throw new InvalidOperationException("JWT Key not found in configuration."))),
         ClockSkew = TimeSpan.Zero
+    };
+    options.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            var accessToken = context.Request.Query["access_token"];
+            var path = context.HttpContext.Request.Path;
+            if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/chatHub"))
+            {
+                context.Token = accessToken;
+            }
+            return Task.CompletedTask;
+        }
     };
 });
 
@@ -137,12 +159,13 @@ builder.Services.AddSingleton<RabbitMQ.Client.IConnectionFactory>(sp =>
 // Configure CORS
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAll", builder =>
+    options.AddPolicy("AllowSpecificOrigin", builder =>
     {
-        builder
-               .AllowAnyOrigin()
+        builder.WithOrigins("http://localhost:3000", "http://localhost:5173") // Ajustado para múltiples puertos
                .AllowAnyMethod()
-               .AllowAnyHeader();
+               .AllowAnyHeader()
+               .AllowCredentials()
+               .SetPreflightMaxAge(TimeSpan.FromSeconds(600));
     });
 });
 
@@ -203,11 +226,11 @@ if (app.Environment.IsDevelopment())
     });
 }
 
-app.UseCors("AllowAll");
+app.UseCors("AllowSpecificOrigin"); // Aplicar CORS antes de otros middleware
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
-app.MapHub<ChatHub>("/chatHub"); // Map SignalR Hub
+app.MapHub<ChatHub>("/chatHub");
 
 app.Urls.Add("http://0.0.0.0:7124");
 

@@ -1,9 +1,7 @@
-﻿using Google.Api;
-using Microsoft.AspNetCore.SignalR;
+﻿using Microsoft.AspNetCore.SignalR;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
-using System.Text.RegularExpressions;
 using System.Text;
 
 public class ChatHub : Hub
@@ -17,9 +15,10 @@ public class ChatHub : Hub
 
     public override async Task OnConnectedAsync()
     {
-        var token = Context.GetHttpContext()?.Request.Query["token"].ToString();
+        var token = Context.GetHttpContext()?.Request.Query["access_token"].ToString();
         if (string.IsNullOrEmpty(token))
         {
+            Console.WriteLine("[13:40 CEST] Connection failed: Missing authentication token");
             throw new HubException("Missing authentication token");
         }
 
@@ -45,14 +44,17 @@ public class ChatHub : Hub
             if (userId != null && conversationId != null)
             {
                 await Groups.AddToGroupAsync(Context.ConnectionId, $"conversation-{conversationId}");
+                Console.WriteLine($"[13:40 CEST] User {userId} joined conversation {conversationId} on connect, Connection ID: {Context.ConnectionId}");
             }
             else
             {
+                Console.WriteLine($"[13:40 CEST] Connection failed: Invalid user ID ({userId}) or conversation ID ({conversationId})");
                 throw new HubException("Invalid user ID or conversation ID");
             }
         }
         catch (Exception ex)
         {
+            Console.WriteLine($"[13:40 CEST] Connection failed: Invalid token: {ex.Message}");
             throw new HubException($"Invalid token: {ex.Message}");
         }
 
@@ -62,5 +64,6 @@ public class ChatHub : Hub
     public async Task JoinConversation(int conversationId, int userId)
     {
         await Groups.AddToGroupAsync(Context.ConnectionId, $"conversation-{conversationId}");
+        Console.WriteLine($"[13:40 CEST] User {userId} joined conversation {conversationId} via JoinConversation, Connection ID: {Context.ConnectionId}");
     }
 }

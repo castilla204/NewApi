@@ -8,6 +8,8 @@ using System.Linq;
 using System;
 using Microsoft.AspNetCore.SignalR;
 using System.Security.Claims;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace newApi.Controllers
 {
@@ -16,6 +18,7 @@ namespace newApi.Controllers
         public async Task JoinConversation(int conversationId, int userId)
         {
             await Groups.AddToGroupAsync(Context.ConnectionId, $"conversation-{conversationId}");
+            Console.WriteLine($"[13:42 CEST] User {userId} joined conversation {conversationId} via JoinConversation, Connection ID: {Context.ConnectionId}");
         }
     }
 
@@ -39,13 +42,13 @@ namespace newApi.Controllers
             try
             {
                 var claims = User.Claims.Select(c => new { c.Type, c.Value }).ToList();
-                Console.WriteLine("Claims received: " + string.Join(", ", claims.Select(c => $"{c.Type}: {c.Value}")));
+                Console.WriteLine("[13:42 CEST] Claims received: " + string.Join(", ", claims.Select(c => $"{c.Type}: {c.Value}")));
 
                 if (!int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
                 {
                     return Unauthorized(new { message = "Invalid or missing user ID in token" });
                 }
-                Console.WriteLine($"Parsed userId: {userId}");
+                Console.WriteLine($"[13:42 CEST] Parsed userId: {userId}");
 
                 var conversation = await _context.Conversations
                     .Include(c => c.Messages)
@@ -54,14 +57,14 @@ namespace newApi.Controllers
                     .Include(c => c.Expert)
                     .FirstOrDefaultAsync(c => c.SearchHire.SearchId == searchId &&
                                              (c.ClientId == userId || c.ExpertId == userId || User.IsInRole("Admin")));
-                Console.WriteLine($"Existing conversation found: {conversation != null}");
+                Console.WriteLine($"[13:42 CEST] Existing conversation found: {conversation != null}");
 
                 if (conversation == null)
                 {
                     var searchHire = await _context.SearchHires
                         .Include(sh => sh.Search)
                         .FirstOrDefaultAsync(sh => sh.SearchId == searchId);
-                    Console.WriteLine($"SearchHire found for searchId {searchId}: {searchHire != null}");
+                    Console.WriteLine($"[13:42 CEST] SearchHire found for searchId {searchId}: {searchHire != null}");
 
                     if (searchHire == null)
                     {
@@ -75,7 +78,7 @@ namespace newApi.Controllers
 
                     if (searchHire.ClientId != userId && searchHire.ExpertId != userId && !User.IsInRole("Admin"))
                     {
-                        Console.WriteLine($"Authorization check failed - ClientId: {searchHire.ClientId}, ExpertId: {searchHire.ExpertId}, UserId: {userId}, IsAdmin: {User.IsInRole("Admin")}");
+                        Console.WriteLine($"[13:42 CEST] Authorization check failed - ClientId: {searchHire.ClientId}, ExpertId: {searchHire.ExpertId}, UserId: {userId}, IsAdmin: {User.IsInRole("Admin")}");
                         return Unauthorized(new { message = "You are not authorized to create a conversation for this search" });
                     }
 
@@ -92,7 +95,7 @@ namespace newApi.Controllers
 
                     _context.Conversations.Add(conversation);
                     await _context.SaveChangesAsync();
-                    Console.WriteLine($"New conversation created with Id: {conversation.Id}");
+                    Console.WriteLine($"[13:42 CEST] New conversation created with Id: {conversation.Id}");
                 }
 
                 var conversationDto = ConversationDto.FromConversation(conversation);
@@ -100,11 +103,11 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                throw ex;
+                Console.WriteLine($"[13:42 CEST] Error in GetConversation: {ex.Message}");
+                throw;
             }
         }
 
-        // POST: api/chat/message
         [HttpPost("message")]
         public async Task<ActionResult<Message>> SendMessage([FromBody] SendMessageDto dto)
         {
@@ -114,6 +117,7 @@ namespace newApi.Controllers
             }
 
             var conversation = await _context.Conversations
+                .Include(c => c.Messages)
                 .FirstOrDefaultAsync(c => c.Id == dto.ConversationId &&
                                        (c.ClientId == userId || c.ExpertId == userId));
 
@@ -135,10 +139,28 @@ namespace newApi.Controllers
             conversation.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
-            await _hubContext.Clients.Group($"conversation-{dto.ConversationId}")
-                .SendAsync("ReceiveMessage", message);
+            var options = new JsonSerializerOptions
+            {
+                ReferenceHandler = ReferenceHandler.IgnoreCycles,
+                MaxDepth = 64
+            };
+            var serializedMessage = JsonSerializer.Serialize(message, options);
+            Console.WriteLine($"[13:42 CEST] Serialized message: {serializedMessage}");
+            var broadcastMessage = JsonSerializer.Deserialize<Message>(serializedMessage, options);
+            Console.WriteLine($"[13:42 CEST] Broadcasting message to group conversation-{dto.ConversationId}: {JsonSerializer.Serialize(broadcastMessage)}");
 
-            return Ok(message);
+            try
+            {
+                var groupClients = _hubContext.Clients.Group($"conversation-{dto.ConversationId}");
+                await groupClients.SendAsync("ReceiveMessage", broadcastMessage);
+                Console.WriteLine($"[13:42 CEST] Successfully broadcasted message {message.Id} to group conversation-{dto.ConversationId}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[13:42 CEST] Failed to broadcast message {message.Id}: {ex.Message}");
+            }
+
+            return Ok(broadcastMessage);
         }
 
         [HttpPut("message/{messageId}/read")]
@@ -167,15 +189,22 @@ namespace newApi.Controllers
             message.IsRead = true;
             await _context.SaveChangesAsync();
 
-            // Notify the conversation group about the read status
-            await _hubContext.Clients.Group($"conversation-{message.ConversationId}")
-                .SendAsync("MessageRead", messageId);
+            try
+            {
+                await _hubContext.Clients.Group($"conversation-{message.ConversationId}")
+                    .SendAsync("MessageRead", messageId);
+                Console.WriteLine($"[13:42 CEST] Successfully broadcasted MessageRead for message {messageId} to group conversation-{message.ConversationId}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[13:42 CEST] Failed to broadcast MessageRead for message {messageId}: {ex.Message}");
+            }
 
             return Ok();
         }
     }
 
-        public class SendMessageDto
+    public class SendMessageDto
     {
         public int ConversationId { get; set; }
         public string Content { get; set; }
@@ -211,7 +240,7 @@ namespace newApi.Controllers
                     Content = m.Content,
                     SentAt = m.SentAt,
                     IsRead = m.IsRead,
-                    SenderName = m.Sender?.Name // Include only necessary sender info
+                    SenderName = m.Sender?.Name
                 }).ToList()
             };
         }

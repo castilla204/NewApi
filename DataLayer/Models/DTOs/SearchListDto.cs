@@ -17,11 +17,13 @@ namespace newApi.DataLayer.Models.DTOs
         public DateTime StartDate { get; set; }
         public int Category { get; set; }
         public UserDto User { get; set; }
+        public SearchHireDto? SearchHire { get; set; }
     }
 
     public class UserDto
     {
         public string Email { get; set; }
         public string Name { get; set; }
+        public string? ProfilePictureUrl { get; set; }
     }
 }

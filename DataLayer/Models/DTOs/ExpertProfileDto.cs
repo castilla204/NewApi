@@ -1,6 +1,6 @@
 ﻿namespace newApi.DataLayer.Models.DTOs
 {
-    public class ExpertProfileDto
+    public class ExpertProfileDtoooo
     {
         public int Id { get; set; }
         public string ProfilePictureUrl { get; set; }

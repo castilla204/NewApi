@@ -20,10 +20,5 @@ namespace newApi.DataLayer.Models.DTOs
         public SearchHireDto? SearchHire { get; set; }
     }
 
-    public class UserDto
-    {
-        public string Email { get; set; }
-        public string Name { get; set; }
-        public string? ProfilePictureUrl { get; set; }
-    }
+
 }

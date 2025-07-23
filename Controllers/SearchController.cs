@@ -196,41 +196,51 @@ namespace newApi.Controllers
 
                 var searches = await _context.Searches
                     .Where(s => s.UserId == userId)
+                    .Include(s => s.User) // Include User to prevent null reference
                     .Include(s => s.SearchParameters)
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                         .ThenInclude(e => e.ExpertProfile)
                     .ToListAsync();
 
-                var searchDtos = searches.Select(s => new SearchListDto
+                var searchDtos = searches.Select(s =>
                 {
-                    Id = s.Id,
-                    UserId = s.UserId,
-                    Title = s.Title,
-                    Description = s.Description,
-                    Frequency = s.Frequency,
-                    IsActive = s.IsActive,
-                    IsRevised = s.IsRevised,
-                    LastExecution = s.LastExecution,
-                    CreatedAt = s.CreatedAt,
-                    StartDate = s.StartDate,
-                    Category = s.SearchParameters.FirstOrDefault()?.Category ?? 0,
-                    User = new UserDto
+                    if (s.User == null)
                     {
-                        Email = s.User.Email,
-                        Name = s.User.Name
-                    },
-                    SearchHire = s.SearchHire != null ? new SearchHireDto
+                        _logger.LogError("Search {SearchId} has no associated User", s.Id);
+                        throw new InvalidOperationException($"Search {s.Id} has no associated user");
+                    }
+
+                    return new SearchListDto
                     {
-                        Id = s.SearchHire.Id,
-                        ExpertId = s.SearchHire.ExpertId ?? 0,
-                        Status = s.SearchHire.Status,
-                        Expert = s.SearchHire.Expert != null ? new UserDto
+                        Id = s.Id,
+                        UserId = s.UserId,
+                        Title = s.Title,
+                        Description = s.Description,
+                        Frequency = s.Frequency,
+                        IsActive = s.IsActive,
+                        IsRevised = s.IsRevised,
+                        LastExecution = s.LastExecution,
+                        CreatedAt = s.CreatedAt,
+                        StartDate = s.StartDate,
+                        Category = s.SearchParameters.FirstOrDefault()?.Category ?? 0,
+                        User = new UserDto
                         {
-                            Name = s.SearchHire.Expert.Name,
-                            ProfilePictureUrl = s.SearchHire.Expert.ExpertProfile?.ProfilePictureUrl ?? "/default-avatar.png"
+                            Email = s.User.Email, // Fixed: Changed from s.User to s.User.Email
+                            Name = s.User.Name
+                        },
+                        SearchHire = s.SearchHire != null ? new SearchHireDto
+                        {
+                            Id = s.SearchHire.Id,
+                            ExpertId = s.SearchHire.ExpertId ?? 0,
+                            Status = s.SearchHire.Status,
+                            Expert = s.SearchHire.Expert != null ? new UserDto
+                            {
+                                Name = s.SearchHire.Expert.Name,
+                                ProfilePictureUrl = s.SearchHire.Expert.ExpertProfile?.ProfilePictureUrl ?? "/default-avatar.png"
+                            } : null
                         } : null
-                    } : null
+                    };
                 }).ToList();
 
                 return Ok(searchDtos);
@@ -349,7 +359,6 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = ex.Message });
             }
         }
-
         [HttpGet("{searchId}")]
         public async Task<IActionResult> GetSearch(int searchId)
         {
@@ -362,6 +371,7 @@ namespace newApi.Controllers
                 }
 
                 var search = await _context.Searches
+                    .Include(s => s.User) // Include User to prevent null reference
                     .Include(s => s.SearchParameters)
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
@@ -374,6 +384,12 @@ namespace newApi.Controllers
                 if (search == null)
                 {
                     return NotFound(new { message = "Search not found" });
+                }
+
+                if (search.User == null)
+                {
+                    _logger.LogError("Search {SearchId} has no associated User", searchId);
+                    return StatusCode(500, new { message = "Search has no associated user" });
                 }
 
                 var searchDto = new SearchListDto

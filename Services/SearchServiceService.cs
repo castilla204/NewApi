@@ -17,10 +17,10 @@ namespace newApi.Services
         private readonly StorageClient _storageClient;
 
         public SearchServiceService(
-            AppDbContext context,
-            IConfiguration configuration,
-            ILogger<SearchServiceService> logger,
-            StorageClient storageClient)
+    AppDbContext context,
+    IConfiguration configuration,
+    ILogger<SearchServiceService> logger,
+    StorageClient storageClient)
         {
             _context = context;
             _configuration = configuration;
@@ -40,6 +40,7 @@ namespace newApi.Services
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType);
 
@@ -74,6 +75,7 @@ namespace newApi.Services
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType);
 
@@ -100,6 +102,7 @@ namespace newApi.Services
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                     .FirstOrDefaultAsync(ss => ss.Id == id);
@@ -223,37 +226,69 @@ namespace newApi.Services
         {
             if (ss == null) return null;
 
-            var searchService = new SearchServiceDetailDto
+            var baseDto = new SearchServiceResponseDto
             {
                 Id = ss.Id,
                 CategoryId = ss.CategoryId,
-                CategoryName = ss.Category?.Name ?? "Unknown Category",
                 ServiceTypeId = ss.ServiceTypeId,
                 ServiceTypeName = ss.ServiceType?.Name ?? "Unknown Service Type",
                 Price = ss.Price,
                 Conditions = ss.Conditions,
                 DurationInHours = ss.DurationInHours,
                 CreatedAt = ss.CreatedAt,
-                ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>(),
-                Expert = ss.ExpertProfile == null ? null : new ExpertProfileDto
+                ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>()
+            };
+
+            ExpertProfileDto expertProfileDto = null;
+            if (ss.ExpertProfile != null)
+            {
+                var userDto = ss.ExpertProfile.User != null ? new UserDto
+                {
+                    Name = ss.ExpertProfile.User.Name,
+                    Email = ss.ExpertProfile.User.Email
+                } : null;
+
+                var reviews = ss.ExpertProfile.User?.ReviewsReceived?.Select(r => new ReviewDto // Using DTOs.ReviewDto
+                {
+                    Id = r.Id,
+                    Score = r.Score,
+                    Description = r.Description ?? "",
+                    CreatedAt = r.CreatedAt
+                }).ToList() ?? new List<ReviewDto>();
+
+                expertProfileDto = new ExpertProfileDto
                 {
                     Id = ss.ExpertProfile.Id,
                     ProfilePictureUrl = ss.ExpertProfile.ProfilePictureUrl,
                     Description = ss.ExpertProfile.Description,
                     CreatedAt = ss.ExpertProfile.CreatedAt,
-                    User = ss.ExpertProfile.User == null ? null : new UserDto
-                    {
-                        Name = ss.ExpertProfile.User.Name,
-                        Email = ss.ExpertProfile.User.Email
-                    }
-                },
+                    User = userDto,
+                    Reviews = reviews
+                };
+            }
+
+            baseDto.Expert = expertProfileDto;
+
+            var detailDto = new SearchServiceDetailDto
+            {
+                Id = baseDto.Id,
+                CategoryId = baseDto.CategoryId,
+                ServiceTypeId = baseDto.ServiceTypeId,
+                ServiceTypeName = baseDto.ServiceTypeName,
+                Price = baseDto.Price,
+                Conditions = baseDto.Conditions,
+                DurationInHours = baseDto.DurationInHours,
+                CreatedAt = baseDto.CreatedAt,
+                ImageUrls = baseDto.ImageUrls,
+                Expert = baseDto.Expert,
+                CategoryName = ss.Category?.Name ?? "Unknown Category",
                 CompletedSearches = ss.ExpertProfile?.User?.SearchHiresAsExpert?.Count(sh => sh.Status == "Completed") ?? 0,
                 AverageRating = ss.ExpertProfile?.User?.ReviewsReceived != null && ss.ExpertProfile.User.ReviewsReceived.Any()
                     ? ss.ExpertProfile.User.ReviewsReceived.Average(r => r.Score)
                     : 0
             };
 
-            return searchService;
+            return detailDto;
         }
 
         private static SearchServiceResponseDto MapToResponseDto(SearchService ss)
@@ -268,21 +303,42 @@ namespace newApi.Services
                 Conditions = ss.Conditions,
                 DurationInHours = ss.DurationInHours,
                 CreatedAt = ss.CreatedAt,
-                ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>(),
-                Expert = ss.ExpertProfile == null ? null : new ExpertProfileDto
+                ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>()
+            };
+
+            ExpertProfileDto expertProfileDto = null;
+            if (ss.ExpertProfile != null)
+            {
+                var userDto = ss.ExpertProfile.User != null ? new UserDto
+                {
+                    Name = ss.ExpertProfile.User.Name,
+                    Email = ss.ExpertProfile.User.Email
+                } : null;
+
+                var reviews = ss.ExpertProfile.User?.ReviewsReceived?.Select(r => new ReviewDto // Using DTOs.ReviewDto
+                {
+                    Id = r.Id,
+                    Score = r.Score,
+                    Description = r.Description ?? "",
+                    CreatedAt = r.CreatedAt
+                }).ToList() ?? new List<ReviewDto>();
+
+                expertProfileDto = new ExpertProfileDto
                 {
                     Id = ss.ExpertProfile.Id,
                     ProfilePictureUrl = ss.ExpertProfile.ProfilePictureUrl,
                     Description = ss.ExpertProfile.Description,
                     CreatedAt = ss.ExpertProfile.CreatedAt,
-                    User = ss.ExpertProfile.User == null ? null : new UserDto
-                    {
-                        Name = ss.ExpertProfile.User.Name,
-                        Email = ss.ExpertProfile.User.Email
-                    }
-                }
-            };
+                    User = userDto,
+                    Reviews = reviews
+                };
+            }
+
+            searchService.Expert = expertProfileDto;
+
             return searchService;
         }
     }
+
+
 }

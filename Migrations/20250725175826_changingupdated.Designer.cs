@@ -12,8 +12,8 @@ using newApi.DataLayer.Models;
 namespace newApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20250709223005_addingsearchparameterservicd")]
-    partial class addingsearchparameterservicd
+    [Migration("20250725175826_changingupdated")]
+    partial class changingupdated
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -690,9 +690,6 @@ namespace newApi.Migrations
                     b.Property<int>("ClientId")
                         .HasColumnType("integer");
 
-                    b.Property<DateTime?>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
                     b.Property<DateTime?>("CompletionDeadline")
                         .HasColumnType("timestamp with time zone");
 
@@ -714,6 +711,9 @@ namespace newApi.Migrations
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
 
@@ -888,7 +888,7 @@ namespace newApi.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<int>("DurationInHours")
+                    b.Property<int?>("DurationInHours")
                         .HasColumnType("integer");
 
                     b.Property<int?>("ExpertProfileId")

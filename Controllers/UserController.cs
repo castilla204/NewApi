@@ -2,7 +2,7 @@
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using newApi.Services;
-using newApi.ScrapperGateway.DataLayer.Models.DTOs.newApi.ScrapperGateway.DataLayer.Models.DTOs;
+using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.DTOs;
 
 [Route("api/[controller]")]
@@ -227,7 +227,9 @@ public class UserController : ControllerBase
                         expertProfile.ProfilePictureUrl,
                         expertProfile.Description,
                         expertProfile.StripeAccountId,
-                        expertProfile.CreatedAt
+                        expertProfile.CreatedAt,
+                        expertProfile.Latitude,
+                        expertProfile.Longitude
                     }
                 }
             });

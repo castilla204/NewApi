@@ -21,8 +21,6 @@ using newApi.Common;
 
 namespace newApi.Controllers
 {
-   
-
     [Route("api/[controller]")]
     [ApiController]
     [Authorize]
@@ -33,8 +31,6 @@ namespace newApi.Controllers
         private readonly ISubscriptionService _subscriptionService;
         private readonly IConfiguration _configuration;
         private readonly string _webhookSecret;
-
-      
 
         public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService)
         {
@@ -639,6 +635,7 @@ namespace newApi.Controllers
                             if (searchHire != null)
                             {
                                 searchHire.Status = SearchHireStatus.TransferFailed.ToStringValue();
+                                searchHire.UpdatedAt = DateTime.UtcNow;
                                 await _context.SaveChangesAsync();
                                 _logger.LogError("Transfer failed for searchHireId={SearchHireId}, transferId={TransferId}",
                                     searchHire.Id, transfer.Id);
@@ -762,7 +759,7 @@ namespace newApi.Controllers
                     };
 
                     _context.SearchHires.Add(searchHire);
-                     await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync();
 
                     financialTransaction.RelatedEntityId = searchHire.Id;
                     _context.FinancialTransactions.Add(financialTransaction);
@@ -838,13 +835,14 @@ namespace newApi.Controllers
                     if (!searchHire.ClientApproved.Value)
                     {
                         searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
+                        searchHire.UpdatedAt = DateTime.UtcNow;
                         _logger.LogInformation("Client opened dispute for searchHireId={SearchHireId}", searchHire.Id);
                     }
                     else
                     {
                         await ProcessTransferToExpert(searchHire.Id);
                         searchHire.Status = SearchHireStatus.Completed.ToStringValue();
-                        searchHire.CompletedAt = DateTime.UtcNow;
+                        searchHire.UpdatedAt = DateTime.UtcNow;
                         _logger.LogInformation("Client approved service, transfer completed for searchHireId={SearchHireId}", searchHire.Id);
                     }
 
@@ -919,7 +917,7 @@ namespace newApi.Controllers
                     };
 
                     searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
-                    searchHire.CompletedAt = DateTime.UtcNow;
+                    searchHire.UpdatedAt = DateTime.UtcNow;
 
                     _context.FinancialTransactions.Add(financialTransaction);
                     await _context.SaveChangesAsync();
@@ -982,6 +980,7 @@ namespace newApi.Controllers
                 {
                     searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
                     searchHire.ClientApproved = false;
+                    searchHire.UpdatedAt = DateTime.UtcNow;
 
                     var dispute = new DataLayer.Models.PostGresModels.Dispute
                     {
@@ -1060,7 +1059,7 @@ namespace newApi.Controllers
                         };
                         _context.FinancialTransactions.Add(financialTransaction);
                         searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
-                        searchHire.CompletedAt = DateTime.UtcNow;
+                        searchHire.UpdatedAt = DateTime.UtcNow;
                         _logger.LogInformation("Force-finalized in favor of client for searchHireId={SearchHireId}, refunded amount={Amount}",
                             searchHire.Id, searchHire.Amount);
                     }
@@ -1068,7 +1067,7 @@ namespace newApi.Controllers
                     {
                         await ProcessTransferToExpert(searchHire.Id);
                         searchHire.Status = SearchHireStatus.Completed.ToStringValue();
-                        searchHire.CompletedAt = DateTime.UtcNow;
+                        searchHire.UpdatedAt = DateTime.UtcNow;
                         _logger.LogInformation("Force-finalized in favor of expert for searchHireId={SearchHireId}, transferred amount={Amount}",
                             searchHire.Id, searchHire.Amount * (1 - 0.1m));
                     }
@@ -1174,7 +1173,7 @@ namespace newApi.Controllers
                     }
 
                     searchHire.Status = SearchHireStatus.DisputeResolved.ToStringValue();
-                    searchHire.CompletedAt = DateTime.UtcNow;
+                    searchHire.UpdatedAt = DateTime.UtcNow;
 
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
@@ -1200,6 +1199,7 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Failed to resolve dispute" });
             }
         }
+
         [HttpPost("process-expired-services")]
         public async Task<IActionResult> ProcessExpiredServices()
         {

@@ -279,6 +279,12 @@ namespace newApi.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<decimal>("Latitude")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal>("Longitude")
+                        .HasColumnType("numeric");
+
                     b.Property<string>("ProfilePictureObjectName")
                         .IsRequired()
                         .HasColumnType("text");
@@ -687,9 +693,6 @@ namespace newApi.Migrations
                     b.Property<int>("ClientId")
                         .HasColumnType("integer");
 
-                    b.Property<DateTime?>("CompletedAt")
-                        .HasColumnType("timestamp with time zone");
-
                     b.Property<DateTime?>("CompletionDeadline")
                         .HasColumnType("timestamp with time zone");
 
@@ -711,6 +714,9 @@ namespace newApi.Migrations
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
 
@@ -885,7 +891,7 @@ namespace newApi.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<int>("DurationInHours")
+                    b.Property<int?>("DurationInHours")
                         .HasColumnType("integer");
 
                     b.Property<int?>("ExpertProfileId")

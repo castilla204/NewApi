@@ -3,6 +3,7 @@ using Stripe.Checkout;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
+using newApi.Controllers;
 
 namespace newApi.Services
 {
@@ -13,8 +14,8 @@ namespace newApi.Services
         private readonly string _domain = "https://atrapo.io";
 
         public SearchHireService(
-            AppDbContext context,
-            ILogger<SearchHireService> logger)
+    AppDbContext context,
+    ILogger<SearchHireService> logger)
         {
             _context = context;
             _logger = logger;
@@ -27,6 +28,8 @@ namespace newApi.Services
                 .Include(h => h.Expert)
                 .Include(h => h.SearchService)
                     .ThenInclude(s => s.Images)
+                .Include(h => h.SearchService)
+                    .ThenInclude(s => s.ServiceType)
                 .Where(h => h.ClientId == userId)
                 .OrderByDescending(h => h.CreatedAt)
                 .ToListAsync();
@@ -41,6 +44,8 @@ namespace newApi.Services
                 .Include(h => h.Expert)
                 .Include(h => h.SearchService)
                     .ThenInclude(s => s.Images)
+                .Include(h => h.SearchService)
+                    .ThenInclude(s => s.ServiceType)
                 .Where(h => h.ExpertId == userId)
                 .OrderByDescending(h => h.CreatedAt)
                 .ToListAsync();
@@ -53,7 +58,6 @@ namespace newApi.Services
             var hire = await _context.SearchHires.FindAsync(hireId);
             if (hire == null || hire.ExpertId != userId)
                 return false;
-
 
             hire.Status = status;
             if (status == "Completed")
@@ -93,12 +97,23 @@ namespace newApi.Services
                 {
                     Id = hire.SearchService.Id,
                     CategoryId = hire.SearchService.CategoryId,
+                    ServiceTypeId = hire.SearchService.ServiceTypeId,
+                    ServiceTypeName = hire.SearchService.ServiceType?.Name,
                     Price = hire.SearchService.Price,
                     Conditions = hire.SearchService.Conditions,
                     DurationInHours = hire.SearchService.DurationInHours,
                     CreatedAt = hire.SearchService.CreatedAt,
                     ImageUrls = hire.SearchService.Images.Select(i => i.ImageUrl).ToList()
-                }
+                },
+                ServiceType = hire.SearchService.ServiceType != null ? new ServiceTypeDto
+                {
+                    Id = hire.SearchService.ServiceType.Id,
+                    Name = hire.SearchService.ServiceType.Name,
+                    Description = hire.SearchService.ServiceType.Description,
+                    IsActive = hire.SearchService.ServiceType.IsActive,
+                    CreatedAt = hire.SearchService.ServiceType.CreatedAt,
+                    UpdatedAt = hire.SearchService.ServiceType.UpdatedAt
+                } : null
             };
         }
     }

@@ -1,4 +1,6 @@
-﻿namespace newApi.DataLayer.Models.DTOs
+﻿using newApi.Controllers;
+
+namespace newApi.DataLayer.Models.DTOs
 {
     public class SearchHireDto
     {
@@ -24,10 +26,11 @@
         public string? ExpertTransferId { get; set; }
         public decimal Amount { get; set; }
         public DateTime CreatedAt { get; set; }
-        public DateTime? CompletedAt { get; set; }
+        public DateTime? UpdatedAt { get; set; }
         public UserDto Client { get; set; }
         public UserDto? Expert { get; set; }
         public SearchServiceResponseDto Service { get; set; }
+        public ServiceTypeDto ServiceType { get; set;  }
     }
 
     public class UpdateSearchHireStatusDto
@@ -89,7 +92,7 @@
         public int ServiceTypeId { get; set; }
         public decimal Price { get; set; }
         public string Conditions { get; set; }
-        public int DurationInHours { get; set; }
+        public int? DurationInHours { get; set; }
         public List<IFormFile> Images { get; set; }
     }
 

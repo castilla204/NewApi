@@ -12,8 +12,8 @@ using newApi.DataLayer.Models;
 namespace newApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20250709223005_addingsearchparameterservicd")]
-    partial class addingsearchparameterservicd
+    [Migration("20250725172014_makingnullabledurationinhours")]
+    partial class makingnullabledurationinhours
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -888,7 +888,7 @@ namespace newApi.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<int>("DurationInHours")
+                    b.Property<int?>("DurationInHours")
                         .HasColumnType("integer");
 
                     b.Property<int?>("ExpertProfileId")

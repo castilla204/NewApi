@@ -9,7 +9,7 @@
         public int ServiceTypeId { get; set; }
         public decimal Price { get; set; }
         public string Conditions { get; set; }
-        public int DurationInHours { get; set; }
+        public int? DurationInHours { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public virtual ExpertProfile? ExpertProfile { get; set; }
         public virtual AI? AI { get; set; } // Propiedad de navegación para AI

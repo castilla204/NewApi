@@ -1,15 +1,12 @@
 ﻿using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
 
 namespace newApi.ScrapperGateway.DataLayer.Models.DTOs
 {
-
-    namespace newApi.ScrapperGateway.DataLayer.Models.DTOs
+    public class BecomeExpertRequestDto
     {
-        public class BecomeExpertRequestDto
-        {
-            public IFormFile ProfilePicture { get; set; }
-            public string Description { get; set; }
-        }
+        public IFormFile ProfilePicture { get; set; }
+        public string Description { get; set; }
+        public decimal Latitude { get; set; }
+        public decimal Longitude { get; set; }
     }
 }

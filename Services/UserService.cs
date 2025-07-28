@@ -13,7 +13,6 @@ using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.DTOs;
 using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using Twilio;
-using newApi.ScrapperGateway.DataLayer.Models.DTOs.newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using static UserController;
 
 namespace newApi.Services
@@ -241,6 +240,8 @@ namespace newApi.Services
                 ProfilePictureUrl = imageUrl,
                 ProfilePictureObjectName = objectName,
                 Description = request.Description,
+                Latitude = request.Latitude,
+                Longitude = request.Longitude,
                 StripeAccountId = null, // No guardar StripeAccountId, se genera en el onboarding
                 CreatedAt = DateTime.UtcNow
             };

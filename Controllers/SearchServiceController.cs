@@ -22,7 +22,12 @@ namespace newApi.Controllers
         }
 
         [HttpGet]
-        public async Task<IActionResult> GetAllServices([FromQuery] int categoryId, [FromQuery] int serviceTypeId)
+        public async Task<IActionResult> GetAllServices(
+            [FromQuery] int categoryId,
+            [FromQuery] int serviceTypeId,
+            [FromQuery] string latitude,
+            [FromQuery] string longitude,
+            [FromQuery] int locationRange)
         {
             try
             {
@@ -36,13 +41,19 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "El tipo de servicio es requerido y debe ser mayor que 0" });
                 }
 
-                var services = await _searchServiceService.GetAllServices(categoryId, serviceTypeId);
+                if (string.IsNullOrEmpty(latitude) || string.IsNullOrEmpty(longitude) || locationRange <= 0)
+                {
+                    return BadRequest(new { message = "Latitude, Longitude, y LocationRange son requeridos y deben ser válidos" });
+                }
+
+                var services = await _searchServiceService.GetAllServices(categoryId, serviceTypeId, latitude, longitude, locationRange);
                 return Ok(services);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving services with CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}", categoryId, serviceTypeId);
-                return StatusCode(500, new { message = "Failed to retrieve services" });
+                _logger.LogError(ex, "Error retrieving services with CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}, Latitude: {Latitude}, Longitude: {Longitude}, LocationRange: {LocationRange}",
+                    categoryId, serviceTypeId, latitude, longitude, locationRange);
+                return StatusCode(500, new { message = "Failed to retrieve services", detail = ex.Message });
             }
         }
 
@@ -58,7 +69,7 @@ namespace newApi.Controllers
             {
                 _logger.LogError(ex, "Error retrieving expert services for ExpertId: {ExpertId}, ServiceTypeId: {ServiceTypeId}",
                     expertId, serviceTypeId);
-                return StatusCode(500, new { message = "Failed to retrieve expert services" });
+                return StatusCode(500, new { message = "Failed to retrieve expert services", detail = ex.Message });
             }
         }
 
@@ -77,7 +88,7 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error retrieving service with Id: {Id}", id);
-                return StatusCode(500, new { message = "Failed to retrieve service" });
+                return StatusCode(500, new { message = "Failed to retrieve service", detail = ex.Message });
             }
         }
 

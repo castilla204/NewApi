@@ -62,7 +62,7 @@ namespace newApi.Services
             hire.Status = status;
             if (status == "Completed")
             {
-                hire.CompletedAt = DateTime.UtcNow;
+                hire.UpdatedAt = DateTime.UtcNow;
             }
 
             await _context.SaveChangesAsync();
@@ -82,7 +82,7 @@ namespace newApi.Services
                 ExpertTransferId = hire.ExpertTransferId,
                 Amount = hire.Amount,
                 CreatedAt = hire.CreatedAt,
-                CompletedAt = hire.CompletedAt,
+                UpdatedAt = hire.UpdatedAt,
                 Client = new UserDto
                 {
                     Name = hire.Client.Name,
@@ -101,7 +101,7 @@ namespace newApi.Services
                     ServiceTypeName = hire.SearchService.ServiceType?.Name,
                     Price = hire.SearchService.Price,
                     Conditions = hire.SearchService.Conditions,
-                    DurationInHours = hire.SearchService.DurationInHours,
+                    DurationInHours = hire.SearchService.DurationInHours ?? 0,
                     CreatedAt = hire.SearchService.CreatedAt,
                     ImageUrls = hire.SearchService.Images.Select(i => i.ImageUrl).ToList()
                 },

@@ -17,10 +17,10 @@ namespace newApi.Services
         private readonly StorageClient _storageClient;
 
         public SearchServiceService(
-    AppDbContext context,
-    IConfiguration configuration,
-    ILogger<SearchServiceService> logger,
-    StorageClient storageClient)
+            AppDbContext context,
+            IConfiguration configuration,
+            ILogger<SearchServiceService> logger,
+            StorageClient storageClient)
         {
             _context = context;
             _configuration = configuration;
@@ -28,15 +28,39 @@ namespace newApi.Services
             _storageClient = storageClient;
         }
 
-        public async Task<IEnumerable<SearchServiceDetailDto>> GetAllServices(int categoryId, int serviceTypeId)
+        public async Task<IEnumerable<SearchServiceDetailDto>> GetAllServices(
+            int categoryId,
+            int serviceTypeId,
+            string latitude,
+            string longitude,
+            int locationRange)
         {
             try
             {
-                _logger.LogInformation("Fetching services for CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}", categoryId, serviceTypeId);
-                IQueryable<SearchService> query = _context.SearchServices
-                    .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId);
+                _logger.LogInformation("Fetching services for CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}, Latitude: {Latitude}, Longitude: {Longitude}, LocationRange: {LocationRange}",
+                    categoryId, serviceTypeId, latitude, longitude, locationRange);
 
-                query = query
+                if (categoryId <= 0 || serviceTypeId <= 0)
+                {
+                    _logger.LogWarning("Invalid CategoryId: {CategoryId} or ServiceTypeId: {ServiceTypeId}", categoryId, serviceTypeId);
+                    throw new ArgumentException("CategoryId and ServiceTypeId must be greater than 0");
+                }
+
+                if (string.IsNullOrEmpty(latitude) || string.IsNullOrEmpty(longitude) || locationRange <= 0)
+                {
+                    _logger.LogWarning("Missing or invalid location parameters: Latitude={Latitude}, Longitude={Longitude}, LocationRange={LocationRange}", latitude, longitude, locationRange);
+                    throw new ArgumentException("Latitude, Longitude, and LocationRange are required and must be valid");
+                }
+
+                if (!decimal.TryParse(latitude, out var searchLatitude) || !decimal.TryParse(longitude, out var searchLongitude))
+                {
+                    _logger.LogWarning("Invalid Latitude or Longitude format: Latitude={Latitude}, Longitude={Longitude}", latitude, longitude);
+                    throw new ArgumentException("Invalid coordinates provided");
+                }
+
+                // Fetch services with necessary includes
+                var query = _context.SearchServices
+                    .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId)
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
@@ -44,18 +68,41 @@ namespace newApi.Services
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType);
 
-                var services = await query
-                    .Select(ss => MapToDetailDto(ss))
-                    .ToListAsync();
+                // Materialize the query to avoid LINQ translation issues
+                var services = await query.ToListAsync();
 
-                _logger.LogInformation("Retrieved {ServiceCount} services for CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}", services.Count, categoryId, serviceTypeId);
-                return services;
+                // Filter by distance in memory using CalculateDistance
+                var filteredServices = services
+                    .Where(ss => ss.ExpertProfile != null &&
+                        CalculateDistance(searchLatitude, searchLongitude, ss.ExpertProfile.Latitude, ss.ExpertProfile.Longitude) <= locationRange)
+                    .Select(ss => MapToDetailDto(ss))
+                    .ToList();
+
+                _logger.LogInformation("Retrieved {ServiceCount} services for CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}, Latitude: {Latitude}, Longitude: {Longitude}, LocationRange: {LocationRange}",
+                    filteredServices.Count, categoryId, serviceTypeId, latitude, longitude, locationRange);
+                return filteredServices;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving services with CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}", categoryId, serviceTypeId);
+                _logger.LogError(ex, "Error retrieving services with CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}, Latitude: {Latitude}, Longitude: {Longitude}, LocationRange: {LocationRange}",
+                    categoryId, serviceTypeId, latitude, longitude, locationRange);
                 throw;
             }
+        }
+
+        // Haversine formula for distance calculation
+        public static decimal CalculateDistance(decimal lat1, decimal lon1, decimal? lat2, decimal? lon2)
+        {
+            if (!lat2.HasValue || !lon2.HasValue) return decimal.MaxValue;
+
+            const double R = 6371; // Earth's radius in km
+            var dLat = (double)(lat2.Value - lat1) * Math.PI / 180;
+            var dLon = (double)(lon2.Value - lon1) * Math.PI / 180;
+            var a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                    Math.Cos((double)lat1 * Math.PI / 180) * Math.Cos((double)lat2.Value * Math.PI / 180) *
+                    Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+            var c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+            return (decimal)(R * c);
         }
 
         public async Task<IEnumerable<SearchServiceResponseDto>> GetExpertServices(int expertId, int? serviceTypeId = null)
@@ -157,7 +204,7 @@ namespace newApi.Services
                     ServiceTypeId = request.ServiceTypeId,
                     Price = request.Price,
                     Conditions = request.Conditions,
-                    DurationInHours = request.DurationInHours,
+                    DurationInHours = request.DurationInHours ?? 0,
                     CreatedAt = DateTime.UtcNow
                 };
 
@@ -190,10 +237,10 @@ namespace newApi.Services
                                 image.SaveAsJpeg(outputStream);
                                 outputStream.Position = 0;
                                 await _storageClient.UploadObjectAsync(
-                                    bucket: bucketName,
-                                    objectName: objectName,
-                                    contentType: "image/jpeg",
-                                    source: outputStream
+                                    bucketName,
+                                    objectName,
+                                    "image/jpeg", // Explicitly define contentType
+                                    outputStream // Use sourceStream parameter
                                 );
                             }
                         }
@@ -234,7 +281,7 @@ namespace newApi.Services
                 ServiceTypeName = ss.ServiceType?.Name ?? "Unknown Service Type",
                 Price = ss.Price,
                 Conditions = ss.Conditions,
-                DurationInHours = ss.DurationInHours,
+                DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,
                 ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>()
             };
@@ -248,7 +295,7 @@ namespace newApi.Services
                     Email = ss.ExpertProfile.User.Email
                 } : null;
 
-                var reviews = ss.ExpertProfile.User?.ReviewsReceived?.Select(r => new ReviewDto // Using DTOs.ReviewDto
+                var reviews = ss.ExpertProfile.User?.ReviewsReceived?.Select(r => new ReviewDto
                 {
                     Id = r.Id,
                     Score = r.Score,
@@ -301,7 +348,7 @@ namespace newApi.Services
                 ServiceTypeName = ss.ServiceType?.Name ?? "Unknown Service Type",
                 Price = ss.Price,
                 Conditions = ss.Conditions,
-                DurationInHours = ss.DurationInHours,
+                DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,
                 ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>()
             };
@@ -315,7 +362,7 @@ namespace newApi.Services
                     Email = ss.ExpertProfile.User.Email
                 } : null;
 
-                var reviews = ss.ExpertProfile.User?.ReviewsReceived?.Select(r => new ReviewDto // Using DTOs.ReviewDto
+                var reviews = ss.ExpertProfile.User?.ReviewsReceived?.Select(r => new ReviewDto
                 {
                     Id = r.Id,
                     Score = r.Score,
@@ -339,6 +386,4 @@ namespace newApi.Services
             return searchService;
         }
     }
-
-
 }

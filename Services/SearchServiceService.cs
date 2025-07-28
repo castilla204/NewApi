@@ -6,6 +6,7 @@ using newApi.DataLayer;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
+using System.Globalization;
 
 namespace newApi.Services
 {
@@ -29,11 +30,11 @@ namespace newApi.Services
         }
 
         public async Task<IEnumerable<SearchServiceDetailDto>> GetAllServices(
-            int categoryId,
-            int serviceTypeId,
-            string latitude,
-            string longitude,
-            int locationRange)
+     int categoryId,
+     int serviceTypeId,
+     string latitude,
+     string longitude,
+     int locationRange)
         {
             try
             {
@@ -52,13 +53,32 @@ namespace newApi.Services
                     throw new ArgumentException("Latitude, Longitude, and LocationRange are required and must be valid");
                 }
 
-                if (!decimal.TryParse(latitude, out var searchLatitude) || !decimal.TryParse(longitude, out var searchLongitude))
+                // Depuración del parseo con CultureInfo.InvariantCulture
+                _logger.LogInformation("Parsing Latitude: {LatitudeRaw}, Longitude: {LongitudeRaw}", latitude, longitude);
+                if (!decimal.TryParse(latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var searchLatitude))
                 {
-                    _logger.LogWarning("Invalid Latitude or Longitude format: Latitude={Latitude}, Longitude={Longitude}", latitude, longitude);
-                    throw new ArgumentException("Invalid coordinates provided");
+                    _logger.LogError("Failed to parse Latitude: {LatitudeRaw}", latitude);
+                    throw new ArgumentException($"Invalid latitude format: {latitude}");
+                }
+                if (!decimal.TryParse(longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var searchLongitude))
+                {
+                    _logger.LogError("Failed to parse Longitude: {LongitudeRaw}", longitude);
+                    throw new ArgumentException($"Invalid longitude format: {longitude}");
+                }
+                _logger.LogInformation("Parsed Latitude: {Latitude}, Parsed Longitude: {Longitude}", searchLatitude, searchLongitude);
+
+                // Validación de coordenadas
+                if (searchLatitude < -90m || searchLatitude > 90m)
+                {
+                    _logger.LogWarning("Latitude {Latitude} is out of valid range (-90 to 90)", searchLatitude);
+                    throw new ArgumentException("Search coordinates must be within valid ranges (-90 to 90 for latitude, -180 to 180 for longitude)");
+                }
+                if (searchLongitude < -180m || searchLongitude > 180m)
+                {
+                    _logger.LogWarning("Longitude {Longitude} is out of valid range (-180 to 180)", searchLongitude);
+                    throw new ArgumentException("Search coordinates must be within valid ranges (-90 to 90 for latitude, -180 to 180 for longitude)");
                 }
 
-                // Fetch services with necessary includes
                 var query = _context.SearchServices
                     .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId)
                     .Include(ss => ss.Images)
@@ -68,18 +88,40 @@ namespace newApi.Services
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType);
 
-                // Materialize the query to avoid LINQ translation issues
                 var services = await query.ToListAsync();
 
-                // Filter by distance in memory using CalculateDistance
+                _logger.LogInformation("Services before null coordinate filter: {ServiceCount}", services.Count);
+                services = services
+                    .Where(ss => ss.ExpertProfile?.Latitude != null && ss.ExpertProfile?.Longitude != null)
+                    .ToList();
+                _logger.LogInformation("Services after null coordinate filter: {ServiceCount}", services.Count);
+
+                foreach (var ss in services)
+                {
+                    var distance = CalculateDistance(searchLatitude, searchLongitude, ss.ExpertProfile.Latitude, ss.ExpertProfile.Longitude);
+                    var isExtremeDistance = distance > 10000m;
+                    _logger.LogInformation("Service ID {ServiceId} at coordinates ({ExpertLat}, {ExpertLon}) is at distance {Distance} km, Extreme: {IsExtreme}",
+                        ss.Id, ss.ExpertProfile.Latitude, ss.ExpertProfile.Longitude, distance, isExtremeDistance);
+                    if (isExtremeDistance)
+                    {
+                        _logger.LogWarning("Service ID {ServiceId} has an extreme distance ({Distance} km) which may indicate invalid coordinates", ss.Id, distance);
+                    }
+                }
+
+                _logger.LogInformation("Services before distance filter: {ServiceCount}", services.Count);
                 var filteredServices = services
-                    .Where(ss => ss.ExpertProfile != null &&
-                        CalculateDistance(searchLatitude, searchLongitude, ss.ExpertProfile.Latitude, ss.ExpertProfile.Longitude) <= locationRange)
+                    .Where(ss =>
+                    {
+                        var distance = CalculateDistance(searchLatitude, searchLongitude, ss.ExpertProfile.Latitude, ss.ExpertProfile.Longitude);
+                        return distance <= locationRange || (distance > 10000m && distance <= locationRange * 2);
+                    })
                     .Select(ss => MapToDetailDto(ss))
                     .ToList();
+                _logger.LogInformation("Services after distance filter: {ServiceCount}", filteredServices.Count);
 
                 _logger.LogInformation("Retrieved {ServiceCount} services for CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}, Latitude: {Latitude}, Longitude: {Longitude}, LocationRange: {LocationRange}",
                     filteredServices.Count, categoryId, serviceTypeId, latitude, longitude, locationRange);
+
                 return filteredServices;
             }
             catch (Exception ex)
@@ -104,7 +146,6 @@ namespace newApi.Services
             var c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
             return (decimal)(R * c);
         }
-
         public async Task<IEnumerable<SearchServiceResponseDto>> GetExpertServices(int expertId, int? serviceTypeId = null)
         {
             try

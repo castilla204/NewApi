@@ -1,6 +1,7 @@
 ﻿using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
-using newApi.ScrapperGateway.DataLayer.Models.DTOs.newApi.ScrapperGateway.DataLayer.Models.DTOs;
+using newApi.ScrapperGateway.DataLayer.Models.DTOs;
+
 using static UserController;
 
 namespace newApi.Services

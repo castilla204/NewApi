@@ -14,6 +14,7 @@ using newApi.DataLayer.Models.DTOs;
 using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using Twilio;
 using static UserController;
+using System.Globalization;
 
 namespace newApi.Services
 {
@@ -27,10 +28,10 @@ namespace newApi.Services
         private readonly string _twilioauthToken;
 
         public UserService(
-            AppDbContext context,
-            IConfiguration configuration,
-            ILogger<UserService> logger,
-            StorageClient storageClient)
+     AppDbContext context,
+     IConfiguration configuration,
+     ILogger<UserService> logger,
+     StorageClient storageClient)
         {
             _context = context;
             _configuration = configuration;
@@ -193,6 +194,37 @@ namespace newApi.Services
                 return (false, null, null, null);
             }
 
+            // Validar Latitude y Longitude
+            if (string.IsNullOrEmpty(request.Latitude) || string.IsNullOrEmpty(request.Longitude))
+            {
+                _logger.LogWarning("Latitude or Longitude is empty for user ID {UserId}", userId);
+                return (false, null, null, null);
+            }
+
+            if (!decimal.TryParse(request.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var latitude))
+            {
+                _logger.LogWarning("Invalid Latitude format for user ID {UserId}: {Latitude}", userId, request.Latitude);
+                return (false, null, null, null);
+            }
+
+            if (!decimal.TryParse(request.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var longitude))
+            {
+                _logger.LogWarning("Invalid Longitude format for user ID {UserId}: {Longitude}", userId, request.Longitude);
+                return (false, null, null, null);
+            }
+
+            if (latitude < -90m || latitude > 90m)
+            {
+                _logger.LogWarning("Latitude {Latitude} out of range for user ID {UserId}", latitude, userId);
+                return (false, null, null, null);
+            }
+
+            if (longitude < -180m || longitude > 180m)
+            {
+                _logger.LogWarning("Longitude {Longitude} out of range for user ID {UserId}", longitude, userId);
+                return (false, null, null, null);
+            }
+
             _logger.LogInformation("Processing profile picture upload for user ID {UserId}", userId);
             var bucketName = _configuration["GoogleCloud:BucketName"];
             var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
@@ -274,7 +306,9 @@ namespace newApi.Services
                 {
                     Name = expertProfile.User.Name,
                     Email = expertProfile.User.Email
-                }
+                },
+                Latitude = expertProfile.Latitude,
+                Longitude = expertProfile.Longitude
             };
         }
 
@@ -282,11 +316,11 @@ namespace newApi.Services
         {
             var claims = new[]
             {
-                new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-                new Claim(ClaimTypes.Email, user.Email),
-                new Claim(ClaimTypes.Name, user.Name),
-                new Claim(ClaimTypes.Role, user.Role.ToString())
-            };
+            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new Claim(ClaimTypes.Email, user.Email),
+            new Claim(ClaimTypes.Name, user.Name),
+            new Claim(ClaimTypes.Role, user.Role.ToString())
+        };
 
             var key = new SymmetricSecurityKey(
                 Encoding.UTF8.GetBytes(_configuration["Jwt:Key"]));

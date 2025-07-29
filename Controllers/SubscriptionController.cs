@@ -1224,7 +1224,7 @@ namespace newApi.Controllers
             }
         }
 
-        private async Task ProcessTransferToExpert(int searchHireId)
+        public async Task ProcessTransferToExpert(int searchHireId)
         {
             var searchHire = await _context.SearchHires
                 .Include(sh => sh.Expert)

@@ -6,7 +6,7 @@ namespace newApi.ScrapperGateway.DataLayer.Models.DTOs
     {
         public IFormFile ProfilePicture { get; set; }
         public string Description { get; set; }
-        public decimal Latitude { get; set; }
-        public decimal Longitude { get; set; }
+        public string Latitude { get; set; }
+        public string Longitude { get; set; }
     }
 }

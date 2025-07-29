@@ -188,6 +188,7 @@ builder.Services.AddScoped<IAuthorizationServices, AuthorizationServices>();
 builder.Services.AddScoped<ISubscriptionService, newApi.Services.SubscriptionService>();
 builder.Services.AddScoped<ISearchHireService, SearchHireService>();
 builder.Services.AddScoped<ISearchServiceService, SearchServiceService>();
+builder.Services.AddScoped<ICheckingClientDecisionService, CheckingClientDecisionService>();
 
 builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<SearchServiceService>();
@@ -212,6 +213,12 @@ RecurringJob.AddOrUpdate<ISubscriptionService>(
     "process-expired-services",
     service => service.ProcessExpiredServicesAsync(),
     Cron.Hourly);
+
+RecurringJob.AddOrUpdate<ISubscriptionService>(
+    "process-awaiting-client-decision",
+    service => service.ProcessAwaitingClientDecisionAsync(),
+    "*/5 * * * *"); // Cada 5 minutos
+
 
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())

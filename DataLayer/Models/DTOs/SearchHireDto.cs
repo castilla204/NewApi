@@ -68,6 +68,8 @@ namespace newApi.DataLayer.Models.DTOs
         public DateTime CreatedAt { get; set; }
         public UserDto User { get; set; }
         public List<ReviewDto> Reviews { get; set; }
+        public string Latitude { get; set; }
+        public string Longitude { get; set; }
     }
 
     public class UserDto

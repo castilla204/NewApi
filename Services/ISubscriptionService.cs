@@ -4,6 +4,8 @@
     {
         Task<SubscriptionLimits> GetUserSubscriptionLimits(int userId);
         Task ProcessExpiredServicesAsync();
+        Task ProcessAwaitingClientDecisionAsync();
+
     }
 
     public class SubscriptionLimits

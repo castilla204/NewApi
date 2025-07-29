@@ -18,10 +18,10 @@ namespace newApi.Services
         private readonly StorageClient _storageClient;
 
         public SearchServiceService(
-            AppDbContext context,
-            IConfiguration configuration,
-            ILogger<SearchServiceService> logger,
-            StorageClient storageClient)
+      AppDbContext context,
+      IConfiguration configuration,
+      ILogger<SearchServiceService> logger,
+      StorageClient storageClient)
         {
             _context = context;
             _configuration = configuration;
@@ -30,11 +30,11 @@ namespace newApi.Services
         }
 
         public async Task<IEnumerable<SearchServiceDetailDto>> GetAllServices(
-     int categoryId,
-     int serviceTypeId,
-     string latitude,
-     string longitude,
-     int locationRange)
+            int categoryId,
+            int serviceTypeId,
+            string latitude,
+            string longitude,
+            int locationRange)
         {
             try
             {
@@ -53,7 +53,7 @@ namespace newApi.Services
                     throw new ArgumentException("Latitude, Longitude, and LocationRange are required and must be valid");
                 }
 
-                // Depuración del parseo con CultureInfo.InvariantCulture
+                // Parsear parámetros de entrada
                 _logger.LogInformation("Parsing Latitude: {LatitudeRaw}, Longitude: {LongitudeRaw}", latitude, longitude);
                 if (!decimal.TryParse(latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var searchLatitude))
                 {
@@ -67,7 +67,7 @@ namespace newApi.Services
                 }
                 _logger.LogInformation("Parsed Latitude: {Latitude}, Parsed Longitude: {Longitude}", searchLatitude, searchLongitude);
 
-                // Validación de coordenadas
+                // Validación de coordenadas de entrada
                 if (searchLatitude < -90m || searchLatitude > 90m)
                 {
                     _logger.LogWarning("Latitude {Latitude} is out of valid range (-90 to 90)", searchLatitude);
@@ -92,32 +92,44 @@ namespace newApi.Services
 
                 _logger.LogInformation("Services before null coordinate filter: {ServiceCount}", services.Count);
                 services = services
-                    .Where(ss => ss.ExpertProfile?.Latitude != null && ss.ExpertProfile?.Longitude != null)
+                    .Where(ss => !string.IsNullOrEmpty(ss.ExpertProfile?.Latitude) && !string.IsNullOrEmpty(ss.ExpertProfile?.Longitude))
                     .ToList();
                 _logger.LogInformation("Services after null coordinate filter: {ServiceCount}", services.Count);
 
-                foreach (var ss in services)
-                {
-                    var distance = CalculateDistance(searchLatitude, searchLongitude, ss.ExpertProfile.Latitude, ss.ExpertProfile.Longitude);
-                    var isExtremeDistance = distance > 10000m;
-                    _logger.LogInformation("Service ID {ServiceId} at coordinates ({ExpertLat}, {ExpertLon}) is at distance {Distance} km, Extreme: {IsExtreme}",
-                        ss.Id, ss.ExpertProfile.Latitude, ss.ExpertProfile.Longitude, distance, isExtremeDistance);
-                    if (isExtremeDistance)
-                    {
-                        _logger.LogWarning("Service ID {ServiceId} has an extreme distance ({Distance} km) which may indicate invalid coordinates", ss.Id, distance);
-                    }
-                }
-
-                _logger.LogInformation("Services before distance filter: {ServiceCount}", services.Count);
                 var filteredServices = services
                     .Where(ss =>
                     {
-                        var distance = CalculateDistance(searchLatitude, searchLongitude, ss.ExpertProfile.Latitude, ss.ExpertProfile.Longitude);
-                        return distance <= locationRange || (distance > 10000m && distance <= locationRange * 2);
+                        // Parsear coordenadas de ExpertProfile
+                        if (!decimal.TryParse(ss.ExpertProfile.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLat))
+                        {
+                            _logger.LogWarning("Invalid Latitude for Service ID {ServiceId}: {Latitude}", ss.Id, ss.ExpertProfile.Latitude);
+                            return false;
+                        }
+                        if (!decimal.TryParse(ss.ExpertProfile.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLon))
+                        {
+                            _logger.LogWarning("Invalid Longitude for Service ID {ServiceId}: {Longitude}", ss.Id, ss.ExpertProfile.Longitude);
+                            return false;
+                        }
+
+                        // Validar rangos de coordenadas
+                        if (expertLat < -90m || expertLat > 90m || expertLon < -180m || expertLon > 180m)
+                        {
+                            _logger.LogWarning("Coordinates out of range for Service ID {ServiceId}: Latitude={Latitude}, Longitude={Longitude}", ss.Id, expertLat, expertLon);
+                            return false;
+                        }
+
+                        var distance = CalculateDistance(searchLatitude, searchLongitude, expertLat, expertLon);
+                        var isExtremeDistance = distance > 10000m;
+                        _logger.LogInformation("Service ID {ServiceId} at coordinates ({ExpertLat}, {ExpertLon}) is at distance {Distance} km, Extreme: {IsExtreme}",
+                            ss.Id, expertLat, expertLon, distance, isExtremeDistance);
+                        if (isExtremeDistance)
+                        {
+                            _logger.LogWarning("Service ID {ServiceId} has an extreme distance ({Distance} km) which may indicate invalid coordinates", ss.Id, distance);
+                        }
+                        return distance <= locationRange || (isExtremeDistance && distance <= locationRange * 2);
                     })
                     .Select(ss => MapToDetailDto(ss))
                     .ToList();
-                _logger.LogInformation("Services after distance filter: {ServiceCount}", filteredServices.Count);
 
                 _logger.LogInformation("Retrieved {ServiceCount} services for CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}, Latitude: {Latitude}, Longitude: {Longitude}, LocationRange: {LocationRange}",
                     filteredServices.Count, categoryId, serviceTypeId, latitude, longitude, locationRange);
@@ -133,19 +145,18 @@ namespace newApi.Services
         }
 
         // Haversine formula for distance calculation
-        public static decimal CalculateDistance(decimal lat1, decimal lon1, decimal? lat2, decimal? lon2)
+        public static decimal CalculateDistance(decimal lat1, decimal lon1, decimal lat2, decimal lon2)
         {
-            if (!lat2.HasValue || !lon2.HasValue) return decimal.MaxValue;
-
             const double R = 6371; // Earth's radius in km
-            var dLat = (double)(lat2.Value - lat1) * Math.PI / 180;
-            var dLon = (double)(lon2.Value - lon1) * Math.PI / 180;
+            var dLat = (double)(lat2 - lat1) * Math.PI / 180;
+            var dLon = (double)(lon2 - lon1) * Math.PI / 180;
             var a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
-                    Math.Cos((double)lat1 * Math.PI / 180) * Math.Cos((double)lat2.Value * Math.PI / 180) *
+                    Math.Cos((double)lat1 * Math.PI / 180) * Math.Cos((double)lat2 * Math.PI / 180) *
                     Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
             var c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
             return (decimal)(R * c);
         }
+
         public async Task<IEnumerable<SearchServiceResponseDto>> GetExpertServices(int expertId, int? serviceTypeId = null)
         {
             try
@@ -280,8 +291,8 @@ namespace newApi.Services
                                 await _storageClient.UploadObjectAsync(
                                     bucketName,
                                     objectName,
-                                    "image/jpeg", // Explicitly define contentType
-                                    outputStream // Use sourceStream parameter
+                                    "image/jpeg",
+                                    outputStream
                                 );
                             }
                         }

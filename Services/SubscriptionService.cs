@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using Hangfire;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using newApi.Common;
 using newApi.Controllers;
@@ -110,79 +111,97 @@ namespace newApi.Services
             }
         }
 
+
         public async Task ProcessAwaitingClientDecisionAsync()
         {
             try
             {
-                var cutoffDate = DateTime.UtcNow.AddDays(-3);
+                var cutoffDate = DateTime.UtcNow.AddDays(-2);
 
-                var awaitingDecisionHires = await _context.SearchHires
-                    .Include(sh => sh.Expert)
-                    .ThenInclude(e => e.ExpertProfile)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.SearchService)
+                if (_context == null)
+                {
+                    throw new InvalidOperationException("Database context is not initialized");
+                }
+
+                var query = _context.SearchHires
                     .Where(sh => sh.Status == SearchHireStatus.AwaitingClientDecision.ToStringValue()
                               && sh.UpdatedAt.HasValue
                               && sh.UpdatedAt.Value <= cutoffDate)
-                    .ToListAsync();
+                    .Select(sh => new { sh.Id, sh.ClientId, sh.ExpertId, sh.Amount });
 
-                _logger.LogInformation("Found {Count} SearchHires awaiting client decision for more than 3 days", awaitingDecisionHires.Count);
+                var awaitingDecisionHires = await query.ToListAsync();
 
-                foreach (var searchHire in awaitingDecisionHires)
+                if (awaitingDecisionHires == null || !awaitingDecisionHires.Any())
                 {
+                    return;
+                }
+
+                const int batchSize = 10; // Smaller batch size to reduce transaction time
+                for (int i = 0; i < awaitingDecisionHires.Count; i += batchSize)
+                {
+                    var batch = awaitingDecisionHires.Skip(i).Take(batchSize).ToList();
                     using var transaction = await _context.Database.BeginTransactionAsync();
                     try
                     {
-                        if (searchHire.Status != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                        foreach (var item in batch)
                         {
-                            _logger.LogWarning("SearchHireId={SearchHireId} is no longer awaiting client decision, skipping", searchHire.Id);
-                            await transaction.CommitAsync();
-                            continue;
-                        }
+                            var searchHire = await _context.SearchHires
+                                .FirstOrDefaultAsync(sh => sh.Id == item.Id);
 
-                        searchHire.ClientApproved = true;
-                        searchHire.Status = SearchHireStatus.Completed.ToStringValue();
-                        searchHire.UpdatedAt = DateTime.UtcNow;
+                            if (searchHire == null || searchHire.Status != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                            {
+                                continue;
+                            }
 
-                        if (searchHire.Expert != null)
-                        {
-                            var expertNotification = new Notification
+                            // Call ProcessTransferToExpert first
+                            try
+                            {
+                                await _checkingClientDecisionService.ProcessTransferToExpert(item.Id);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, "Failed to process transfer for SearchHireId={SearchHireId}", item.Id);
+                                continue; // Skip to next record if transfer fails
+                            }
+
+                            // Only update status and create notifications if transfer succeeds
+                            searchHire.ClientApproved = true;
+                            searchHire.Status = SearchHireStatus.Completed.ToStringValue();
+                            searchHire.UpdatedAt = DateTime.UtcNow;
+
+                            if (item.ExpertId.HasValue)
+                            {
+                                _context.Notifications.Add(new Notification
+                                {
+                                    Id = Guid.NewGuid(),
+                                    UserId = item.ExpertId.Value,
+                                    Title = "Pago Automático Recibido",
+                                    Message = $"Has recibido el pago de €{item.Amount:F2} por tu servicio. El cliente no respondió en 2 días.",
+                                    Type = "payment",
+                                    Read = false,
+                                    CreatedAt = DateTime.UtcNow
+                                });
+                            }
+
+                            _context.Notifications.Add(new Notification
                             {
                                 Id = Guid.NewGuid(),
-                                UserId = searchHire.Expert.Id,
-                                Title = "Pago Automático Recibido",
-                                Message = $"Has recibido el pago de €{searchHire.Amount:F2} por tu servicio. El cliente no respondió en 3 días, por lo que se aprobó automáticamente.",
-                                Type = "payment",
+                                UserId = item.ClientId,
+                                Title = "Servicio Completado Automáticamente",
+                                Message = $"Tu servicio de €{item.Amount:F2} se ha completado automáticamente.",
+                                Type = "service_completion",
                                 Read = false,
                                 CreatedAt = DateTime.UtcNow
-                            };
-                            _context.Notifications.Add(expertNotification);
+                            });
                         }
-
-                        var clientNotification = new Notification
-                        {
-                            Id = Guid.NewGuid(),
-                            UserId = searchHire.ClientId,
-                            Title = "Servicio Completado Automáticamente",
-                            Message = $"Tu servicio de €{searchHire.Amount:F2} se ha marcado como completado automáticamente. El pago se ha procesado al experto.",
-                            Type = "service_completion",
-                            Read = false,
-                            CreatedAt = DateTime.UtcNow
-                        };
-                        _context.Notifications.Add(clientNotification);
-
-                        // Use the new CheckingClientDecisionService
-                        await _checkingClientDecisionService.ProcessTransferToExpert(searchHire.Id);
 
                         await _context.SaveChangesAsync();
                         await transaction.CommitAsync();
-
-                        _logger.LogInformation("Auto-approved and paid expert for SearchHireId={SearchHireId} after 3 days without client decision", searchHire.Id);
                     }
                     catch (Exception ex)
                     {
                         await transaction.RollbackAsync();
-                        _logger.LogError(ex, "Error auto-approving searchHireId={SearchHireId}", searchHire.Id);
+                        _logger.LogError(ex, "Error processing batch of SearchHires starting at index {Index}", i);
                     }
                 }
             }
@@ -192,6 +211,7 @@ namespace newApi.Services
                 throw;
             }
         }
-    }
 
+
+    }
 }

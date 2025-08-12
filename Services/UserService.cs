@@ -312,6 +312,15 @@ namespace newApi.Services
             };
         }
 
+
+        public async Task<decimal> GetUserBalanceAsync(int userId)
+        {
+            var user = await _context.Users.FirstOrDefaultAsync(z => z.Id == userId);
+            return user?.Balance ?? 0;
+        }
+
+
+
         private string GenerateJwtToken(User user)
         {
             var claims = new[]

@@ -42,6 +42,36 @@ public class UserController : ControllerBase
         }
     }
 
+
+
+
+    [Authorize]
+    [HttpGet("user-balance")]
+    public async Task<IActionResult> GetUserBalance()
+    {
+        try
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            {
+                return BadRequest(new { message = "Invalid or missing user ID." });
+            }
+
+            var balance = await _userService.GetUserBalanceAsync(userId);
+            if (balance == null)
+            {
+                return NotFound(new { message = "User or balance not found." });
+            }
+
+            return Ok(new { balance });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving user balance for user ID: {UserId}");
+            return StatusCode(500, new { message = "Failed to retrieve user balance." });
+        }
+    }
+
     [Authorize]
     [HttpPut("{userId}/block")]
     public async Task<IActionResult> BlockUser(int userId)

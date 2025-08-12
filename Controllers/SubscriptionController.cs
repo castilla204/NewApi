@@ -18,6 +18,7 @@ using Microsoft.Extensions.Logging;
 using newApi.Services;
 using SubscriptionService = Stripe.SubscriptionService;
 using newApi.Common;
+using Google.Api;
 
 namespace newApi.Controllers
 {
@@ -563,7 +564,183 @@ namespace newApi.Controllers
             }
         }
 
-        [HttpPost("webhook")]
+
+    [Authorize]
+    [HttpPost("load-money-service")]
+    public async Task<IActionResult> LoadMoneyService([FromBody] int serviceId)
+    {
+        _logger.LogInformation("LoadMoney endpoint invoked with serviceId: {ServiceId}", serviceId);
+
+        try
+        {
+            // Validate user ID
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            {
+                _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim ?? "null");
+                return Unauthorized(new { message = "Invalid user identification" });
+            }
+
+            // Find the service
+            var service = await _context.SearchServices.FindAsync(serviceId);
+            if (service == null)
+            {
+                _logger.LogError("Service not found for serviceId={ServiceId}", serviceId);
+                return NotFound(new { message = "Service not found" });
+            }
+
+            // Validate service price
+            if (service.Price <= 0 || service.Price > 1000)
+            {
+                _logger.LogError("Invalid service price: {Price} for serviceId={ServiceId}", service.Price, serviceId);
+                return BadRequest(new { message = "Service price must be between 0.01 and 1000.00" });
+            }
+
+            // Find the user
+            var user = await _context.Users.FindAsync(userId);
+            if (user == null)
+            {
+                _logger.LogError("User not found for userId={UserId}", userId);
+                return NotFound(new { message = "User not found" });
+            }
+
+            // Configure Stripe session
+            var domain = "https://atrapo.io";
+            var options = new SessionCreateOptions
+            {
+                PaymentMethodTypes = new List<string> { "card" },
+                LineItems = new List<SessionLineItemOptions>
+            {
+                new SessionLineItemOptions
+                {
+                    PriceData = new SessionLineItemPriceDataOptions
+                    {
+                        Currency = "eur",
+                        UnitAmount = (long)(service.Price * 100), // Convert to cents
+                        ProductData = new SessionLineItemPriceDataProductDataOptions
+                        {
+                            Name = "Load Money" // Use service name or fallback
+                        }
+                    },
+                    Quantity = 1
+                }
+            },
+                Mode = "payment",
+                SuccessUrl = $"{domain}/success",
+                CancelUrl = $"{domain}/cancel",
+                CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "unknown@example.com", // Fallback email
+                Metadata = new Dictionary<string, string>
+            {
+                { "userId", userId.ToString() },
+                { "serviceId", serviceId.ToString() },
+                { "amount", service.Price.ToString() }
+            }
+            };
+
+            // Create Stripe session
+            var stripeService = new SessionService();
+            Session session;
+            try
+            {
+                session = await stripeService.CreateAsync(options);
+                _logger.LogInformation("Stripe Checkout session created: sessionId={SessionId}, url={SessionUrl}", session.Id, session.Url);
+            }
+            catch (StripeException ex)
+            {
+                _logger.LogError(ex, "Stripe error creating checkout session for userId={UserId}, serviceId={ServiceId}: {ErrorMessage}", userId, serviceId, ex.Message);
+                return StatusCode(500, new { message = ex.Message });
+            }
+
+            return Ok(new { url = session.Url });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating load money session for serviceId={ServiceId}: {ErrorMessage}", serviceId, ex.Message);
+            return StatusCode(500, new { message = "Failed to create load money session" });
+        }
+    }
+
+    //[HttpPost("load-money")]
+    //public async Task<IActionResult> LoadMone([FromBody] LoadMoneyDto request)
+    //{
+    //    _logger.LogInformation("LoadMoney endpoint invoked with amount: {Amount}", request.Amount);
+
+    //    try
+    //    {
+    //        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+    //        if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+    //        {
+    //            _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+    //            return Unauthorized(new { message = "Invalid user identification" });
+    //        }
+
+    //        if (request.Amount <= 0 || request.Amount > 1000)
+    //        {
+    //            _logger.LogError("Invalid amount: {Amount}", request.Amount);
+    //            return BadRequest(new { message = "Amount must be between 0.01 and 1000" });
+    //        }
+
+    //        var user = await _context.Users.FindAsync(userId);
+    //        if (user == null)
+    //        {
+    //            _logger.LogError("User not found for userId={UserId}", userId);
+    //            return NotFound(new { message = "User not found" });
+    //        }
+
+    //        var domain = "https://atrapo.io";
+    //        var options = new SessionCreateOptions
+    //        {
+    //            PaymentMethodTypes = new List<string> { "card" },
+    //            LineItems = new List<SessionLineItemOptions>
+    //            {
+    //                new SessionLineItemOptions
+    //                {
+    //                    PriceData = new SessionLineItemPriceDataOptions
+    //                    {
+    //                        Currency = "eur",
+    //                        UnitAmount = (long)(request.Amount * 100),
+    //                        ProductData = new SessionLineItemPriceDataProductDataOptions
+    //                        {
+    //                            Name = "Load Money"
+    //                        }
+    //                    },
+    //                    Quantity = 1
+    //                }
+    //            },
+    //            Mode = "payment",
+    //            SuccessUrl = domain + "/success",
+    //            CancelUrl = domain + "/cancel",
+    //            CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value,
+    //            Metadata = new Dictionary<string, string>
+    //            {
+    //                { "userId", userId.ToString() },
+    //                { "amount", request.Amount.ToString() }
+    //            }
+    //        };
+
+    //        var service = new SessionService();
+    //        Session session;
+    //        try
+    //        {
+    //            session = await service.CreateAsync(options);
+    //            _logger.LogInformation("Stripe Checkout session created: sessionId={SessionId}, url={SessionUrl}", session.Id, session.Url);
+    //        }
+    //        catch (StripeException e)
+    //        {
+    //            _logger.LogError(e, "Stripe error creating checkout session: {ErrorMessage}", e.Message);
+    //            return StatusCode(500, new { message = e.Message });
+    //        }
+
+    //        return Ok(new { url = session.Url });
+    //    }
+    //    catch (Exception ex)
+    //    {
+    //        _logger.LogError(ex, "Error creating load money session: {ErrorMessage}", ex.Message);
+    //        return StatusCode(500, new { message = "Failed to create load money session" });
+    //    }
+    //}
+
+    [HttpPost("webhook")]
         [AllowAnonymous]
         public async Task<IActionResult> HandleStripeWebhook()
         {

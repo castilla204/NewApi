@@ -17,5 +17,6 @@ namespace newApi.Services
         Task<(bool success, string token, User user, ExpertProfile expertProfile)> BecomeExpert(int userId, BecomeExpertRequestDto request);
         Task<ExpertProfileDto> GetExpertProfile(int userId);
         Task<User> GetUserAsync(int userId);
+        Task<decimal> GetUserBalanceAsync(int userId);
     }
 }

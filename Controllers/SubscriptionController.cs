@@ -564,110 +564,103 @@ namespace newApi.Controllers
             }
         }
 
-
-    [Authorize]
-    [HttpPost("load-money-service")]
-    public async Task<IActionResult> LoadMoneyService([FromBody] int serviceId)
-    {
-        _logger.LogInformation("LoadMoney endpoint invoked with serviceId: {ServiceId}", serviceId);
-
-        try
+        [Authorize]
+        [HttpPost("load-money-service")]
+        public async Task<IActionResult> LoadMoneyService([FromBody] LoadMoneyServiceDto request)
         {
-            // Validate user ID
-            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-            {
-                _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim ?? "null");
-                return Unauthorized(new { message = "Invalid user identification" });
-            }
+            _logger.LogInformation("LoadMoneyService endpoint invoked with serviceId: {ServiceId}, amount: {Amount}", request.ServiceId, request.Amount);
 
-            // Find the service
-            var service = await _context.SearchServices.FindAsync(serviceId);
-            if (service == null)
-            {
-                _logger.LogError("Service not found for serviceId={ServiceId}", serviceId);
-                return NotFound(new { message = "Service not found" });
-            }
-
-            // Validate service price
-            if (service.Price <= 0 || service.Price > 1000)
-            {
-                _logger.LogError("Invalid service price: {Price} for serviceId={ServiceId}", service.Price, serviceId);
-                return BadRequest(new { message = "Service price must be between 0.01 and 1000.00" });
-            }
-
-            // Find the user
-            var user = await _context.Users.FindAsync(userId);
-            if (user == null)
-            {
-                _logger.LogError("User not found for userId={UserId}", userId);
-                return NotFound(new { message = "User not found" });
-            }
-
-            // Configure Stripe session
-            var domain = "https://atrapo.io";
-            var options = new SessionCreateOptions
-            {
-                PaymentMethodTypes = new List<string> { "card" },
-                LineItems = new List<SessionLineItemOptions>
-            {
-                new SessionLineItemOptions
-                {
-                    PriceData = new SessionLineItemPriceDataOptions
-                    {
-                        Currency = "eur",
-                        UnitAmount = (long)(service.Price * 100), // Convert to cents
-                        ProductData = new SessionLineItemPriceDataProductDataOptions
-                        {
-                            Name = "Load Money" // Use service name or fallback
-                        }
-                    },
-                    Quantity = 1
-                }
-            },
-                Mode = "payment",
-                SuccessUrl = $"{domain}/success",
-                CancelUrl = $"{domain}/cancel",
-                CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "unknown@example.com", // Fallback email
-                Metadata = new Dictionary<string, string>
-            {
-                { "userId", userId.ToString() },
-                { "serviceId", serviceId.ToString() },
-                { "amount", service.Price.ToString() }
-            }
-            };
-
-            // Create Stripe session
-            var stripeService = new SessionService();
-            Session session;
             try
             {
-                session = await stripeService.CreateAsync(options);
-                _logger.LogInformation("Stripe Checkout session created: sessionId={SessionId}, url={SessionUrl}", session.Id, session.Url);
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim ?? "null");
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var service = await _context.SearchServices.FindAsync(request.ServiceId);
+                if (service == null)
+                {
+                    _logger.LogError("Service not found for serviceId={ServiceId}", request.ServiceId);
+                    return NotFound(new { message = "Service not found" });
+                }
+
+                if (service.Price != request.Amount || service.Price <= 0 || service.Price > 1000)
+                {
+                    _logger.LogError("Invalid service price: expected={Expected}, received={Received} for serviceId={ServiceId}", service.Price, request.Amount, request.ServiceId);
+                    return BadRequest(new { message = "Service price mismatch or invalid amount (must be between 0.01 and 1000.00)" });
+                }
+
+                var user = await _context.Users.FindAsync(userId);
+                if (user == null)
+                {
+                    _logger.LogError("User not found for userId={UserId}", userId);
+                    return NotFound(new { message = "User not found" });
+                }
+
+                var domain = "https://atrapo.io";
+                var options = new SessionCreateOptions
+                {
+                    PaymentMethodTypes = new List<string> { "card" },
+                    LineItems = new List<SessionLineItemOptions>
+                    {
+                        new SessionLineItemOptions
+                        {
+                            PriceData = new SessionLineItemPriceDataOptions
+                            {
+                                Currency = "eur",
+                                UnitAmount = (long)(service.Price * 100),
+                                ProductData = new SessionLineItemPriceDataProductDataOptions
+                                {
+                                    Name = $"Payment for Service {service.Id}"
+                                }
+                            },
+                            Quantity = 1
+                        }
+                    },
+                    Mode = "payment",
+                    SuccessUrl = $"{domain}/success?userId={userId}",
+                    CancelUrl = $"{domain}/cancel",
+                    CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "unknown@example.com",
+                    Metadata = new Dictionary<string, string>
+                    {
+                        { "userId", userId.ToString() },
+                        { "serviceId", request.ServiceId.ToString() },
+                        { "amount", request.Amount.ToString() },
+                        { "pendingHire", "true" }
+                    }
+                };
+
+                var stripeService = new SessionService();
+                Session session;
+                try
+                {
+                    session = await stripeService.CreateAsync(options);
+                    _logger.LogInformation("Stripe Checkout session created: sessionId={SessionId}, url={SessionUrl}", session.Id, session.Url);
+                }
+                catch (StripeException ex)
+                {
+                    _logger.LogError(ex, "Stripe error creating checkout session for userId={UserId}, serviceId={ServiceId}: {ErrorMessage}", userId, request.ServiceId, ex.Message);
+                    return StatusCode(500, new { message = ex.Message });
+                }
+
+                return Ok(new { url = session.Url });
             }
-            catch (StripeException ex)
+            catch (Exception ex)
             {
-                _logger.LogError(ex, "Stripe error creating checkout session for userId={UserId}, serviceId={ServiceId}: {ErrorMessage}", userId, serviceId, ex.Message);
-                return StatusCode(500, new { message = ex.Message });
+                _logger.LogError(ex, "Error creating load money session for serviceId={ServiceId}: {ErrorMessage}", request.ServiceId, ex.Message);
+                return StatusCode(500, new { message = "Failed to create load money session" });
             }
-
-            return Ok(new { url = session.Url });
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error creating load money session for serviceId={ServiceId}: {ErrorMessage}", serviceId, ex.Message);
-            return StatusCode(500, new { message = "Failed to create load money session" });
-        }
-    }
 
-
-    [HttpPost("webhook")]
+        [HttpPost("webhook")]
         [AllowAnonymous]
         public async Task<IActionResult> HandleStripeWebhook()
         {
             var json = await new StreamReader(Request.Body).ReadToEndAsync();
             var signatureHeader = Request.Headers["Stripe-Signature"];
-            _logger.LogInformation("Received webhook with signature: {SignatureHeader}", signatureHeader);
+            _logger.LogInformation("Received webhook with signature: {SignatureHeader}, payload: {Payload}", signatureHeader, json);
 
             try
             {
@@ -678,33 +671,40 @@ namespace newApi.Controllers
                 {
                     case "checkout.session.completed":
                         var session = stripeEvent.Data.Object as Session;
-                        if (session != null)
+                        if (session != null && session.Mode == "payment")
                         {
-                            if (session.Mode == "payment")
+                            _logger.LogInformation("Processing payment session: sessionId={SessionId}, metadata={Metadata}", session.Id, JsonSerializer.Serialize(session.Metadata));
+                            if (int.TryParse(session.Metadata.GetValueOrDefault("userId", "0"), out int userId) &&
+                                decimal.TryParse(session.Metadata.GetValueOrDefault("amount", "0"), out decimal amount) &&
+                                bool.TryParse(session.Metadata.GetValueOrDefault("pendingHire", "false"), out bool pendingHire))
                             {
-                                if (int.TryParse(session.Metadata["userId"], out int userId) &&
-                                    decimal.TryParse(session.Metadata["amount"], out decimal amount))
+                                if (pendingHire && int.TryParse(session.Metadata.GetValueOrDefault("serviceId", "0"), out int serviceId))
                                 {
-                                    await HandleLoadMoneyCompleted(userId, amount);
+                                    _logger.LogInformation("Processing pending hire for userId={UserId}, serviceId={ServiceId}, amount={Amount}", userId, serviceId, amount);
+                                    await HandlePendingHireCompleted(userId, amount, serviceId, session.Metadata);
                                 }
                                 else
                                 {
-                                    _logger.LogError("Invalid metadata for load-money: userId={UserId}, amount={Amount}",
-                                        session.Metadata["userId"], session.Metadata["amount"]);
-                                    return BadRequest(new { error = "Invalid metadata" });
+                                    _logger.LogInformation("Processing load money for userId={UserId}, amount={Amount}", userId, amount);
+                                    await HandleLoadMoneyCompleted(userId, amount);
                                 }
                             }
-                            else if (session.Mode == "subscription")
+                            else
                             {
-                                if (!int.TryParse(session.Metadata["userId"], out int userId) ||
-                                    !int.TryParse(session.Metadata["planId"], out int planId) ||
-                                    !bool.TryParse(session.Metadata["isYearly"], out bool isYearly))
-                                {
-                                    _logger.LogError("Invalid metadata in Stripe session. Metadata: {Metadata}", JsonSerializer.Serialize(session.Metadata));
-                                    return BadRequest(new { error = "Invalid metadata" });
-                                }
-                                await HandleCheckoutSessionCompleted(userId, planId, isYearly, session.SubscriptionId);
+                                _logger.LogError("Invalid metadata for payment session: sessionId={SessionId}, metadata={Metadata}", session.Id, JsonSerializer.Serialize(session.Metadata));
+                                return BadRequest(new { error = "Invalid metadata format" });
                             }
+                        }
+                        else if (session != null && session.Mode == "subscription")
+                        {
+                            if (!int.TryParse(session.Metadata.GetValueOrDefault("userId", "0"), out int userId) ||
+                                !int.TryParse(session.Metadata.GetValueOrDefault("planId", "0"), out int planId) ||
+                                !bool.TryParse(session.Metadata.GetValueOrDefault("isYearly", "false"), out bool isYearly))
+                            {
+                                _logger.LogError("Invalid metadata in subscription session: sessionId={SessionId}, metadata={Metadata}", session.Id, JsonSerializer.Serialize(session.Metadata));
+                                return BadRequest(new { error = "Invalid metadata format" });
+                            }
+                            await HandleCheckoutSessionCompleted(userId, planId, isYearly, session.SubscriptionId);
                         }
                         break;
 
@@ -720,6 +720,10 @@ namespace newApi.Controllers
                                 _logger.LogInformation("Account updated for expert userId={UserId}, accountId={AccountId}, enabled={Enabled}",
                                     expertProfile.UserId, account.Id, isAccountEnabled);
                                 await _context.SaveChangesAsync();
+                            }
+                            else
+                            {
+                                _logger.LogWarning("No expert profile found for accountId={AccountId}", account.Id);
                             }
                         }
                         break;
@@ -738,6 +742,10 @@ namespace newApi.Controllers
                                 _logger.LogError("Transfer failed for searchHireId={SearchHireId}, transferId={TransferId}",
                                     searchHire.Id, transfer.Id);
                             }
+                            else
+                            {
+                                _logger.LogWarning("No SearchHire found for transferId={TransferId}", transfer.Id);
+                            }
                         }
                         break;
 
@@ -747,6 +755,10 @@ namespace newApi.Controllers
                         {
                             await HandleSubscriptionUpdated(subscriptionUpdated);
                         }
+                        else
+                        {
+                            _logger.LogWarning("No subscription data in customer.subscription.updated event");
+                        }
                         break;
 
                     case "customer.subscription.deleted":
@@ -754,6 +766,10 @@ namespace newApi.Controllers
                         if (subscriptionDeleted != null)
                         {
                             await HandleSubscriptionCanceled(subscriptionDeleted);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("No subscription data in customer.subscription.deleted event");
                         }
                         break;
 
@@ -763,6 +779,10 @@ namespace newApi.Controllers
                         {
                             await HandlePaymentSucceeded(invoiceSucceeded);
                         }
+                        else
+                        {
+                            _logger.LogWarning("No invoice data in invoice.payment_succeeded event");
+                        }
                         break;
 
                     case "invoice.payment_failed":
@@ -770,6 +790,10 @@ namespace newApi.Controllers
                         if (invoiceFailed != null)
                         {
                             await HandlePaymentFailed(invoiceFailed);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("No invoice data in invoice.payment_failed event");
                         }
                         break;
 
@@ -782,13 +806,186 @@ namespace newApi.Controllers
             }
             catch (StripeException e)
             {
-                _logger.LogError(e, "Stripe webhook error: {ErrorMessage}", e.Message);
+                _logger.LogError(e, "Stripe webhook error: {ErrorMessage}, payload: {Payload}", e.Message, json);
                 return BadRequest(new { error = e.Message });
             }
             catch (Exception e)
             {
-                _logger.LogError(e, "General webhook error: {ErrorMessage}", e.Message);
+                _logger.LogError(e, "General webhook error: {ErrorMessage}, payload: {Payload}", e.Message, json);
                 return StatusCode(500, new { error = "Internal server error" });
+            }
+        }
+
+        private async Task HandlePendingHireCompleted(int userId, decimal amount, int serviceId, Dictionary<string, string> metadata)
+        {
+            _logger.LogInformation("Handling pending hire completed for userId={UserId}, serviceId={ServiceId}, amount={Amount}", userId, serviceId, amount);
+
+            var user = await _context.Users.FindAsync(userId);
+            if (user == null)
+            {
+                _logger.LogError("User not found for userId={UserId}", userId);
+                throw new Exception("User not found");
+            }
+
+            var service = await _context.SearchServices.FindAsync(serviceId);
+            if (service == null)
+            {
+                _logger.LogError("Service not found for serviceId={ServiceId}", serviceId);
+                throw new Exception("Service not found");
+            }
+
+            if (!metadata.TryGetValue("searchData", out var searchDataJson) || !metadata.TryGetValue("parameters", out var parametersJson))
+            {
+                _logger.LogError("Missing searchData or parameters in metadata for userId={UserId}, serviceId={ServiceId}", userId, serviceId);
+                throw new Exception("Missing search data or parameters in metadata");
+            }
+
+            CreateSearchDto searchDto;
+            CreateSearchParameterDto parameterDto;
+            try
+            {
+                searchDto = JsonSerializer.Deserialize<CreateSearchDto>(searchDataJson);
+                parameterDto = JsonSerializer.Deserialize<CreateSearchParameterDto>(parametersJson);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogError(ex, "Error deserializing search data or parameters for userId={UserId}", userId);
+                throw new Exception("Invalid search data or parameters format");
+            }
+
+            if (searchDto == null || parameterDto == null)
+            {
+                _logger.LogError("Deserialized searchDto or parameterDto is null for userId={UserId}", userId);
+                throw new Exception("Invalid search data or parameters");
+            }
+
+            var activeSearchCount = await _context.Searches.CountAsync(s => s.UserId == userId && s.IsActive);
+            var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
+            if (activeSearchCount >= subscriptionLimits.MaxSearches)
+            {
+                _logger.LogError("User has reached max searches: userId={UserId}, maxSearches={MaxSearches}", userId, subscriptionLimits.MaxSearches);
+                throw new Exception($"User has reached the limit of {subscriptionLimits.MaxSearches} active searches");
+            }
+            if (searchDto.Frequency < subscriptionLimits.MinSearchInterval)
+            {
+                _logger.LogError("Search frequency below minimum: userId={UserId}, frequency={Frequency}, minInterval={MinInterval}", userId, searchDto.Frequency, subscriptionLimits.MinSearchInterval);
+                throw new Exception($"Minimum search interval is {subscriptionLimits.MinSearchInterval} hours");
+            }
+
+            if (!user.PhoneVerified)
+            {
+                _logger.LogError("Phone verification required for userId={UserId}", userId);
+                throw new Exception("Phone verification required");
+            }
+
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                // Update user balance
+                user.Balance += amount;
+                var depositTransaction = new FinancialTransaction
+                {
+                    UserId = userId,
+                    Amount = amount,
+                    TransactionType = "Deposit",
+                    CreatedAt = DateTime.UtcNow
+                };
+                _context.FinancialTransactions.Add(depositTransaction);
+                await _context.SaveChangesAsync();
+
+                // Create search
+                var search = new Search
+                {
+                    UserId = userId,
+                    Frequency = searchDto.Frequency,
+                    Title = searchDto.Title,
+                    Description = searchDto.Description,
+                    IsActive = searchDto.IsActive,
+                    NextExecution = DateTime.UtcNow,
+                    StartDate = searchDto.StartDate,
+                    CreatedAt = DateTime.UtcNow
+                };
+                await _context.Searches.AddAsync(search);
+                await _context.SaveChangesAsync();
+
+                // Create search parameters
+                var searchParameter = new SearchParameter
+                {
+                    Keywords = parameterDto.Keywords,
+                    UserSearch = parameterDto.UserSearch,
+                    Latitude = parameterDto.Latitude,
+                    Longitude = parameterDto.Longitude,
+                    ShippingAvailable = parameterDto.ShippingAvailable,
+                    StrictMatchOnly = parameterDto.StrictMatchOnly,
+                    Category = parameterDto.Category,
+                    LocationRange = parameterDto.LocationRange,
+                    MinPrice = parameterDto.MinPrice,
+                    MaxPrice = parameterDto.MaxPrice,
+                    BrandId = parameterDto.BrandId,
+                    ModelId = parameterDto.ModelId,
+                    ServiceTypeId = parameterDto.ServiceTypeId,
+                    SearchId = search.Id
+                };
+                await _context.SearchParameters.AddAsync(searchParameter);
+                await _context.SaveChangesAsync();
+
+                // Create platform associations
+                if (parameterDto.PlatformIds != null && parameterDto.PlatformIds.Any())
+                {
+                    var platforms = await _context.Platforms
+                        .Where(p => parameterDto.PlatformIds.Contains(p.Id))
+                        .ToListAsync();
+                    if (platforms.Count != parameterDto.PlatformIds.Count)
+                    {
+                        throw new Exception("Some platform IDs are invalid");
+                    }
+                    foreach (var platform in platforms)
+                    {
+                        _context.SearchParameterPlatforms.Add(new SearchParameterPlatform
+                        {
+                            SearchParameterId = searchParameter.SearchParameterId,
+                            PlatformId = platform.Id
+                        });
+                    }
+                }
+
+                // Create search hire
+                var searchHire = new SearchHire
+                {
+                    ClientId = userId,
+                    ExpertId = service.ExpertProfileId,
+                    SearchServiceId = service.Id,
+                    SearchId = search.Id,
+                    Status = SearchHireStatus.Pending.ToStringValue(),
+                    Amount = service.Price,
+                    CreatedAt = DateTime.UtcNow,
+                    CompletionDeadline = DateTime.UtcNow.AddDays(7)
+                };
+                _context.SearchHires.Add(searchHire);
+
+                // Deduct service price from balance
+                user.Balance -= service.Price;
+                var paymentTransaction = new FinancialTransaction
+                {
+                    UserId = userId,
+                    Amount = -service.Price,
+                    TransactionType = "ServicePayment",
+                    RelatedEntityType = "SearchHire",
+                    RelatedEntityId = searchHire.Id,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _context.FinancialTransactions.Add(paymentTransaction);
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                _logger.LogInformation("Pending hire completed successfully for userId={UserId}, searchId={SearchId}, searchHireId={SearchHireId}", userId, search.Id, searchHire.Id);
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogError(ex, "Error processing pending hire for userId={UserId}, serviceId={ServiceId}", userId, serviceId);
+                throw;
             }
         }
 
@@ -923,7 +1120,7 @@ namespace newApi.Controllers
                 if (request.ClientApproved == null)
                 {
                     _logger.LogError("ClientApproved is required for client action: searchHireId={SearchHireId}", searchHire.Id);
-                    return BadRequest(new { message = "ClientApproved is required" });
+                    return BadRequest(new { error = "ClientApproved is required" });
                 }
 
                 using var transaction = await _context.Database.BeginTransactionAsync();
@@ -1384,7 +1581,7 @@ namespace newApi.Controllers
             if (user == null)
             {
                 _logger.LogError("User not found for userId={UserId}", userId);
-                return;
+                throw new Exception("User not found");
             }
 
             using var transaction = await _context.Database.BeginTransactionAsync();
@@ -1398,8 +1595,8 @@ namespace newApi.Controllers
                     TransactionType = "Deposit",
                     CreatedAt = DateTime.UtcNow
                 };
-
                 _context.FinancialTransactions.Add(financialTransaction);
+
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
 
@@ -1591,7 +1788,11 @@ namespace newApi.Controllers
         {
             public int SearchHireId { get; set; }
         }
-
+        public class LoadMoneyServiceDto
+        {
+            public int ServiceId { get; set; }
+            public decimal Amount { get; set; }
+        }
         public class DisputeServiceDto
         {
             public int SearchHireId { get; set; }

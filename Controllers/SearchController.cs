@@ -8,6 +8,10 @@ using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models;
+using newApi.Common;
+using Stripe.Checkout;
+using Stripe;
+using System.Text.Json;
 
 namespace newApi.Controllers
 {
@@ -95,6 +99,210 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = ex.Message });
             }
         }
+
+
+
+        [HttpPost("create-with-hire")]
+        public async Task<IActionResult> CreateSearchWithHire([FromBody] CreateSearchWithHireDto request)
+        {
+            try
+            {
+                var searchDto = request.SearchDto;
+                var parameterDto = request.ParameterDto;
+
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var activeSearchCount = await _context.Searches.CountAsync(s => s.UserId == userId && s.IsActive);
+                var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
+                if (activeSearchCount >= subscriptionLimits.MaxSearches)
+                {
+                    return StatusCode(403, new { message = $"You've reached your plan's limit of {subscriptionLimits.MaxSearches} active searches" });
+                }
+                if (searchDto.Frequency < subscriptionLimits.MinSearchInterval)
+                {
+                    return StatusCode(403, new { message = $"Minimum search interval for your plan is {subscriptionLimits.MinSearchInterval} hours" });
+                }
+
+                var user = await _userService.GetUserAsync(userId);
+                if (user == null)
+                {
+                    return NotFound(new { message = "User not found" });
+                }
+
+                if (!user.PhoneVerified)
+                {
+                    return StatusCode(403, new { message = "Phone verification required to create searches" });
+                }
+
+                var service = await _context.SearchServices.FindAsync(searchDto.ServiceId);
+                if (service == null)
+                {
+                    return NotFound(new { message = "Service not found" });
+                }
+
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    if (user.Balance >= service.Price)
+                    {
+                        var search = new Search
+                        {
+                            UserId = userId,
+                            Frequency = searchDto.Frequency,
+                            Title = searchDto.Title,
+                            Description = searchDto.Description,
+                            IsActive = searchDto.IsActive,
+                            NextExecution = DateTime.UtcNow,
+                            StartDate = searchDto.StartDate,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        await _context.Searches.AddAsync(search);
+                        await _context.SaveChangesAsync(); // Save Search to generate Search.Id
+
+                        var searchParameter = new SearchParameter
+                        {
+                            Keywords = parameterDto.Keywords,
+                            UserSearch = parameterDto.UserSearch,
+                            Latitude = parameterDto.Latitude,
+                            Longitude = parameterDto.Longitude,
+                            ShippingAvailable = parameterDto.ShippingAvailable,
+                            StrictMatchOnly = parameterDto.StrictMatchOnly,
+                            Category = parameterDto.Category,
+                            LocationRange = parameterDto.LocationRange,
+                            MinPrice = parameterDto.MinPrice,
+                            MaxPrice = parameterDto.MaxPrice,
+                            BrandId = parameterDto.BrandId,
+                            ModelId = parameterDto.ModelId,
+                            ServiceTypeId = parameterDto.ServiceTypeId,
+                            SearchId = search.Id
+                        };
+                        await _context.SearchParameters.AddAsync(searchParameter);
+                        await _context.SaveChangesAsync(); // Save SearchParameter to generate SearchParameterId
+
+                        if (parameterDto.PlatformIds != null && parameterDto.PlatformIds.Any())
+                        {
+                            var platforms = await _context.Platforms
+                                .Where(p => parameterDto.PlatformIds.Contains(p.Id))
+                                .ToListAsync();
+                            if (platforms.Count != parameterDto.PlatformIds.Count)
+                            {
+                                return BadRequest(new { message = "Some platform IDs are invalid" });
+                            }
+                            foreach (var platform in platforms)
+                            {
+                                _context.SearchParameterPlatforms.Add(new SearchParameterPlatform
+                                {
+                                    SearchParameterId = searchParameter.SearchParameterId,
+                                    PlatformId = platform.Id
+                                });
+                            }
+                        }
+
+                        var expertProfile = await _context.ExpertProfiles
+                        .FirstOrDefaultAsync(z => z.Id == service.ExpertProfileId);
+
+                        var expertuserid = expertProfile?.UserId ?? 0;
+
+
+                        var searchHire = new SearchHire
+                        {
+                            ClientId = userId,
+                            ExpertId = expertuserid,
+                            SearchServiceId = service.Id,
+                            SearchId = search.Id,
+                            Status = SearchHireStatus.Pending.ToStringValue(),
+                            Amount = service.Price,
+                            CreatedAt = DateTime.UtcNow,
+                            CompletionDeadline = DateTime.UtcNow.AddDays(7)
+                        };
+                        _context.SearchHires.Add(searchHire);
+
+                        user.Balance -= service.Price;
+                        _context.FinancialTransactions.Add(new FinancialTransaction
+                        {
+                            UserId = userId,
+                            Amount = -service.Price,
+                            TransactionType = "ServicePayment",
+                            RelatedEntityType = "SearchHire",
+                            RelatedEntityId = searchHire.Id,
+                            CreatedAt = DateTime.UtcNow
+                        });
+
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+
+                        return Ok(new { message = "Search created and service hired successfully", searchId = search.Id, searchHireId = searchHire.Id });
+                    }
+                    else
+                    {
+                        var domain = "https://atrapo.io";
+                        var options = new SessionCreateOptions
+                        {
+                            PaymentMethodTypes = new List<string> { "card" },
+                            LineItems = new List<SessionLineItemOptions>
+                            {
+                                new SessionLineItemOptions
+                                {
+                                    PriceData = new SessionLineItemPriceDataOptions
+                                    {
+                                        Currency = "eur",
+                                        UnitAmount = (long)(service.Price * 100),
+                                        ProductData = new SessionLineItemPriceDataProductDataOptions
+                                        {
+                                            Name = $"Payment for Service {service.Id}"
+                                        }
+                                    },
+                                    Quantity = 1
+                                }
+                            },
+                            Mode = "payment",
+                            SuccessUrl = $"{domain}/success?userId={userId}&serviceId={service.Id}",
+                            CancelUrl = $"{domain}/cancel",
+                            CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "unknown@example.com",
+                            Metadata = new Dictionary<string, string>
+                            {
+                                { "userId", userId.ToString() },
+                                { "serviceId", service.Id.ToString() },
+                                { "amount", service.Price.ToString() },
+                                { "pendingHire", "true" },
+                                { "searchData", JsonSerializer.Serialize(searchDto) },
+                                { "parameters", JsonSerializer.Serialize(parameterDto) }
+                            }
+                        };
+
+                        var serviceStripe = new SessionService();
+                        var session = await serviceStripe.CreateAsync(options);
+                        await transaction.CommitAsync();
+
+                        return Ok(new { url = session.Url });
+                    }
+                }
+                catch (StripeException ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Stripe error creating checkout session for userId={UserId}, serviceId={ServiceId}", userId, searchDto.ServiceId);
+                    return StatusCode(500, new { message = ex.Message });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Error creating search with hire for userId={UserId}", userId);
+                    return StatusCode(500, new { message = ex.Message });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error in CreateSearchWithHire for userId={UserId}");
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
+
+
 
         [HttpPut("{searchId}/revise")]
         public async Task<IActionResult> MarkAsRevised(int searchId)
@@ -431,5 +639,10 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = ex.Message });
             }
         }
+    }
+    public class CreateSearchWithHireDto
+    {
+        public CreateSearchDto SearchDto { get; set; }
+        public CreateSearchParameterDto ParameterDto { get; set; }
     }
 }

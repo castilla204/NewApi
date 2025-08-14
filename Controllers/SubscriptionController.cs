@@ -949,11 +949,16 @@ namespace newApi.Controllers
                     }
                 }
 
+                var expertProfile = await _context.ExpertProfiles
+                       .FirstOrDefaultAsync(z => z.Id == service.ExpertProfileId);
+
+                var expertuserid = expertProfile?.UserId ?? 0;
+
                 // Create search hire
                 var searchHire = new SearchHire
                 {
                     ClientId = userId,
-                    ExpertId = service.ExpertProfileId,
+                    ExpertId = expertuserid,
                     SearchServiceId = service.Id,
                     SearchId = search.Id,
                     Status = SearchHireStatus.Pending.ToStringValue(),

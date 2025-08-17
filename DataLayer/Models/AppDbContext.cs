@@ -39,6 +39,8 @@ namespace newApi.DataLayer.Models
         public DbSet<ServiceType> ServiceTypes { get; set; }
         public DbSet<Conversation> Conversations { get; set; }
         public DbSet<Message> Messages { get; set; }
+        public DbSet<MessageAttachment> MessageAttachments { get; set; }
+        public DbSet<SearchHireDeliverable> SearchHireDeliverables { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -72,7 +74,7 @@ namespace newApi.DataLayer.Models
                 .HasOne(sp => sp.ServiceType)
                 .WithMany()
                 .HasForeignKey(sp => sp.ServiceTypeId)
-                .OnDelete(DeleteBehavior.Restrict); // Added: SearchParameter-ServiceType relationship
+                .OnDelete(DeleteBehavior.Restrict);
 
             modelBuilder.Entity<SearchResult>()
                 .HasOne(sr => sr.Search)
@@ -331,24 +333,63 @@ namespace newApi.DataLayer.Models
             });
 
             modelBuilder.Entity<Message>(entity =>
+                {
+                    entity.Property(e => e.Content)
+                        .HasMaxLength(5000); // Remove IsRequired() to allow NULL
+                    entity.Property(e => e.SentAt)
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                    entity.Property(e => e.IsRead)
+                        .HasDefaultValue(false);
+                    entity.Property(e => e.LocationLatitude)
+                        .HasMaxLength(50);
+                    entity.Property(e => e.LocationLongitude)
+                        .HasMaxLength(50);
+
+                    entity.HasOne(m => m.Conversation)
+                        .WithMany(c => c.Messages)
+                        .HasForeignKey(m => m.ConversationId)
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    entity.HasOne(m => m.Sender)
+                        .WithMany(u => u.MessagesSent)
+                        .HasForeignKey(m => m.SenderId)
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity<MessageAttachment>(entity =>
             {
-                entity.Property(e => e.Content)
+                entity.Property(e => e.Url)
                     .IsRequired()
-                    .HasMaxLength(5000);
-                entity.Property(e => e.SentAt)
-                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
-                entity.Property(e => e.IsRead)
-                    .HasDefaultValue(false);
+                    .HasMaxLength(500);
+                entity.Property(e => e.ObjectName)
+                    .IsRequired()
+                    .HasMaxLength(200);
+                entity.Property(e => e.Type)
+                    .IsRequired()
+                    .HasMaxLength(50);
 
-                entity.HasOne(m => m.Conversation)
-                    .WithMany(c => c.Messages)
-                    .HasForeignKey(m => m.ConversationId)
+                entity.HasOne(ma => ma.Message)
+                    .WithMany(m => m.Attachments)
+                    .HasForeignKey(ma => ma.MessageId)
                     .OnDelete(DeleteBehavior.Cascade);
+            });
 
-                entity.HasOne(m => m.Sender)
-                    .WithMany(u => u.MessagesSent)
-                    .HasForeignKey(m => m.SenderId)
-                    .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SearchHireDeliverable>(entity =>
+            {
+                entity.Property(e => e.Url)
+                    .IsRequired()
+                    .HasMaxLength(500);
+                entity.Property(e => e.ObjectName)
+                    .IsRequired()
+                    .HasMaxLength(200);
+                entity.Property(e => e.Type)
+                    .IsRequired()
+                    .HasMaxLength(50);
+
+                entity.HasOne(sd => sd.SearchHire)
+                    .WithMany(sh => sh.Deliverables)
+                    .HasForeignKey(sd => sd.SearchHireId)
+                    .OnDelete(DeleteBehavior.Cascade);
             });
         }
     }

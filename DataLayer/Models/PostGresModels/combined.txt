@@ -209,20 +209,44 @@ namespace newApi.DataLayer.Models.PostGresModels
 // --- Contenido de Message.cs ---
 ﻿namespace newApi.DataLayer.Models.PostGresModels
 {
+
+
     public class Message
     {
         public int Id { get; set; }
         public int ConversationId { get; set; } // Ties the message to a conversation
         public int SenderId { get; set; } // The user (client or expert) who sent the message
-        public string Content { get; set; } // The message text
+        public string? Content { get; set; } // The message text
         public DateTime SentAt { get; set; } = DateTime.UtcNow;
         public bool IsRead { get; set; } = false; // Tracks if the message has been read
+        public string? LocationLatitude { get; set; } // Latitude for shared location
+        public string? LocationLongitude { get; set; } // Longitude for shared location
 
         // Navigation properties
         public virtual Conversation Conversation { get; set; }
         public virtual User Sender { get; set; }
+        public virtual ICollection<MessageAttachment> Attachments { get; set; } = new List<MessageAttachment>();
     }
 }
+
+// --- Contenido de MessageAttachment.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class MessageAttachment
+    {
+        [Key]
+        public int Id { get; set; }
+        public int MessageId { get; set; }
+        public string Url { get; set; }
+        public string ObjectName { get; set; }
+        public string Type { get; set; } // "image", "video"
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public virtual Message Message { get; set; }
+    }
+}
+
 
 // --- Contenido de Notification.cs ---
 ﻿using System;
@@ -376,7 +400,7 @@ namespace newApi.DataLayer.Models.PostGresModels
     {
         public int Id { get; set; }
         public int ClientId { get; set; }
-        public int? ExpertId { get; set; } 
+        public int? ExpertId { get; set; }
         public int SearchServiceId { get; set; }
         public int SearchId { get; set; }
         public string Status { get; set; }
@@ -387,13 +411,34 @@ namespace newApi.DataLayer.Models.PostGresModels
         public DateTime? CompletionDeadline { get; set; }
         public bool? ClientApproved { get; set; }
         public virtual User Client { get; set; }
-        public virtual User? Expert { get; set; } 
+        public virtual User? Expert { get; set; }
         public virtual SearchService SearchService { get; set; }
         public virtual Search Search { get; set; }
         public virtual ICollection<Dispute> Disputes { get; set; }
         public virtual ICollection<Conversation> Conversations { get; set; } = new List<Conversation>();
+        public virtual ICollection<SearchHireDeliverable> Deliverables { get; set; } = new List<SearchHireDeliverable>();
     }
 
+}
+
+
+// --- Contenido de SearchHireDeliverable.cs ---
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
+{
+    public class SearchHireDeliverable
+    {
+        [Key]
+        public int Id { get; set; }
+        public int SearchHireId { get; set; }
+        public string Url { get; set; }
+        public string ObjectName { get; set; }
+        public string Type { get; set; } // "pdf", "video"
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        public virtual SearchHire SearchHire { get; set; }
+    }
 }
 
 

@@ -861,16 +861,18 @@ namespace newApi.Controllers
 
             var activeSearchCount = await _context.Searches.CountAsync(s => s.UserId == userId && s.IsActive);
             var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
-            if (activeSearchCount >= subscriptionLimits.MaxSearches)
-            {
-                _logger.LogError("User has reached max searches: userId={UserId}, maxSearches={MaxSearches}", userId, subscriptionLimits.MaxSearches);
-                throw new Exception($"User has reached the limit of {subscriptionLimits.MaxSearches} active searches");
-            }
-            if (searchDto.Frequency < subscriptionLimits.MinSearchInterval)
-            {
-                _logger.LogError("Search frequency below minimum: userId={UserId}, frequency={Frequency}, minInterval={MinInterval}", userId, searchDto.Frequency, subscriptionLimits.MinSearchInterval);
-                throw new Exception($"Minimum search interval is {subscriptionLimits.MinSearchInterval} hours");
-            }
+
+            //PARA MANEJAR SUSCRIPCIONES
+            //if (activeSearchCount >= subscriptionLimits.MaxSearches)
+            //{
+            //    _logger.LogError("User has reached max searches: userId={UserId}, maxSearches={MaxSearches}", userId, subscriptionLimits.MaxSearches);
+            //    throw new Exception($"User has reached the limit of {subscriptionLimits.MaxSearches} active searches");
+            //}
+            //if (searchDto.Frequency < subscriptionLimits.MinSearchInterval)
+            //{
+            //    _logger.LogError("Search frequency below minimum: userId={UserId}, frequency={Frequency}, minInterval={MinInterval}", userId, searchDto.Frequency, subscriptionLimits.MinSearchInterval);
+            //    throw new Exception($"Minimum search interval is {subscriptionLimits.MinSearchInterval} hours");
+            //}
 
             if (!user.PhoneVerified)
             {

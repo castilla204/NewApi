@@ -92,6 +92,29 @@ namespace newApi.Controllers
             }
         }
 
+
+        [HttpGet("GetServiceByHireId/{id}")]
+        public async Task<IActionResult> GetServiceByHireId(int id)
+        {
+            try
+            {
+                var service = await _searchServiceService.GetServiceByHireId(id);
+                if (service == null)
+                {
+                    return NotFound(new { message = "Service not found" });
+                }
+                return Ok(service);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving service with Id: {Id}", id);
+                return StatusCode(500, new { message = "Failed to retrieve service", detail = ex.Message });
+            }
+        }
+
+
+
+
         [Authorize]
         [HttpPost]
         public async Task<IActionResult> CreateSearchService([FromForm] CreateSearchServiceRequestDto request)

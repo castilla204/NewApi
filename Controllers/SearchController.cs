@@ -12,6 +12,7 @@ using newApi.Common;
 using Stripe.Checkout;
 using Stripe;
 using System.Text.Json;
+using System.ComponentModel.Design;
 
 namespace newApi.Controllers
 {
@@ -118,14 +119,17 @@ namespace newApi.Controllers
 
                 var activeSearchCount = await _context.Searches.CountAsync(s => s.UserId == userId && s.IsActive);
                 var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
-                if (activeSearchCount >= subscriptionLimits.MaxSearches)
-                {
-                    return StatusCode(403, new { message = $"You've reached your plan's limit of {subscriptionLimits.MaxSearches} active searches" });
-                }
-                if (searchDto.Frequency < subscriptionLimits.MinSearchInterval)
-                {
-                    return StatusCode(403, new { message = $"Minimum search interval for your plan is {subscriptionLimits.MinSearchInterval} hours" });
-                }
+
+
+                //PARA MANEJAR SUSCRIPCIONES
+                //if (activeSearchCount >= subscriptionLimits.MaxSearches)
+                //{
+                //    return StatusCode(403, new { message = $"You've reached your plan's limit of {subscriptionLimits.MaxSearches} active searches" });
+                //}
+                //if (searchDto.Frequency < subscriptionLimits.MinSearchInterval)
+                //{
+                //    return StatusCode(403, new { message = $"Minimum search interval for your plan is {subscriptionLimits.MinSearchInterval} hours" });
+                //}
 
                 var user = await _userService.GetUserAsync(userId);
                 if (user == null)

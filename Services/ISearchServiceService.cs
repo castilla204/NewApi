@@ -17,6 +17,8 @@ namespace newApi.Services
      string longitude,
      int locationRange);
 
+        Task<SearchServiceDetailDto> GetServiceByHireId(int id);
+
         Task<IEnumerable<SearchServiceResponseDto>> GetExpertServices(int expertId, int? serviceTypeId = null);
 
         Task<SearchServiceDetailDto> GetServiceById(int id);

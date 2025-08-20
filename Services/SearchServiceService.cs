@@ -219,6 +219,44 @@ namespace newApi.Services
             }
         }
 
+
+
+        public async Task<SearchServiceDetailDto> GetServiceByHireId(int id)
+        {
+            try
+            {
+                _logger.LogInformation("Fetching service by HireId: {Id}", id);
+
+                // Retrieve the SearchService associated with the HireId, including related data
+                var service = await _context.SearchServices
+                    .Include(ss => ss.Images)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                    .Include(ss => ss.Category)
+                    .Include(ss => ss.ServiceType)
+                    .FirstOrDefaultAsync(ss => _context.SearchHires.Any(sh => sh.Id == id && sh.SearchServiceId == ss.Id));
+
+                if (service == null)
+                {
+                    _logger.LogWarning("Service not found for HireId: {Id}", id);
+                    return null;
+                }
+
+                _logger.LogInformation("Successfully retrieved service with Id: {ServiceId} for HireId: {Id}", service.Id, id);
+                return MapToDetailDto(service);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving service for HireId: {Id}", id);
+                throw;
+            }
+        }
+
+
+
+
+
         public async Task<(bool Success, SearchService Service, List<string> ImageUrls)> CreateSearchService(
             int userId,
             CreateSearchServiceRequestDto request)

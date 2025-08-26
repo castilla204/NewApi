@@ -197,6 +197,7 @@ namespace newApi.Controllers
                         service.Conditions,
                         service.DurationInHours,
                         service.CreatedAt,
+                        service.IsActive,
                         ImageUrls = imageUrls
                     }
                 });
@@ -205,6 +206,36 @@ namespace newApi.Controllers
             {
                 _logger.LogError(ex, "Error creating search service with ServiceTypeId: {ServiceTypeId}", request.ServiceTypeId);
                 return StatusCode(500, new { message = "Failed to create search service", detail = ex.Message });
+            }
+        }
+
+        [Authorize]
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteSearchService(int id)
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                _logger.LogInformation("User {UserId} attempting to delete SearchService with Id: {ServiceId}", userId, id);
+
+                var success = await _searchServiceService.DeleteSearchService(id, userId);
+                
+                if (!success)
+                {
+                    return NotFound(new { message = "Service not found or you don't have permission to delete it" });
+                }
+
+                return Ok(new { message = "Search service deleted successfully" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error deleting search service with Id: {ServiceId}", id);
+                return StatusCode(500, new { message = "Failed to delete search service", detail = ex.Message });
             }
         }
     }

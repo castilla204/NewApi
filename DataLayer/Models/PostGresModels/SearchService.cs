@@ -11,6 +11,7 @@
         public string Conditions { get; set; }
         public int? DurationInHours { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public bool IsActive { get; set; } // Added IsActive property
         public virtual ExpertProfile? ExpertProfile { get; set; }
         public virtual AI? AI { get; set; } // Propiedad de navegación para AI
         public virtual Category Category { get; set; }

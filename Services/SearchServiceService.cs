@@ -80,7 +80,7 @@ namespace newApi.Services
                 }
 
                 var query = _context.SearchServices
-                    .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId)
+                    .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId && ss.IsActive)
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
@@ -163,7 +163,7 @@ namespace newApi.Services
             {
                 _logger.LogInformation("Fetching expert services for ExpertId: {ExpertId}, ServiceTypeId: {ServiceTypeId}", expertId, serviceTypeId);
                 IQueryable<SearchService> query = _context.SearchServices
-                    .Where(ss => ss.ExpertProfileId == expertId);
+                    .Where(ss => ss.ExpertProfileId == expertId && ss.IsActive);
 
                 if (serviceTypeId.HasValue)
                 {
@@ -295,7 +295,8 @@ namespace newApi.Services
                     Price = request.Price,
                     Conditions = request.Conditions,
                     DurationInHours = request.DurationInHours ?? 0,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = DateTime.UtcNow,
+                    IsActive = true
                 };
 
                 _context.SearchServices.Add(searchService);
@@ -373,6 +374,7 @@ namespace newApi.Services
                 Conditions = ss.Conditions,
                 DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,
+                IsActive = ss.IsActive,
                 ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>()
             };
 
@@ -440,6 +442,7 @@ namespace newApi.Services
                 Conditions = ss.Conditions,
                 DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,
+                IsActive = ss.IsActive,
                 ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>()
             };
 
@@ -474,6 +477,44 @@ namespace newApi.Services
             searchService.Expert = expertProfileDto;
 
             return searchService;
+        }
+
+        public async Task<bool> DeleteSearchService(int serviceId, int userId)
+        {
+            try
+            {
+                _logger.LogInformation("Attempting to delete SearchService with Id: {ServiceId} by User: {UserId}", serviceId, userId);
+
+                // Buscar el servicio y verificar que pertenezca al usuario
+                var searchService = await _context.SearchServices
+                    .Include(ss => ss.ExpertProfile)
+                    .FirstOrDefaultAsync(ss => ss.Id == serviceId && ss.ExpertProfile.UserId == userId);
+
+                if (searchService == null)
+                {
+                    _logger.LogWarning("SearchService with Id: {ServiceId} not found or does not belong to User: {UserId}", serviceId, userId);
+                    return false;
+                }
+
+                // Verificar si el servicio ya está inactivo
+                if (!searchService.IsActive)
+                {
+                    _logger.LogInformation("SearchService with Id: {ServiceId} is already inactive", serviceId);
+                    return true; // Ya está "eliminado"
+                }
+
+                // Marcar como inactivo (soft delete)
+                searchService.IsActive = false;
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Successfully deactivated SearchService with Id: {ServiceId}", serviceId);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error deleting SearchService with Id: {ServiceId} by User: {UserId}", serviceId, userId);
+                return false;
+            }
         }
     }
 }

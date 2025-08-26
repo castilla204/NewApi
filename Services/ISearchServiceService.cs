@@ -27,7 +27,7 @@ namespace newApi.Services
             int userId,
             CreateSearchServiceRequestDto request);
 
-
+        Task<bool> DeleteSearchService(int serviceId, int userId);
 
     }
 }

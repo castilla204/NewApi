@@ -210,6 +210,106 @@ namespace newApi.Controllers
         }
 
         [Authorize]
+        [HttpPut]
+        public async Task<IActionResult> UpdateSearchService([FromForm] UpdateSearchServiceRequestDto request)
+        {
+            try
+            {
+                foreach (var key in Request.Form.Keys)
+                {
+                    var values = Request.Form[key];
+                    if (key == "Images")
+                    {
+                        _logger.LogInformation("FormData key: {Key}, Files: {FileCount}", key, Request.Form.Files.Count);
+                        foreach (var file in Request.Form.Files)
+                        {
+                            _logger.LogInformation("Received file: {FileName}, {ContentType}, {FileSize} bytes",
+                                file.FileName, file.ContentType, file.Length);
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogInformation("FormData key: {Key}, Value: {Value}", key, values);
+                    }
+                }
+
+                _logger.LogInformation("Received request to update service with data: {RequestData}",
+                    new
+                    {
+                        request.ServiceId,
+                        request.CategoryId,
+                        request.ServiceTypeId,
+                        request.Price,
+                        request.Conditions,
+                        request.DurationInHours,
+                        ImageCount = request.Images?.Count ?? 0
+                    });
+
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                if (request.ServiceId <= 0)
+                {
+                    return BadRequest(new { message = "El ID del servicio es requerido" });
+                }
+
+                if (request.ServiceTypeId <= 0)
+                {
+                    return BadRequest(new { message = "El tipo de servicio es requerido" });
+                }
+
+                if (string.IsNullOrWhiteSpace(request.Conditions))
+                {
+                    return BadRequest(new { message = "El campo Condiciones es requerido" });
+                }
+
+                if (request.Price <= 0)
+                {
+                    return BadRequest(new { message = "El precio debe ser mayor que 0" });
+                }
+
+                if (request.DurationInHours <= 0)
+                {
+                    return BadRequest(new { message = "La duración debe ser mayor que 0" });
+                }
+
+                var (success, newService, imageUrls) = await _searchServiceService.UpdateSearchService(userId, request);
+                if (!success)
+                {
+                    return BadRequest(new { message = "Failed to update service. The service may not exist, may not belong to you, or may be inactive." });
+                }
+
+                return Ok(new
+                {
+                    message = "Search service updated successfully",
+                    searchService = new
+                    {
+                        newService.Id,
+                        newService.ExpertProfileId,
+                        newService.CategoryId,
+                        newService.ServiceTypeId,
+                        ServiceTypeName = newService.ServiceType?.Name,
+                        newService.Price,
+                        newService.Conditions,
+                        newService.DurationInHours,
+                        newService.CreatedAt,
+                        newService.IsActive,
+                        ImageUrls = imageUrls
+                    },
+                    originalServiceId = request.ServiceId
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating search service with Id: {ServiceId}", request.ServiceId);
+                return StatusCode(500, new { message = "Failed to update search service", detail = ex.Message });
+            }
+        }
+
+        [Authorize]
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteSearchService(int id)
         {

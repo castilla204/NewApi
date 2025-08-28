@@ -479,6 +479,130 @@ namespace newApi.Services
             return searchService;
         }
 
+        public async Task<(bool Success, SearchService NewService, List<string> ImageUrls)> UpdateSearchService(
+            int userId,
+            UpdateSearchServiceRequestDto request)
+        {
+            try
+            {
+                _logger.LogInformation("Updating SearchService with Id: {ServiceId} for User: {UserId}", request.ServiceId, userId);
+
+                // Verificar que el servicio existe y pertenece al usuario
+                var existingService = await _context.SearchServices
+                    .Include(ss => ss.ExpertProfile)
+                    .FirstOrDefaultAsync(ss => ss.Id == request.ServiceId && ss.ExpertProfile.UserId == userId);
+
+                if (existingService == null)
+                {
+                    _logger.LogError("SearchService with Id: {ServiceId} not found or does not belong to User: {UserId}", request.ServiceId, userId);
+                    return (false, null, null);
+                }
+
+                // Verificar que el servicio está activo
+                if (!existingService.IsActive)
+                {
+                    _logger.LogError("Cannot update inactive SearchService with Id: {ServiceId}", request.ServiceId);
+                    return (false, null, null);
+                }
+
+                // Validar los datos de la actualización
+                var serviceTypeExists = await _context.ServiceTypes.AnyAsync(st => st.Id == request.ServiceTypeId);
+                if (!serviceTypeExists)
+                {
+                    _logger.LogError("Invalid ServiceTypeId: {ServiceTypeId}", request.ServiceTypeId);
+                    return (false, null, null);
+                }
+
+                var category = await _context.Categories.FindAsync(request.CategoryId);
+                if (category == null)
+                {
+                    _logger.LogError("Invalid CategoryId: {CategoryId}", request.CategoryId);
+                    return (false, null, null);
+                }
+
+                // Paso 1: Inactivar el servicio existente
+                existingService.IsActive = false;
+                _logger.LogInformation("Deactivating existing SearchService with Id: {ServiceId}", existingService.Id);
+
+                // Paso 2: Crear el nuevo servicio con los datos actualizados
+                var newSearchService = new SearchService
+                {
+                    ExpertProfileId = existingService.ExpertProfileId, // Mantener el mismo ExpertProfile
+                    CategoryId = request.CategoryId,
+                    ServiceTypeId = request.ServiceTypeId,
+                    Price = request.Price,
+                    Conditions = request.Conditions,
+                    DurationInHours = request.DurationInHours ?? 0,
+                    CreatedAt = DateTime.UtcNow,
+                    IsActive = true
+                };
+
+                _context.SearchServices.Add(newSearchService);
+                _logger.LogInformation("Creating new SearchService with updated data for ServiceTypeId: {ServiceTypeId}", newSearchService.ServiceTypeId);
+                
+                await _context.SaveChangesAsync();
+                _logger.LogInformation("Successfully created new SearchService with Id: {NewServiceId} and deactivated old service with Id: {OldServiceId}", 
+                    newSearchService.Id, existingService.Id);
+
+                // Paso 3: Procesar las imágenes si se proporcionaron
+                var imageUrls = new List<string>();
+                if (request.Images != null && request.Images.Any())
+                {
+                    var bucketName = _configuration["GoogleCloud:BucketName"];
+                    foreach (var imageFile in request.Images)
+                    {
+                        var extension = Path.GetExtension(imageFile.FileName).ToLowerInvariant();
+                        var uniqueFileName = $"{Guid.NewGuid()}{extension}";
+                        var objectName = $"services/{uniqueFileName}";
+
+                        using (var inputStream = imageFile.OpenReadStream())
+                        using (var image = Image.Load(inputStream))
+                        {
+                            image.Mutate(x => x.Resize(new ResizeOptions
+                            {
+                                Size = new Size(200, 200),
+                                Mode = ResizeMode.Max
+                            }));
+
+                            using (var outputStream = new MemoryStream())
+                            {
+                                image.SaveAsJpeg(outputStream);
+                                outputStream.Position = 0;
+                                await _storageClient.UploadObjectAsync(
+                                    bucketName,
+                                    objectName,
+                                    "image/jpeg",
+                                    outputStream
+                                );
+                            }
+                        }
+
+                        var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
+                        imageUrls.Add(imageUrl);
+
+                        var searchServiceImage = new SearchServiceImage
+                        {
+                            SearchServiceId = newSearchService.Id,
+                            ImageUrl = imageUrl,
+                            ImageObjectName = objectName,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        _context.SearchServiceImages.Add(searchServiceImage);
+                    }
+                    await _context.SaveChangesAsync();
+                    _logger.LogInformation("Successfully processed {ImageCount} images for new SearchService with Id: {ServiceId}", 
+                        imageUrls.Count, newSearchService.Id);
+                }
+
+                return (true, newSearchService, imageUrls);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating SearchService with Id: {ServiceId} for User: {UserId}", request.ServiceId, userId);
+                throw;
+            }
+        }
+
         public async Task<bool> DeleteSearchService(int serviceId, int userId)
         {
             try

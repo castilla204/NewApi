@@ -27,6 +27,10 @@ namespace newApi.Services
             int userId,
             CreateSearchServiceRequestDto request);
 
+        Task<(bool Success, SearchService NewService, List<string> ImageUrls)> UpdateSearchService(
+            int userId,
+            UpdateSearchServiceRequestDto request);
+
         Task<bool> DeleteSearchService(int serviceId, int userId);
 
     }

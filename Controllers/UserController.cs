@@ -298,6 +298,58 @@ public class UserController : ControllerBase
         }
     }
 
+    [Authorize]
+    [HttpPut("expert-profile")]
+    public async Task<IActionResult> UpdateExpertProfile([FromForm] UpdateExpertProfileRequestDto request)
+    {
+        try
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            {
+                return Unauthorized(new { message = "Invalid user identification" });
+            }
+
+            // Validaciones básicas
+            if (string.IsNullOrWhiteSpace(request.Description))
+            {
+                return BadRequest(new { message = "La descripción es requerida" });
+            }
+
+            if (string.IsNullOrWhiteSpace(request.Latitude) || string.IsNullOrWhiteSpace(request.Longitude))
+            {
+                return BadRequest(new { message = "Latitud y Longitud son requeridas" });
+            }
+
+            _logger.LogInformation("Received request to update expert profile for user {UserId} with data: {RequestData}",
+                userId,
+                new
+                {
+                    request.Description,
+                    request.Latitude,
+                    request.Longitude,
+                    HasProfilePicture = request.ProfilePicture != null
+                });
+
+            var (success, updatedProfile) = await _userService.UpdateExpertProfile(userId, request);
+            if (!success)
+            {
+                return BadRequest(new { message = "Failed to update expert profile. Please check your data and try again." });
+            }
+
+            return Ok(new
+            {
+                message = "Expert profile updated successfully",
+                expertProfile = updatedProfile
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating expert profile");
+            return StatusCode(500, new { message = "Failed to update expert profile", detail = ex.Message });
+        }
+    }
+
     public class GoogleAuthDto
     {
         public string AccessToken { get; set; } = string.Empty;

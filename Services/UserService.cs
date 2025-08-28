@@ -313,6 +313,132 @@ namespace newApi.Services
         }
 
 
+        public async Task<(bool Success, ExpertProfileDto UpdatedProfile)> UpdateExpertProfile(int userId, UpdateExpertProfileRequestDto request)
+        {
+            try
+            {
+                _logger.LogInformation("Updating expert profile for user ID {UserId}", userId);
+
+                // Buscar el perfil de experto existente
+                var expertProfile = await _context.ExpertProfiles
+                    .Include(ep => ep.User)
+                    .FirstOrDefaultAsync(ep => ep.UserId == userId);
+
+                if (expertProfile == null)
+                {
+                    _logger.LogWarning("Expert profile not found for user ID {UserId}", userId);
+                    return (false, null);
+                }
+
+                // Validar coordenadas
+                if (!decimal.TryParse(request.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var latitude) ||
+                    latitude < -90m || latitude > 90m)
+                {
+                    _logger.LogWarning("Invalid latitude provided: {Latitude}", request.Latitude);
+                    return (false, null);
+                }
+
+                if (!decimal.TryParse(request.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var longitude) ||
+                    longitude < -180m || longitude > 180m)
+                {
+                    _logger.LogWarning("Invalid longitude provided: {Longitude}", request.Longitude);
+                    return (false, null);
+                }
+
+                // Actualizar los campos básicos
+                expertProfile.Description = request.Description;
+                expertProfile.Latitude = request.Latitude;
+                expertProfile.Longitude = request.Longitude;
+
+                // Procesar nueva imagen de perfil si se proporciona
+                if (request.ProfilePicture != null)
+                {
+                    var bucketName = _configuration["GoogleCloud:BucketName"];
+                    var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
+                    var uniqueFileName = $"{Guid.NewGuid()}{extension}";
+                    var objectName = $"experts/{uniqueFileName}";
+
+                    try
+                    {
+                        using (var inputStream = request.ProfilePicture.OpenReadStream())
+                        using (var image = Image.Load(inputStream))
+                        {
+                            image.Mutate(x => x.Resize(new ResizeOptions
+                            {
+                                Size = new Size(200, 200),
+                                Mode = ResizeMode.Max
+                            }));
+
+                            using (var outputStream = new MemoryStream())
+                            {
+                                image.SaveAsJpeg(outputStream);
+                                outputStream.Position = 0;
+                                await _storageClient.UploadObjectAsync(
+                                    bucket: bucketName,
+                                    objectName: objectName,
+                                    contentType: "image/jpeg",
+                                    source: outputStream
+                                );
+                            }
+                        }
+
+                        // Eliminar la imagen anterior si existe
+                        if (!string.IsNullOrEmpty(expertProfile.ProfilePictureObjectName))
+                        {
+                            try
+                            {
+                                await _storageClient.DeleteObjectAsync(bucketName, expertProfile.ProfilePictureObjectName);
+                                _logger.LogInformation("Deleted old profile picture: {ObjectName}", expertProfile.ProfilePictureObjectName);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "Could not delete old profile picture: {ObjectName}", expertProfile.ProfilePictureObjectName);
+                            }
+                        }
+
+                        // Actualizar URLs de la nueva imagen
+                        var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
+                        expertProfile.ProfilePictureUrl = imageUrl;
+                        expertProfile.ProfilePictureObjectName = objectName;
+
+                        _logger.LogInformation("Successfully uploaded new profile picture for user ID {UserId}", userId);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error uploading new profile picture for user ID {UserId}", userId);
+                        return (false, null);
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+
+                // Devolver el perfil actualizado
+                var updatedProfileDto = new ExpertProfileDto
+                {
+                    Id = expertProfile.Id,
+                    ProfilePictureUrl = expertProfile.ProfilePictureUrl,
+                    StripeAccountId = expertProfile.StripeAccountId,
+                    Description = expertProfile.Description,
+                    CreatedAt = expertProfile.CreatedAt,
+                    User = new UserDto
+                    {
+                        Name = expertProfile.User.Name,
+                        Email = expertProfile.User.Email
+                    },
+                    Latitude = expertProfile.Latitude,
+                    Longitude = expertProfile.Longitude
+                };
+
+                _logger.LogInformation("Successfully updated expert profile for user ID {UserId}", userId);
+                return (true, updatedProfileDto);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating expert profile for user ID {UserId}", userId);
+                return (false, null);
+            }
+        }
+
         public async Task<decimal> GetUserBalanceAsync(int userId)
         {
             var user = await _context.Users.FirstOrDefaultAsync(z => z.Id == userId);

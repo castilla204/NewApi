@@ -157,7 +157,7 @@ builder.Services.AddSingleton<RabbitMQ.Client.IConnectionFactory>(sp =>
 });
 
 // Configure CORS
-builder.Services.AddCors(options =>
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowSpecificOrigin", builder =>

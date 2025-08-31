@@ -158,16 +158,21 @@ builder.Services.AddSingleton<RabbitMQ.Client.IConnectionFactory>(sp =>
 
 // Configure CORS
 builder.Services.AddCors(options =>
+builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowSpecificOrigin", builder =>
     {
-        builder.WithOrigins("http://localhost:3000", "http://localhost:5173") // Ajustado para múltiples puertos
+        builder.WithOrigins(
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "https://atrapo.io") // <--- agregar dominio de frontend producción
                .AllowAnyMethod()
                .AllowAnyHeader()
                .AllowCredentials()
                .SetPreflightMaxAge(TimeSpan.FromSeconds(600));
     });
 });
+
 
 // Configure Hangfire
 builder.Services.AddHangfire(config => config

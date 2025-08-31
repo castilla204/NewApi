@@ -4,76 +4,127 @@
         <name>newApi</name>
     </assembly>
     <members>
-        <member name="T:DataLayer.Migrations.modificandouserteelfono">
+        <member name="M:newApi.Migrations.fixingerror.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.modificandouserteelfono.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+        <member name="T:newApi.Migrations.servicestypeychat">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.modificandouserteelfono.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+        <member name="M:newApi.Migrations.servicestypeychat.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.modificandouserteelfono.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+        <member name="M:newApi.Migrations.servicestypeychat.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
-        <member name="T:DataLayer.Migrations.nuevonextexecution">
+        <member name="M:newApi.Migrations.servicestypeychat.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.nuevonextexecution.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+        <member name="T:newApi.Migrations.addingsearchparameterservicd">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.nuevonextexecution.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+        <member name="M:newApi.Migrations.addingsearchparameterservicd.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.nuevonextexecution.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+        <member name="M:newApi.Migrations.addingsearchparameterservicd.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
-        <member name="T:DataLayer.Migrations.AddingField">
+        <member name="M:newApi.Migrations.addingsearchparameterservicd.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.AddingField.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+        <member name="T:newApi.Migrations.makingnullabledurationinhours">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.AddingField.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+        <member name="M:newApi.Migrations.makingnullabledurationinhours.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.AddingField.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+        <member name="M:newApi.Migrations.makingnullabledurationinhours.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
-        <member name="T:DataLayer.Migrations.AddingNotification">
+        <member name="M:newApi.Migrations.makingnullabledurationinhours.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.AddingNotification.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+        <member name="T:newApi.Migrations.changingupdated">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.AddingNotification.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+        <member name="M:newApi.Migrations.changingupdated.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.AddingNotification.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+        <member name="M:newApi.Migrations.changingupdated.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
-        <member name="T:DataLayer.Migrations.AddingNotifications">
+        <member name="M:newApi.Migrations.changingupdated.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.AddingNotifications.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+        <member name="T:newApi.Migrations.addubicationtoexpert">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.AddingNotifications.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+        <member name="M:newApi.Migrations.addubicationtoexpert.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.AddingNotifications.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+        <member name="M:newApi.Migrations.addubicationtoexpert.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
-        <member name="T:DataLayer.Migrations.Notificationss">
+        <member name="M:newApi.Migrations.addubicationtoexpert.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.Notificationss.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+        <member name="T:newApi.Migrations.changingdecimaltostring">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.Notificationss.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+        <member name="M:newApi.Migrations.changingdecimaltostring.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:DataLayer.Migrations.Notificationss.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+        <member name="M:newApi.Migrations.changingdecimaltostring.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.changingdecimaltostring.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.addingreportsandchatimagesandmaps">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.addingreportsandchatimagesandmaps.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.addingreportsandchatimagesandmaps.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.addingreportsandchatimagesandmaps.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.makingnull">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.makingnull.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.makingnull.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.makingnull.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.makingnul">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.makingnul.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.makingnul.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.makingnul.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.isactivetoservice">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.isactivetoservice.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.isactivetoservice.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.isactivetoservice.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
     </members>

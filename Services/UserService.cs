@@ -89,20 +89,26 @@ namespace newApi.Services
 
         public async Task<bool> SendVerification(int userId, string phoneNumber)
         {
-            var user = await _context.Users.FindAsync(userId);
-            if (user == null || user.PhoneVerified)
-                return false;
-            TwilioClient.Init(_configuration["Twilio:AccountSid"], _twilioauthToken);
+            try
+            {
+                var user = await _context.Users.FindAsync(userId);
+                if (user == null || user.PhoneVerified)
+                    return false;
+                TwilioClient.Init(_configuration["Twilio:AccountSid"], _twilioauthToken);
 
-            await VerificationResource.CreateAsync(
-                to: phoneNumber,
-                channel: "sms",
-                pathServiceSid: _twilioVerificationServiceSid
-            );
+                await VerificationResource.CreateAsync(
+                    to: phoneNumber,
+                    channel: "sms",
+                    pathServiceSid: _twilioVerificationServiceSid
+                );
 
-            user.PhoneNumber = phoneNumber;
-            await _context.SaveChangesAsync();
-            return true;
+                user.PhoneNumber = phoneNumber;
+                await _context.SaveChangesAsync();
+                return true;
+            }catch(Exception ex)
+            {
+                throw ex;
+            }
         }
 
         public async Task<(bool success, string token, User user)> VerifyCode(int userId, string phoneNumber, string code)

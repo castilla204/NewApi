@@ -579,7 +579,9 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                var service = await _context.SearchServices.FindAsync(request.ServiceId);
+                var service = await _context.SearchServices
+                    .Include(ss => ss.ExpertProfile)
+                    .FirstOrDefaultAsync(ss => ss.Id == request.ServiceId);
                 if (service == null)
                 {
                     _logger.LogError("Service not found for serviceId={ServiceId}", request.ServiceId);
@@ -599,6 +601,53 @@ namespace newApi.Controllers
                     return NotFound(new { message = "User not found" });
                 }
 
+                // Calculate the amount to charge after deducting user balance
+                var amountToCharge = Math.Max(0, service.Price - user.Balance);
+                
+                // If amount to charge is 0, user has enough balance to cover the service
+                if (amountToCharge == 0)
+                {
+                    // Process the hire directly without payment link since balance covers it
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
+                    {
+                        user.Balance -= service.Price;
+                        var financialTransaction = new FinancialTransaction
+                        {
+                            UserId = userId,
+                            Amount = -service.Price,
+                            TransactionType = "ServicePayment",
+                            RelatedEntityType = "SearchService",
+                            RelatedEntityId = service.Id,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        _context.FinancialTransactions.Add(financialTransaction);
+
+                        var searchHire = new SearchHire
+                        {
+                            ClientId = userId,
+                            ExpertId = service.ExpertProfile?.UserId ?? 0,
+                            SearchServiceId = service.Id,
+                            Status = SearchHireStatus.Pending.ToStringValue(),
+                            Amount = service.Price,
+                            CreatedAt = DateTime.UtcNow,
+                            CompletionDeadline = DateTime.UtcNow.AddDays(7)
+                        };
+                        _context.SearchHires.Add(searchHire);
+
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+
+                        return Ok(new { message = "Service hired successfully using balance", searchHireId = searchHire.Id });
+                    }
+                    catch (Exception ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Error processing service hire with balance for userId={UserId}, serviceId={ServiceId}", userId, request.ServiceId);
+                        return StatusCode(500, new { message = "Failed to process service hire" });
+                    }
+                }
+
                 var domain = "https://atrapo.io";
                 var options = new SessionCreateOptions
                 {
@@ -610,10 +659,10 @@ namespace newApi.Controllers
                             PriceData = new SessionLineItemPriceDataOptions
                             {
                                 Currency = "eur",
-                                UnitAmount = (long)(service.Price * 100),
+                                UnitAmount = (long)(amountToCharge * 100),
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {
-                                    Name = $"Payment for Service {service.Id}"
+                                    Name = $"Payment for Service {service.Id} (after balance deduction)"
                                 }
                             },
                             Quantity = 1
@@ -628,6 +677,8 @@ namespace newApi.Controllers
                         { "userId", userId.ToString() },
                         { "serviceId", request.ServiceId.ToString() },
                         { "amount", request.Amount.ToString() },
+                        { "chargedAmount", amountToCharge.ToString() },
+                        { "balanceUsed", Math.Min(user.Balance, service.Price).ToString() },
                         { "pendingHire", "true" }
                     }
                 };
@@ -883,16 +934,31 @@ namespace newApi.Controllers
             using var transaction = await _context.Database.BeginTransactionAsync();
             try
             {
-                // Update user balance
-                user.Balance += amount;
-                var depositTransaction = new FinancialTransaction
+                // Get balance usage information from metadata
+                var balanceUsed = decimal.TryParse(metadata.GetValueOrDefault("balanceUsed", "0"), out decimal parsedBalanceUsed) ? parsedBalanceUsed : 0;
+                var chargedAmount = decimal.TryParse(metadata.GetValueOrDefault("chargedAmount", amount.ToString()), out decimal parsedChargedAmount) ? parsedChargedAmount : amount;
+                
+                // Add only the charged amount to balance (not the full service price)
+                if (chargedAmount > 0)
                 {
-                    UserId = userId,
-                    Amount = amount,
-                    TransactionType = "Deposit",
-                    CreatedAt = DateTime.UtcNow
-                };
-                _context.FinancialTransactions.Add(depositTransaction);
+                    user.Balance += chargedAmount;
+                    var depositTransaction = new FinancialTransaction
+                    {
+                        UserId = userId,
+                        Amount = chargedAmount,
+                        TransactionType = "Deposit",
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    _context.FinancialTransactions.Add(depositTransaction);
+                }
+                
+                // Log the balance usage for tracking
+                if (balanceUsed > 0)
+                {
+                    _logger.LogInformation("Using balance for service payment: userId={UserId}, balanceUsed={BalanceUsed}, chargedAmount={ChargedAmount}, servicePrice={ServicePrice}", 
+                        userId, balanceUsed, chargedAmount, service.Price);
+                }
+                
                 await _context.SaveChangesAsync();
 
                 // Create search

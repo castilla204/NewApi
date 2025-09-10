@@ -224,6 +224,7 @@ public class UserController : ControllerBase
 
     [Authorize]
     [HttpPost("become-expert")]
+    [RequestSizeLimit(10 * 1024 * 1024)] // 10MB limit
     public async Task<IActionResult> BecomeExpert([FromForm] BecomeExpertRequestDto request)
     {
         try
@@ -232,6 +233,23 @@ public class UserController : ControllerBase
             if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
             {
                 return Unauthorized(new { message = "Invalid user identification" });
+            }
+
+            // Validaciones previas
+            if (request.ProfilePicture == null)
+            {
+                return BadRequest(new { message = "Profile picture is required" });
+            }
+
+            if (request.ProfilePicture.Length > 5 * 1024 * 1024)
+            {
+                return BadRequest(new { message = "Profile picture must be smaller than 5MB" });
+            }
+
+            var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
+            if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
+            {
+                return BadRequest(new { message = "Profile picture must be a JPG or PNG image" });
             }
 
             var (success, token, user, expertProfile) = await _userService.BecomeExpert(userId, request);

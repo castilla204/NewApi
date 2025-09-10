@@ -231,9 +231,23 @@ namespace newApi.Services
                 return (false, null, null, null);
             }
 
+            // Validar tamaño del archivo (5MB límite para imágenes de perfil)
+            if (request.ProfilePicture.Length > 5 * 1024 * 1024)
+            {
+                _logger.LogWarning("Profile picture file size {FileSize} exceeds 5MB limit for user ID {UserId}", request.ProfilePicture.Length, userId);
+                return (false, null, null, null);
+            }
+
+            // Validar tipo de archivo
+            var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
+            if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
+            {
+                _logger.LogWarning("Invalid profile picture file type {Extension} for user ID {UserId}", extension, userId);
+                return (false, null, null, null);
+            }
+
             _logger.LogInformation("Processing profile picture upload for user ID {UserId}", userId);
             var bucketName = _configuration["GoogleCloud:BucketName"];
-            var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
             var uniqueFileName = $"{Guid.NewGuid()}{extension}";
             var objectName = $"experts/{uniqueFileName}";
 
@@ -359,8 +373,22 @@ namespace newApi.Services
                 // Procesar nueva imagen de perfil si se proporciona
                 if (request.ProfilePicture != null)
                 {
-                    var bucketName = _configuration["GoogleCloud:BucketName"];
+                    // Validar tamaño del archivo (5MB límite para imágenes de perfil)
+                    if (request.ProfilePicture.Length > 5 * 1024 * 1024)
+                    {
+                        _logger.LogWarning("Profile picture file size {FileSize} exceeds 5MB limit for user ID {UserId}", request.ProfilePicture.Length, userId);
+                        return (false, null);
+                    }
+
+                    // Validar tipo de archivo
                     var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
+                    if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
+                    {
+                        _logger.LogWarning("Invalid profile picture file type {Extension} for user ID {UserId}", extension, userId);
+                        return (false, null);
+                    }
+
+                    var bucketName = _configuration["GoogleCloud:BucketName"];
                     var uniqueFileName = $"{Guid.NewGuid()}{extension}";
                     var objectName = $"experts/{uniqueFileName}";
 

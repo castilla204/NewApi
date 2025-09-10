@@ -409,6 +409,12 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Expert already registered with Stripe" });
                 }
 
+                if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
+                {
+                    _logger.LogInformation("Expert already has a pending Stripe account: userId={UserId}, pendingStripeAccountId={PendingStripeAccountId}", userId, expertProfile.PendingStripeAccountId);
+                    return BadRequest(new { message = "Expert already has a pending Stripe onboarding process" });
+                }
+
                 var accountOptions = new AccountCreateOptions
                 {
                     Type = "express",
@@ -441,7 +447,9 @@ namespace newApi.Controllers
                 using var transaction = await _context.Database.BeginTransactionAsync();
                 try
                 {
-                    expertProfile.StripeAccountId = account.Id;
+                    // Guardar temporalmente el account ID hasta que se complete el onboarding
+                    expertProfile.PendingStripeAccountId = account.Id;
+                    expertProfile.OnboardingCompleted = false;
                     await _context.SaveChangesAsync();
 
                     var linkOptions = new AccountLinkCreateOptions
@@ -481,6 +489,117 @@ namespace newApi.Controllers
             {
                 _logger.LogError(ex, "Error creating expert onboarding: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to process expert onboarding" });
+            }
+        }
+
+        [HttpGet("onboarding-status")]
+        [Authorize(Roles = "Expert")]
+        public async Task<IActionResult> GetOnboardingStatus()
+        {
+            _logger.LogInformation("GetOnboardingStatus endpoint invoked");
+
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var expertProfile = await _context.ExpertProfiles
+                    .FirstOrDefaultAsync(ep => ep.UserId == userId);
+
+                if (expertProfile == null)
+                {
+                    _logger.LogError("Expert profile not found for userId={UserId}", userId);
+                    return NotFound(new { message = "Expert profile not found" });
+                }
+
+                var status = new
+                {
+                    HasStripeAccount = !string.IsNullOrEmpty(expertProfile.StripeAccountId),
+                    HasPendingOnboarding = !string.IsNullOrEmpty(expertProfile.PendingStripeAccountId),
+                    OnboardingCompleted = expertProfile.OnboardingCompleted,
+                    StripeAccountId = expertProfile.StripeAccountId
+                };
+
+                _logger.LogInformation("Onboarding status for userId={UserId}: {Status}", userId, System.Text.Json.JsonSerializer.Serialize(status));
+                return Ok(status);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting onboarding status: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to get onboarding status" });
+            }
+        }
+
+        [HttpPost("restart-onboarding")]
+        [Authorize(Roles = "Expert")]
+        public async Task<IActionResult> RestartOnboarding()
+        {
+            _logger.LogInformation("RestartOnboarding endpoint invoked");
+
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var expertProfile = await _context.ExpertProfiles
+                    .FirstOrDefaultAsync(ep => ep.UserId == userId);
+
+                if (expertProfile == null)
+                {
+                    _logger.LogError("Expert profile not found for userId={UserId}", userId);
+                    return NotFound(new { message = "Expert profile not found" });
+                }
+
+                // Si ya tiene cuenta completada, no puede reiniciar
+                if (!string.IsNullOrEmpty(expertProfile.StripeAccountId) && expertProfile.OnboardingCompleted)
+                {
+                    _logger.LogInformation("Expert already has completed onboarding: userId={UserId}", userId);
+                    return BadRequest(new { message = "Onboarding already completed" });
+                }
+
+                // Si no tiene cuenta pendiente, redirigir al endpoint de crear onboarding
+                if (string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
+                {
+                    return await CreateExpertOnboarding();
+                }
+
+                // Si tiene cuenta pendiente, crear nuevo link de onboarding
+                var linkOptions = new AccountLinkCreateOptions
+                {
+                    Account = expertProfile.PendingStripeAccountId,
+                    RefreshUrl = "https://atrapo.io/refresh-onboarding",
+                    ReturnUrl = "https://atrapo.io/complete-onboarding",
+                    Type = "account_onboarding",
+                    Collect = "eventually_due"
+                };
+
+                var linkService = new AccountLinkService();
+                AccountLink accountLink;
+                try
+                {
+                    accountLink = await linkService.CreateAsync(linkOptions);
+                    _logger.LogInformation("New onboarding link created for userId={UserId}, url={Url}", userId, accountLink.Url);
+                }
+                catch (StripeException ex)
+                {
+                    _logger.LogError(ex, "Stripe error creating new onboarding link for userId={UserId}: {ErrorMessage}", userId, ex.Message);
+                    return StatusCode(500, new { message = "Failed to create new onboarding link" });
+                }
+
+                return Ok(new { url = accountLink.Url });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error restarting onboarding: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to restart onboarding" });
             }
         }
 
@@ -763,13 +882,32 @@ namespace newApi.Controllers
                         var account = stripeEvent.Data.Object as Account;
                         if (account != null)
                         {
+                            // Buscar por StripeAccountId o PendingStripeAccountId
                             var expertProfile = await _context.ExpertProfiles
-                                .FirstOrDefaultAsync(ep => ep.StripeAccountId == account.Id);
+                                .FirstOrDefaultAsync(ep => ep.StripeAccountId == account.Id || ep.PendingStripeAccountId == account.Id);
+                            
                             if (expertProfile != null)
                             {
                                 bool isAccountEnabled = account.ChargesEnabled && account.PayoutsEnabled;
-                                _logger.LogInformation("Account updated for expert userId={UserId}, accountId={AccountId}, enabled={Enabled}",
-                                    expertProfile.UserId, account.Id, isAccountEnabled);
+                                bool onboardingCompleted = account.DetailsSubmitted && isAccountEnabled;
+                                
+                                _logger.LogInformation("Account updated for expert userId={UserId}, accountId={AccountId}, enabled={Enabled}, onboardingCompleted={OnboardingCompleted}",
+                                    expertProfile.UserId, account.Id, isAccountEnabled, onboardingCompleted);
+                                
+                                // Si el onboarding se completó y teníamos una cuenta pendiente
+                                if (onboardingCompleted && !string.IsNullOrEmpty(expertProfile.PendingStripeAccountId) && string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                                {
+                                    _logger.LogInformation("Onboarding completed! Moving PendingStripeAccountId to StripeAccountId for userId={UserId}", expertProfile.UserId);
+                                    expertProfile.StripeAccountId = expertProfile.PendingStripeAccountId;
+                                    expertProfile.PendingStripeAccountId = null;
+                                    expertProfile.OnboardingCompleted = true;
+                                }
+                                // Si ya tenía StripeAccountId, solo actualizar el estado
+                                else if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                                {
+                                    expertProfile.OnboardingCompleted = onboardingCompleted;
+                                }
+                                
                                 await _context.SaveChangesAsync();
                             }
                             else

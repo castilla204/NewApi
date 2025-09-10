@@ -15,13 +15,16 @@ using Hangfire;
 using Hangfire.PostgreSql;
 using Microsoft.Extensions.DependencyInjection;
 using newApi.Controllers;
+using Microsoft.AspNetCore.Server.IIS;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.AspNetCore.Http.Features;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Instancia el cliente de Secret Manager
 var secretClient = SecretManagerServiceClient.Create();
 
-// Función para obtener secretos
+// Funciï¿½n para obtener secretos
 string GetSecretValue(string secretName)
 {
     var projectId = "grup-441318";
@@ -57,7 +60,7 @@ builder.Configuration["Twilio:AuthToken"] = GetSecretValue("twilio-auth-token");
 builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-verification-service-sid");
 builder.Configuration["GoogleCloud:BucketName"] = "atrapobucket";
 
-// Configurar la cadena de conexión según el entorno
+// Configurar la cadena de conexiï¿½n segï¿½n el entorno
 if (builder.Environment.IsDevelopment())
 {
     builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=185.166.39.4;Port=30000;Username=admin;Password=__REDACTED_CREDENTIAL__;Database=atrapo";
@@ -69,6 +72,26 @@ else
 
 // Add services to the container
 builder.Services.AddControllers();
+
+// Configure request size limits for file uploads
+builder.Services.Configure<IISServerOptions>(options =>
+{
+    options.MaxRequestBodySize = 10 * 1024 * 1024; // 10MB
+});
+
+builder.Services.Configure<KestrelServerOptions>(options =>
+{
+    options.Limits.MaxRequestBodySize = 10 * 1024 * 1024; // 10MB
+});
+
+// Configure form options for multipart form data
+builder.Services.Configure<FormOptions>(options =>
+{
+    options.ValueLengthLimit = int.MaxValue;
+    options.MultipartBodyLengthLimit = 10 * 1024 * 1024; // 10MB
+    options.MemoryBufferThreshold = int.MaxValue;
+});
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -165,7 +188,7 @@ builder.Services.AddCors(options =>
         builder.WithOrigins(
             "http://localhost:3000",
             "http://localhost:5173",
-            "https://atrapo.io") // <--- agregar dominio de frontend producción
+            "https://atrapo.io") // <--- agregar dominio de frontend producciï¿½n
                .AllowAnyMethod()
                .AllowAnyHeader()
                .AllowCredentials()

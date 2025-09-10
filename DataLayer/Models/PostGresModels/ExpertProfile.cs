@@ -8,6 +8,8 @@
         public string ProfilePictureObjectName { get; set; }
         public string Description { get; set; }
         public string? StripeAccountId { get; set; }
+        public string? PendingStripeAccountId { get; set; } // Cuenta temporal hasta completar onboarding
+        public bool OnboardingCompleted { get; set; } = false; // Estado del onboarding
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public string Latitude { get; set; }
         public string Longitude { get; set; }

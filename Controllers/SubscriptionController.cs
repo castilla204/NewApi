@@ -13,6 +13,7 @@ using System.Threading.Tasks;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.DTOs;
+using Hangfire;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using newApi.Services;
@@ -43,6 +44,37 @@ namespace newApi.Controllers
             _webhookSecret = _configuration["Stripe:WebhookSecret"];
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
             _logger.LogInformation("Stripe API Key and Webhook Secret configured");
+        }
+
+        private async Task<(bool IsValid, ExpertProfile ExpertProfile, string ErrorMessage)> ValidateExpertOnboardingAsync(int userId)
+        {
+            var expertProfile = await _context.ExpertProfiles
+                .FirstOrDefaultAsync(ep => ep.UserId == userId);
+
+            if (expertProfile == null)
+            {
+                return (false, null, "Expert profile not found");
+            }
+
+            if (expertProfile.StripeStatus != StripeStatus.Approved || !expertProfile.OnboardingCompleted)
+            {
+                return (false, expertProfile, GetStatusMessage(expertProfile.StripeStatus));
+            }
+
+            return (true, expertProfile, null);
+        }
+
+        private string GetStatusMessage(StripeStatus status)
+        {
+            return status switch
+            {
+                StripeStatus.NotRequested => "You haven't set up your Stripe account yet. Please configure your payment account to start offering services.",
+                StripeStatus.Pending => "Your Stripe account application is being reviewed. Please wait for approval before creating services.",
+                StripeStatus.Approved => "Your Stripe account is approved and ready to receive payments.",
+                StripeStatus.Rejected => "Your Stripe account application was rejected. Please try setting up your account again with correct information.",
+                StripeStatus.Deauthorized => "Your Stripe account has been deauthorized. Please contact support or try setting up your account again.",
+                _ => "Unknown Stripe account status. Please contact support."
+            };
         }
 
         [HttpPost("cancel")]
@@ -406,14 +438,73 @@ namespace newApi.Controllers
                 if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
                 {
                     _logger.LogInformation("Expert already has a Stripe account: userId={UserId}, stripeAccountId={StripeAccountId}", userId, expertProfile.StripeAccountId);
-                    return BadRequest(new { message = "Expert already registered with Stripe" });
+                    
+                    // Clean up PendingStripeAccountId if it exists (shouldn't happen but just in case)
+                    if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
+                    {
+                        _logger.LogInformation("Clearing stale PendingStripeAccountId for expert with completed account: userId={UserId}", userId);
+                        expertProfile.PendingStripeAccountId = null;
+                        expertProfile.OnboardingCompleted = true;
+                        await _context.SaveChangesAsync();
+                    }
+                    
+                    // If expert already has a completed Stripe account, create a login link instead
+                    var linkOptions = new AccountLinkCreateOptions
+                    {
+                        Account = expertProfile.StripeAccountId,
+                        RefreshUrl = "https://atrapo.io/refresh-onboarding",
+                        ReturnUrl = "https://atrapo.io/complete-onboarding",
+                        Type = "account_onboarding"
+                    };
+                    
+                    var linkService = new AccountLinkService();
+                    
+                    try
+                    {
+                        var accountLink = await linkService.CreateAsync(linkOptions);
+                        _logger.LogInformation("Stripe account link created for existing account: userId={UserId}, url={Url}", userId, accountLink.Url);
+                        return Ok(new { url = accountLink.Url, isLoginLink = true });
+                    }
+                    catch (StripeException ex)
+                    {
+                        _logger.LogError(ex, "Stripe error creating account link for userId={UserId}: {ErrorMessage}", userId, ex.Message);
+                        return StatusCode(500, new { message = "Failed to create Stripe account link" });
+                    }
                 }
 
                 if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
                 {
                     _logger.LogInformation("Expert already has a pending Stripe account: userId={UserId}, pendingStripeAccountId={PendingStripeAccountId}", userId, expertProfile.PendingStripeAccountId);
-                    return BadRequest(new { message = "Expert already has a pending Stripe onboarding process" });
+                    
+                    // Si tiene cuenta pendiente pero no completó onboarding, crear nuevo link para continuar
+                    var linkOptions = new AccountLinkCreateOptions
+                    {
+                        Account = expertProfile.PendingStripeAccountId,
+                        RefreshUrl = "https://atrapo.io/refresh-onboarding",
+                        ReturnUrl = "https://atrapo.io/complete-onboarding",
+                        Type = "account_onboarding",
+                        Collect = "eventually_due"
+                    };
+                    
+                    var linkService = new AccountLinkService();
+                    
+                    try
+                    {
+                        var accountLink = await linkService.CreateAsync(linkOptions);
+                        _logger.LogInformation("Onboarding link created for pending account: userId={UserId}, url={Url}", userId, accountLink.Url);
+                        return Ok(new { url = accountLink.Url, isLoginLink = false });
+                    }
+                    catch (StripeException ex)
+                    {
+                        _logger.LogError(ex, "Stripe error creating onboarding link for pending account userId={UserId}: {ErrorMessage}", userId, ex.Message);
+                        return StatusCode(500, new { message = "Failed to create onboarding link" });
+                    }
                 }
+
+                // Marcar como pendiente antes de crear la cuenta
+                expertProfile.StripeStatus = StripeStatus.Pending;
+                await _context.SaveChangesAsync();
+                _logger.LogInformation("Set StripeStatus to Pending for new account creation: userId={UserId}", userId);
 
                 var accountOptions = new AccountCreateOptions
                 {
@@ -521,7 +612,8 @@ namespace newApi.Controllers
                     HasStripeAccount = !string.IsNullOrEmpty(expertProfile.StripeAccountId),
                     HasPendingOnboarding = !string.IsNullOrEmpty(expertProfile.PendingStripeAccountId),
                     OnboardingCompleted = expertProfile.OnboardingCompleted,
-                    StripeAccountId = expertProfile.StripeAccountId
+                    StripeAccountId = expertProfile.StripeAccountId,
+                    CanAccessStripe = !string.IsNullOrEmpty(expertProfile.StripeAccountId) && expertProfile.OnboardingCompleted
                 };
 
                 _logger.LogInformation("Onboarding status for userId={UserId}: {Status}", userId, System.Text.Json.JsonSerializer.Serialize(status));
@@ -531,6 +623,197 @@ namespace newApi.Controllers
             {
                 _logger.LogError(ex, "Error getting onboarding status: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to get onboarding status" });
+            }
+        }
+
+        [HttpGet("expert-status")]
+        [Authorize(Roles = "Expert")]
+        public async Task<IActionResult> GetExpertStatus()
+        {
+            _logger.LogInformation("GetExpertStatus endpoint invoked");
+
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var expertProfile = await _context.ExpertProfiles
+                    .FirstOrDefaultAsync(ep => ep.UserId == userId);
+
+                if (expertProfile == null)
+                {
+                    _logger.LogError("Expert profile not found for userId={UserId}", userId);
+                    return NotFound(new { message = "Expert profile not found" });
+                }
+
+                // Si la cuenta está rechazada, obtener información detallada de Stripe
+                string rejectionReason = null;
+                if (expertProfile.StripeStatus == StripeStatus.Rejected && !string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                {
+                    try
+                    {
+                        var accountService = new AccountService();
+                        var account = await accountService.GetAsync(expertProfile.StripeAccountId);
+                        rejectionReason = account.Requirements?.DisabledReason;
+                    }
+                    catch (StripeException ex)
+                    {
+                        _logger.LogWarning(ex, "Could not retrieve rejection reason for userId={UserId}: {ErrorMessage}", userId, ex.Message);
+                    }
+                }
+
+                var status = new
+                {
+                    HasStripeAccount = !string.IsNullOrEmpty(expertProfile.StripeAccountId),
+                    HasPendingOnboarding = !string.IsNullOrEmpty(expertProfile.PendingStripeAccountId),
+                    OnboardingCompleted = expertProfile.OnboardingCompleted,
+                    StripeStatus = expertProfile.StripeStatus.ToString(),
+                    StripeAccountId = expertProfile.StripeAccountId,
+                    CanAccessStripe = expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted,
+                    CanCreateServices = expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted,
+                    CanReceivePayments = expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted,
+                    StatusMessage = GetStatusMessage(expertProfile.StripeStatus),
+                    CanRetryOnboarding = expertProfile.StripeStatus == StripeStatus.Rejected || expertProfile.StripeStatus == StripeStatus.NotRequested,
+                    RejectionReason = rejectionReason
+                };
+
+                _logger.LogInformation("Expert status for userId={UserId}: {Status}", userId, System.Text.Json.JsonSerializer.Serialize(status));
+                return Ok(status);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting expert status: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to get expert status" });
+            }
+        }
+
+        [HttpPost("sync-stripe-status")]
+        [Authorize(Roles = "Expert")]
+        public async Task<IActionResult> SyncStripeStatus()
+        {
+            _logger.LogInformation("SyncStripeStatus endpoint invoked");
+
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var expertProfile = await _context.ExpertProfiles
+                    .FirstOrDefaultAsync(ep => ep.UserId == userId);
+
+                if (expertProfile == null)
+                {
+                    _logger.LogError("Expert profile not found for userId={UserId}", userId);
+                    return NotFound(new { message = "Expert profile not found" });
+                }
+
+                if (string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                {
+                    _logger.LogInformation("Expert has no Stripe account to sync: userId={UserId}", userId);
+                    return BadRequest(new { message = "No Stripe account found to sync" });
+                }
+
+                // Verificar el estado actual en Stripe
+                var accountService = new AccountService();
+                Account account;
+                try
+                {
+                    account = await accountService.GetAsync(expertProfile.StripeAccountId);
+                    _logger.LogInformation("Retrieved Stripe account status for userId={UserId}, accountId={AccountId}", userId, account.Id);
+                }
+                catch (StripeException ex)
+                {
+                    _logger.LogError(ex, "Stripe error retrieving account for userId={UserId}: {ErrorMessage}", userId, ex.Message);
+                    return StatusCode(500, new { message = "Failed to retrieve Stripe account status" });
+                }
+
+                // Actualizar el estado basado en la información de Stripe usando la lógica correcta
+                bool isAccountApproved = account.Requirements?.CurrentlyDue?.Count == 0;
+                bool canReceivePayments = account.ChargesEnabled && account.PayoutsEnabled;
+                bool onboardingCompleted = isAccountApproved && canReceivePayments;
+
+                // Verificar si la cuenta ha sido rechazada o desactivada
+                string disabledReason = account.Requirements?.DisabledReason;
+                bool isAccountRejected = !string.IsNullOrEmpty(disabledReason) && disabledReason.StartsWith("rejected");
+                bool isAccountDisabled = !account.ChargesEnabled || !account.PayoutsEnabled;
+
+                _logger.LogInformation("🔍 DEBUG: Syncing Stripe account status for userId={UserId}, isApproved={IsApproved}, canReceivePayments={CanReceivePayments}, disabledReason={DisabledReason}, isRejected={IsRejected}",
+                    userId, isAccountApproved, canReceivePayments, disabledReason, isAccountRejected);
+
+                // Actualizar el StripeStatus basado en el estado real
+                // PRIORIDAD 1: Verificar si la cuenta está aprobada y puede recibir pagos
+                if (onboardingCompleted)
+                {
+                    var previousStatus = expertProfile.StripeStatus;
+                    expertProfile.StripeStatus = StripeStatus.Approved;
+                    expertProfile.OnboardingCompleted = true;
+                    _logger.LogInformation("✅ DEBUG: Account approved and ready for payments for userId={UserId}, previousStatus={PreviousStatus}", userId, previousStatus);
+                }
+                // PRIORIDAD 2: Verificar si la cuenta ha sido rechazada o desactivada
+                else if (isAccountRejected || (isAccountDisabled && !string.IsNullOrEmpty(disabledReason)))
+                {
+                    // La cuenta ha sido rechazada por Stripe
+                    var previousStatus = expertProfile.StripeStatus;
+                    expertProfile.StripeStatus = StripeStatus.Rejected;
+                    expertProfile.OnboardingCompleted = false;
+                    _logger.LogWarning("❌ DEBUG: Account rejected by Stripe for userId={UserId}, reason={DisabledReason}, previousStatus={PreviousStatus}", userId, disabledReason, previousStatus);
+                }
+                // PRIORIDAD 3: La cuenta aún está pendiente de verificación
+                else if (!isAccountApproved)
+                {
+                    var previousStatus = expertProfile.StripeStatus;
+                    expertProfile.StripeStatus = StripeStatus.Pending;
+                    expertProfile.OnboardingCompleted = false;
+                    _logger.LogInformation("⏳ DEBUG: Account still pending verification for userId={UserId}, previousStatus={PreviousStatus}", userId, previousStatus);
+                }
+                else
+                {
+                    // La cuenta está aprobada pero no puede recibir pagos (caso raro)
+                    var previousStatus = expertProfile.StripeStatus;
+                    expertProfile.StripeStatus = StripeStatus.Pending;
+                    expertProfile.OnboardingCompleted = false;
+                    _logger.LogWarning("⚠️ DEBUG: Account approved but cannot receive payments for userId={UserId}, previousStatus={PreviousStatus}", userId, previousStatus);
+                }
+                
+                // Limpiar PendingStripeAccountId si existe
+                if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
+                {
+                    _logger.LogInformation("Clearing PendingStripeAccountId for synced account: userId={UserId}", userId);
+                    expertProfile.PendingStripeAccountId = null;
+                }
+
+                await _context.SaveChangesAsync();
+
+                var status = new
+                {
+                    HasStripeAccount = !string.IsNullOrEmpty(expertProfile.StripeAccountId),
+                    HasPendingOnboarding = !string.IsNullOrEmpty(expertProfile.PendingStripeAccountId),
+                    OnboardingCompleted = expertProfile.OnboardingCompleted,
+                    StripeAccountId = expertProfile.StripeAccountId,
+                    CanAccessStripe = !string.IsNullOrEmpty(expertProfile.StripeAccountId) && expertProfile.OnboardingCompleted,
+                    StripeAccountStatus = new
+                    {
+                        ChargesEnabled = account.ChargesEnabled,
+                        PayoutsEnabled = account.PayoutsEnabled,
+                        DetailsSubmitted = account.DetailsSubmitted
+                    }
+                };
+
+                _logger.LogInformation("Stripe status synced for userId={UserId}: {Status}", userId, System.Text.Json.JsonSerializer.Serialize(status));
+                return Ok(status);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error syncing Stripe status: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to sync Stripe status" });
             }
         }
 
@@ -558,11 +841,32 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Expert profile not found" });
                 }
 
-                // Si ya tiene cuenta completada, no puede reiniciar
+                // Si ya tiene cuenta completada, crear login link en lugar de reiniciar
                 if (!string.IsNullOrEmpty(expertProfile.StripeAccountId) && expertProfile.OnboardingCompleted)
                 {
-                    _logger.LogInformation("Expert already has completed onboarding: userId={UserId}", userId);
-                    return BadRequest(new { message = "Onboarding already completed" });
+                    _logger.LogInformation("Expert already has completed onboarding: userId={UserId}, creating account link", userId);
+                    
+                    var restartLinkOptions = new AccountLinkCreateOptions
+                    {
+                        Account = expertProfile.StripeAccountId,
+                        RefreshUrl = "https://atrapo.io/refresh-onboarding",
+                        ReturnUrl = "https://atrapo.io/complete-onboarding",
+                        Type = "account_onboarding"
+                    };
+                    
+                    var restartLinkService = new AccountLinkService();
+                    
+                    try
+                    {
+                        var restartAccountLink = await restartLinkService.CreateAsync(restartLinkOptions);
+                        _logger.LogInformation("Stripe account link created for completed account: userId={UserId}, url={Url}", userId, restartAccountLink.Url);
+                        return Ok(new { url = restartAccountLink.Url, isLoginLink = true });
+                    }
+                    catch (StripeException ex)
+                    {
+                        _logger.LogError(ex, "Stripe error creating account link for userId={UserId}: {ErrorMessage}", userId, ex.Message);
+                        return StatusCode(500, new { message = "Failed to create Stripe account link" });
+                    }
                 }
 
                 // Si no tiene cuenta pendiente, redirigir al endpoint de crear onboarding
@@ -572,7 +876,7 @@ namespace newApi.Controllers
                 }
 
                 // Si tiene cuenta pendiente, crear nuevo link de onboarding
-                var linkOptions = new AccountLinkCreateOptions
+                var pendingLinkOptions = new AccountLinkCreateOptions
                 {
                     Account = expertProfile.PendingStripeAccountId,
                     RefreshUrl = "https://atrapo.io/refresh-onboarding",
@@ -581,12 +885,12 @@ namespace newApi.Controllers
                     Collect = "eventually_due"
                 };
 
-                var linkService = new AccountLinkService();
-                AccountLink accountLink;
+                var pendingLinkService = new AccountLinkService();
+                AccountLink pendingAccountLink;
                 try
                 {
-                    accountLink = await linkService.CreateAsync(linkOptions);
-                    _logger.LogInformation("New onboarding link created for userId={UserId}, url={Url}", userId, accountLink.Url);
+                    pendingAccountLink = await pendingLinkService.CreateAsync(pendingLinkOptions);
+                    _logger.LogInformation("New onboarding link created for userId={UserId}, url={Url}", userId, pendingAccountLink.Url);
                 }
                 catch (StripeException ex)
                 {
@@ -594,7 +898,7 @@ namespace newApi.Controllers
                     return StatusCode(500, new { message = "Failed to create new onboarding link" });
                 }
 
-                return Ok(new { url = accountLink.Url });
+                return Ok(new { url = pendingAccountLink.Url });
             }
             catch (Exception ex)
             {
@@ -830,12 +1134,13 @@ namespace newApi.Controllers
         {
             var json = await new StreamReader(Request.Body).ReadToEndAsync();
             var signatureHeader = Request.Headers["Stripe-Signature"];
-            _logger.LogInformation("Received webhook with signature: {SignatureHeader}, payload: {Payload}", signatureHeader, json);
+            _logger.LogInformation("🔔 WEBHOOK RECEIVED: signature={SignatureHeader}, payload={Payload}", signatureHeader, json);
 
             try
             {
+                _logger.LogInformation("🔐 DEBUG: Validating webhook signature with secret: {WebhookSecret}", _webhookSecret?.Substring(0, 10) + "...");
                 var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, _webhookSecret);
-                _logger.LogInformation("Event constructed successfully: type={EventType}, id={EventId}", stripeEvent.Type, stripeEvent.Id);
+                _logger.LogInformation("✅ WEBHOOK EVENT CONSTRUCTED: type={EventType}, id={EventId}", stripeEvent.Type, stripeEvent.Id);
 
                 switch (stripeEvent.Type)
                 {
@@ -878,42 +1183,145 @@ namespace newApi.Controllers
                         }
                         break;
 
+                    case "account.application.authorized":
+                        // Este evento solo indica que el usuario autorizó la aplicación (OAuth)
+                        // NO indica que la cuenta esté aprobada o que el onboarding esté completo
+                        var authorizedApp = stripeEvent.Data.Object as Application;
+                        if (authorizedApp != null)
+                        {
+                            _logger.LogInformation("🔗 DEBUG: Application authorized: appId={AppId}, accountId={AccountId}", authorizedApp.Id, stripeEvent.Account);
+                            // No actualizamos el estado del experto aquí, solo registramos la autorización
+                        }
+                        break;
+
+                    case "account.application.deauthorized":
+                        var deauthorizedAccount = stripeEvent.Data.Object as Account;
+                        if (deauthorizedAccount != null)
+                        {
+                            _logger.LogInformation("❌ DEBUG: Account application deauthorized for accountId={AccountId}", deauthorizedAccount.Id);
+                            
+                            // Buscar por StripeAccountId o PendingStripeAccountId
+                            var expertProfile = await _context.ExpertProfiles
+                                .FirstOrDefaultAsync(ep => ep.StripeAccountId == deauthorizedAccount.Id || ep.PendingStripeAccountId == deauthorizedAccount.Id);
+                            
+                            if (expertProfile != null)
+                            {
+                                _logger.LogInformation("⚠️ DEBUG: Found expert profile for account.application.deauthorized: userId={UserId}, accountId={AccountId}", expertProfile.UserId, deauthorizedAccount.Id);
+                                
+                                // Marcar como rechazado cuando la aplicación es desautorizada
+                                expertProfile.StripeStatus = StripeStatus.Rejected;
+                                expertProfile.OnboardingCompleted = false;
+                                
+                                // Limpiar PendingStripeAccountId si existe
+                                if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
+                                {
+                                    _logger.LogInformation("🧹 DEBUG: Clearing PendingStripeAccountId for rejected account: userId={UserId}", expertProfile.UserId);
+                                    expertProfile.PendingStripeAccountId = null;
+                                }
+                                
+                                // Opcional: También limpiar StripeAccountId si fue rechazado
+                                // expertProfile.StripeAccountId = null;
+                                
+                                await _context.SaveChangesAsync();
+                                _logger.LogInformation("❌ DEBUG: Account application deauthorized - status set to Rejected for userId={UserId}", expertProfile.UserId);
+                            }
+                            else
+                            {
+                                _logger.LogWarning("❌ DEBUG: No expert profile found for account.application.deauthorized accountId={AccountId}", deauthorizedAccount.Id);
+                            }
+                        }
+                        break;
+
                     case "account.updated":
                         var account = stripeEvent.Data.Object as Account;
                         if (account != null)
                         {
+                            _logger.LogInformation("🔍 DEBUG: Processing account.updated webhook for accountId={AccountId}, ChargesEnabled={ChargesEnabled}, PayoutsEnabled={PayoutsEnabled}, DetailsSubmitted={DetailsSubmitted}, RequirementsCurrentlyDue={RequirementsCurrentlyDue}", 
+                                account.Id, account.ChargesEnabled, account.PayoutsEnabled, account.DetailsSubmitted, 
+                                account.Requirements?.CurrentlyDue?.Count ?? 0);
+                            
                             // Buscar por StripeAccountId o PendingStripeAccountId
                             var expertProfile = await _context.ExpertProfiles
                                 .FirstOrDefaultAsync(ep => ep.StripeAccountId == account.Id || ep.PendingStripeAccountId == account.Id);
                             
                             if (expertProfile != null)
                             {
-                                bool isAccountEnabled = account.ChargesEnabled && account.PayoutsEnabled;
-                                bool onboardingCompleted = account.DetailsSubmitted && isAccountEnabled;
+                                // Verificar si la cuenta está completamente verificada y aprobada
+                                bool isAccountApproved = account.Requirements?.CurrentlyDue?.Count == 0;
+                                bool canReceivePayments = account.ChargesEnabled && account.PayoutsEnabled;
+                                bool onboardingCompleted = isAccountApproved && canReceivePayments;
                                 
-                                _logger.LogInformation("Account updated for expert userId={UserId}, accountId={AccountId}, enabled={Enabled}, onboardingCompleted={OnboardingCompleted}",
-                                    expertProfile.UserId, account.Id, isAccountEnabled, onboardingCompleted);
+                                // Verificar si la cuenta ha sido rechazada o desactivada
+                                string disabledReason = account.Requirements?.DisabledReason;
+                                bool isAccountRejected = !string.IsNullOrEmpty(disabledReason) && disabledReason.StartsWith("rejected");
+                                bool isAccountDisabled = !account.ChargesEnabled || !account.PayoutsEnabled;
                                 
-                                // Si el onboarding se completó y teníamos una cuenta pendiente
-                                if (onboardingCompleted && !string.IsNullOrEmpty(expertProfile.PendingStripeAccountId) && string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                                _logger.LogInformation("✅ DEBUG: Found expert profile for account.updated: userId={UserId}, accountId={AccountId}, isApproved={IsApproved}, canReceivePayments={CanReceivePayments}, onboardingCompleted={OnboardingCompleted}, disabledReason={DisabledReason}, isRejected={IsRejected}",
+                                    expertProfile.UserId, account.Id, isAccountApproved, canReceivePayments, onboardingCompleted, disabledReason, isAccountRejected);
+                                
+                                // Actualizar el estado del StripeStatus
+                                // PRIORIDAD 1: Verificar si la cuenta está aprobada y puede recibir pagos
+                                if (onboardingCompleted)
                                 {
-                                    _logger.LogInformation("Onboarding completed! Moving PendingStripeAccountId to StripeAccountId for userId={UserId}", expertProfile.UserId);
-                                    expertProfile.StripeAccountId = expertProfile.PendingStripeAccountId;
-                                    expertProfile.PendingStripeAccountId = null;
+                                    // La cuenta está aprobada y puede recibir pagos
+                                    var previousStatus = expertProfile.StripeStatus;
+                                    expertProfile.StripeStatus = StripeStatus.Approved;
                                     expertProfile.OnboardingCompleted = true;
+                                    
+                                    // Si tenía PendingStripeAccountId, moverlo a StripeAccountId
+                                    if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId) && string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                                    {
+                                        _logger.LogInformation("🔄 DEBUG: Moving PendingStripeAccountId to StripeAccountId for userId={UserId}", expertProfile.UserId);
+                                        expertProfile.StripeAccountId = expertProfile.PendingStripeAccountId;
+                                        expertProfile.PendingStripeAccountId = null;
+                                    }
+                                    
+                                    _logger.LogInformation("🎉 DEBUG: Account approved and onboarding completed for userId={UserId}, previousStatus={PreviousStatus}", expertProfile.UserId, previousStatus);
                                 }
-                                // Si ya tenía StripeAccountId, solo actualizar el estado
-                                else if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                                // PRIORIDAD 2: Verificar si la cuenta ha sido rechazada o desactivada
+                                else if (isAccountRejected || (isAccountDisabled && !string.IsNullOrEmpty(disabledReason)))
                                 {
-                                    expertProfile.OnboardingCompleted = onboardingCompleted;
+                                    // La cuenta ha sido rechazada por Stripe
+                                    var previousStatus = expertProfile.StripeStatus;
+                                    expertProfile.StripeStatus = StripeStatus.Rejected;
+                                    expertProfile.OnboardingCompleted = false;
+                                    
+                                    _logger.LogWarning("❌ DEBUG: Account rejected by Stripe for userId={UserId}, reason={DisabledReason}, previousStatus={PreviousStatus}", expertProfile.UserId, disabledReason, previousStatus);
+                                    
+                                    // TODO: Aquí podrías enviar una notificación al usuario sobre el rechazo
+                                    // await _notificationService.SendAccountRejectedNotification(expertProfile.UserId, disabledReason);
+                                }
+                                // PRIORIDAD 3: La cuenta aún está pendiente de verificación
+                                else if (!isAccountApproved)
+                                {
+                                    // La cuenta aún está pendiente de verificación
+                                    var previousStatus = expertProfile.StripeStatus;
+                                    expertProfile.StripeStatus = StripeStatus.Pending;
+                                    expertProfile.OnboardingCompleted = false;
+                                    _logger.LogInformation("⏳ DEBUG: Account still pending verification for userId={UserId}, previousStatus={PreviousStatus}", expertProfile.UserId, previousStatus);
                                 }
                                 
                                 await _context.SaveChangesAsync();
+                                _logger.LogInformation("✅ DEBUG: Updated expert profile after account.updated webhook: userId={UserId}, StripeStatus={StripeStatus}, OnboardingCompleted={OnboardingCompleted}", 
+                                    expertProfile.UserId, expertProfile.StripeStatus, expertProfile.OnboardingCompleted);
                             }
                             else
                             {
-                                _logger.LogWarning("No expert profile found for accountId={AccountId}", account.Id);
+                                _logger.LogWarning("❌ DEBUG: No expert profile found for account.updated accountId={AccountId}", account.Id);
+                                _logger.LogWarning("❌ DEBUG: No expert profile found for accountId={AccountId}. Searching all expert profiles...", account.Id);
+                                
+                                // Log all expert profiles for debugging
+                                var allProfiles = await _context.ExpertProfiles.ToListAsync();
+                                foreach (var profile in allProfiles)
+                                {
+                                    _logger.LogInformation("📋 DEBUG: Expert profile: userId={UserId}, StripeAccountId={StripeAccountId}, PendingStripeAccountId={PendingStripeAccountId}", 
+                                        profile.UserId, profile.StripeAccountId, profile.PendingStripeAccountId);
+                                }
                             }
+                        }
+                        else
+                        {
+                            _logger.LogWarning("account.updated webhook received but account data is null");
                         }
                         break;
 
@@ -991,6 +1399,7 @@ namespace newApi.Controllers
                         break;
                 }
 
+                _logger.LogInformation("✅ WEBHOOK PROCESSED SUCCESSFULLY: returning 200 OK");
                 return Ok();
             }
             catch (StripeException e)
@@ -1548,53 +1957,61 @@ namespace newApi.Controllers
                 _logger.LogInformation("Processing force-finalize for searchHireId={SearchHireId}, current status={Status}",
                     searchHire.Id, searchHire.Status);
 
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
+                if (request.ResolveInFavorOfClient)
                 {
-                    if (request.ResolveInFavorOfClient)
+                    // Usar la función centralizada para procesar el reembolso
+                    var success = await ProcessClientRefundAsync(searchHire.Id, "Admin force-finalized in favor of client");
+                    
+                    if (success)
                     {
-                        searchHire.Client.Balance += searchHire.Amount;
-                        var financialTransaction = new FinancialTransaction
-                        {
-                            UserId = searchHire.ClientId,
-                            Amount = searchHire.Amount,
-                            TransactionType = "Refund",
-                            RelatedEntityType = "SearchHire",
-                            RelatedEntityId = searchHire.Id,
-                            CreatedAt = DateTime.UtcNow
-                        };
-                        _context.FinancialTransactions.Add(financialTransaction);
-                        searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
-                        searchHire.UpdatedAt = DateTime.UtcNow;
                         _logger.LogInformation("Force-finalized in favor of client for searchHireId={SearchHireId}, refunded amount={Amount}",
                             searchHire.Id, searchHire.Amount);
+                        return Ok(new { message = "Service finalized successfully in favor of client" });
                     }
                     else
                     {
+                        _logger.LogError("Failed to process client refund for searchHireId={SearchHireId}", searchHire.Id);
+                        return StatusCode(500, new { message = "Failed to process client refund" });
+                    }
+                }
+                else
+                {
+                    // Verificar que el experto tenga Stripe configurado antes de transferir
+                    if (string.IsNullOrEmpty(searchHire.Expert.ExpertProfile?.StripeAccountId))
+                    {
+                        _logger.LogError("Expert has no Stripe account configured for searchHireId={SearchHireId}, expertId={ExpertId}", 
+                            searchHire.Id, searchHire.ExpertId);
+                        return BadRequest(new { message = "Expert has no Stripe account configured" });
+                    }
+                    
+                    // Procesar transferencia al experto
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
+                    {
                         await ProcessTransferToExpert(searchHire.Id);
-                        searchHire.Status = SearchHireStatus.Completed.ToStringValue();
-                        searchHire.UpdatedAt = DateTime.UtcNow;
+                        // El estado ya se actualiza en ProcessTransferToExpert
+                        
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+                        
                         _logger.LogInformation("Force-finalized in favor of expert for searchHireId={SearchHireId}, transferred amount={Amount}",
                             searchHire.Id, searchHire.Amount * (1 - 0.1m));
+                        
+                        return Ok(new { message = "Service finalized successfully in favor of expert" });
                     }
-
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
-
-                    return Ok(new { message = "Service finalized successfully" });
-                }
-                catch (StripeException ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Stripe error finalizing service for searchHireId={SearchHireId}: {ErrorMessage}",
-                        searchHire.Id, ex.Message);
-                    return StatusCode(500, new { message = "Failed to process service finalization" });
-                }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Database error finalizing service for searchHireId={SearchHireId}", searchHire.Id);
-                    return StatusCode(500, new { message = "Failed to finalize service" });
+                    catch (StripeException ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Stripe error finalizing service for searchHireId={SearchHireId}: {ErrorMessage}",
+                            searchHire.Id, ex.Message);
+                        return StatusCode(500, new { message = "Failed to process service finalization" });
+                    }
+                    catch (Exception ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Database error finalizing service for searchHireId={SearchHireId}", searchHire.Id);
+                        return StatusCode(500, new { message = "Failed to finalize service" });
+                    }
                 }
             }
             catch (Exception ex)
@@ -1659,26 +2076,33 @@ namespace newApi.Controllers
 
                     if (request.ResolveInFavorOfClient)
                     {
-                        searchHire.Client.Balance += searchHire.Amount;
-                        var financialTransaction = new FinancialTransaction
+                        // Usar la función centralizada para procesar el reembolso
+                        var success = await ProcessClientRefundAsync(searchHire.Id, $"Dispute resolved in favor of client: {request.Resolution}");
+                        
+                        if (!success)
                         {
-                            UserId = searchHire.ClientId,
-                            Amount = searchHire.Amount,
-                            TransactionType = "Refund",
-                            RelatedEntityType = "SearchHire",
-                            RelatedEntityId = searchHire.Id,
-                            CreatedAt = DateTime.UtcNow
-                        };
-                        _context.FinancialTransactions.Add(financialTransaction);
+                            _logger.LogError("Failed to process client refund for dispute searchHireId={SearchHireId}", searchHire.Id);
+                            await transaction.RollbackAsync();
+                            return StatusCode(500, new { message = "Failed to process client refund" });
+                        }
+                        
                         _logger.LogInformation("Dispute resolved in favor of client for searchHireId={SearchHireId}", searchHire.Id);
                     }
                     else
                     {
+                        // Verificar que el experto tenga Stripe configurado antes de transferir
+                        if (string.IsNullOrEmpty(searchHire.Expert.ExpertProfile?.StripeAccountId))
+                        {
+                            _logger.LogError("Expert has no Stripe account configured for searchHireId={SearchHireId}, expertId={ExpertId}", 
+                                searchHire.Id, searchHire.ExpertId);
+                            await transaction.RollbackAsync();
+                            return BadRequest(new { message = "Expert has no Stripe account configured" });
+                        }
+                        
                         await ProcessTransferToExpert(searchHire.Id);
+                        searchHire.Status = SearchHireStatus.Completed.ToStringValue();
                         _logger.LogInformation("Dispute resolved in favor of expert for searchHireId={SearchHireId}", searchHire.Id);
                     }
-
-                    searchHire.Status = SearchHireStatus.DisputeResolved.ToStringValue();
                     searchHire.UpdatedAt = DateTime.UtcNow;
 
                     await _context.SaveChangesAsync();
@@ -1706,6 +2130,7 @@ namespace newApi.Controllers
             }
         }
 
+
         [HttpPost("process-expired-services")]
         public async Task<IActionResult> ProcessExpiredServices()
         {
@@ -1730,8 +2155,160 @@ namespace newApi.Controllers
             }
         }
 
+        /// <summary>
+        /// Función centralizada para dar la razón al cliente y procesar el reembolso
+        /// </summary>
+        /// <param name="searchHireId">ID del servicio contratado</param>
+        /// <param name="reason">Razón del reembolso</param>
+        /// <returns>True si se procesó correctamente, false en caso contrario</returns>
+        public async Task<bool> ProcessClientRefundAsync(int searchHireId, string reason)
+        {
+            _logger.LogInformation("Processing client refund for searchHireId={SearchHireId}, reason={Reason}", searchHireId, reason);
+
+            try
+            {
+                var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Client)
+                    .Include(sh => sh.Expert)
+                    .ThenInclude(e => e.ExpertProfile)
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+
+                if (searchHire == null)
+                {
+                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
+                    return false;
+                }
+
+                // Verificar que el servicio esté en estado activo
+                if (searchHire.Status != SearchHireStatus.Pending.ToStringValue())
+                {
+                    _logger.LogWarning("SearchHire is not in active status for searchHireId={SearchHireId}, current status={Status}", 
+                        searchHireId, searchHire.Status);
+                    return false;
+                }
+
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    // Reembolsar al cliente
+                    searchHire.Client.Balance += searchHire.Amount;
+                    
+                    // Crear transacción financiera
+                    var financialTransaction = new FinancialTransaction
+                    {
+                        UserId = searchHire.ClientId,
+                        Amount = searchHire.Amount,
+                        TransactionType = "Refund",
+                        RelatedEntityType = "SearchHire",
+                        RelatedEntityId = searchHire.Id,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    _context.FinancialTransactions.Add(financialTransaction);
+                    
+                    // Actualizar estado del servicio
+                    searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
+                    searchHire.UpdatedAt = DateTime.UtcNow;
+                    
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    _logger.LogInformation("Successfully processed client refund for searchHireId={SearchHireId}, refunded amount={Amount}, reason={Reason}",
+                        searchHire.Id, searchHire.Amount, reason);
+
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Error processing client refund for searchHireId={SearchHireId}: {ErrorMessage}", 
+                        searchHireId, ex.Message);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in ProcessClientRefundAsync for searchHireId={SearchHireId}: {ErrorMessage}", 
+                    searchHireId, ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Verifica si el experto ha respondido en las primeras 24 horas
+        /// </summary>
+        /// <param name="searchHireId">ID del servicio contratado</param>
+        public async Task CheckExpertResponseAsync(int searchHireId)
+        {
+            _logger.LogInformation("Checking expert response for searchHireId={SearchHireId}", searchHireId);
+
+            try
+            {
+                var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Client)
+                    .Include(sh => sh.Expert)
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+
+                if (searchHire == null)
+                {
+                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
+                    return;
+                }
+
+                // Verificar que el servicio esté activo
+                if (searchHire.Status != SearchHireStatus.Pending.ToStringValue())
+                {
+                    _logger.LogInformation("SearchHire is not active for searchHireId={SearchHireId}, current status={Status}", 
+                        searchHireId, searchHire.Status);
+                    return;
+                }
+
+                // Calcular si han pasado 24 horas desde la contratación
+                var timeSinceHire = DateTime.UtcNow - searchHire.CreatedAt;
+                if (timeSinceHire.TotalHours < 24)
+                {
+                    _logger.LogInformation("Less than 24 hours have passed for searchHireId={SearchHireId}, hours={Hours}", 
+                        searchHireId, timeSinceHire.TotalHours);
+                    return;
+                }
+
+                // Verificar si el experto ha enviado algún mensaje
+                var hasExpertMessage = await _context.Messages
+                    .AnyAsync(m => m.Conversation.SearchHireId == searchHireId && 
+                                   m.SenderId == searchHire.ExpertId && 
+                                   m.SentAt > searchHire.CreatedAt);
+
+                if (!hasExpertMessage)
+                {
+                    _logger.LogWarning("Expert has not responded within 24 hours for searchHireId={SearchHireId}, processing automatic refund", searchHireId);
+                    
+                    // Procesar reembolso automático
+                    var success = await ProcessClientRefundAsync(searchHireId, "Expert did not respond within 24 hours - automatic refund");
+                    
+                    if (success)
+                    {
+                        _logger.LogInformation("Automatic refund processed successfully for searchHireId={SearchHireId}", searchHireId);
+                    }
+                    else
+                    {
+                        _logger.LogError("Failed to process automatic refund for searchHireId={SearchHireId}", searchHireId);
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("Expert has responded for searchHireId={SearchHireId}, no action needed", searchHireId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in CheckExpertResponseAsync for searchHireId={SearchHireId}: {ErrorMessage}", 
+                    searchHireId, ex.Message);
+            }
+        }
+
         public async Task ProcessTransferToExpert(int searchHireId)
         {
+            _logger.LogInformation("Processing transfer to expert for searchHireId={SearchHireId}", searchHireId);
+
             var searchHire = await _context.SearchHires
                 .Include(sh => sh.Expert)
                 .ThenInclude(e => e.ExpertProfile)
@@ -1741,6 +2318,14 @@ namespace newApi.Controllers
             {
                 _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
                 throw new Exception("SearchHire not found");
+            }
+
+            // Verificar que el servicio esté en estado activo
+            if (searchHire.Status != SearchHireStatus.Pending.ToStringValue())
+            {
+                _logger.LogWarning("SearchHire is not in active status for searchHireId={SearchHireId}, current status={Status}", 
+                    searchHireId, searchHire.Status);
+                throw new Exception($"SearchHire is not in active status: {searchHire.Status}");
             }
 
             var commissionRate = 0.1m;
@@ -1754,34 +2339,58 @@ namespace newApi.Controllers
                 throw new Exception("Expert has no Stripe account configured");
             }
 
-            var transferOptions = new TransferCreateOptions
+            try
             {
-                Amount = amountInCents,
-                Currency = "eur",
-                Destination = expertStripeAccountId,
-                Metadata = new Dictionary<string, string>
+                var transferOptions = new TransferCreateOptions
                 {
-                    { "searchHireId", searchHireId.ToString() }
-                }
-            };
+                    Amount = amountInCents,
+                    Currency = "eur",
+                    Destination = expertStripeAccountId,
+                    Metadata = new Dictionary<string, string>
+                    {
+                        { "searchHireId", searchHireId.ToString() }
+                    }
+                };
 
-            var transferService = new TransferService();
-            var transfer = await transferService.CreateAsync(transferOptions);
-            searchHire.ExpertTransferId = transfer.Id;
-            _logger.LogInformation("Transfer created for searchHireId={SearchHireId}, transferId={TransferId}, amount={Amount}", searchHireId, transfer.Id, amountToExpert);
+                var transferService = new TransferService();
+                var transfer = await transferService.CreateAsync(transferOptions);
+                searchHire.ExpertTransferId = transfer.Id;
+                
+                // Actualizar el estado del servicio a completado
+                searchHire.Status = SearchHireStatus.Completed.ToStringValue();
+                searchHire.UpdatedAt = DateTime.UtcNow;
+                
+                _logger.LogInformation("Transfer created for searchHireId={SearchHireId}, transferId={TransferId}, amount={Amount}", searchHireId, transfer.Id, amountToExpert);
 
-            //var financialTransaction = new FinancialTransaction
-            //{
-            //    UserId = searchHire.ExpertId,
-            //    Amount = amountToExpert,
-            //    TransactionType = "Payout",
-            //    RelatedEntityType = "SearchHire",
-            //    RelatedEntityId = searchHireId,
-            //    CreatedAt = DateTime.UtcNow
-            //};
-            //_context.FinancialTransactions.Add(financialTransaction);
+                // Crear transacción financiera para el pago al experto
+                var financialTransaction = new FinancialTransaction
+                {
+                    UserId = searchHire.ExpertId.Value,
+                    Amount = amountToExpert,
+                    TransactionType = "Payout",
+                    RelatedEntityType = "SearchHire",
+                    RelatedEntityId = searchHireId,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _context.FinancialTransactions.Add(financialTransaction);
 
-            await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync();
+                
+                _logger.LogInformation("Successfully processed transfer to expert for searchHireId={SearchHireId}, amount={Amount}", 
+                    searchHireId, amountToExpert);
+            }
+            catch (StripeException ex)
+            {
+                _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", 
+                    searchHireId, ex.Message);
+                throw new Exception($"Stripe transfer failed: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", 
+                    searchHireId, ex.Message);
+                throw;
+            }
         }
 
         private async Task HandleLoadMoneyCompleted(int userId, decimal amount)
@@ -2051,5 +2660,6 @@ namespace newApi.Controllers
             public string BillingPeriod { get; set; }
             public DateTime? NextBillingDate { get; set; }
         }
+
     }
 }

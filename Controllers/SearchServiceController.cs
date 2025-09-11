@@ -1,8 +1,11 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using newApi.Services;
 using newApi.DataLayer.Models.DTOs;
+using newApi.DataLayer.Models.PostGresModels;
 using System.Security.Claims;
+using newApi.DataLayer.Models;
 
 namespace newApi.Controllers
 {
@@ -12,13 +15,29 @@ namespace newApi.Controllers
     {
         private readonly SearchServiceService _searchServiceService;
         private readonly ILogger<SearchServiceController> _logger;
+        private readonly AppDbContext _context;
 
         public SearchServiceController(
             SearchServiceService searchServiceService,
-            ILogger<SearchServiceController> logger)
+            ILogger<SearchServiceController> logger,
+            AppDbContext context)
         {
             _searchServiceService = searchServiceService;
             _logger = logger;
+            _context = context;
+        }
+
+        private string GetStripeStatusMessage(StripeStatus status)
+        {
+            return status switch
+            {
+                StripeStatus.NotRequested => "You haven't set up your Stripe account yet. Please configure your payment account to start offering services.",
+                StripeStatus.Pending => "Your Stripe account application is being reviewed. Please wait for approval before creating services.",
+                StripeStatus.Approved => "Your Stripe account is approved and ready to receive payments.",
+                StripeStatus.Rejected => "Your Stripe account application was rejected. Please try setting up your account again with correct information.",
+                StripeStatus.Deauthorized => "Your Stripe account has been deauthorized. Please contact support or try setting up your account again.",
+                _ => "Unknown Stripe account status. Please contact support."
+            };
         }
 
         [HttpGet]
@@ -157,6 +176,26 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
+                // Verificar que el experto haya completado el onboarding de Stripe
+                var expertProfile = await _context.ExpertProfiles
+                    .FirstOrDefaultAsync(ep => ep.UserId == userId);
+
+                if (expertProfile == null)
+                {
+                    return BadRequest(new { message = "Expert profile not found" });
+                }
+
+                if (expertProfile.StripeStatus != StripeStatus.Approved || !expertProfile.OnboardingCompleted)
+                {
+                    var statusMessage = GetStripeStatusMessage(expertProfile.StripeStatus);
+                    return BadRequest(new { 
+                        message = statusMessage,
+                        stripeStatus = expertProfile.StripeStatus.ToString(),
+                        requiresStripeSetup = expertProfile.StripeStatus == StripeStatus.NotRequested,
+                        canRetry = expertProfile.StripeStatus == StripeStatus.Rejected || expertProfile.StripeStatus == StripeStatus.NotRequested
+                    });
+                }
+
                 if (request.ServiceTypeId <= 0)
                 {
                     return BadRequest(new { message = "El tipo de servicio es requerido" });
@@ -249,6 +288,26 @@ namespace newApi.Controllers
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
                     return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                // Verificar que el experto haya completado el onboarding de Stripe
+                var expertProfile = await _context.ExpertProfiles
+                    .FirstOrDefaultAsync(ep => ep.UserId == userId);
+
+                if (expertProfile == null)
+                {
+                    return BadRequest(new { message = "Expert profile not found" });
+                }
+
+                if (expertProfile.StripeStatus != StripeStatus.Approved || !expertProfile.OnboardingCompleted)
+                {
+                    var statusMessage = GetStripeStatusMessage(expertProfile.StripeStatus);
+                    return BadRequest(new { 
+                        message = statusMessage,
+                        stripeStatus = expertProfile.StripeStatus.ToString(),
+                        requiresStripeSetup = expertProfile.StripeStatus == StripeStatus.NotRequested,
+                        canRetry = expertProfile.StripeStatus == StripeStatus.Rejected || expertProfile.StripeStatus == StripeStatus.NotRequested
+                    });
                 }
 
                 if (request.ServiceId <= 0)

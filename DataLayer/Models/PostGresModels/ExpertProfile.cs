@@ -1,5 +1,14 @@
 ﻿namespace newApi.DataLayer.Models.PostGresModels
 {
+    public enum StripeStatus
+    {
+        NotRequested = 0,    // Usuario nunca ha solicitado cuenta Stripe
+        Pending = 1,         // Solicitud enviada, esperando aprobación
+        Approved = 2,        // Cuenta aprobada por Stripe
+        Rejected = 3,        // Cuenta rechazada por Stripe
+        Deauthorized = 4     // Cuenta desautorizada después de ser aprobada
+    }
+
     public class ExpertProfile
     {
         public int Id { get; set; }
@@ -10,6 +19,7 @@
         public string? StripeAccountId { get; set; }
         public string? PendingStripeAccountId { get; set; } // Cuenta temporal hasta completar onboarding
         public bool OnboardingCompleted { get; set; } = false; // Estado del onboarding
+        public StripeStatus StripeStatus { get; set; } = StripeStatus.NotRequested; // Estado de la solicitud Stripe
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public string Latitude { get; set; }
         public string Longitude { get; set; }

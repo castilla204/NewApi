@@ -10,6 +10,7 @@ using System;
 using System.Linq;
 using Stripe;
 using newApi.DataLayer.Models.DTOs;
+using Hangfire;
 
 namespace newApi.Controllers
 {
@@ -134,12 +135,118 @@ namespace newApi.Controllers
 
                 await _context.SaveChangesAsync();
 
+                // Programar automáticamente la verificación de respuesta del experto para 24 horas después
+                var scheduledTime = searchHire.CreatedAt.AddHours(24);
+                BackgroundJob.Schedule(
+                    () => CheckExpertResponseAsync(searchHire.Id),
+                    scheduledTime - DateTime.UtcNow
+                );
+
+                _logger.LogInformation("SearchHire created and expert response check scheduled for searchHireId={SearchHireId}, scheduledTime={ScheduledTime}", 
+                    searchHire.Id, scheduledTime);
+
                 return CreatedAtAction(nameof(GetSearchHire), new { id = searchHire.Id }, searchHire);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error creating search hire");
                 return StatusCode(500, new { message = "Failed to create search hire" });
+            }
+        }
+
+        /// <summary>
+        /// Verifica si el experto ha respondido en las primeras 24 horas (método para Hangfire)
+        /// </summary>
+        /// <param name="searchHireId">ID del servicio contratado</param>
+        public async Task CheckExpertResponseAsync(int searchHireId)
+        {
+            _logger.LogInformation("Checking expert response for searchHireId={SearchHireId}", searchHireId);
+
+            try
+            {
+                var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Client)
+                    .Include(sh => sh.Expert)
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+
+                if (searchHire == null)
+                {
+                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
+                    return;
+                }
+
+                // Verificar que el servicio esté activo
+                if (searchHire.Status != "active")
+                {
+                    _logger.LogInformation("SearchHire is not active for searchHireId={SearchHireId}, current status={Status}", 
+                        searchHireId, searchHire.Status);
+                    return;
+                }
+
+                // Calcular si han pasado 24 horas desde la contratación
+                var timeSinceHire = DateTime.UtcNow - searchHire.CreatedAt;
+                if (timeSinceHire.TotalHours < 24)
+                {
+                    _logger.LogInformation("Less than 24 hours have passed for searchHireId={SearchHireId}, hours={Hours}", 
+                        searchHireId, timeSinceHire.TotalHours);
+                    return;
+                }
+
+                // Verificar si el experto ha enviado algún mensaje
+                var hasExpertMessage = await _context.Messages
+                    .AnyAsync(m => m.Conversation.SearchHireId == searchHireId && 
+                                   m.SenderId == searchHire.ExpertId && 
+                                   m.SentAt > searchHire.CreatedAt);
+
+                if (!hasExpertMessage)
+                {
+                    _logger.LogWarning("Expert has not responded within 24 hours for searchHireId={SearchHireId}, processing automatic refund", searchHireId);
+                    
+                    // Procesar reembolso automático usando la función centralizada del SubscriptionController
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
+                    {
+                        // Reembolsar al cliente
+                        searchHire.Client.Balance += searchHire.Amount;
+                        
+                        // Crear transacción financiera
+                        var financialTransaction = new FinancialTransaction
+                        {
+                            UserId = searchHire.ClientId,
+                            Amount = searchHire.Amount,
+                            TransactionType = "Refund",
+                            RelatedEntityType = "SearchHire",
+                            RelatedEntityId = searchHire.Id,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        _context.FinancialTransactions.Add(financialTransaction);
+                        
+                        // Actualizar estado del servicio
+                        searchHire.Status = "cancelled";
+                        searchHire.UpdatedAt = DateTime.UtcNow;
+                        
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+
+                        _logger.LogInformation("Automatic refund processed successfully for searchHireId={SearchHireId}, refunded amount={Amount}", 
+                            searchHireId, searchHire.Amount);
+                    }
+                    catch (Exception ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Error processing automatic refund for searchHireId={SearchHireId}: {ErrorMessage}", 
+                            searchHireId, ex.Message);
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("Expert has responded for searchHireId={SearchHireId}, no action needed", searchHireId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in CheckExpertResponseAsync for searchHireId={SearchHireId}: {ErrorMessage}", 
+                    searchHireId, ex.Message);
             }
         }
 

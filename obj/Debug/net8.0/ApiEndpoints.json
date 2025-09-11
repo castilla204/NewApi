@@ -499,6 +499,28 @@
   },
   {
     "ContainingType": "newApi.Controllers.SearchHireController",
+    "Method": "CheckExpertResponseAsync",
+    "RelativePath": "api/SearchHire",
+    "HttpMethod": "",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "searchHireId",
+        "Type": "System.Int32",
+        "IsRequired": false
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
+    "ContainingType": "newApi.Controllers.SearchHireController",
     "Method": "UpdateHireStatus",
     "RelativePath": "api/SearchHire/{hireId}/status",
     "HttpMethod": "PUT",
@@ -995,6 +1017,59 @@
   },
   {
     "ContainingType": "newApi.Controllers.SubscriptionController",
+    "Method": "ProcessClientRefundAsync",
+    "RelativePath": "api/Subscription",
+    "HttpMethod": "",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "searchHireId",
+        "Type": "System.Int32",
+        "IsRequired": false
+      },
+      {
+        "Name": "reason",
+        "Type": "System.String",
+        "IsRequired": false
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "System.Boolean",
+        "MediaTypes": [
+          "text/plain",
+          "application/json",
+          "text/json"
+        ],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
+    "ContainingType": "newApi.Controllers.SubscriptionController",
+    "Method": "CheckExpertResponseAsync",
+    "RelativePath": "api/Subscription",
+    "HttpMethod": "",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "searchHireId",
+        "Type": "System.Int32",
+        "IsRequired": false
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
+    "ContainingType": "newApi.Controllers.SubscriptionController",
     "Method": "ProcessTransferToExpert",
     "RelativePath": "api/Subscription",
     "HttpMethod": "",
@@ -1121,6 +1196,16 @@
   },
   {
     "ContainingType": "newApi.Controllers.SubscriptionController",
+    "Method": "GetExpertStatus",
+    "RelativePath": "api/Subscription/expert-status",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "newApi.Controllers.SubscriptionController",
     "Method": "ForceFinalize",
     "RelativePath": "api/Subscription/force-finalize",
     "HttpMethod": "POST",
@@ -1185,6 +1270,16 @@
   },
   {
     "ContainingType": "newApi.Controllers.SubscriptionController",
+    "Method": "GetOnboardingStatus",
+    "RelativePath": "api/Subscription/onboarding-status",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "newApi.Controllers.SubscriptionController",
     "Method": "GetSubscriptionPlans",
     "RelativePath": "api/Subscription/plans",
     "HttpMethod": "GET",
@@ -1217,6 +1312,26 @@
         "IsRequired": true
       }
     ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "newApi.Controllers.SubscriptionController",
+    "Method": "RestartOnboarding",
+    "RelativePath": "api/Subscription/restart-onboarding",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "newApi.Controllers.SubscriptionController",
+    "Method": "SyncStripeStatus",
+    "RelativePath": "api/Subscription/sync-stripe-status",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [],
     "ReturnTypes": []
   },
   {

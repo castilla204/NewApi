@@ -26,7 +26,7 @@ namespace newApi.Controllers
     [Route("api/[controller]")]
     [ApiController]
     [Authorize]
-    public class SubscriptionController : ControllerBase
+    public partial class SubscriptionController : ControllerBase
     {
         private readonly AppDbContext _context;
         private readonly ILogger<SubscriptionController> _logger;
@@ -68,12 +68,12 @@ namespace newApi.Controllers
         {
             return status switch
             {
-                StripeStatus.NotRequested => "You haven't set up your Stripe account yet. Please configure your payment account to start offering services.",
-                StripeStatus.Pending => "Your Stripe account application is being reviewed. Please wait for approval before creating services.",
-                StripeStatus.Approved => "Your Stripe account is approved and ready to receive payments.",
-                StripeStatus.Rejected => "Your Stripe account application was rejected. Please try setting up your account again with correct information.",
-                StripeStatus.Deauthorized => "Your Stripe account has been deauthorized. Please contact support or try setting up your account again.",
-                _ => "Unknown Stripe account status. Please contact support."
+                StripeStatus.NotRequested => "🔧 **Configuración Pendiente**: No has configurado tu cuenta de pagos de Stripe. Para ofrecer servicios y recibir pagos, necesitas completar el proceso de verificación. Haz clic en 'Configurar Pagos' para comenzar.",
+                StripeStatus.Pending => "⏳ **Verificación en Proceso**: Tu cuenta de pagos está siendo revisada por Stripe. Este proceso puede tomar entre 1-3 días hábiles. Te notificaremos cuando esté lista. Mientras tanto, puedes preparar tus servicios.",
+                StripeStatus.Approved => "✅ **Cuenta Aprobada**: ¡Excelente! Tu cuenta de pagos está completamente verificada y lista para recibir pagos. Ya puedes crear servicios y comenzar a ganar dinero.",
+                StripeStatus.Rejected => "❌ **Cuenta Rechazada**: Tu solicitud de cuenta de pagos fue rechazada. Esto puede deberse a información incompleta o incorrecta. Revisa los detalles específicos y vuelve a intentar con información actualizada.",
+                StripeStatus.Deauthorized => "🚫 **Cuenta Desautorizada**: Tu cuenta de pagos ha sido desautorizada. Esto puede ocurrir por violaciones de términos o problemas de seguridad. Contacta al soporte técnico para resolver esta situación.",
+                _ => "❓ **Estado Desconocido**: No se pudo determinar el estado de tu cuenta de pagos. Por favor, contacta al soporte técnico para obtener ayuda."
             };
         }
 
@@ -607,12 +607,14 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Expert profile not found" });
                 }
 
-                var status = new
+                var status = new OnboardingStatusDto
                 {
                     HasStripeAccount = !string.IsNullOrEmpty(expertProfile.StripeAccountId),
                     HasPendingOnboarding = !string.IsNullOrEmpty(expertProfile.PendingStripeAccountId),
                     OnboardingCompleted = expertProfile.OnboardingCompleted,
                     StripeAccountId = expertProfile.StripeAccountId,
+                    StripeStatus = expertProfile.StripeStatus.ToString(),
+                    StripeStatusDetails = expertProfile.StripeStatusDetails,
                     CanAccessStripe = !string.IsNullOrEmpty(expertProfile.StripeAccountId) && expertProfile.OnboardingCompleted
                 };
 
@@ -666,12 +668,13 @@ namespace newApi.Controllers
                     }
                 }
 
-                var status = new
+                var status = new ExpertStatusDto
                 {
                     HasStripeAccount = !string.IsNullOrEmpty(expertProfile.StripeAccountId),
                     HasPendingOnboarding = !string.IsNullOrEmpty(expertProfile.PendingStripeAccountId),
                     OnboardingCompleted = expertProfile.OnboardingCompleted,
                     StripeStatus = expertProfile.StripeStatus.ToString(),
+                    StripeStatusDetails = expertProfile.StripeStatusDetails,
                     StripeAccountId = expertProfile.StripeAccountId,
                     CanAccessStripe = expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted,
                     CanCreateServices = expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted,
@@ -690,6 +693,8 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Failed to get expert status" });
             }
         }
+
+
 
         [HttpPost("sync-stripe-status")]
         [Authorize(Roles = "Expert")]
@@ -792,14 +797,16 @@ namespace newApi.Controllers
 
                 await _context.SaveChangesAsync();
 
-                var status = new
+                var status = new StripeSyncStatusDto
                 {
                     HasStripeAccount = !string.IsNullOrEmpty(expertProfile.StripeAccountId),
                     HasPendingOnboarding = !string.IsNullOrEmpty(expertProfile.PendingStripeAccountId),
                     OnboardingCompleted = expertProfile.OnboardingCompleted,
+                    StripeStatus = expertProfile.StripeStatus.ToString(),
+                    StripeStatusDetails = expertProfile.StripeStatusDetails,
                     StripeAccountId = expertProfile.StripeAccountId,
                     CanAccessStripe = !string.IsNullOrEmpty(expertProfile.StripeAccountId) && expertProfile.OnboardingCompleted,
-                    StripeAccountStatus = new
+                    StripeAccountStatus = new StripeAccountStatusDto
                     {
                         ChargesEnabled = account.ChargesEnabled,
                         PayoutsEnabled = account.PayoutsEnabled,
@@ -1201,29 +1208,29 @@ namespace newApi.Controllers
                             _logger.LogInformation("❌ DEBUG: Account application deauthorized for accountId={AccountId}", deauthorizedAccount.Id);
                             
                             // Buscar por StripeAccountId o PendingStripeAccountId
-                            var expertProfile = await _context.ExpertProfiles
+                            var deauthorizedExpertProfile = await _context.ExpertProfiles
                                 .FirstOrDefaultAsync(ep => ep.StripeAccountId == deauthorizedAccount.Id || ep.PendingStripeAccountId == deauthorizedAccount.Id);
                             
-                            if (expertProfile != null)
+                            if (deauthorizedExpertProfile != null)
                             {
-                                _logger.LogInformation("⚠️ DEBUG: Found expert profile for account.application.deauthorized: userId={UserId}, accountId={AccountId}", expertProfile.UserId, deauthorizedAccount.Id);
+                                _logger.LogInformation("⚠️ DEBUG: Found expert profile for account.application.deauthorized: userId={UserId}, accountId={AccountId}", deauthorizedExpertProfile.UserId, deauthorizedAccount.Id);
                                 
                                 // Marcar como rechazado cuando la aplicación es desautorizada
-                                expertProfile.StripeStatus = StripeStatus.Rejected;
-                                expertProfile.OnboardingCompleted = false;
+                                deauthorizedExpertProfile.StripeStatus = StripeStatus.Rejected;
+                                deauthorizedExpertProfile.OnboardingCompleted = false;
                                 
                                 // Limpiar PendingStripeAccountId si existe
-                                if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
+                                if (!string.IsNullOrEmpty(deauthorizedExpertProfile.PendingStripeAccountId))
                                 {
-                                    _logger.LogInformation("🧹 DEBUG: Clearing PendingStripeAccountId for rejected account: userId={UserId}", expertProfile.UserId);
-                                    expertProfile.PendingStripeAccountId = null;
+                                    _logger.LogInformation("🧹 DEBUG: Clearing PendingStripeAccountId for rejected account: userId={UserId}", deauthorizedExpertProfile.UserId);
+                                    deauthorizedExpertProfile.PendingStripeAccountId = null;
                                 }
                                 
                                 // Opcional: También limpiar StripeAccountId si fue rechazado
-                                // expertProfile.StripeAccountId = null;
+                                // deauthorizedExpertProfile.StripeAccountId = null;
                                 
                                 await _context.SaveChangesAsync();
-                                _logger.LogInformation("❌ DEBUG: Account application deauthorized - status set to Rejected for userId={UserId}", expertProfile.UserId);
+                                _logger.LogInformation("❌ DEBUG: Account application deauthorized - status set to Rejected for userId={UserId}", deauthorizedExpertProfile.UserId);
                             }
                             else
                             {
@@ -1234,94 +1241,325 @@ namespace newApi.Controllers
 
                     case "account.updated":
                         var account = stripeEvent.Data.Object as Account;
-                        if (account != null)
+                        if (account == null)
                         {
+                            _logger.LogWarning("account.updated webhook received but account data is null");
+                            break;
+                        }
+
+                        // MEJORA: Idempotencia - Solo usar idempotency_key si existe, sino procesar el evento
+                        var idempotencyKey = stripeEvent.Request?.IdempotencyKey;
+                        _logger.LogInformation("🔑 DEBUG: Idempotency key: {IdempotencyKey} (exists: {Exists})", 
+                            idempotencyKey ?? "null", idempotencyKey != null ? "Yes" : "No");
+                        
+                        // Solo verificar duplicados si hay idempotency_key
+                        if (!string.IsNullOrEmpty(idempotencyKey) && await IsEventProcessedAsync(idempotencyKey))
+                        {
+                            _logger.LogInformation("🔄 DEBUG: Evento ya procesado (idempotencyKey={IdempotencyKey}), ignorando", idempotencyKey);
+                            break;
+                        }
+
                             _logger.LogInformation("🔍 DEBUG: Processing account.updated webhook for accountId={AccountId}, ChargesEnabled={ChargesEnabled}, PayoutsEnabled={PayoutsEnabled}, DetailsSubmitted={DetailsSubmitted}, RequirementsCurrentlyDue={RequirementsCurrentlyDue}", 
                                 account.Id, account.ChargesEnabled, account.PayoutsEnabled, account.DetailsSubmitted, 
                                 account.Requirements?.CurrentlyDue?.Count ?? 0);
                             
-                            // Buscar por StripeAccountId o PendingStripeAccountId
+                            // Log metadata para debugging
+                            if (account.Metadata != null)
+                            {
+                                _logger.LogInformation("📋 DEBUG: Account metadata: {Metadata}", string.Join(", ", account.Metadata.Select(kv => $"{kv.Key}={kv.Value}")));
+                            }
+                            else
+                            {
+                                _logger.LogWarning("⚠️ DEBUG: No metadata found in account");
+                            }
+                            
+                            // Buscar por StripeAccountId, PendingStripeAccountId, o por userId en metadata
+                            _logger.LogInformation("🔍 DEBUG: Searching for expert profile with accountId={AccountId}", account.Id);
                             var expertProfile = await _context.ExpertProfiles
                                 .FirstOrDefaultAsync(ep => ep.StripeAccountId == account.Id || ep.PendingStripeAccountId == account.Id);
                             
                             if (expertProfile != null)
                             {
-                                // Verificar si la cuenta está completamente verificada y aprobada
-                                bool isAccountApproved = account.Requirements?.CurrentlyDue?.Count == 0;
-                                bool canReceivePayments = account.ChargesEnabled && account.PayoutsEnabled;
-                                bool onboardingCompleted = isAccountApproved && canReceivePayments;
+                                _logger.LogInformation("✅ DEBUG: Found expert profile by account ID: userId={UserId}, stripeAccountId={StripeAccountId}, pendingStripeAccountId={PendingStripeAccountId}", 
+                                    expertProfile.UserId, expertProfile.StripeAccountId, expertProfile.PendingStripeAccountId);
+                            }
+                            else
+                            {
+                                _logger.LogWarning("❌ DEBUG: No expert profile found by account ID, trying metadata search...");
                                 
-                                // Verificar si la cuenta ha sido rechazada o desactivada
+                                // Si no se encuentra por account ID, buscar por userId en metadata
+                                if (account.Metadata != null && account.Metadata.ContainsKey("userId"))
+                                {
+                                    if (int.TryParse(account.Metadata["userId"], out int userIdFromMetadata))
+                                    {
+                                        _logger.LogInformation("🔍 DEBUG: Searching by userId from metadata: {UserId}", userIdFromMetadata);
+                                        expertProfile = await _context.ExpertProfiles
+                                            .FirstOrDefaultAsync(ep => ep.UserId == userIdFromMetadata);
+                                        
+                                        if (expertProfile != null)
+                                        {
+                                            _logger.LogInformation("✅ DEBUG: Found expert profile by userId from metadata: userId={UserId}, accountId={AccountId}, stripeAccountId={StripeAccountId}, pendingStripeAccountId={PendingStripeAccountId}", 
+                                                userIdFromMetadata, account.Id, expertProfile.StripeAccountId, expertProfile.PendingStripeAccountId);
+                                        }
+                                        else
+                                        {
+                                            _logger.LogError("❌ DEBUG: No expert profile found even by userId from metadata: {UserId}", userIdFromMetadata);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        _logger.LogError("❌ DEBUG: Could not parse userId from metadata: {UserId}", account.Metadata["userId"]);
+                                    }
+                                }
+                                else
+                                {
+                                    _logger.LogError("❌ DEBUG: No metadata or userId in metadata found");
+                                }
+                            }
+                            
+                            if (expertProfile != null)
+                            {
+                                _logger.LogInformation("✅ DEBUG: Expert profile found: userId={UserId}, stripeAccountId={StripeAccountId}, pendingStripeAccountId={PendingStripeAccountId}", 
+                                    expertProfile.UserId, expertProfile.StripeAccountId, expertProfile.PendingStripeAccountId);
+                            // MEJORA: Verificaciones existentes (mantenidas)
+                            bool noPendingRequirements = (account.Requirements?.CurrentlyDue?.Count ?? 0) == 0;
+                            bool noPastDueRequirements = (account.Requirements?.PastDue?.Count ?? 0) == 0;
+                            // CORRECCIÓN: eventually_due son requisitos futuros, no bloquean la aprobación actual
+                            bool noEventuallyDueRequirements = (account.Requirements?.EventuallyDue?.Count ?? 0) == 0;
+                            bool noRequirementErrors = (account.Requirements?.Errors?.Count ?? 0) == 0;
+                            bool noPendingVerifications = (account.Requirements?.PendingVerification?.Count ?? 0) == 0;
+                            // CORRECCIÓN: No incluir eventually_due en la verificación de aprobación
+                            bool allRequirementsMet = noPendingRequirements && noPastDueRequirements && noRequirementErrors && noPendingVerifications;
+
+                            // MEJORA: Verificar future_requirements para alertas preventivas
+                            bool noFutureIssues = (account.FutureRequirements?.CurrentlyDue?.Count ?? 0) == 0 && 
+                                                  (account.FutureRequirements?.PastDue?.Count ?? 0) == 0 && 
+                                                  (account.FutureRequirements?.EventuallyDue?.Count ?? 0) == 0;
+
+                            bool canProcessPayments = account.ChargesEnabled;
+                            bool canReceivePayments = account.PayoutsEnabled;
+                            // MEJORA: Verificar capacidades adicionales (ej. transfers)
+                            bool transfersActive = account.Capabilities?.Transfers == "active";
+                            bool paymentsEnabled = canProcessPayments && canReceivePayments && transfersActive;
+
+                            bool detailsSubmitted = account.DetailsSubmitted;
+                            bool tosAccepted = account.TosAcceptance?.Date != null && !string.IsNullOrEmpty(account.TosAcceptance?.Ip);
+                            bool notDisabled = string.IsNullOrEmpty(account.Requirements?.DisabledReason);
+
+                            // MEJORA: Analizar requirements.errors para detalles
+                            List<string> requirementErrorDetails = new List<string>();
+                            if (account.Requirements?.Errors != null && account.Requirements.Errors.Count > 0)
+                            {
+                                foreach (var error in account.Requirements.Errors)
+                                {
+                                    requirementErrorDetails.Add($"Code: {error.Code}, Reason: {error.Reason}, Requirement: {error.Requirement}");
+                                }
+                                _logger.LogWarning("⚠️ DEBUG: Errores en requirements para accountId={AccountId}: {Errors}", account.Id, string.Join("; ", requirementErrorDetails));
+                            }
+
+                            // Determinar si la cuenta está completamente aprobada (NO incluir future_requirements)
+                            bool isAccountApproved = allRequirementsMet && paymentsEnabled && detailsSubmitted && tosAccepted && notDisabled;
+                            bool onboardingCompleted = isAccountApproved;
+                                
+                            // MEJORA: Ampliar verificación de rechazos con todos los valores posibles de disabled_reason
                                 string disabledReason = account.Requirements?.DisabledReason;
-                                bool isAccountRejected = !string.IsNullOrEmpty(disabledReason) && disabledReason.StartsWith("rejected");
-                                bool isAccountDisabled = !account.ChargesEnabled || !account.PayoutsEnabled;
+                            bool isAccountRejected = !string.IsNullOrEmpty(disabledReason) && 
+                                (disabledReason.StartsWith("rejected.") ||  // Cubre rejected.fraud, rejected.terms_of_service, etc.
+                                 disabledReason == "under_review" ||
+                                 disabledReason == "listed" ||
+                                 disabledReason == "action_required.requested_capabilities" ||
+                                 disabledReason == "requirements.past_due" ||
+                                 disabledReason == "requirements.pending_verification" ||
+                                 disabledReason == "other");
+                            bool isAccountDisabled = !account.ChargesEnabled || !account.PayoutsEnabled || !transfersActive;
+
+                            // MEJORA: Verificar problemas críticos (NO incluir future_requirements como críticos)
+                            bool hasCriticalIssues = !allRequirementsMet || !paymentsEnabled || !detailsSubmitted || !tosAccepted || !notDisabled || requirementErrorDetails.Count > 0;
                                 
-                                _logger.LogInformation("✅ DEBUG: Found expert profile for account.updated: userId={UserId}, accountId={AccountId}, isApproved={IsApproved}, canReceivePayments={CanReceivePayments}, onboardingCompleted={OnboardingCompleted}, disabledReason={DisabledReason}, isRejected={IsRejected}",
-                                    expertProfile.UserId, account.Id, isAccountApproved, canReceivePayments, onboardingCompleted, disabledReason, isAccountRejected);
+                            // MEJORA: Logging (agrega detalles de errores y future_requirements)
+                            _logger.LogInformation("🔍 DEBUG: Found expert profile for account.updated: userId={UserId}, accountId={AccountId}", expertProfile.UserId, account.Id);
+                            _logger.LogInformation("📋 DEBUG: Verification details - allRequirementsMet={AllRequirementsMet}, paymentsEnabled={PaymentsEnabled}, detailsSubmitted={DetailsSubmitted}, tosAccepted={TosAccepted}, notDisabled={NotDisabled}, noRequirementErrors={NoRequirementErrors}, noPendingVerifications={NoPendingVerifications}, transfersActive={TransfersActive}",
+                                allRequirementsMet, paymentsEnabled, detailsSubmitted, tosAccepted, notDisabled, noRequirementErrors, noPendingVerifications, transfersActive);
+                            _logger.LogInformation("📊 DEBUG: Requirements breakdown - currentlyDue={CurrentlyDue}, pastDue={PastDue}, eventuallyDue={EventuallyDue}, errors={Errors}, pendingVerification={PendingVerification}",
+                                account.Requirements?.CurrentlyDue?.Count ?? 0, account.Requirements?.PastDue?.Count ?? 0, 
+                                account.Requirements?.EventuallyDue?.Count ?? 0, account.Requirements?.Errors?.Count ?? 0, 
+                                account.Requirements?.PendingVerification?.Count ?? 0);
+                            _logger.LogInformation("📊 DEBUG: Future requirements breakdown - currentlyDue={CurrentlyDue}, pastDue={PastDue}, eventuallyDue={EventuallyDue}",
+                                account.FutureRequirements?.CurrentlyDue?.Count ?? 0, account.FutureRequirements?.PastDue?.Count ?? 0, account.FutureRequirements?.EventuallyDue?.Count ?? 0);
+                            _logger.LogInformation("✅ DEBUG: Final status - isApproved={IsApproved}, onboardingCompleted={OnboardingCompleted}, disabledReason={DisabledReason}, isRejected={IsRejected}, requirementErrors={RequirementErrors}",
+                                isAccountApproved, onboardingCompleted, disabledReason, isAccountRejected, string.Join("; ", requirementErrorDetails));
                                 
-                                // Actualizar el estado del StripeStatus
-                                // PRIORIDAD 1: Verificar si la cuenta está aprobada y puede recibir pagos
+                            // MEJORA: Usar transacción para actualizaciones atómicas
+                            var previousStatus = expertProfile.StripeStatus;
+                            using (var transaction = await _context.Database.BeginTransactionAsync())
+                            {
+                                try
+                                {
                                 if (onboardingCompleted)
                                 {
-                                    // La cuenta está aprobada y puede recibir pagos
-                                    var previousStatus = expertProfile.StripeStatus;
+                                        // La cuenta está completamente aprobada y puede recibir pagos
                                     expertProfile.StripeStatus = StripeStatus.Approved;
                                     expertProfile.OnboardingCompleted = true;
+                                        expertProfile.StripeStatusDetails = "✅ **Cuenta Aprobada**: ¡Excelente! Tu cuenta de pagos está completamente verificada y lista para recibir pagos. Ya puedes crear servicios y comenzar a ganar dinero.";
                                     
-                                    // Si tenía PendingStripeAccountId, moverlo a StripeAccountId
-                                    if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId) && string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                                    // Asegurar que el StripeAccountId esté establecido
+                                    if (string.IsNullOrEmpty(expertProfile.StripeAccountId))
                                     {
-                                        _logger.LogInformation("🔄 DEBUG: Moving PendingStripeAccountId to StripeAccountId for userId={UserId}", expertProfile.UserId);
-                                        expertProfile.StripeAccountId = expertProfile.PendingStripeAccountId;
+                                        expertProfile.StripeAccountId = account.Id;
+                                        _logger.LogInformation("🔗 DEBUG: Setting StripeAccountId for approved account: userId={UserId}, accountId={AccountId}", expertProfile.UserId, account.Id);
+                                    }
+                                    
+                                    // Si tenía PendingStripeAccountId, limpiarlo
+                                    if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
+                                    {
+                                        _logger.LogInformation("🧹 DEBUG: Clearing PendingStripeAccountId for approved account: userId={UserId}", expertProfile.UserId);
                                         expertProfile.PendingStripeAccountId = null;
                                     }
                                     
-                                    _logger.LogInformation("🎉 DEBUG: Account approved and onboarding completed for userId={UserId}, previousStatus={PreviousStatus}", expertProfile.UserId, previousStatus);
+                                        _logger.LogInformation("🎉 DEBUG: Account fully approved and onboarding completed for userId={UserId}, previousStatus={PreviousStatus}", expertProfile.UserId, previousStatus);
+                                        
+                                        // MEJORA: Enviar notificación de aprobación
+                                        // await _notificationService.SendAccountApprovedNotification(expertProfile.UserId);
                                 }
-                                // PRIORIDAD 2: Verificar si la cuenta ha sido rechazada o desactivada
-                                else if (isAccountRejected || (isAccountDisabled && !string.IsNullOrEmpty(disabledReason)))
+                                    else if (isAccountRejected)
                                 {
-                                    // La cuenta ha sido rechazada por Stripe
-                                    var previousStatus = expertProfile.StripeStatus;
                                     expertProfile.StripeStatus = StripeStatus.Rejected;
                                     expertProfile.OnboardingCompleted = false;
                                     
-                                    _logger.LogWarning("❌ DEBUG: Account rejected by Stripe for userId={UserId}, reason={DisabledReason}, previousStatus={PreviousStatus}", expertProfile.UserId, disabledReason, previousStatus);
-                                    
-                                    // TODO: Aquí podrías enviar una notificación al usuario sobre el rechazo
-                                    // await _notificationService.SendAccountRejectedNotification(expertProfile.UserId, disabledReason);
-                                }
-                                // PRIORIDAD 3: La cuenta aún está pendiente de verificación
-                                else if (!isAccountApproved)
-                                {
-                                    // La cuenta aún está pendiente de verificación
-                                    var previousStatus = expertProfile.StripeStatus;
+                                        // Crear mensaje específico basado en el motivo del rechazo
+                                        string rejectionMessage = GetRejectionMessage(disabledReason, requirementErrorDetails);
+                                        expertProfile.StripeStatusDetails = rejectionMessage;
+                                        
+                                        _logger.LogWarning("❌ DEBUG: Account explicitly rejected by Stripe for userId={UserId}, reason={DisabledReason}, errors={Errors}, previousStatus={PreviousStatus}", 
+                                            expertProfile.UserId, disabledReason, string.Join("; ", requirementErrorDetails), previousStatus);
+                                        
+                                        // MEJORA: Enviar notificación con detalles del rechazo
+                                        // await _notificationService.SendAccountRejectedNotification(expertProfile.UserId, disabledReason, requirementErrorDetails);
+                                    }
+                                    else if (hasCriticalIssues)
+                                    {
                                     expertProfile.StripeStatus = StripeStatus.Pending;
                                     expertProfile.OnboardingCompleted = false;
-                                    _logger.LogInformation("⏳ DEBUG: Account still pending verification for userId={UserId}, previousStatus={PreviousStatus}", expertProfile.UserId, previousStatus);
+                                        
+                                        // Crear mensaje específico basado en los problemas encontrados
+                                        string pendingMessage = GetPendingMessage(account, requirementErrorDetails, allRequirementsMet, paymentsEnabled, detailsSubmitted, tosAccepted, notDisabled, noRequirementErrors, noPendingVerifications, noFutureIssues);
+                                        expertProfile.StripeStatusDetails = pendingMessage;
+                                        
+                                        _logger.LogWarning("⚠️ DEBUG: Account has critical issues preventing approval for userId={UserId}, errors={Errors}, previousStatus={PreviousStatus}", 
+                                            expertProfile.UserId, string.Join("; ", requirementErrorDetails), previousStatus);
+                                        _logger.LogWarning("⚠️ DEBUG: Critical issues - allRequirementsMet={AllRequirementsMet}, paymentsEnabled={PaymentsEnabled}, detailsSubmitted={DetailsSubmitted}, tosAccepted={TosAccepted}, notDisabled={NotDisabled}, noRequirementErrors={NoRequirementErrors}, noPendingVerifications={NoPendingVerifications}, noFutureIssues={NoFutureIssues}",
+                                            allRequirementsMet, paymentsEnabled, detailsSubmitted, tosAccepted, notDisabled, noRequirementErrors, noPendingVerifications, noFutureIssues);
+                                        
+                                        // MEJORA: Enviar notificación con requisitos pendientes y errores
+                                        var missingRequirements = account.Requirements?.CurrentlyDue ?? new List<string>();
+                                        // await _notificationService.SendAccountPendingNotification(expertProfile.UserId, missingRequirements, requirementErrorDetails);
+                                    }
+                                    else
+                                    {
+                                        // La cuenta está en proceso de verificación
+                                        expertProfile.StripeStatus = StripeStatus.Pending;
+                                        expertProfile.OnboardingCompleted = false;
+                                        expertProfile.StripeStatusDetails = "Tu cuenta está siendo verificada. Te notificaremos cuando esté lista.";
+                                        _logger.LogInformation("⏳ DEBUG: Account still in verification process for userId={UserId}, previousStatus={PreviousStatus}", expertProfile.UserId, previousStatus);
                                 }
                                 
                                 await _context.SaveChangesAsync();
+                                    await transaction.CommitAsync();
+
+                                    // MEJORA: Marcar evento como procesado (solo si hay idempotency_key)
+                                    if (!string.IsNullOrEmpty(idempotencyKey))
+                                    {
+                                        await MarkEventAsProcessedAsync(idempotencyKey, stripeEvent.Type, account.Id, expertProfile.UserId);
+                                    }
+                                    
                                 _logger.LogInformation("✅ DEBUG: Updated expert profile after account.updated webhook: userId={UserId}, StripeStatus={StripeStatus}, OnboardingCompleted={OnboardingCompleted}", 
                                     expertProfile.UserId, expertProfile.StripeStatus, expertProfile.OnboardingCompleted);
+                                }
+                                catch (Exception ex)
+                                {
+                                    await transaction.RollbackAsync();
+                                    _logger.LogError(ex, "❌ ERROR: Fallo al procesar account.updated para accountId={AccountId}", account.Id);
+                                    
+                                    // MEJORA: Marcar evento como fallido (solo si hay idempotency_key)
+                                    if (!string.IsNullOrEmpty(idempotencyKey))
+                                    {
+                                        await MarkEventAsProcessedAsync(idempotencyKey, stripeEvent.Type, account.Id, expertProfile.UserId, "Failed", ex.Message);
+                                    }
+                                    
+                                    // Opcional: Reintentar o notificar admin
+                                    throw; // Re-lanzar para que Stripe reintente el webhook
+                                }
+                            }
                             }
                             else
                             {
                                 _logger.LogWarning("❌ DEBUG: No expert profile found for account.updated accountId={AccountId}", account.Id);
-                                _logger.LogWarning("❌ DEBUG: No expert profile found for accountId={AccountId}. Searching all expert profiles...", account.Id);
                                 
                                 // Log all expert profiles for debugging
                                 var allProfiles = await _context.ExpertProfiles.ToListAsync();
+                                _logger.LogWarning("❌ DEBUG: Total expert profiles in database: {Count}", allProfiles.Count);
+                                
                                 foreach (var profile in allProfiles)
                                 {
                                     _logger.LogInformation("📋 DEBUG: Expert profile: userId={UserId}, StripeAccountId={StripeAccountId}, PendingStripeAccountId={PendingStripeAccountId}", 
                                         profile.UserId, profile.StripeAccountId, profile.PendingStripeAccountId);
                                 }
-                            }
-                        }
-                        else
-                        {
-                            _logger.LogWarning("account.updated webhook received but account data is null");
+                                
+                                // Intentar encontrar por userId en metadata si existe
+                                if (account.Metadata != null && account.Metadata.ContainsKey("userId"))
+                                {
+                                    if (int.TryParse(account.Metadata["userId"], out int userIdFromMetadata))
+                                    {
+                                        _logger.LogWarning("🔍 DEBUG: Trying to find expert profile by userId from metadata: {UserId}", userIdFromMetadata);
+                                        var profileByUserId = await _context.ExpertProfiles
+                                            .FirstOrDefaultAsync(ep => ep.UserId == userIdFromMetadata);
+                                        
+                                        if (profileByUserId != null)
+                                        {
+                                            _logger.LogInformation("✅ DEBUG: Found expert profile by userId! Updating with new account info...");
+                                            
+                                            // Actualizar el perfil con la nueva información de la cuenta
+                                            profileByUserId.StripeAccountId = account.Id;
+                                            if (!string.IsNullOrEmpty(profileByUserId.PendingStripeAccountId))
+                                            {
+                                                profileByUserId.PendingStripeAccountId = null;
+                                            }
+                                            
+                                            // Aplicar la misma lógica de aprobación
+                                            bool noPendingRequirements = (account.Requirements?.CurrentlyDue?.Count ?? 0) == 0;
+                                            bool noPastDueRequirements = (account.Requirements?.PastDue?.Count ?? 0) == 0;
+                                            bool noRequirementErrors = (account.Requirements?.Errors?.Count ?? 0) == 0;
+                                            bool noPendingVerifications = (account.Requirements?.PendingVerification?.Count ?? 0) == 0;
+                                            bool allRequirementsMet = noPendingRequirements && noPastDueRequirements && noRequirementErrors && noPendingVerifications;
+
+                                            bool canProcessPayments = account.ChargesEnabled;
+                                            bool canReceivePayments = account.PayoutsEnabled;
+                                            bool transfersActive = account.Capabilities?.Transfers == "active";
+                                            bool paymentsEnabled = canProcessPayments && canReceivePayments && transfersActive;
+
+                                            bool detailsSubmitted = account.DetailsSubmitted;
+                                            bool tosAccepted = account.TosAcceptance?.Date != null && !string.IsNullOrEmpty(account.TosAcceptance?.Ip);
+                                            bool notDisabled = string.IsNullOrEmpty(account.Requirements?.DisabledReason);
+
+                                            bool isAccountApproved = allRequirementsMet && paymentsEnabled && detailsSubmitted && tosAccepted && notDisabled;
+                                            
+                                            if (isAccountApproved)
+                                            {
+                                                profileByUserId.StripeStatus = StripeStatus.Approved;
+                                                profileByUserId.OnboardingCompleted = true;
+                                                profileByUserId.StripeStatusDetails = "✅ **Cuenta Aprobada**: ¡Excelente! Tu cuenta de pagos está completamente verificada y lista para recibir pagos. Ya puedes crear servicios y comenzar a ganar dinero.";
+                                                _logger.LogInformation("🎉 DEBUG: Account approved and profile updated for userId={UserId}", userIdFromMetadata);
+                                            }
+                                            
+                                            await _context.SaveChangesAsync();
+                                            await MarkEventAsProcessedAsync(idempotencyKey, stripeEvent.Type, account.Id, userIdFromMetadata);
+                                        }
+                                        else
+                                        {
+                                            _logger.LogError("❌ DEBUG: No expert profile found even by userId from metadata: {UserId}", userIdFromMetadata);
+                                        }
+                                    }
+                                }
                         }
                         break;
 
@@ -2660,6 +2898,314 @@ namespace newApi.Controllers
             public string BillingPeriod { get; set; }
             public DateTime? NextBillingDate { get; set; }
         }
+    }
 
+    // MEJORA: Métodos auxiliares para idempotencia de webhooks
+    public partial class SubscriptionController
+    {
+        /// <summary>
+        /// Verifica si un evento ya fue procesado para evitar duplicados
+        /// </summary>
+        private async Task<bool> IsEventProcessedAsync(string eventId)
+        {
+            try
+            {
+                return await _context.ProcessedWebhookEvents
+                    .AnyAsync(e => e.EventId == eventId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ ERROR: Fallo al verificar idempotencia para eventId={EventId}", eventId);
+                return false; // En caso de error, permitir procesamiento
+            }
+        }
+
+        /// <summary>
+        /// Marca un evento como procesado en la base de datos
+        /// </summary>
+        private async Task MarkEventAsProcessedAsync(string eventId, string eventType, string? stripeAccountId = null, int? userId = null, string status = "Success", string? errorMessage = null)
+        {
+            try
+            {
+                var processedEvent = new ProcessedWebhookEvent
+                {
+                    EventId = eventId,
+                    EventType = eventType,
+                    StripeAccountId = stripeAccountId,
+                    UserId = userId,
+                    Status = status,
+                    ErrorMessage = errorMessage,
+                    ProcessedAt = DateTime.UtcNow
+                };
+
+                _context.ProcessedWebhookEvents.Add(processedEvent);
+                await _context.SaveChangesAsync();
+                
+                _logger.LogInformation("✅ DEBUG: Evento marcado como procesado: eventId={EventId}, status={Status}", eventId, status);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ ERROR: Fallo al marcar evento como procesado: eventId={EventId}", eventId);
+                // No lanzar excepción para no interrumpir el flujo principal
+            }
+        }
+
+        /// <summary>
+        /// Genera un mensaje específico para cuentas rechazadas
+        /// </summary>
+        private string GetRejectionMessage(string? disabledReason, List<string> requirementErrorDetails)
+        {
+            if (string.IsNullOrEmpty(disabledReason))
+            {
+                return "❌ **Cuenta Rechazada**: Tu solicitud de cuenta de pagos fue rechazada por motivos no especificados. Por favor, contacta al soporte técnico para obtener más información y resolver esta situación.";
+            }
+
+            var baseMessage = "❌ **Cuenta Rechazada** - Tu solicitud de cuenta de pagos fue rechazada.\n\n";
+            var reasonMessage = "";
+            var solutionMessage = "";
+
+            switch (disabledReason)
+            {
+                case "rejected.fraud":
+                    reasonMessage = "🚨 **Motivo**: Se detectó actividad sospechosa o posible fraude en tu cuenta.";
+                    solutionMessage = "**Solución**: Contacta inmediatamente al soporte de Stripe para resolver este problema. Puede ser necesario proporcionar documentación adicional para verificar tu identidad.";
+                    break;
+
+                case "rejected.terms_of_service":
+                    reasonMessage = "📜 **Motivo**: No aceptaste los términos de servicio de Stripe o los violaste.";
+                    solutionMessage = "**Solución**: Ve a tu cuenta de Stripe y acepta los términos de servicio. Si ya los aceptaste, revisa que no hayas violado ninguna política.";
+                    break;
+
+                case "rejected.unsupported_business":
+                    reasonMessage = "🏢 **Motivo**: Tu tipo de negocio no está permitido en la plataforma de Stripe.";
+                    solutionMessage = "**Solución**: Contacta al soporte de Stripe para verificar si tu negocio puede ser aceptado. Algunos tipos de negocio requieren aprobación especial.";
+                    break;
+
+                case "rejected.other":
+                    reasonMessage = "⚠️ **Motivo**: Rechazo por otros motivos no especificados.";
+                    solutionMessage = "**Solución**: Contacta al soporte de Stripe para obtener detalles específicos sobre el rechazo y los pasos para resolverlo.";
+                    break;
+
+                case "under_review":
+                    reasonMessage = "🔍 **Motivo**: Tu cuenta está siendo revisada por el equipo de Stripe.";
+                    solutionMessage = "**Solución**: Espera a que se complete la revisión (1-3 días hábiles). Te notificaremos cuando tengamos una decisión.";
+                    break;
+
+                case "listed":
+                    reasonMessage = "🚫 **Motivo**: Tu cuenta está en una lista de sanciones o restricciones (ej. OFAC).";
+                    solutionMessage = "**Solución**: Contacta al soporte de Stripe inmediatamente. Este tipo de restricciones requiere resolución directa con el equipo de cumplimiento.";
+                    break;
+
+                case "action_required.requested_capabilities":
+                    reasonMessage = "⚡ **Motivo**: Se requiere acción adicional para activar las funcionalidades solicitadas.";
+                    solutionMessage = "**Solución**: Ve a tu panel de Stripe y completa los pasos adicionales requeridos para activar las capacidades de tu cuenta.";
+                    break;
+
+                case "requirements.past_due":
+                    reasonMessage = "⏰ **Motivo**: Hay requisitos vencidos que debías completar y no lo hiciste a tiempo.";
+                    solutionMessage = "**Solución**: Ve a tu panel de Stripe y completa inmediatamente todos los requisitos pendientes. Los documentos deben estar actualizados y en alta calidad.";
+                    break;
+
+                case "requirements.pending_verification":
+                    reasonMessage = "🔍 **Motivo**: Hay verificaciones pendientes que no se completaron correctamente.";
+                    solutionMessage = "**Solución**: Revisa tu panel de Stripe y asegúrate de que todos los documentos estén correctamente subidos y sean legibles. Vuelve a enviar cualquier documento que haya sido rechazado.";
+                    break;
+
+                default:
+                    reasonMessage = $"⚠️ **Motivo**: {GetDisabledReasonDescription(disabledReason)}";
+                    solutionMessage = "**Solución**: Contacta al soporte de Stripe para obtener información específica sobre este rechazo y los pasos para resolverlo.";
+                    break;
+            }
+
+            var message = baseMessage + reasonMessage + "\n\n" + solutionMessage;
+
+            // Agregar información sobre errores específicos si los hay
+            if (requirementErrorDetails.Any())
+            {
+                message += "\n\n**Errores específicos encontrados:**\n";
+                foreach (var error in requirementErrorDetails)
+                {
+                    message += $"• {GetErrorDescription(error)}\n";
+                }
+                message += "\n**Acción requerida**: Corrige estos errores específicos en tu cuenta de Stripe.";
+            }
+
+            message += "\n\n💡 **Consejo**: Una vez resuelto el problema, puedes volver a solicitar la verificación de tu cuenta.";
+
+            return message;
+        }
+
+        /// <summary>
+        /// Genera un mensaje específico para cuentas pendientes con problemas
+        /// </summary>
+        private string GetPendingMessage(Account account, List<string> requirementErrorDetails, bool allRequirementsMet, bool paymentsEnabled, bool detailsSubmitted, bool tosAccepted, bool notDisabled, bool noRequirementErrors, bool noPendingVerifications, bool noFutureIssues)
+        {
+            var issues = new List<string>();
+            var solutions = new List<string>();
+
+            if (!allRequirementsMet)
+            {
+                var missingRequirements = account.Requirements?.CurrentlyDue ?? new List<string>();
+                if (missingRequirements.Any())
+                {
+                    var missingList = string.Join(", ", missingRequirements.Select(GetRequirementDescription));
+                    issues.Add($"📋 **Documentos Faltantes**: {missingList}");
+                    solutions.Add("Ve a tu panel de Stripe y sube los documentos requeridos en alta calidad");
+                }
+            }
+
+            if (!paymentsEnabled)
+            {
+                if (!account.ChargesEnabled)
+                {
+                    issues.Add("💳 **Pagos Deshabilitados**: No puedes procesar pagos de clientes");
+                    solutions.Add("Completa la verificación de identidad en tu cuenta de Stripe");
+                }
+                if (!account.PayoutsEnabled)
+                {
+                    issues.Add("💰 **Transferencias Deshabilitadas**: No puedes recibir pagos");
+                    solutions.Add("Agrega y verifica una cuenta bancaria en tu perfil de Stripe");
+                }
+                if (account.Capabilities?.Transfers != "active")
+                {
+                    issues.Add("🔄 **Transferencias Inactivas**: Las transferencias no están disponibles");
+                    solutions.Add("Espera a que Stripe active esta funcionalidad o contacta soporte");
+                }
+            }
+
+            if (!detailsSubmitted)
+            {
+                issues.Add("📝 **Información Incompleta**: Los detalles de tu cuenta no han sido enviados");
+                solutions.Add("Completa todos los campos requeridos en tu perfil de Stripe");
+            }
+
+            if (!tosAccepted)
+            {
+                issues.Add("📜 **Términos No Aceptados**: Debes aceptar los términos de servicio");
+                solutions.Add("Ve a tu cuenta de Stripe y acepta los términos de servicio");
+            }
+
+            if (!notDisabled)
+            {
+                var disabledReason = account.Requirements?.DisabledReason ?? "desconocida";
+                issues.Add($"🚫 **Cuenta Deshabilitada**: Razón: {GetDisabledReasonDescription(disabledReason)}");
+                solutions.Add("Contacta al soporte de Stripe para resolver este problema");
+            }
+
+            if (!noRequirementErrors && requirementErrorDetails.Any())
+            {
+                var errorMessages = requirementErrorDetails.Select(GetErrorDescription).ToList();
+                issues.Add($"⚠️ **Errores Detectados**: {string.Join(", ", errorMessages)}");
+                solutions.Add("Revisa y corrige la información según los errores mostrados");
+            }
+
+            if (!noPendingVerifications)
+            {
+                issues.Add("🔍 **Verificaciones Pendientes**: Hay documentos en proceso de verificación");
+                solutions.Add("Espera a que Stripe complete la verificación (1-3 días hábiles)");
+            }
+
+            if (!noFutureIssues)
+            {
+                issues.Add("⏰ **Requisitos Futuros**: Hay requisitos que deben cumplirse próximamente");
+                solutions.Add("Revisa tu panel de Stripe para ver los requisitos pendientes");
+            }
+
+            if (issues.Any())
+            {
+                var message = "⏳ **Verificación Pendiente** - Tu cuenta de pagos necesita atención:\n\n";
+                message += "**Problemas encontrados:**\n";
+                foreach (var issue in issues)
+                {
+                    message += $"• {issue}\n";
+                }
+                
+                message += "\n**Cómo solucionarlo:**\n";
+                foreach (var solution in solutions)
+                {
+                    message += $"• {solution}\n";
+                }
+                
+                message += "\n💡 **Consejo**: Accede a tu panel de Stripe para completar estos pasos. Una vez resuelto, podrás recibir pagos y ofrecer servicios.";
+                
+                return message;
+            }
+
+            return "✅ **Verificación en Proceso**: Tu cuenta está siendo revisada por Stripe. Te notificaremos cuando esté lista (1-3 días hábiles).";
+        }
+
+        /// <summary>
+        /// Convierte códigos de disabled_reason en descripciones amigables
+        /// </summary>
+        private string GetDisabledReasonDescription(string disabledReason)
+        {
+            return disabledReason switch
+            {
+                "requirements.past_due" => "Requisitos vencidos - Hay documentos o información que debías proporcionar y no lo hiciste a tiempo",
+                "requirements.pending_verification" => "Verificación pendiente - Hay documentos en proceso de verificación",
+                "action_required.requested_capabilities" => "Acción requerida - Necesitas completar pasos adicionales para las funcionalidades solicitadas",
+                "rejected.fraud" => "Rechazado por fraude - Se detectó actividad sospechosa en tu cuenta",
+                "rejected.terms_of_service" => "Rechazado por términos - No cumpliste con los términos de servicio de Stripe",
+                "rejected.unsupported_business" => "Negocio no soportado - Tu tipo de negocio no está permitido en Stripe",
+                "rejected.other" => "Rechazado por otros motivos - Contacta soporte para más detalles",
+                "under_review" => "En revisión - Tu cuenta está siendo evaluada por el equipo de Stripe",
+                "listed" => "En lista de sanciones - Tu cuenta está en una lista de restricciones (ej. OFAC)",
+                "fields_needed" => "Campos faltantes - Necesitas completar información adicional",
+                "other" => "Otros motivos - Contacta soporte para más información",
+                _ => $"Motivo específico: {disabledReason}"
+            };
+        }
+
+        /// <summary>
+        /// Convierte códigos de requisitos en descripciones amigables
+        /// </summary>
+        private string GetRequirementDescription(string requirement)
+        {
+            return requirement switch
+            {
+                "individual.verification.document" => "documento de identidad",
+                "individual.address" => "dirección",
+                "individual.phone" => "número de teléfono",
+                "individual.dob" => "fecha de nacimiento",
+                "individual.email" => "email",
+                "company.verification.document" => "documentos de la empresa",
+                "business_profile.support_address" => "dirección del negocio",
+                "business_profile.url" => "sitio web del negocio",
+                "business_profile.support_phone" => "teléfono de soporte",
+                "business_profile.support_email" => "email de soporte",
+                "tos_acceptance.date" => "aceptar términos de servicio",
+                "external_account" => "información bancaria",
+                _ => requirement.Replace("_", " ").Replace(".", " ")
+            };
+        }
+
+        /// <summary>
+        /// Convierte códigos de error en descripciones amigables
+        /// </summary>
+        private string GetErrorDescription(string errorDetail)
+        {
+            if (errorDetail.Contains("invalid_document"))
+                return "Documento inválido - El documento proporcionado no es válido o no cumple con los requisitos";
+            if (errorDetail.Contains("verification_failed"))
+                return "Verificación fallida - No se pudo verificar la información proporcionada";
+            if (errorDetail.Contains("invalid_address"))
+                return "Dirección inválida - La dirección proporcionada no es válida o no existe";
+            if (errorDetail.Contains("missing"))
+                return "Información faltante - Falta información requerida para completar la verificación";
+            if (errorDetail.Contains("expired"))
+                return "Documento expirado - El documento proporcionado ha expirado y necesita ser renovado";
+            if (errorDetail.Contains("unreadable"))
+                return "Documento ilegible - El documento no se puede leer claramente, sube una imagen de mejor calidad";
+            if (errorDetail.Contains("blurry"))
+                return "Imagen borrosa - La imagen del documento está borrosa, toma una foto más clara";
+            if (errorDetail.Contains("cropped"))
+                return "Documento recortado - El documento está incompleto, asegúrate de que se vea completo";
+            if (errorDetail.Contains("back_side"))
+                return "Reverso faltante - Necesitas subir también el reverso del documento";
+            if (errorDetail.Contains("selfie"))
+                return "Selfie requerido - Necesitas subir una foto tuya sosteniendo el documento";
+            
+            return "Error de verificación - Revisa la información proporcionada y vuelve a intentar";
+        }
     }
 }

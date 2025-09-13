@@ -48,3 +48,4 @@ namespace newApi.DataLayer.Models.PostGresModels
         public string? EventData { get; set; }
     }
 }
+

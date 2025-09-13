@@ -41,6 +41,7 @@ namespace newApi.DataLayer.Models
         public DbSet<Message> Messages { get; set; }
         public DbSet<MessageAttachment> MessageAttachments { get; set; }
         public DbSet<SearchHireDeliverable> SearchHireDeliverables { get; set; }
+        public DbSet<ProcessedWebhookEvent> ProcessedWebhookEvents { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -390,6 +391,36 @@ namespace newApi.DataLayer.Models
                     .WithMany(sh => sh.Deliverables)
                     .HasForeignKey(sd => sd.SearchHireId)
                     .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // Configuración para ProcessedWebhookEvent
+            modelBuilder.Entity<ProcessedWebhookEvent>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.EventId)
+                    .IsRequired()
+                    .HasMaxLength(255);
+                entity.Property(e => e.EventType)
+                    .IsRequired()
+                    .HasMaxLength(100);
+                entity.Property(e => e.StripeAccountId)
+                    .HasMaxLength(255);
+                entity.Property(e => e.Status)
+                    .IsRequired()
+                    .HasMaxLength(50)
+                    .HasDefaultValue("Success");
+                entity.Property(e => e.ProcessedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                
+                // Índice único para evitar duplicados
+                entity.HasIndex(e => e.EventId)
+                    .IsUnique();
+                
+                // Índice para búsquedas por cuenta
+                entity.HasIndex(e => e.StripeAccountId);
+                
+                // Índice para búsquedas por usuario
+                entity.HasIndex(e => e.UserId);
             });
         }
     }

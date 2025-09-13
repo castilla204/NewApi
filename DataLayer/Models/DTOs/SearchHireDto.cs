@@ -1,5 +1,7 @@
 ﻿using newApi.Controllers;
 
+using newApi.DataLayer.Models.PostGresModels;
+
 namespace newApi.DataLayer.Models.DTOs
 {
     public class SearchHireDto
@@ -71,6 +73,9 @@ namespace newApi.DataLayer.Models.DTOs
         public List<ReviewDto> Reviews { get; set; }
         public string Latitude { get; set; }
         public string Longitude { get; set; }
+        public StripeStatus StripeStatus { get; set; }
+        public string? StripeStatusDetails { get; set; }
+        public bool OnboardingCompleted { get; set; }
     }
 
     public class UserDto

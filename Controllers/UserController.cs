@@ -258,29 +258,34 @@ public class UserController : ControllerBase
                 return BadRequest(new { message = "Failed to become expert" });
             }
 
-            return Ok(new
+            var response = new BecomeExpertResponseDto
             {
-                message = "Successfully became an expert",
-                token = token,
-                user = new
+                Message = "Successfully became an expert",
+                Token = token,
+                User = new UserInfoDto
                 {
-                    user.Id,
-                    user.Name,
-                    user.Email,
-                    user.PhoneVerified,
+                    Id = user.Id,
+                    Name = user.Name,
+                    Email = user.Email,
+                    PhoneVerified = user.PhoneVerified,
                     Role = user.Role.ToString(),
-                    ExpertProfile = new
+                    ExpertProfile = new ExpertProfileInfoDto
                     {
-                        expertProfile.Id,
-                        expertProfile.ProfilePictureUrl,
-                        expertProfile.Description,
-                        expertProfile.StripeAccountId,
-                        expertProfile.CreatedAt,
-                        expertProfile.Latitude,
-                        expertProfile.Longitude
+                        Id = expertProfile.Id,
+                        ProfilePictureUrl = expertProfile.ProfilePictureUrl,
+                        Description = expertProfile.Description,
+                        StripeAccountId = expertProfile.StripeAccountId,
+                        CreatedAt = expertProfile.CreatedAt,
+                        Latitude = expertProfile.Latitude,
+                        Longitude = expertProfile.Longitude,
+                        StripeStatus = expertProfile.StripeStatus,
+                        StripeStatusDetails = expertProfile.StripeStatusDetails,
+                        OnboardingCompleted = expertProfile.OnboardingCompleted
                     }
                 }
-            });
+            };
+
+            return Ok(response);
         }
         catch (Exception ex)
         {
@@ -355,11 +360,13 @@ public class UserController : ControllerBase
                 return BadRequest(new { message = "Failed to update expert profile. Please check your data and try again." });
             }
 
-            return Ok(new
+            var response = new UpdateExpertProfileResponseDto
             {
-                message = "Expert profile updated successfully",
-                expertProfile = updatedProfile
-            });
+                Message = "Expert profile updated successfully",
+                ExpertProfile = updatedProfile
+            };
+
+            return Ok(response);
         }
         catch (Exception ex)
         {

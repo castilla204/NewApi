@@ -20,6 +20,7 @@
         public string? PendingStripeAccountId { get; set; } // Cuenta temporal hasta completar onboarding
         public bool OnboardingCompleted { get; set; } = false; // Estado del onboarding
         public StripeStatus StripeStatus { get; set; } = StripeStatus.NotRequested; // Estado de la solicitud Stripe
+        public string? StripeStatusDetails { get; set; } // Detalles específicos del estado para el frontend
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public string Latitude { get; set; }
         public string Longitude { get; set; }

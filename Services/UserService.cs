@@ -328,7 +328,10 @@ namespace newApi.Services
                     Email = expertProfile.User.Email
                 },
                 Latitude = expertProfile.Latitude,
-                Longitude = expertProfile.Longitude
+                Longitude = expertProfile.Longitude,
+                StripeStatus = expertProfile.StripeStatus,
+                StripeStatusDetails = expertProfile.StripeStatusDetails,
+                OnboardingCompleted = expertProfile.OnboardingCompleted
             };
         }
 
@@ -460,7 +463,10 @@ namespace newApi.Services
                         Email = expertProfile.User.Email
                     },
                     Latitude = expertProfile.Latitude,
-                    Longitude = expertProfile.Longitude
+                    Longitude = expertProfile.Longitude,
+                    StripeStatus = expertProfile.StripeStatus,
+                    StripeStatusDetails = expertProfile.StripeStatusDetails,
+                    OnboardingCompleted = expertProfile.OnboardingCompleted
                 };
 
                 _logger.LogInformation("Successfully updated expert profile for user ID {UserId}", userId);

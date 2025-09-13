@@ -42,3 +42,5 @@ namespace newApi.DataLayer.Models.DTOs
         public bool OnboardingCompleted { get; set; }
     }
 }
+
+

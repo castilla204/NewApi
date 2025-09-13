@@ -60,3 +60,4 @@ namespace newApi.DataLayer.Models.DTOs
         public StripeAccountStatusDto StripeAccountStatus { get; set; }
     }
 }
+

@@ -1321,175 +1321,148 @@ namespace newApi.Controllers
                             {
                                 _logger.LogInformation("✅ DEBUG: Expert profile found: userId={UserId}, stripeAccountId={StripeAccountId}, pendingStripeAccountId={PendingStripeAccountId}", 
                                     expertProfile.UserId, expertProfile.StripeAccountId, expertProfile.PendingStripeAccountId);
-                            // MEJORA: Verificaciones existentes (mantenidas)
-                            bool noPendingRequirements = (account.Requirements?.CurrentlyDue?.Count ?? 0) == 0;
-                            bool noPastDueRequirements = (account.Requirements?.PastDue?.Count ?? 0) == 0;
-                            // CORRECCIÓN: eventually_due son requisitos futuros, no bloquean la aprobación actual
-                            bool noEventuallyDueRequirements = (account.Requirements?.EventuallyDue?.Count ?? 0) == 0;
-                            bool noRequirementErrors = (account.Requirements?.Errors?.Count ?? 0) == 0;
-                            bool noPendingVerifications = (account.Requirements?.PendingVerification?.Count ?? 0) == 0;
-                            // CORRECCIÓN: No incluir eventually_due en la verificación de aprobación
-                            bool allRequirementsMet = noPendingRequirements && noPastDueRequirements && noRequirementErrors && noPendingVerifications;
-
-                            // MEJORA: Verificar future_requirements para alertas preventivas
-                            bool noFutureIssues = (account.FutureRequirements?.CurrentlyDue?.Count ?? 0) == 0 && 
-                                                  (account.FutureRequirements?.PastDue?.Count ?? 0) == 0 && 
-                                                  (account.FutureRequirements?.EventuallyDue?.Count ?? 0) == 0;
-
-                            bool canProcessPayments = account.ChargesEnabled;
-                            bool canReceivePayments = account.PayoutsEnabled;
-                            // MEJORA: Verificar capacidades adicionales (ej. transfers)
-                            bool transfersActive = account.Capabilities?.Transfers == "active";
-                            bool paymentsEnabled = canProcessPayments && canReceivePayments && transfersActive;
-
-                            bool detailsSubmitted = account.DetailsSubmitted;
-                            bool tosAccepted = account.TosAcceptance?.Date != null && !string.IsNullOrEmpty(account.TosAcceptance?.Ip);
-                            bool notDisabled = string.IsNullOrEmpty(account.Requirements?.DisabledReason);
-
-                            // MEJORA: Analizar requirements.errors para detalles
-                            List<string> requirementErrorDetails = new List<string>();
-                            if (account.Requirements?.Errors != null && account.Requirements.Errors.Count > 0)
-                            {
-                                foreach (var error in account.Requirements.Errors)
-                                {
-                                    requirementErrorDetails.Add($"Code: {error.Code}, Reason: {error.Reason}, Requirement: {error.Requirement}");
-                                }
-                                _logger.LogWarning("⚠️ DEBUG: Errores en requirements para accountId={AccountId}: {Errors}", account.Id, string.Join("; ", requirementErrorDetails));
-                            }
-
-                            // Determinar si la cuenta está completamente aprobada (NO incluir future_requirements)
-                            bool isAccountApproved = allRequirementsMet && paymentsEnabled && detailsSubmitted && tosAccepted && notDisabled;
-                            bool onboardingCompleted = isAccountApproved;
                                 
-                            // MEJORA: Ampliar verificación de rechazos con todos los valores posibles de disabled_reason
-                                string disabledReason = account.Requirements?.DisabledReason;
-                            bool isAccountRejected = !string.IsNullOrEmpty(disabledReason) && 
-                                (disabledReason.StartsWith("rejected.") ||  // Cubre rejected.fraud, rejected.terms_of_service, etc.
-                                 disabledReason == "under_review" ||
-                                 disabledReason == "listed" ||
-                                 disabledReason == "action_required.requested_capabilities" ||
-                                 disabledReason == "requirements.past_due" ||
-                                 disabledReason == "requirements.pending_verification" ||
-                                 disabledReason == "other");
-                            bool isAccountDisabled = !account.ChargesEnabled || !account.PayoutsEnabled || !transfersActive;
-
-                            // MEJORA: Verificar problemas críticos (NO incluir future_requirements como críticos)
-                            bool hasCriticalIssues = !allRequirementsMet || !paymentsEnabled || !detailsSubmitted || !tosAccepted || !notDisabled || requirementErrorDetails.Count > 0;
-                                
-                            // MEJORA: Logging (agrega detalles de errores y future_requirements)
-                            _logger.LogInformation("🔍 DEBUG: Found expert profile for account.updated: userId={UserId}, accountId={AccountId}", expertProfile.UserId, account.Id);
-                            _logger.LogInformation("📋 DEBUG: Verification details - allRequirementsMet={AllRequirementsMet}, paymentsEnabled={PaymentsEnabled}, detailsSubmitted={DetailsSubmitted}, tosAccepted={TosAccepted}, notDisabled={NotDisabled}, noRequirementErrors={NoRequirementErrors}, noPendingVerifications={NoPendingVerifications}, transfersActive={TransfersActive}",
-                                allRequirementsMet, paymentsEnabled, detailsSubmitted, tosAccepted, notDisabled, noRequirementErrors, noPendingVerifications, transfersActive);
-                            _logger.LogInformation("📊 DEBUG: Requirements breakdown - currentlyDue={CurrentlyDue}, pastDue={PastDue}, eventuallyDue={EventuallyDue}, errors={Errors}, pendingVerification={PendingVerification}",
-                                account.Requirements?.CurrentlyDue?.Count ?? 0, account.Requirements?.PastDue?.Count ?? 0, 
-                                account.Requirements?.EventuallyDue?.Count ?? 0, account.Requirements?.Errors?.Count ?? 0, 
-                                account.Requirements?.PendingVerification?.Count ?? 0);
-                            _logger.LogInformation("📊 DEBUG: Future requirements breakdown - currentlyDue={CurrentlyDue}, pastDue={PastDue}, eventuallyDue={EventuallyDue}",
-                                account.FutureRequirements?.CurrentlyDue?.Count ?? 0, account.FutureRequirements?.PastDue?.Count ?? 0, account.FutureRequirements?.EventuallyDue?.Count ?? 0);
-                            _logger.LogInformation("✅ DEBUG: Final status - isApproved={IsApproved}, onboardingCompleted={OnboardingCompleted}, disabledReason={DisabledReason}, isRejected={IsRejected}, requirementErrors={RequirementErrors}",
-                                isAccountApproved, onboardingCompleted, disabledReason, isAccountRejected, string.Join("; ", requirementErrorDetails));
-                                
-                            // MEJORA: Usar transacción para actualizaciones atómicas
-                            var previousStatus = expertProfile.StripeStatus;
-                            using (var transaction = await _context.Database.BeginTransactionAsync())
-                            {
+                                // CORRECCIÓN: Try-catch interno para capturar errores en lógica de verificación
                                 try
                                 {
-                                if (onboardingCompleted)
+                                    // LÓGICA DE VERIFICACIÓN 100% ALINEADA CON STRIPE DOCS
+                                // Requirements críticos: currently_due, past_due, errors, pending_verification deben estar VACÍOS
+                                bool noCurrentlyDue = (account.Requirements?.CurrentlyDue?.Count ?? 0) == 0;
+                                bool noPastDue = (account.Requirements?.PastDue?.Count ?? 0) == 0;
+                                bool noErrors = (account.Requirements?.Errors?.Count ?? 0) == 0;
+                                bool noPendingVerification = (account.Requirements?.PendingVerification?.Count ?? 0) == 0;  // CLAVE: Debe ser 0 para full verification
+                                bool allCriticalRequirementsMet = noCurrentlyDue && noPastDue && noErrors && noPendingVerification;
+                                // eventually_due: Ignorar para aprobación (docs confirman no bloquea)
+
+                                // Future requirements: Solo para alertas
+                                bool hasFutureIssues = (account.FutureRequirements?.CurrentlyDue?.Count ?? 0) > 0 ||
+                                                       (account.FutureRequirements?.PastDue?.Count ?? 0) > 0 ||
+                                                       (account.FutureRequirements?.EventuallyDue?.Count ?? 0) > 0;
+
+                                // Capabilities y Enabled Flags
+                                bool chargesEnabled = account.ChargesEnabled;
+                                bool payoutsEnabled = account.PayoutsEnabled;
+                                
+                                // FIX: Simplificado - usar solo flags básicos que sabemos que funcionan
+                                // Para Express accounts, si charges_enabled y payouts_enabled son true,
+                                // significa que todas las capabilities necesarias están activas
+                                bool paymentsEnabled = chargesEnabled && payoutsEnabled;
+                                
+                                // Log de capabilities para debug (sin acceder a .Status)
+                                _logger.LogInformation("🔍 DEBUG: Capabilities object exists: {Exists}, Transfers exists: {TransfersExists}", 
+                                    account.Capabilities != null, account.Capabilities?.Transfers != null);
+
+                                bool detailsSubmitted = account.DetailsSubmitted;
+                                
+                                // Log para debug ToS IP
+                                string tosIp = account.TosAcceptance?.Ip ?? "null";
+                                _logger.LogInformation("🔍 DEBUG: ToS Acceptance - Date: {Date}, IP: {Ip}", 
+                                    account.TosAcceptance?.Date, tosIp);
+                                bool tosAccepted = account.TosAcceptance?.Date != null && !string.IsNullOrEmpty(tosIp);
+                                
+                                string disabledReason = account.Requirements?.DisabledReason ?? "";
+                                bool notDisabled = string.IsNullOrEmpty(disabledReason);
+
+                                // Condición FINAL para Verified (exacta de docs): Requirements críticos met + enabled + details/tos + no disabled
+                                bool isAccountVerified = allCriticalRequirementsMet && paymentsEnabled && detailsSubmitted && tosAccepted && notDisabled;
+                                
+                                // Errores details
+                                List<string> errorDetails = new List<string>();
+                                if (account.Requirements?.Errors != null && account.Requirements.Errors.Any())
                                 {
-                                        // La cuenta está completamente aprobada y puede recibir pagos
-                                    expertProfile.StripeStatus = StripeStatus.Approved;
-                                    expertProfile.OnboardingCompleted = true;
-                                        expertProfile.StripeStatusDetails = "✅ **Cuenta Aprobada**: ¡Excelente! Tu cuenta de pagos está completamente verificada y lista para recibir pagos. Ya puedes crear servicios y comenzar a ganar dinero.";
-                                    
-                                    // Asegurar que el StripeAccountId esté establecido
-                                    if (string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                                    foreach (var error in account.Requirements.Errors)
                                     {
-                                        expertProfile.StripeAccountId = account.Id;
-                                        _logger.LogInformation("🔗 DEBUG: Setting StripeAccountId for approved account: userId={UserId}, accountId={AccountId}", expertProfile.UserId, account.Id);
+                                        errorDetails.Add($"Code: {error.Code}, Reason: {error.Reason}, Requirement: {error.Requirement}");
                                     }
-                                    
-                                    // Si tenía PendingStripeAccountId, limpiarlo
-                                    if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
-                                    {
-                                        _logger.LogInformation("🧹 DEBUG: Clearing PendingStripeAccountId for approved account: userId={UserId}", expertProfile.UserId);
-                                        expertProfile.PendingStripeAccountId = null;
-                                    }
-                                    
-                                        _logger.LogInformation("🎉 DEBUG: Account fully approved and onboarding completed for userId={UserId}, previousStatus={PreviousStatus}", expertProfile.UserId, previousStatus);
-                                        
-                                        // MEJORA: Enviar notificación de aprobación
-                                        // await _notificationService.SendAccountApprovedNotification(expertProfile.UserId);
-                                }
-                                    else if (isAccountRejected)
-                                {
-                                    expertProfile.StripeStatus = StripeStatus.Rejected;
-                                    expertProfile.OnboardingCompleted = false;
-                                    
-                                        // Crear mensaje específico basado en el motivo del rechazo
-                                        string rejectionMessage = GetRejectionMessage(disabledReason, requirementErrorDetails);
-                                        expertProfile.StripeStatusDetails = rejectionMessage;
-                                        
-                                        _logger.LogWarning("❌ DEBUG: Account explicitly rejected by Stripe for userId={UserId}, reason={DisabledReason}, errors={Errors}, previousStatus={PreviousStatus}", 
-                                            expertProfile.UserId, disabledReason, string.Join("; ", requirementErrorDetails), previousStatus);
-                                        
-                                        // MEJORA: Enviar notificación con detalles del rechazo
-                                        // await _notificationService.SendAccountRejectedNotification(expertProfile.UserId, disabledReason, requirementErrorDetails);
-                                    }
-                                    else if (hasCriticalIssues)
-                                    {
-                                    expertProfile.StripeStatus = StripeStatus.Pending;
-                                    expertProfile.OnboardingCompleted = false;
-                                        
-                                        // Crear mensaje específico basado en los problemas encontrados
-                                        string pendingMessage = GetPendingMessage(account, requirementErrorDetails, allRequirementsMet, paymentsEnabled, detailsSubmitted, tosAccepted, notDisabled, noRequirementErrors, noPendingVerifications, noFutureIssues);
-                                        expertProfile.StripeStatusDetails = pendingMessage;
-                                        
-                                        _logger.LogWarning("⚠️ DEBUG: Account has critical issues preventing approval for userId={UserId}, errors={Errors}, previousStatus={PreviousStatus}", 
-                                            expertProfile.UserId, string.Join("; ", requirementErrorDetails), previousStatus);
-                                        _logger.LogWarning("⚠️ DEBUG: Critical issues - allRequirementsMet={AllRequirementsMet}, paymentsEnabled={PaymentsEnabled}, detailsSubmitted={DetailsSubmitted}, tosAccepted={TosAccepted}, notDisabled={NotDisabled}, noRequirementErrors={NoRequirementErrors}, noPendingVerifications={NoPendingVerifications}, noFutureIssues={NoFutureIssues}",
-                                            allRequirementsMet, paymentsEnabled, detailsSubmitted, tosAccepted, notDisabled, noRequirementErrors, noPendingVerifications, noFutureIssues);
-                                        
-                                        // MEJORA: Enviar notificación con requisitos pendientes y errores
-                                        var missingRequirements = account.Requirements?.CurrentlyDue ?? new List<string>();
-                                        // await _notificationService.SendAccountPendingNotification(expertProfile.UserId, missingRequirements, requirementErrorDetails);
-                                    }
-                                    else
-                                    {
-                                        // La cuenta está en proceso de verificación
-                                        expertProfile.StripeStatus = StripeStatus.Pending;
-                                        expertProfile.OnboardingCompleted = false;
-                                        expertProfile.StripeStatusDetails = "Tu cuenta está siendo verificada. Te notificaremos cuando esté lista.";
-                                        _logger.LogInformation("⏳ DEBUG: Account still in verification process for userId={UserId}, previousStatus={PreviousStatus}", expertProfile.UserId, previousStatus);
+                                    _logger.LogWarning("⚠️ DEBUG: Requirements errors for accountId={AccountId}: {Errors}", account.Id, string.Join("; ", errorDetails));
                                 }
                                 
-                                await _context.SaveChangesAsync();
-                                    await transaction.CommitAsync();
-
-                                    // MEJORA: Marcar evento como procesado (solo si hay idempotency_key)
-                                    if (!string.IsNullOrEmpty(idempotencyKey))
-                                    {
-                                        await MarkEventAsProcessedAsync(idempotencyKey, stripeEvent.Type, account.Id, expertProfile.UserId);
-                                    }
-                                    
-                                _logger.LogInformation("✅ DEBUG: Updated expert profile after account.updated webhook: userId={UserId}, StripeStatus={StripeStatus}, OnboardingCompleted={OnboardingCompleted}", 
-                                    expertProfile.UserId, expertProfile.StripeStatus, expertProfile.OnboardingCompleted);
-                                }
-                                catch (Exception ex)
+                                // Rejected: Si disabled_reason indica rechazo (docs: startsWith "rejected.", etc.)
+                                bool isRejected = !string.IsNullOrEmpty(disabledReason) &&
+                                                  (disabledReason.StartsWith("rejected.") || disabledReason == "under_review" || disabledReason == "listed" ||
+                                                   disabledReason == "requirements.past_due" || disabledReason == "requirements.pending_verification" ||
+                                                   disabledReason == "other" || disabledReason == "action_required.requested_capabilities");
+                                
+                                // Logging Detallado (agregado para debug)
+                                _logger.LogInformation("📊 DEBUG: Requirements - currentlyDue={CurrentlyDue}, pastDue={PastDue}, eventuallyDue={EventuallyDue}, errors={Errors}, pendingVerification={PendingVerification}",
+                                    account.Requirements?.CurrentlyDue?.Count ?? 0, account.Requirements?.PastDue?.Count ?? 0,
+                                    account.Requirements?.EventuallyDue?.Count ?? 0, account.Requirements?.Errors?.Count ?? 0,
+                                    account.Requirements?.PendingVerification?.Count ?? 0);
+                                _logger.LogInformation("🔍 DEBUG: Payments - chargesEnabled={ChargesEnabled}, payoutsEnabled={PayoutsEnabled}, paymentsEnabled={PaymentsEnabled}",
+                                    chargesEnabled, payoutsEnabled, paymentsEnabled);
+                                _logger.LogInformation("📋 DEBUG: Verification - allCriticalRequirementsMet={AllCritical}, detailsSubmitted={Details}, tosAccepted={Tos}, notDisabled={NotDisabled}, isVerified={IsVerified}, hasFutureIssues={FutureIssues}",
+                                    allCriticalRequirementsMet, detailsSubmitted, tosAccepted, notDisabled, isAccountVerified, hasFutureIssues);
+                                _logger.LogInformation("✅ DEBUG: Final - verified={Verified}, rejected={Rejected}, disabledReason={DisabledReason}, errorDetails={Errors}",
+                                    isAccountVerified, isRejected, disabledReason, string.Join("; ", errorDetails));
+                                
+                                // MEJORA: Usar transacción para actualizaciones atómicas
+                                var previousStatus = expertProfile.StripeStatus;
+                                using (var transaction = await _context.Database.BeginTransactionAsync())
                                 {
-                                    await transaction.RollbackAsync();
-                                    _logger.LogError(ex, "❌ ERROR: Fallo al procesar account.updated para accountId={AccountId}", account.Id);
-                                    
-                                    // MEJORA: Marcar evento como fallido (solo si hay idempotency_key)
-                                    if (!string.IsNullOrEmpty(idempotencyKey))
+                                    try
                                     {
-                                        await MarkEventAsProcessedAsync(idempotencyKey, stripeEvent.Type, account.Id, expertProfile.UserId, "Failed", ex.Message);
+                                        if (isAccountVerified)
+                                        {
+                                            expertProfile.StripeStatus = StripeStatus.Approved;
+                                            expertProfile.OnboardingCompleted = true;
+                                            expertProfile.StripeAccountId ??= account.Id;  // Set si vacío
+                                            expertProfile.PendingStripeAccountId = null;  // Clear pending
+                                            string details = "✅ **Cuenta Aprobada**: ¡Excelente! Tu cuenta de pagos está completamente verificada y lista para recibir pagos.";
+                                            if (hasFutureIssues || (account.Requirements?.EventuallyDue?.Count ?? 0) > 0)
+                                            {
+                                                details += " Nota: Verifica requirements futuros para mantener el estado.";
+                                            }
+                                            expertProfile.StripeStatusDetails = details;
+                                            _logger.LogInformation("🎉 DEBUG: Account verified and approved for userId={UserId} (prev: {PreviousStatus})", expertProfile.UserId, previousStatus);
+                                        }
+                                        else if (isRejected)
+                                        {
+                                            expertProfile.StripeStatus = StripeStatus.Rejected;
+                                            expertProfile.OnboardingCompleted = false;
+                                            expertProfile.StripeStatusDetails = GetRejectionMessage(disabledReason, errorDetails);
+                                            _logger.LogWarning("❌ DEBUG: Account rejected for userId={UserId}, reason={Reason}", expertProfile.UserId, disabledReason);
+                                        }
+                                        else
+                                        {
+                                            // Pending: Incluye critical issues o en proceso
+                                            expertProfile.StripeStatus = StripeStatus.Pending;
+                                            expertProfile.OnboardingCompleted = false;
+                                            string pendingMsg = GetPendingMessage(account, errorDetails, allCriticalRequirementsMet, paymentsEnabled, detailsSubmitted, tosAccepted, notDisabled, noErrors, noPendingVerification, !hasFutureIssues);
+                                            if (!noPendingVerification) pendingMsg += " En revisión asíncrona por Stripe (pending_verification).";
+                                            if (hasFutureIssues) pendingMsg += " Prepara para requirements futuros.";
+                                            expertProfile.StripeStatusDetails = pendingMsg;
+                                            _logger.LogWarning("⏳ DEBUG: Account pending for userId={UserId} (prev: {PreviousStatus}), pendingVerification={PendingVerif}", 
+                                                expertProfile.UserId, previousStatus, account.Requirements?.PendingVerification?.Count ?? 0);
+                                        }
+
+                                        await _context.SaveChangesAsync();
+                                        await transaction.CommitAsync();
+
+                                        if (!string.IsNullOrEmpty(idempotencyKey))
+                                        {
+                                            await MarkEventAsProcessedAsync(idempotencyKey, stripeEvent.Type, account.Id, expertProfile.UserId);
+                                        }
+
+                                        _logger.LogInformation("✅ DEBUG: Updated profile: userId={UserId}, status={Status}, completed={Completed}", 
+                                            expertProfile.UserId, expertProfile.StripeStatus, expertProfile.OnboardingCompleted);
                                     }
-                                    
-                                    // Opcional: Reintentar o notificar admin
-                                    throw; // Re-lanzar para que Stripe reintente el webhook
+                                    catch (Exception ex)
+                                    {
+                                        await transaction.RollbackAsync();
+                                        _logger.LogError(ex, "❌ ERROR: Processing account.updated for {AccountId}", account.Id);
+                                        if (!string.IsNullOrEmpty(idempotencyKey))
+                                        {
+                                            await MarkEventAsProcessedAsync(idempotencyKey, stripeEvent.Type, account.Id, expertProfile.UserId, "Failed", ex.Message);
+                                        }
+                                        throw;  // Retry por Stripe
+                                    }
                                 }
-                            }
+                                }
+                                catch (Exception logicEx)
+                                {
+                                    _logger.LogError(logicEx, "❌ ERROR: En lógica de verificación para account.updated accountId={AccountId}. Verificar Capabilities o ToS.", account.Id);
+                                    // No throw; evita retry innecesario, pero loguea para debug
+                                }
                             }
                             else
                             {

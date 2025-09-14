@@ -32,7 +32,12 @@ namespace newApi.DataLayer.Models.DTOs
         public UserDto Client { get; set; }
         public UserDto? Expert { get; set; }
         public SearchServiceResponseDto Service { get; set; }
-        public ServiceTypeDto ServiceType { get; set;  }
+        public ServiceTypeDto ServiceType { get; set; }
+        
+        // Nuevos campos agregados
+        public string? SearchTitle { get; set; } // Título de la contratación
+        public string? SearchDescription { get; set; } // Descripción de la contratación
+        public int UnreadMessagesCount { get; set; } // Número de mensajes pendientes de leer
     }
 
     public class UpdateSearchHireStatusDto

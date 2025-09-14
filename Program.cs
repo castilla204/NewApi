@@ -18,6 +18,7 @@ using newApi.Controllers;
 using Microsoft.AspNetCore.Server.IIS;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Authorization;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -55,6 +56,7 @@ builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password")
 builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key");
 builder.Configuration["Stripe:SecretKey"] = "sk_test_51RDr9QR7PVKiStYueTMBRCFZGySidpx1f07iqqJYt9K4KqvAmgZHi6V1GDVpRyQxU3U08OcgGZDcHuqg7MpZaf0l004FRtdQym";
 builder.Configuration["Stripe:WebhookSecret"] = "whsec_YMCdzRPhKbpE0xke1L1YP3TPQnkO2UHt";
+builder.Configuration["Stripe:GeneralWebhookSecret"] = "whsec_6rVBKKefl9hkihHD82LIA828KF5usVxJ";
 builder.Configuration["Twilio:AccountSid"] = GetSecretValue("twilio-account-sid");
 builder.Configuration["Twilio:AuthToken"] = GetSecretValue("twilio-auth-token");
 builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-verification-service-sid");
@@ -231,6 +233,7 @@ var app = builder.Build();
 
 // Configure Stripe
 StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"];
+
 
 // Schedule recurring job with Hangfire
 app.UseHangfireDashboard("/hangfire");

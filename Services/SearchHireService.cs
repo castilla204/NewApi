@@ -46,6 +46,9 @@ namespace newApi.Services
                     .ThenInclude(s => s.Images)
                 .Include(h => h.SearchService)
                     .ThenInclude(s => s.ServiceType)
+                .Include(h => h.Search) // Incluir datos de Search para título y descripción
+                .Include(h => h.Conversations)
+                    .ThenInclude(c => c.Messages) // Incluir mensajes para contar pendientes
                 .Where(h => h.ExpertId == userId)
                 .OrderByDescending(h => h.CreatedAt)
                 .ToListAsync();
@@ -71,6 +74,11 @@ namespace newApi.Services
 
         private static SearchHireResponseDto MapToResponseDto(SearchHire hire)
         {
+            // Contar mensajes no leídos del experto en las conversaciones
+            var unreadMessagesCount = hire.Conversations
+                .SelectMany(c => c.Messages)
+                .Count(m => !m.IsRead && m.SenderId != hire.ExpertId); // Mensajes no leídos que NO fueron enviados por el experto
+
             return new SearchHireResponseDto
             {
                 Id = hire.Id,
@@ -113,7 +121,12 @@ namespace newApi.Services
                     IsActive = hire.SearchService.ServiceType.IsActive,
                     CreatedAt = hire.SearchService.ServiceType.CreatedAt,
                     UpdatedAt = hire.SearchService.ServiceType.UpdatedAt
-                } : null
+                } : null,
+                
+                // Nuevos campos agregados
+                SearchTitle = hire.Search?.Title,
+                SearchDescription = hire.Search?.Description,
+                UnreadMessagesCount = unreadMessagesCount
             };
         }
     }

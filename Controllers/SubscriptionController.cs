@@ -32,7 +32,8 @@ namespace newApi.Controllers
         private readonly ILogger<SubscriptionController> _logger;
         private readonly ISubscriptionService _subscriptionService;
         private readonly IConfiguration _configuration;
-        private readonly string _webhookSecret;
+        private readonly string? _webhookSecret;
+        private readonly string? _generalWebhookSecret;
 
         public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService)
         {
@@ -42,8 +43,9 @@ namespace newApi.Controllers
             _subscriptionService = subscriptionService;
             _configuration = configuration;
             _webhookSecret = _configuration["Stripe:WebhookSecret"];
+            _generalWebhookSecret = _configuration["Stripe:GeneralWebhookSecret"];
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
-            _logger.LogInformation("Stripe API Key and Webhook Secret configured");
+            _logger.LogInformation("Stripe API Key and Webhook Secrets configured");
         }
 
         private async Task<(bool IsValid, ExpertProfile ExpertProfile, string ErrorMessage)> ValidateExpertOnboardingAsync(int userId)
@@ -580,6 +582,71 @@ namespace newApi.Controllers
             {
                 _logger.LogError(ex, "Error creating expert onboarding: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to process expert onboarding" });
+            }
+        }
+
+        /// <summary>
+        /// Crea un enlace de cuenta de Stripe Connect para que el experto pueda actualizar sus datos bancarios
+        /// </summary>
+        [HttpPost("create-account-link")]
+        [Authorize(Roles = "Expert")]
+        public async Task<IActionResult> CreateAccountLink()
+        {
+            _logger.LogInformation("CreateAccountLink endpoint invoked");
+
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var expertProfile = await _context.ExpertProfiles
+                    .FirstOrDefaultAsync(ep => ep.UserId == userId);
+
+                if (expertProfile == null)
+                {
+                    _logger.LogError("Expert profile not found for userId={UserId}", userId);
+                    return NotFound(new { message = "Expert profile not found" });
+                }
+
+                if (string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                {
+                    _logger.LogError("Stripe account ID not found for expert userId={UserId}", userId);
+                    return BadRequest(new { message = "Stripe account not found. Please complete onboarding first." });
+                }
+
+                // Crear un enlace de cuenta de Stripe Connect para actualizar datos bancarios
+                var accountLinkService = new Stripe.AccountLinkService();
+                var accountLinkOptions = new Stripe.AccountLinkCreateOptions
+                {
+                    Account = expertProfile.StripeAccountId,
+                    RefreshUrl = "https://atrapo.io/expert-panel?refresh=true", // URL si necesita refrescar
+                    ReturnUrl = "https://atrapo.io/expert-panel", // URL de retorno después de actualizar datos
+                    Type = "account_onboarding" // Tipo de enlace para completar/actualizar información de la cuenta
+                };
+
+                var accountLink = await accountLinkService.CreateAsync(accountLinkOptions);
+
+                _logger.LogInformation("Account link created successfully for expert userId={UserId}, accountLinkUrl={AccountLinkUrl}", 
+                    userId, accountLink.Url);
+
+                return Ok(new { 
+                    message = "Enlace de cuenta creado exitosamente",
+                    accountLinkUrl = accountLink.Url 
+                });
+            }
+            catch (StripeException stripeEx)
+            {
+                _logger.LogError(stripeEx, "Stripe error creating account link: {StripeError}", stripeEx.Message);
+                return StatusCode(500, new { message = "Error de Stripe al crear el enlace de cuenta", error = stripeEx.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating account link: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
 
@@ -1151,44 +1218,7 @@ namespace newApi.Controllers
 
                 switch (stripeEvent.Type)
                 {
-                    case "checkout.session.completed":
-                        var session = stripeEvent.Data.Object as Session;
-                        if (session != null && session.Mode == "payment")
-                        {
-                            _logger.LogInformation("Processing payment session: sessionId={SessionId}, metadata={Metadata}", session.Id, JsonSerializer.Serialize(session.Metadata));
-                            if (int.TryParse(session.Metadata.GetValueOrDefault("userId", "0"), out int userId) &&
-                                decimal.TryParse(session.Metadata.GetValueOrDefault("amount", "0"), out decimal amount) &&
-                                bool.TryParse(session.Metadata.GetValueOrDefault("pendingHire", "false"), out bool pendingHire))
-                            {
-                                if (pendingHire && int.TryParse(session.Metadata.GetValueOrDefault("serviceId", "0"), out int serviceId))
-                                {
-                                    _logger.LogInformation("Processing pending hire for userId={UserId}, serviceId={ServiceId}, amount={Amount}", userId, serviceId, amount);
-                                    await HandlePendingHireCompleted(userId, amount, serviceId, session.Metadata);
-                                }
-                                else
-                                {
-                                    _logger.LogInformation("Processing load money for userId={UserId}, amount={Amount}", userId, amount);
-                                    await HandleLoadMoneyCompleted(userId, amount);
-                                }
-                            }
-                            else
-                            {
-                                _logger.LogError("Invalid metadata for payment session: sessionId={SessionId}, metadata={Metadata}", session.Id, JsonSerializer.Serialize(session.Metadata));
-                                return BadRequest(new { error = "Invalid metadata format" });
-                            }
-                        }
-                        else if (session != null && session.Mode == "subscription")
-                        {
-                            if (!int.TryParse(session.Metadata.GetValueOrDefault("userId", "0"), out int userId) ||
-                                !int.TryParse(session.Metadata.GetValueOrDefault("planId", "0"), out int planId) ||
-                                !bool.TryParse(session.Metadata.GetValueOrDefault("isYearly", "false"), out bool isYearly))
-                            {
-                                _logger.LogError("Invalid metadata in subscription session: sessionId={SessionId}, metadata={Metadata}", session.Id, JsonSerializer.Serialize(session.Metadata));
-                                return BadRequest(new { error = "Invalid metadata format" });
-                            }
-                            await HandleCheckoutSessionCompleted(userId, planId, isYearly, session.SubscriptionId);
-                        }
-                        break;
+                    // Los eventos de pago se manejan en el webhook general
 
                     case "account.application.authorized":
                         // Este evento solo indica que el usuario autorizó la aplicación (OAuth)
@@ -1557,27 +1587,123 @@ namespace newApi.Controllers
                         }
                         break;
 
-                    case "customer.subscription.updated":
-                        var subscriptionUpdated = stripeEvent.Data.Object as Subscription;
-                        if (subscriptionUpdated != null)
+                    // Los eventos de suscripción y facturas se manejan en el webhook general
+
+                    default:
+                        _logger.LogWarning("Unhandled event type: {EventType}", stripeEvent.Type);
+                        break;
+                }
+
+                _logger.LogInformation("✅ WEBHOOK PROCESSED SUCCESSFULLY: returning 200 OK");
+                return Ok();
+            }
+            catch (StripeException e)
+            {
+                _logger.LogError(e, "Stripe webhook error: {ErrorMessage}, payload: {Payload}", e.Message, json);
+                return BadRequest(new { error = e.Message });
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "General webhook error: {ErrorMessage}, payload: {Payload}", e.Message, json);
+                return StatusCode(500, new { error = "Internal server error" });
+            }
+        }
+
+        [HttpPost("webhook-general")]
+        [AllowAnonymous]
+        public async Task<IActionResult> HandleGeneralStripeWebhook()
+        {
+            var json = await new StreamReader(Request.Body).ReadToEndAsync();
+            var signatureHeader = Request.Headers["Stripe-Signature"];
+            _logger.LogInformation("🔔 GENERAL WEBHOOK RECEIVED: signature={SignatureHeader}, payload={Payload}", signatureHeader, json);
+
+            try
+            {
+                _logger.LogInformation("🔐 DEBUG: Validating general webhook signature with secret: {WebhookSecret}", _generalWebhookSecret?.Substring(0, 10) + "...");
+                _logger.LogInformation("🔐 DEBUG: Full signature header: {FullSignature}", signatureHeader);
+                _logger.LogInformation("🔐 DEBUG: Webhook secret length: {SecretLength}", _generalWebhookSecret?.Length ?? 0);
+                
+                if (string.IsNullOrEmpty(_generalWebhookSecret))
+                {
+                    _logger.LogError("❌ GENERAL WEBHOOK SECRET IS NULL OR EMPTY!");
+                    return BadRequest(new { error = "Webhook secret not configured" });
+                }
+                
+                if (string.IsNullOrEmpty(signatureHeader))
+                {
+                    _logger.LogError("❌ STRIPE SIGNATURE HEADER IS NULL OR EMPTY!");
+                    return BadRequest(new { error = "Stripe signature header missing" });
+                }
+                
+                var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, _generalWebhookSecret);
+                _logger.LogInformation("✅ GENERAL WEBHOOK EVENT CONSTRUCTED: type={EventType}, id={EventId}", stripeEvent.Type, stripeEvent.Id);
+
+                switch (stripeEvent.Type)
+                {
+                    case "payment_intent.succeeded":
+                        var paymentIntent = stripeEvent.Data.Object as PaymentIntent;
+                        if (paymentIntent != null)
                         {
-                            await HandleSubscriptionUpdated(subscriptionUpdated);
+                            await HandlePaymentIntentSucceeded(paymentIntent);
                         }
                         else
                         {
-                            _logger.LogWarning("No subscription data in customer.subscription.updated event");
+                            _logger.LogWarning("No payment intent data in payment_intent.succeeded event");
                         }
                         break;
 
-                    case "customer.subscription.deleted":
-                        var subscriptionDeleted = stripeEvent.Data.Object as Subscription;
-                        if (subscriptionDeleted != null)
+                    case "payment_intent.payment_failed":
+                        var failedPaymentIntent = stripeEvent.Data.Object as PaymentIntent;
+                        if (failedPaymentIntent != null)
                         {
-                            await HandleSubscriptionCanceled(subscriptionDeleted);
+                            await HandlePaymentIntentFailed(failedPaymentIntent);
                         }
                         else
                         {
-                            _logger.LogWarning("No subscription data in customer.subscription.deleted event");
+                            _logger.LogWarning("No payment intent data in payment_intent.payment_failed event");
+                        }
+                        break;
+
+                    case "checkout.session.completed":
+                        var session = stripeEvent.Data.Object as Session;
+                        if (session != null && session.Mode == "payment")
+                        {
+                            _logger.LogInformation("Processing payment session: sessionId={SessionId}, metadata={Metadata}", session.Id, JsonSerializer.Serialize(session.Metadata));
+                            if (int.TryParse(session.Metadata.GetValueOrDefault("userId", "0"), out int userId) &&
+                                decimal.TryParse(session.Metadata.GetValueOrDefault("amount", "0"), out decimal amount) &&
+                                bool.TryParse(session.Metadata.GetValueOrDefault("pendingHire", "false"), out bool pendingHire))
+                            {
+                                if (pendingHire && int.TryParse(session.Metadata.GetValueOrDefault("serviceId", "0"), out int serviceId))
+                                {
+                                    _logger.LogInformation("Processing pending hire for userId={UserId}, serviceId={ServiceId}, amount={Amount}", userId, serviceId, amount);
+                                    await HandlePendingHireCompleted(userId, amount, serviceId, session.Metadata);
+                                }
+                                else
+                                {
+                                    _logger.LogInformation("Processing load money for userId={UserId}, amount={Amount}", userId, amount);
+                                    await HandleLoadMoneyCompleted(userId, amount);
+                                }
+                            }
+                            else
+                            {
+                                _logger.LogError("Invalid metadata for payment session: sessionId={SessionId}, metadata={Metadata}", session.Id, JsonSerializer.Serialize(session.Metadata));
+                                return BadRequest(new { error = "Invalid metadata format" });
+                            }
+                        }
+                        else if (session != null && session.Mode == "subscription")
+                        {
+                            if (!int.TryParse(session.Metadata.GetValueOrDefault("userId", "0"), out int userId) ||
+                                !int.TryParse(session.Metadata.GetValueOrDefault("planId", "0"), out int planId) ||
+                                !bool.TryParse(session.Metadata.GetValueOrDefault("isYearly", "false"), out bool isYearly))
+                            {
+                                _logger.LogError("Invalid metadata in subscription session: sessionId={SessionId}, metadata={Metadata}", session.Id, JsonSerializer.Serialize(session.Metadata));
+                                return BadRequest(new { error = "Invalid metadata format" });
+                            }
+                            await HandleCheckoutSessionCompleted(userId, planId, isYearly, session.SubscriptionId);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("No session data in checkout.session.completed event");
                         }
                         break;
 
@@ -1605,17 +1731,55 @@ namespace newApi.Controllers
                         }
                         break;
 
+                    case "customer.subscription.created":
+                        var subscriptionCreated = stripeEvent.Data.Object as Subscription;
+                        if (subscriptionCreated != null)
+                        {
+                            _logger.LogInformation("🆕 Subscription Created: {SubscriptionId}, Status: {Status}, Customer: {CustomerId}", 
+                                subscriptionCreated.Id, subscriptionCreated.Status, subscriptionCreated.CustomerId);
+                            // No hay método específico para created, solo logueamos
+                        }
+                        else
+                        {
+                            _logger.LogWarning("No subscription data in customer.subscription.created event");
+                        }
+                        break;
+
+                    case "customer.subscription.updated":
+                        var subscriptionUpdated = stripeEvent.Data.Object as Subscription;
+                        if (subscriptionUpdated != null)
+                        {
+                            await HandleSubscriptionUpdated(subscriptionUpdated);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("No subscription data in customer.subscription.updated event");
+                        }
+                        break;
+
+                    case "customer.subscription.deleted":
+                        var subscriptionDeleted = stripeEvent.Data.Object as Subscription;
+                        if (subscriptionDeleted != null)
+                        {
+                            await HandleSubscriptionCanceled(subscriptionDeleted);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("No subscription data in customer.subscription.deleted event");
+                        }
+                        break;
+
                     default:
-                        _logger.LogWarning("Unhandled event type: {EventType}", stripeEvent.Type);
+                        _logger.LogWarning("Unhandled general webhook event type: {EventType}", stripeEvent.Type);
                         break;
                 }
 
-                _logger.LogInformation("✅ WEBHOOK PROCESSED SUCCESSFULLY: returning 200 OK");
+                _logger.LogInformation("✅ GENERAL WEBHOOK PROCESSED SUCCESSFULLY: returning 200 OK");
                 return Ok();
             }
             catch (StripeException e)
             {
-                _logger.LogError(e, "Stripe webhook error: {ErrorMessage}, payload: {Payload}", e.Message, json);
+                _logger.LogError(e, "Stripe general webhook error: {ErrorMessage}, payload: {Payload}", e.Message, json);
                 return BadRequest(new { error = e.Message });
             }
             catch (Exception e)
@@ -3180,5 +3344,59 @@ namespace newApi.Controllers
             
             return "Error de verificación - Revisa la información proporcionada y vuelve a intentar";
         }
+
+        // Métodos para el webhook general de pagos
+        private async Task HandlePaymentIntentSucceeded(PaymentIntent paymentIntent)
+        {
+            _logger.LogInformation("💳 Payment Intent Succeeded: {PaymentIntentId}, Amount: {Amount}, Currency: {Currency}", 
+                paymentIntent.Id, paymentIntent.Amount, paymentIntent.Currency);
+
+            try
+            {
+                // Aquí puedes agregar lógica específica para cuando un pago se completa exitosamente
+                // Por ejemplo, actualizar el estado de una orden, enviar confirmación por email, etc.
+                
+                if (paymentIntent.Metadata != null && paymentIntent.Metadata.Count > 0)
+                {
+                    _logger.LogInformation("Payment Intent metadata: {Metadata}", 
+                        string.Join(", ", paymentIntent.Metadata.Select(kv => $"{kv.Key}={kv.Value}")));
+                }
+
+                // Si tienes un sistema de órdenes, podrías actualizar el estado aquí
+                // await UpdateOrderStatus(paymentIntent.Metadata["order_id"], "paid");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error handling payment intent succeeded: {PaymentIntentId}", paymentIntent.Id);
+            }
+        }
+
+        private async Task HandlePaymentIntentFailed(PaymentIntent paymentIntent)
+        {
+            _logger.LogWarning("❌ Payment Intent Failed: {PaymentIntentId}, Amount: {Amount}, Currency: {Currency}, LastPaymentError: {LastPaymentError}", 
+                paymentIntent.Id, paymentIntent.Amount, paymentIntent.Currency, 
+                paymentIntent.LastPaymentError?.Message ?? "No error details");
+
+            try
+            {
+                // Aquí puedes agregar lógica para manejar pagos fallidos
+                // Por ejemplo, notificar al usuario, actualizar el estado de la orden, etc.
+                
+                if (paymentIntent.Metadata != null && paymentIntent.Metadata.Count > 0)
+                {
+                    _logger.LogInformation("Failed Payment Intent metadata: {Metadata}", 
+                        string.Join(", ", paymentIntent.Metadata.Select(kv => $"{kv.Key}={kv.Value}")));
+                }
+
+                // Si tienes un sistema de órdenes, podrías actualizar el estado aquí
+                // await UpdateOrderStatus(paymentIntent.Metadata["order_id"], "payment_failed");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error handling payment intent failed: {PaymentIntentId}", paymentIntent.Id);
+            }
+        }
+
+
     }
 }

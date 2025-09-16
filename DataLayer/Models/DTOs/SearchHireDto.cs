@@ -81,6 +81,7 @@ namespace newApi.DataLayer.Models.DTOs
         public StripeStatus StripeStatus { get; set; }
         public string? StripeStatusDetails { get; set; }
         public bool OnboardingCompleted { get; set; }
+        public bool IsOnVacation { get; set; }
     }
 
     public class UserDto

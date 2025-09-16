@@ -80,7 +80,7 @@ namespace newApi.Services
                 }
 
                 var query = _context.SearchServices
-                    .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId && ss.IsActive)
+                    .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId && ss.IsActive && !ss.ExpertProfile.IsOnVacation)
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
@@ -403,7 +403,8 @@ namespace newApi.Services
                     Description = ss.ExpertProfile.Description,
                     CreatedAt = ss.ExpertProfile.CreatedAt,
                     User = userDto,
-                    Reviews = reviews
+                    Reviews = reviews,
+                    IsOnVacation = ss.ExpertProfile.IsOnVacation
                 };
             }
 
@@ -471,7 +472,8 @@ namespace newApi.Services
                     Description = ss.ExpertProfile.Description,
                     CreatedAt = ss.ExpertProfile.CreatedAt,
                     User = userDto,
-                    Reviews = reviews
+                    Reviews = reviews,
+                    IsOnVacation = ss.ExpertProfile.IsOnVacation
                 };
             }
 

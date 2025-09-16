@@ -375,6 +375,37 @@ public class UserController : ControllerBase
         }
     }
 
+    [Authorize(Roles = "Expert")]
+    [HttpPost("toggle-vacation-mode")]
+    public async Task<IActionResult> ToggleVacationMode()
+    {
+        try
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            {
+                return Unauthorized(new { message = "Invalid user identification" });
+            }
+
+            var (success, isOnVacation) = await _userService.ToggleVacationMode(userId);
+            if (!success)
+            {
+                return BadRequest(new { message = "Failed to toggle vacation mode" });
+            }
+
+            var message = isOnVacation ? "Modo vacaciones activado" : "Modo vacaciones desactivado";
+            return Ok(new { 
+                message = message,
+                isOnVacation = isOnVacation 
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error toggling vacation mode");
+            return StatusCode(500, new { message = "Failed to toggle vacation mode" });
+        }
+    }
+
     public class GoogleAuthDto
     {
         public string AccessToken { get; set; } = string.Empty;

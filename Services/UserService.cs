@@ -331,7 +331,8 @@ namespace newApi.Services
                 Longitude = expertProfile.Longitude,
                 StripeStatus = expertProfile.StripeStatus,
                 StripeStatusDetails = expertProfile.StripeStatusDetails,
-                OnboardingCompleted = expertProfile.OnboardingCompleted
+                OnboardingCompleted = expertProfile.OnboardingCompleted,
+                IsOnVacation = expertProfile.IsOnVacation
             };
         }
 
@@ -466,7 +467,8 @@ namespace newApi.Services
                     Longitude = expertProfile.Longitude,
                     StripeStatus = expertProfile.StripeStatus,
                     StripeStatusDetails = expertProfile.StripeStatusDetails,
-                    OnboardingCompleted = expertProfile.OnboardingCompleted
+                    OnboardingCompleted = expertProfile.OnboardingCompleted,
+                    IsOnVacation = expertProfile.IsOnVacation
                 };
 
                 _logger.LogInformation("Successfully updated expert profile for user ID {UserId}", userId);
@@ -483,6 +485,37 @@ namespace newApi.Services
         {
             var user = await _context.Users.FirstOrDefaultAsync(z => z.Id == userId);
             return user?.Balance ?? 0;
+        }
+
+        public async Task<(bool Success, bool IsOnVacation)> ToggleVacationMode(int userId)
+        {
+            try
+            {
+                _logger.LogInformation("Toggling vacation mode for user ID {UserId}", userId);
+
+                var expertProfile = await _context.ExpertProfiles
+                    .FirstOrDefaultAsync(ep => ep.UserId == userId);
+
+                if (expertProfile == null)
+                {
+                    _logger.LogError("Expert profile not found for user ID {UserId}", userId);
+                    return (false, false);
+                }
+
+                // Cambiar el estado de vacaciones
+                expertProfile.IsOnVacation = !expertProfile.IsOnVacation;
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Successfully toggled vacation mode for user ID {UserId}. New status: {IsOnVacation}", 
+                    userId, expertProfile.IsOnVacation);
+
+                return (true, expertProfile.IsOnVacation);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error toggling vacation mode for user ID {UserId}", userId);
+                return (false, false);
+            }
         }
 
 

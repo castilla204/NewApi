@@ -234,32 +234,6 @@ namespace newApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Crear una disputa de cita (SOLO CLIENTE)
-        /// </summary>
-        [HttpPost("create-dispute")]
-        public async Task<IActionResult> CreateDispute([FromBody] CreateAppointmentDisputeDto dto)
-        {
-            try
-            {
-                var userId = GetCurrentUserId();
-                var appointment = await _appointmentService.CreateDisputeAsync(dto, userId);
-                return Ok(appointment);
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return Unauthorized(new { message = "Only the client can create disputes" });
-            }
-            catch (InvalidOperationException ex)
-            {
-                return BadRequest(new { message = ex.Message });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error creating appointment dispute: {AppointmentId}", dto.AppointmentId);
-                return StatusCode(500, new { message = "Internal server error" });
-            }
-        }
 
         #region Admin Endpoints
 
@@ -282,48 +256,6 @@ namespace newApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Obtener todas las disputas de citas (Admin)
-        /// </summary>
-        [HttpGet("admin/disputes")]
-        [Authorize(Roles = "Admin")]
-        public async Task<IActionResult> GetAppointmentDisputes()
-        {
-            try
-            {
-                var disputes = await _appointmentService.GetAppointmentDisputesAsync();
-                return Ok(disputes);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error getting appointment disputes");
-                return StatusCode(500, new { message = "Internal server error" });
-            }
-        }
-
-        /// <summary>
-        /// Resolver una disputa de cita (Admin)
-        /// </summary>
-        [HttpPost("admin/resolve-dispute")]
-        [Authorize(Roles = "Admin")]
-        public async Task<IActionResult> ResolveDispute([FromBody] ResolveAppointmentDisputeDto dto)
-        {
-            try
-            {
-                var adminId = GetCurrentUserId();
-                var success = await _appointmentService.ResolveDisputeAsync(dto, adminId);
-                
-                if (success)
-                    return Ok(new { message = "Dispute resolved successfully" });
-                else
-                    return BadRequest(new { message = "Failed to resolve dispute" });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error resolving appointment dispute: {AppointmentId}", dto.AppointmentId);
-                return StatusCode(500, new { message = "Internal server error" });
-            }
-        }
 
         /// <summary>
         /// Verificar timers de citas (Admin)

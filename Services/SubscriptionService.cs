@@ -129,14 +129,14 @@ namespace newApi.Services
         {
             try
             {
-                var cutoffDate = DateTime.UtcNow.AddDays(-2);
+                var cutoffDate = DateTime.UtcNow.AddHours(-24); // UNIFICADO: 24h para disputas y aprobación automática
 
                 if (_context == null)
                 {
                     throw new InvalidOperationException("Database context is not initialized");
                 }
 
-                // Procesar contrataciones donde el experto completó el trabajo pero el cliente no ha decidido en 2 días
+                // Procesar contrataciones donde el experto completó el trabajo pero el cliente no ha decidido en 24h
                 // En este caso, aprobamos automáticamente y transferimos al experto
                 var query = _context.SearchHires
                     .Where(sh => sh.Status == SearchHireStatus.AwaitingClientDecision.ToStringValue()
@@ -191,7 +191,7 @@ namespace newApi.Services
                                     Id = Guid.NewGuid(),
                                     UserId = item.ExpertId.Value,
                                     Title = "Pago Automático Recibido",
-                                    Message = $"Has recibido el pago de €{item.Amount:F2} por tu servicio. El cliente no respondió en 2 días.",
+                                    Message = $"Has recibido el pago de €{item.Amount:F2} por tu servicio. El cliente no respondió en 24h.",
                                     Type = "payment",
                                     Read = false,
                                     CreatedAt = DateTime.UtcNow

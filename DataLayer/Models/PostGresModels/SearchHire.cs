@@ -23,6 +23,7 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual ICollection<Dispute> Disputes { get; set; }
         public virtual ICollection<Conversation> Conversations { get; set; } = new List<Conversation>();
         public virtual ICollection<SearchHireDeliverable> Deliverables { get; set; } = new List<SearchHireDeliverable>();
+        public virtual Appointment? Appointment { get; set; } // Solo si requiere cita
     }
 
 }

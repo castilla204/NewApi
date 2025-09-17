@@ -37,11 +37,14 @@ namespace newApi.DataLayer.Models
         public DbSet<Dispute> Disputes { get; set; }
         public DbSet<FinancialTransaction> FinancialTransactions { get; set; }
         public DbSet<ServiceType> ServiceTypes { get; set; }
+        public DbSet<ServiceTypeCategory> ServiceTypeCategories { get; set; }
         public DbSet<Conversation> Conversations { get; set; }
         public DbSet<Message> Messages { get; set; }
         public DbSet<MessageAttachment> MessageAttachments { get; set; }
         public DbSet<SearchHireDeliverable> SearchHireDeliverables { get; set; }
         public DbSet<ProcessedWebhookEvent> ProcessedWebhookEvents { get; set; }
+        public DbSet<Appointment> Appointments { get; set; }
+        public DbSet<AppointmentTimer> AppointmentTimers { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -421,6 +424,119 @@ namespace newApi.DataLayer.Models
                 
                 // Índice para búsquedas por usuario
                 entity.HasIndex(e => e.UserId);
+            });
+
+            // Configuración de ServiceTypeCategory
+            modelBuilder.Entity<ServiceTypeCategory>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Name)
+                    .IsRequired()
+                    .HasMaxLength(100);
+                entity.Property(e => e.Description)
+                    .IsRequired()
+                    .HasMaxLength(500);
+                entity.Property(e => e.Position)
+                    .HasDefaultValue(0);
+                entity.Property(e => e.IsActive)
+                    .HasDefaultValue(true);
+                entity.Property(e => e.CreatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.UpdatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+            });
+
+            // Configuración de ServiceType con relación a ServiceTypeCategory
+            modelBuilder.Entity<ServiceType>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Name)
+                    .IsRequired()
+                    .HasMaxLength(100);
+                entity.Property(e => e.Description)
+                    .IsRequired()
+                    .HasMaxLength(500);
+                entity.Property(e => e.Position)
+                    .HasDefaultValue(0);
+                entity.Property(e => e.IsActive)
+                    .HasDefaultValue(true);
+                entity.Property(e => e.CreatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.UpdatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                // Relación con ServiceTypeCategory
+                entity.HasOne(st => st.ServiceTypeCategory)
+                    .WithMany(stc => stc.ServiceTypes)
+                    .HasForeignKey(st => st.ServiceTypeCategoryId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // Configuración de Appointment
+            modelBuilder.Entity<Appointment>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Status)
+                    .IsRequired()
+                    .HasMaxLength(50)
+                    .HasDefaultValue("awaiting_appointment");
+                entity.Property(e => e.Location)
+                    .IsRequired()
+                    .HasMaxLength(500);
+                entity.Property(e => e.ProposedDate)
+                    .IsRequired();
+                entity.Property(e => e.ProposedTime)
+                    .IsRequired();
+                entity.Property(e => e.RejectionCount)
+                    .HasDefaultValue(0);
+                entity.Property(e => e.CancellationCount)
+                    .HasDefaultValue(0);
+                entity.Property(e => e.IsLocked)
+                    .HasDefaultValue(false);
+                entity.Property(e => e.CreatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.UpdatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                // Relación con SearchHire
+                entity.HasOne(a => a.SearchHire)
+                    .WithOne(sh => sh.Appointment)
+                    .HasForeignKey<Appointment>(a => a.SearchHireId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                // Índices
+                entity.HasIndex(e => e.SearchHireId);
+                entity.HasIndex(e => e.Status);
+                entity.HasIndex(e => e.ProposedDate);
+            });
+
+            // Configuración de AppointmentTimer
+            modelBuilder.Entity<AppointmentTimer>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.TimerType)
+                    .IsRequired()
+                    .HasMaxLength(50);
+                entity.Property(e => e.StartTime)
+                    .IsRequired();
+                entity.Property(e => e.EndTime)
+                    .IsRequired();
+                entity.Property(e => e.IsExpired)
+                    .HasDefaultValue(false);
+                entity.Property(e => e.CreatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                // Relación con Appointment
+                entity.HasOne(at => at.Appointment)
+                    .WithMany(a => a.Timers)
+                    .HasForeignKey(at => at.AppointmentId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                // Índices
+                entity.HasIndex(e => e.AppointmentId);
+                entity.HasIndex(e => e.TimerType);
+                entity.HasIndex(e => e.EndTime);
+                entity.HasIndex(e => e.IsExpired);
             });
         }
     }

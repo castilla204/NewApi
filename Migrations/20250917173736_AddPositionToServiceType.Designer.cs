@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using newApi.DataLayer.Models;
@@ -11,9 +12,11 @@ using newApi.DataLayer.Models;
 namespace newApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250917173736_AddPositionToServiceType")]
+    partial class AddPositionToServiceType
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -151,147 +154,6 @@ namespace newApi.Migrations
                     b.HasIndex("PlatformId");
 
                     b.ToTable("Ads");
-                });
-
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Appointment", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("CancellationCount")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(0);
-
-                    b.Property<DateTime?>("CompletedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<int?>("CompletedBy")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.Property<string>("DisputeReason")
-                        .HasColumnType("text");
-
-                    b.Property<bool>("IsLocked")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false);
-
-                    b.Property<DateTime?>("LastProposalAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime?>("LastRejectionAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime?>("LastResponseAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<decimal?>("Latitude")
-                        .HasColumnType("numeric");
-
-                    b.Property<string>("Location")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
-                    b.Property<decimal?>("Longitude")
-                        .HasColumnType("numeric");
-
-                    b.Property<DateTime>("ProposedDate")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<TimeSpan>("ProposedTime")
-                        .HasColumnType("interval");
-
-                    b.Property<int>("RejectionCount")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(0);
-
-                    b.Property<int>("SearchHireId")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)")
-                        .HasDefaultValue("awaiting_appointment");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ProposedDate");
-
-                    b.HasIndex("SearchHireId")
-                        .IsUnique();
-
-                    b.HasIndex("Status");
-
-                    b.ToTable("Appointments");
-                });
-
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.AppointmentTimer", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("AppointmentId")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.Property<DateTime>("EndTime")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime?>("ExpiredAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<bool>("IsExpired")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false);
-
-                    b.Property<string>("Notes")
-                        .HasColumnType("text");
-
-                    b.Property<DateTime>("StartTime")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("TimerType")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("AppointmentId");
-
-                    b.HasIndex("EndTime");
-
-                    b.HasIndex("IsExpired");
-
-                    b.HasIndex("TimerType");
-
-                    b.ToTable("AppointmentTimers");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Category", b =>
@@ -1272,11 +1134,6 @@ namespace newApi.Migrations
                         .HasColumnType("character varying(100)");
 
                     b.Property<int>("Position")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(0);
-
-                    b.Property<int?>("ServiceTypeCategoryId")
                         .HasColumnType("integer");
 
                     b.Property<DateTime>("UpdatedAt")
@@ -1285,53 +1142,8 @@ namespace newApi.Migrations
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("ServiceTypeCategoryId");
 
                     b.ToTable("ServiceTypes");
-                });
-
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.ServiceTypeCategory", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.Property<string>("Description")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
-                    b.Property<bool>("IsActive")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(true);
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
-
-                    b.Property<int>("Position")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(0);
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("ServiceTypeCategories");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SubscriptionPlan", b =>
@@ -1578,28 +1390,6 @@ namespace newApi.Migrations
                         .IsRequired();
 
                     b.Navigation("Platform");
-                });
-
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Appointment", b =>
-                {
-                    b.HasOne("newApi.DataLayer.Models.PostGresModels.SearchHire", "SearchHire")
-                        .WithOne("Appointment")
-                        .HasForeignKey("newApi.DataLayer.Models.PostGresModels.Appointment", "SearchHireId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("SearchHire");
-                });
-
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.AppointmentTimer", b =>
-                {
-                    b.HasOne("newApi.DataLayer.Models.PostGresModels.Appointment", "Appointment")
-                        .WithMany("Timers")
-                        .HasForeignKey("AppointmentId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Appointment");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Category", b =>
@@ -1984,16 +1774,6 @@ namespace newApi.Migrations
                     b.Navigation("SearchService");
                 });
 
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.ServiceType", b =>
-                {
-                    b.HasOne("newApi.DataLayer.Models.PostGresModels.ServiceTypeCategory", "ServiceTypeCategory")
-                        .WithMany("ServiceTypes")
-                        .HasForeignKey("ServiceTypeCategoryId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.Navigation("ServiceTypeCategory");
-                });
-
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SystemSetting", b =>
                 {
                     b.HasOne("newApi.DataLayer.Models.PostGresModels.AI", "AI")
@@ -2056,11 +1836,6 @@ namespace newApi.Migrations
                     b.Navigation("Likes");
                 });
 
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Appointment", b =>
-                {
-                    b.Navigation("Timers");
-                });
-
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Category", b =>
                 {
                     b.Navigation("PlatformCategoryMappings");
@@ -2107,8 +1882,6 @@ namespace newApi.Migrations
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchHire", b =>
                 {
-                    b.Navigation("Appointment");
-
                     b.Navigation("Conversations");
 
                     b.Navigation("Deliverables");
@@ -2126,11 +1899,6 @@ namespace newApi.Migrations
                     b.Navigation("Images");
 
                     b.Navigation("SearchHires");
-                });
-
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.ServiceTypeCategory", b =>
-                {
-                    b.Navigation("ServiceTypes");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SubscriptionPlan", b =>

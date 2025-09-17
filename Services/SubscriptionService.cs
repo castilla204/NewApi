@@ -90,9 +90,22 @@ namespace newApi.Services
                             continue;
                         }
 
-                        searchHire.Status = SearchHireStatus.AwaitingClientDecision.ToStringValue();
-                        searchHire.UpdatedAt = DateTime.UtcNow;
-                        _logger.LogInformation("Moved searchHireId={SearchHireId} to awaiting_client_decision", searchHire.Id);
+                        // Si el experto no responde en 2 días, devolver el dinero al cliente
+                        var refundSuccess = await ProcessClientRefundAsync(searchHire.Id, "Expert did not respond within deadline");
+                        
+                        if (refundSuccess)
+                        {
+                            searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
+                            searchHire.UpdatedAt = DateTime.UtcNow;
+                            _logger.LogInformation("Refunded client and cancelled searchHireId={SearchHireId} due to expert timeout", searchHire.Id);
+                        }
+                        else
+                        {
+                            // Si falla el reembolso, marcar como transfer_failed para revisión manual
+                            searchHire.Status = SearchHireStatus.TransferFailed.ToStringValue();
+                            searchHire.UpdatedAt = DateTime.UtcNow;
+                            _logger.LogError("Failed to refund client for expired searchHireId={SearchHireId}, marked as transfer_failed", searchHire.Id);
+                        }
 
                         await _context.SaveChangesAsync();
                         await transaction.CommitAsync();
@@ -123,6 +136,8 @@ namespace newApi.Services
                     throw new InvalidOperationException("Database context is not initialized");
                 }
 
+                // Procesar contrataciones donde el experto completó el trabajo pero el cliente no ha decidido en 2 días
+                // En este caso, aprobamos automáticamente y transferimos al experto
                 var query = _context.SearchHires
                     .Where(sh => sh.Status == SearchHireStatus.AwaitingClientDecision.ToStringValue()
                               && sh.UpdatedAt.HasValue
@@ -212,6 +227,75 @@ namespace newApi.Services
             }
         }
 
+        public async Task<bool> ProcessClientRefundAsync(int searchHireId, string reason)
+        {
+            _logger.LogInformation("Processing client refund for searchHireId={SearchHireId}, reason={Reason}", searchHireId, reason);
 
+            try
+            {
+                var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Client)
+                    .Include(sh => sh.Expert)
+                    .ThenInclude(e => e.ExpertProfile)
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+
+                if (searchHire == null)
+                {
+                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
+                    return false;
+                }
+
+                // Verificar que el servicio esté en estado activo
+                if (searchHire.Status != SearchHireStatus.Pending.ToStringValue())
+                {
+                    _logger.LogWarning("SearchHire is not in active status for searchHireId={SearchHireId}, current status={Status}", 
+                        searchHireId, searchHire.Status);
+                    return false;
+                }
+
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    // Reembolsar al cliente
+                    searchHire.Client.Balance += searchHire.Amount;
+                    
+                    // Crear transacción financiera de reembolso
+                    var refundTransaction = new FinancialTransaction
+                    {
+                        UserId = searchHire.ClientId,
+                        Amount = searchHire.Amount,
+                        TransactionType = "Refund",
+                        RelatedEntityType = "SearchHire",
+                        RelatedEntityId = searchHireId,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    _context.FinancialTransactions.Add(refundTransaction);
+
+                    // Actualizar estado del SearchHire
+                    searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
+                    searchHire.UpdatedAt = DateTime.UtcNow;
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    _logger.LogInformation("Client refund processed successfully for searchHireId={SearchHireId}, amount={Amount}", 
+                        searchHireId, searchHire.Amount);
+                    
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Error processing client refund for searchHireId={SearchHireId}", searchHireId);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in ProcessClientRefundAsync for searchHireId={SearchHireId}: {ErrorMessage}", 
+                    searchHireId, ex.Message);
+                return false;
+            }
+        }
     }
 }

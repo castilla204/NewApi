@@ -13,7 +13,6 @@ namespace newApi.DataLayer.Models.enums
         AppointmentCancelledByClientSecond,     // Segunda cancelación del cliente
         AppointmentCancelledByExpert,           // Experto cancela voluntariamente
         AppointmentCancelledByNoResponse,       // Cliente no propuso en tiempo
-        AppointmentDisputed,                    // Cliente abre disputa
         AppointmentCompleted                    // Cita realizada exitosamente
     }
 
@@ -31,7 +30,6 @@ namespace newApi.DataLayer.Models.enums
                 AppointmentStatus.AppointmentCancelledByClientSecond => "appointment_cancelled_by_client_second",
                 AppointmentStatus.AppointmentCancelledByExpert => "appointment_cancelled_by_expert",
                 AppointmentStatus.AppointmentCancelledByNoResponse => "appointment_cancelled_by_no_response",
-                AppointmentStatus.AppointmentDisputed => "appointment_disputed",
                 AppointmentStatus.AppointmentCompleted => "appointment_completed",
                 _ => status.ToString().ToLower()
             };
@@ -49,7 +47,6 @@ namespace newApi.DataLayer.Models.enums
                 "appointment_cancelled_by_client_second" => AppointmentStatus.AppointmentCancelledByClientSecond,
                 "appointment_cancelled_by_expert" => AppointmentStatus.AppointmentCancelledByExpert,
                 "appointment_cancelled_by_no_response" => AppointmentStatus.AppointmentCancelledByNoResponse,
-                "appointment_disputed" => AppointmentStatus.AppointmentDisputed,
                 "appointment_completed" => AppointmentStatus.AppointmentCompleted,
                 _ => throw new ArgumentException($"Invalid appointment status: {value}")
             };

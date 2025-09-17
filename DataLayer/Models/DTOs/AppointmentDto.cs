@@ -93,26 +93,6 @@ namespace newApi.DataLayer.Models.DTOs
         public string? Notes { get; set; }
     }
 
-    /// <summary>
-    /// DTO para crear una disputa de cita
-    /// </summary>
-    public class CreateAppointmentDisputeDto
-    {
-        public int AppointmentId { get; set; }
-        public string DisputeReason { get; set; } = string.Empty;
-        public List<string> EvidencePhotos { get; set; } = new List<string>();
-        public string EvidenceText { get; set; } = string.Empty;
-    }
-
-    /// <summary>
-    /// DTO para resolver una disputa (Admin)
-    /// </summary>
-    public class ResolveAppointmentDisputeDto
-    {
-        public int AppointmentId { get; set; }
-        public string Resolution { get; set; } = string.Empty; // "client_no_show", "expert_no_show", "both_present", "technical_issue"
-        public string AdminNotes { get; set; } = string.Empty;
-    }
 
     /// <summary>
     /// DTO para mostrar información de un timer

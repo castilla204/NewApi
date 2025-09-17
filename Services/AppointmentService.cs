@@ -18,11 +18,8 @@ namespace newApi.Services
         Task<AppointmentDto> RejectAppointmentAsync(RejectAppointmentDto dto, int userId);
         Task<AppointmentDto> CancelAppointmentAsync(CancelAppointmentDto dto, int userId);
         Task<AppointmentDto> MarkCompletedAsync(MarkCompletedDto dto, int userId);
-        Task<AppointmentDto> CreateDisputeAsync(CreateAppointmentDisputeDto dto, int userId);
         Task CheckAppointmentTimersAsync();
         Task<AppointmentMetricsDto> GetAppointmentMetricsAsync();
-        Task<List<AppointmentDto>> GetAppointmentDisputesAsync();
-        Task<bool> ResolveDisputeAsync(ResolveAppointmentDisputeDto dto, int adminId);
     }
 
     public class AppointmentService : IAppointmentService
@@ -134,9 +131,10 @@ namespace newApi.Services
             if (appointment.SearchHire.ClientId != userId)
                 throw new UnauthorizedAccessException("Only the client can propose appointments");
 
-            // Verificar estado
+            // Verificar estado - incluir reprogramación después de primera cancelación
             if (appointment.Status != AppointmentStatus.AwaitingAppointment.ToStringValue() && 
-                appointment.Status != AppointmentStatus.AppointmentRejected.ToStringValue())
+                appointment.Status != AppointmentStatus.AppointmentRejected.ToStringValue() &&
+                appointment.Status != AppointmentStatus.AppointmentCancelledByClient.ToStringValue())
                 throw new InvalidOperationException($"Cannot propose appointment in status: {appointment.Status}");
 
             // Verificar restricción de 12h
@@ -147,6 +145,13 @@ namespace newApi.Services
             using var transaction = await _context.Database.BeginTransactionAsync();
             try
             {
+                // Si es reprogramación después de primera cancelación, cancelar timer de reprogramación
+                if (appointment.Status == AppointmentStatus.AppointmentCancelledByClient.ToStringValue())
+                {
+                    await CancelReprogramTimerAsync(appointment.Id);
+                    _logger.LogInformation("Cancelled reprogram timer for appointment: {AppointmentId}", appointment.Id);
+                }
+
                 appointment.Status = AppointmentStatus.AppointmentProposed.ToStringValue();
                 appointment.ProposedDate = dto.ProposedDate;
                 appointment.ProposedTime = dto.ProposedTime;
@@ -199,6 +204,7 @@ namespace newApi.Services
                 appointment.UpdatedAt = DateTime.UtcNow;
 
                 // Crear timer de 3h para cambio automático a AwaitingClientDecision
+                // Se crea un nuevo timer cada vez que se confirma (incluyendo reprogramaciones)
                 var appointmentDateTime = appointment.ProposedDate.Date.Add(appointment.ProposedTime);
                 var timerEndTime = appointmentDateTime.AddHours(3);
                 await CreateTimerAsync(appointment.Id, "auto_awaiting_client_decision", timerEndTime);
@@ -309,6 +315,7 @@ namespace newApi.Services
                     if (appointment.CancellationCount == 1)
                     {
                         appointment.Status = AppointmentStatus.AppointmentCancelledByClient.ToStringValue();
+                        // NO cambiar SearchHire.Status - dinero retenido
                         // Crear timer de 24h para reprogramar
                         await CreateTimerAsync(appointment.Id, "reprogram", 24);
                     }
@@ -388,65 +395,6 @@ namespace newApi.Services
             }
         }
 
-        public async Task<AppointmentDto> CreateDisputeAsync(CreateAppointmentDisputeDto dto, int userId)
-        {
-            var appointment = await _context.Appointments
-                .Include(a => a.SearchHire)
-                .FirstOrDefaultAsync(a => a.Id == dto.AppointmentId);
-
-            if (appointment == null)
-                throw new InvalidOperationException("Appointment not found");
-
-            // SOLO EL CLIENTE PUEDE CREAR DISPUTAS
-            if (appointment.SearchHire.ClientId != userId)
-                throw new UnauthorizedAccessException("Only the client can create disputes");
-
-            // Verificar estado - SOLO cuando se llega a AwaitingClientDecision
-            if (appointment.SearchHire.Status != SearchHireStatus.AwaitingClientDecision.ToStringValue())
-                throw new InvalidOperationException("Can only create disputes when status is AwaitingClientDecision");
-
-            // Verificar que no han pasado más de 24h desde que cambió a AwaitingClientDecision
-            if (appointment.SearchHire.UpdatedAt.HasValue && 
-                appointment.SearchHire.UpdatedAt.Value.AddHours(24) < DateTime.UtcNow)
-                throw new InvalidOperationException("Cannot create dispute after 24 hours");
-
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                appointment.Status = AppointmentStatus.AppointmentDisputed.ToStringValue();
-                appointment.DisputeReason = dto.DisputeReason;
-                appointment.UpdatedAt = DateTime.UtcNow;
-
-                appointment.SearchHire.Status = SearchHireStatus.Disputed.ToStringValue();
-                appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
-
-                // Crear disputa usando el sistema existente
-                var dispute = new Dispute
-                {
-                    SearchHireId = appointment.SearchHireId,
-                    ReporterId = userId,
-                    Reason = dto.DisputeReason,
-                    ResolutionComments = dto.EvidenceText, // Usar ResolutionComments para almacenar evidencia
-                    Status = "pending",
-                    CreatedAt = DateTime.UtcNow
-                };
-
-                _context.Disputes.Add(dispute);
-
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                _logger.LogInformation("Appointment dispute created: {AppointmentId} by user: {UserId}", appointment.Id, userId);
-
-                return await GetAppointmentAsync(appointment.Id) ?? throw new InvalidOperationException("Failed to retrieve updated appointment");
-            }
-            catch (Exception ex)
-            {
-                await transaction.RollbackAsync();
-                _logger.LogError(ex, "Failed to create appointment dispute: {AppointmentId}", appointment.Id);
-                throw;
-            }
-        }
 
         public async Task CheckAppointmentTimersAsync()
         {
@@ -496,7 +444,7 @@ namespace newApi.Services
             var metrics = new AppointmentMetricsDto
             {
                 TotalAppointments = await _context.Appointments.CountAsync(),
-                PendingDisputes = await _context.Appointments.CountAsync(a => a.Status == AppointmentStatus.AppointmentDisputed.ToStringValue()),
+                PendingDisputes = 0, // Las disputas se manejan en el sistema general de Disputes
                 ClientNoShows = await _context.Appointments.CountAsync(a => a.Status == AppointmentStatus.AppointmentCancelledByClientSecond.ToStringValue()),
                 ExpertNoShows = await _context.Appointments.CountAsync(a => a.Status == AppointmentStatus.AppointmentCancelledByExpert.ToStringValue()),
                 SuccessfulAppointments = await _context.Appointments.CountAsync(a => a.Status == AppointmentStatus.AppointmentCompleted.ToStringValue()),
@@ -514,80 +462,6 @@ namespace newApi.Services
             return metrics;
         }
 
-        public async Task<List<AppointmentDto>> GetAppointmentDisputesAsync()
-        {
-            var appointments = await _context.Appointments
-                .Include(a => a.SearchHire)
-                .ThenInclude(sh => sh.Client)
-                .Include(a => a.SearchHire)
-                .ThenInclude(sh => sh.Expert)
-                .Include(a => a.Timers)
-                .Where(a => a.Status == AppointmentStatus.AppointmentDisputed.ToStringValue())
-                .OrderByDescending(a => a.UpdatedAt)
-                .ToListAsync();
-
-            return appointments.Select(MapToDto).ToList();
-        }
-
-        public async Task<bool> ResolveDisputeAsync(ResolveAppointmentDisputeDto dto, int adminId)
-        {
-            var appointment = await _context.Appointments
-                .Include(a => a.SearchHire)
-                .FirstOrDefaultAsync(a => a.Id == dto.AppointmentId);
-
-            if (appointment == null)
-                return false;
-
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                switch (dto.Resolution)
-                {
-                    case "client_no_show":
-                        // Cliente no se presentó - 80% al experto
-                        await ProcessNoShowRefundAsync(appointment.SearchHireId, 0.0m, 0.8m);
-                        appointment.SearchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
-                        break;
-                        
-                    case "expert_no_show":
-                        // Experto no se presentó - 100% al cliente
-                        await ProcessNoShowRefundAsync(appointment.SearchHireId, 1.0m, 0.0m);
-                        appointment.SearchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
-                        break;
-                        
-                    case "both_present":
-                        // Ambos se presentaron - proceder normalmente
-                        appointment.SearchHire.Status = SearchHireStatus.Completed.ToStringValue();
-                        await _checkingClientDecisionService.ProcessTransferToExpert(appointment.SearchHireId);
-                        break;
-                        
-                    case "technical_issue":
-                        // Problema técnico - reprogramar
-                        appointment.Status = AppointmentStatus.AwaitingAppointment.ToStringValue();
-                        appointment.SearchHire.Status = SearchHireStatus.Pending.ToStringValue();
-                        await CreateTimerAsync(appointment.Id, "proposal", 48);
-                        break;
-                }
-
-                appointment.Status = AppointmentStatus.AppointmentCompleted.ToStringValue();
-                appointment.UpdatedAt = DateTime.UtcNow;
-                appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
-
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                _logger.LogInformation("Appointment dispute resolved: {AppointmentId} by admin: {AdminId}, resolution: {Resolution}", 
-                    appointment.Id, adminId, dto.Resolution);
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                await transaction.RollbackAsync();
-                _logger.LogError(ex, "Failed to resolve appointment dispute: {AppointmentId}", appointment.Id);
-                return false;
-            }
-        }
 
         #region Private Methods
 
@@ -617,6 +491,21 @@ namespace newApi.Services
             };
 
             _context.AppointmentTimers.Add(timer);
+        }
+
+        private async Task CancelReprogramTimerAsync(int appointmentId)
+        {
+            var activeReprogramTimers = await _context.AppointmentTimers
+                .Where(t => t.AppointmentId == appointmentId && 
+                           t.TimerType == "reprogram" && 
+                           !t.IsExpired)
+                .ToListAsync();
+
+            foreach (var timer in activeReprogramTimers)
+            {
+                timer.IsExpired = true;
+                timer.ExpiredAt = DateTime.UtcNow;
+            }
         }
 
         private async Task ProcessCancellationRefundAsync(int searchHireId, decimal clientPercentage, decimal expertPercentage)

@@ -219,6 +219,10 @@ builder.Services.AddScoped<ISubscriptionService, newApi.Services.SubscriptionSer
 builder.Services.AddScoped<ISearchHireService, SearchHireService>();
 builder.Services.AddScoped<ISearchServiceService, SearchServiceService>();
 builder.Services.AddScoped<ICheckingClientDecisionService, CheckingClientDecisionService>();
+builder.Services.AddScoped<IAppointmentService, AppointmentService>();
+
+// Background services
+builder.Services.AddHostedService<AppointmentTimerBackgroundService>();
 
 builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<SearchServiceService>();

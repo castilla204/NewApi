@@ -19,6 +19,5 @@ namespace newApi.Services
         Task<(bool Success, ExpertProfileDto UpdatedProfile)> UpdateExpertProfile(int userId, UpdateExpertProfileRequestDto request);
         Task<User> GetUserAsync(int userId);
         Task<decimal> GetUserBalanceAsync(int userId);
-        Task<(bool Success, bool IsOnVacation)> ToggleVacationMode(int userId);
     }
 }

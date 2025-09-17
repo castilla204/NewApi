@@ -31,16 +31,18 @@ namespace newApi.Controllers
         private readonly AppDbContext _context;
         private readonly ILogger<SubscriptionController> _logger;
         private readonly ISubscriptionService _subscriptionService;
+        private readonly ICheckingClientDecisionService _checkingClientDecisionService;
         private readonly IConfiguration _configuration;
         private readonly string? _webhookSecret;
         private readonly string? _generalWebhookSecret;
 
-        public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService)
+        public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService, ICheckingClientDecisionService checkingClientDecisionService)
         {
             _logger = logger;
             _logger.LogInformation("Initializing SubscriptionController");
             _context = context;
             _subscriptionService = subscriptionService;
+            _checkingClientDecisionService = checkingClientDecisionService;
             _configuration = configuration;
             _webhookSecret = _configuration["Stripe:WebhookSecret"];
             _generalWebhookSecret = _configuration["Stripe:GeneralWebhookSecret"];
@@ -2130,7 +2132,7 @@ namespace newApi.Controllers
                     }
                     else
                     {
-                        await ProcessTransferToExpert(searchHire.Id);
+                        await _checkingClientDecisionService.ProcessTransferToExpert(searchHire.Id);
                         searchHire.Status = SearchHireStatus.Completed.ToStringValue();
                         searchHire.UpdatedAt = DateTime.UtcNow;
                         _logger.LogInformation("Client approved service, transfer completed for searchHireId={SearchHireId}", searchHire.Id);
@@ -2363,7 +2365,7 @@ namespace newApi.Controllers
                     using var transaction = await _context.Database.BeginTransactionAsync();
                     try
                     {
-                        await ProcessTransferToExpert(searchHire.Id);
+                        await _checkingClientDecisionService.ProcessTransferToExpert(searchHire.Id);
                         // El estado ya se actualiza en ProcessTransferToExpert
                         
                         await _context.SaveChangesAsync();
@@ -2461,6 +2463,8 @@ namespace newApi.Controllers
                             return StatusCode(500, new { message = "Failed to process client refund" });
                         }
                         
+                        // Usar DisputeResolved solo cuando se resuelve a favor del cliente
+                        searchHire.Status = SearchHireStatus.DisputeResolved.ToStringValue();
                         _logger.LogInformation("Dispute resolved in favor of client for searchHireId={SearchHireId}", searchHire.Id);
                     }
                     else
@@ -2474,7 +2478,8 @@ namespace newApi.Controllers
                             return BadRequest(new { message = "Expert has no Stripe account configured" });
                         }
                         
-                        await ProcessTransferToExpert(searchHire.Id);
+                        await _checkingClientDecisionService.ProcessTransferToExpert(searchHire.Id);
+                        // Usar Completed cuando se resuelve a favor del experto
                         searchHire.Status = SearchHireStatus.Completed.ToStringValue();
                         _logger.LogInformation("Dispute resolved in favor of expert for searchHireId={SearchHireId}", searchHire.Id);
                     }
@@ -2505,6 +2510,82 @@ namespace newApi.Controllers
             }
         }
 
+        /// <summary>
+        /// Resuelve manualmente una contratación en estado TransferFailed
+        /// </summary>
+        [HttpPost("resolve-transfer-failed")]
+        public async Task<IActionResult> ResolveTransferFailed([FromBody] ResolveTransferFailedRequest request)
+        {
+            try
+            {
+                var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
+                if (adminEmail != "dcastillaa@gmail.com")
+                {
+                    return Unauthorized(new { message = "Admin access required" });
+                }
+
+                var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Client)
+                    .Include(sh => sh.Expert)
+                    .ThenInclude(e => e.ExpertProfile)
+                    .FirstOrDefaultAsync(sh => sh.Id == request.SearchHireId);
+
+                if (searchHire == null)
+                {
+                    return NotFound(new { message = "Service not found" });
+                }
+
+                if (searchHire.Status != SearchHireStatus.TransferFailed.ToStringValue())
+                {
+                    return BadRequest(new { message = "Service is not in transfer_failed status" });
+                }
+
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    if (request.ResolveInFavorOfClient)
+                    {
+                        // Reembolsar al cliente
+                        var success = await ProcessClientRefundAsync(searchHire.Id, $"Transfer failed resolved in favor of client: {request.Resolution}");
+                        if (!success)
+                        {
+                            await transaction.RollbackAsync();
+                            return StatusCode(500, new { message = "Failed to process client refund" });
+                        }
+                        searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
+                    }
+                    else
+                    {
+                        // Intentar transferir al experto nuevamente
+                        if (string.IsNullOrEmpty(searchHire.Expert?.ExpertProfile?.StripeAccountId))
+                        {
+                            await transaction.RollbackAsync();
+                            return BadRequest(new { message = "Expert has no Stripe account configured" });
+                        }
+                        
+                        await _checkingClientDecisionService.ProcessTransferToExpert(searchHire.Id);
+                        searchHire.Status = SearchHireStatus.Completed.ToStringValue();
+                    }
+
+                    searchHire.UpdatedAt = DateTime.UtcNow;
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    return Ok(new { message = "Transfer failed resolved successfully" });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogError(ex, "Error resolving transfer failed for searchHireId={SearchHireId}", searchHire.Id);
+                    return StatusCode(500, new { message = "Failed to resolve transfer failed" });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error resolving transfer failed: {ErrorMessage}", ex.Message);
+                return StatusCode(500, new { message = "Failed to resolve transfer failed" });
+            }
+        }
 
         [HttpPost("process-expired-services")]
         public async Task<IActionResult> ProcessExpiredServices()
@@ -2680,93 +2761,6 @@ namespace newApi.Controllers
             }
         }
 
-        public async Task ProcessTransferToExpert(int searchHireId)
-        {
-            _logger.LogInformation("Processing transfer to expert for searchHireId={SearchHireId}", searchHireId);
-
-            var searchHire = await _context.SearchHires
-                .Include(sh => sh.Expert)
-                .ThenInclude(e => e.ExpertProfile)
-                .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
-
-            if (searchHire == null)
-            {
-                _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
-                throw new Exception("SearchHire not found");
-            }
-
-            // Verificar que el servicio esté en estado activo
-            if (searchHire.Status != SearchHireStatus.Pending.ToStringValue())
-            {
-                _logger.LogWarning("SearchHire is not in active status for searchHireId={SearchHireId}, current status={Status}", 
-                    searchHireId, searchHire.Status);
-                throw new Exception($"SearchHire is not in active status: {searchHire.Status}");
-            }
-
-            var commissionRate = 0.1m;
-            var amountToExpert = searchHire.Amount * (1 - commissionRate);
-            var amountInCents = (long)(amountToExpert * 100);
-
-            var expertStripeAccountId = searchHire.Expert.ExpertProfile?.StripeAccountId;
-            if (string.IsNullOrEmpty(expertStripeAccountId))
-            {
-                _logger.LogError("Expert has no Stripe account for searchHireId={SearchHireId}, expertId={ExpertId}", searchHireId, searchHire.ExpertId);
-                throw new Exception("Expert has no Stripe account configured");
-            }
-
-            try
-            {
-                var transferOptions = new TransferCreateOptions
-                {
-                    Amount = amountInCents,
-                    Currency = "eur",
-                    Destination = expertStripeAccountId,
-                    Metadata = new Dictionary<string, string>
-                    {
-                        { "searchHireId", searchHireId.ToString() }
-                    }
-                };
-
-                var transferService = new TransferService();
-                var transfer = await transferService.CreateAsync(transferOptions);
-                searchHire.ExpertTransferId = transfer.Id;
-                
-                // Actualizar el estado del servicio a completado
-                searchHire.Status = SearchHireStatus.Completed.ToStringValue();
-                searchHire.UpdatedAt = DateTime.UtcNow;
-                
-                _logger.LogInformation("Transfer created for searchHireId={SearchHireId}, transferId={TransferId}, amount={Amount}", searchHireId, transfer.Id, amountToExpert);
-
-                // Crear transacción financiera para el pago al experto
-                var financialTransaction = new FinancialTransaction
-                {
-                    UserId = searchHire.ExpertId.Value,
-                    Amount = amountToExpert,
-                    TransactionType = "Payout",
-                    RelatedEntityType = "SearchHire",
-                    RelatedEntityId = searchHireId,
-                    CreatedAt = DateTime.UtcNow
-                };
-                _context.FinancialTransactions.Add(financialTransaction);
-
-                await _context.SaveChangesAsync();
-                
-                _logger.LogInformation("Successfully processed transfer to expert for searchHireId={SearchHireId}, amount={Amount}", 
-                    searchHireId, amountToExpert);
-            }
-            catch (StripeException ex)
-            {
-                _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", 
-                    searchHireId, ex.Message);
-                throw new Exception($"Stripe transfer failed: {ex.Message}");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", 
-                    searchHireId, ex.Message);
-                throw;
-            }
-        }
 
         private async Task HandleLoadMoneyCompleted(int userId, decimal amount)
         {
@@ -3396,7 +3390,12 @@ namespace newApi.Controllers
                 _logger.LogError(ex, "Error handling payment intent failed: {PaymentIntentId}", paymentIntent.Id);
             }
         }
+    }
 
-
+    public class ResolveTransferFailedRequest
+    {
+        public int SearchHireId { get; set; }
+        public bool ResolveInFavorOfClient { get; set; }
+        public string Resolution { get; set; }
     }
 }

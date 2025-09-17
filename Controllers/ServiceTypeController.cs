@@ -21,45 +21,125 @@ namespace newApi.Controllers
             _logger = logger;
         }
 
+        /// <summary>
+        /// Obtiene todos los tipos de servicio activos para el frontend
+        /// </summary>
+        /// <returns>Lista de tipos de servicio activos</returns>
         [HttpGet]
         public async Task<IActionResult> GetServiceTypes()
         {
             try
             {
                 var serviceTypes = await _context.ServiceTypes
+                    .Include(st => st.ServiceTypeCategory)
                     .Where(st => st.IsActive)
+                    .OrderBy(st => st.Position) // Ordenar por posición personalizada
+                    .ThenBy(st => st.Name) // Luego alfabéticamente como fallback
                     .Select(st => new ServiceTypeDto
                     {
                         Id = st.Id,
                         Name = st.Name,
                         Description = st.Description,
+                        ServiceTypeCategoryId = st.ServiceTypeCategoryId,
+                        ServiceTypeCategoryName = st.ServiceTypeCategory != null ? st.ServiceTypeCategory.Name : null,
+                        Position = st.Position,
                         IsActive = st.IsActive,
                         CreatedAt = st.CreatedAt,
                         UpdatedAt = st.UpdatedAt
                     })
                     .ToListAsync();
 
-                return Ok(serviceTypes);
+                _logger.LogInformation("Retrieved {Count} active service types", serviceTypes.Count);
+                
+                return Ok(new 
+                { 
+                    success = true,
+                    data = serviceTypes,
+                    count = serviceTypes.Count,
+                    message = "Service types retrieved successfully"
+                });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error retrieving service types");
-                return StatusCode(500, new { message = ex.Message });
+                return StatusCode(500, new 
+                { 
+                    success = false,
+                    message = "Error retrieving service types",
+                    error = ex.Message 
+                });
             }
         }
 
+        /// <summary>
+        /// Obtiene todos los tipos de servicio activos (endpoint público sin autenticación)
+        /// </summary>
+        /// <returns>Lista de tipos de servicio activos</returns>
+        [HttpGet("public")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetServiceTypesPublic()
+        {
+            try
+            {
+                var serviceTypes = await _context.ServiceTypes
+                    .Include(st => st.ServiceTypeCategory)
+                    .Where(st => st.IsActive)
+                    .OrderBy(st => st.Position) // Ordenar por posición personalizada
+                    .ThenBy(st => st.Name) // Luego alfabéticamente como fallback
+                    .Select(st => new 
+                    {
+                        Id = st.Id,
+                        Name = st.Name,
+                        Description = st.Description,
+                        ServiceTypeCategoryId = st.ServiceTypeCategoryId,
+                        ServiceTypeCategoryName = st.ServiceTypeCategory != null ? st.ServiceTypeCategory.Name : null,
+                        Position = st.Position
+                    })
+                    .ToListAsync();
+
+                _logger.LogInformation("Retrieved {Count} active service types (public endpoint)", serviceTypes.Count);
+                
+                return Ok(new 
+                { 
+                    success = true,
+                    data = serviceTypes,
+                    count = serviceTypes.Count,
+                    message = "Service types retrieved successfully"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving service types (public endpoint)");
+                return StatusCode(500, new 
+                { 
+                    success = false,
+                    message = "Error retrieving service types",
+                    error = ex.Message 
+                });
+            }
+        }
+
+        /// <summary>
+        /// Obtiene un tipo de servicio específico por ID
+        /// </summary>
+        /// <param name="id">ID del tipo de servicio</param>
+        /// <returns>Tipo de servicio específico</returns>
         [HttpGet("{id}")]
         public async Task<IActionResult> GetServiceType(int id)
         {
             try
             {
                 var serviceType = await _context.ServiceTypes
+                    .Include(st => st.ServiceTypeCategory)
                     .Where(st => st.Id == id && st.IsActive)
                     .Select(st => new ServiceTypeDto
                     {
                         Id = st.Id,
                         Name = st.Name,
                         Description = st.Description,
+                        ServiceTypeCategoryId = st.ServiceTypeCategoryId,
+                        ServiceTypeCategoryName = st.ServiceTypeCategory != null ? st.ServiceTypeCategory.Name : null,
+                        Position = st.Position,
                         IsActive = st.IsActive,
                         CreatedAt = st.CreatedAt,
                         UpdatedAt = st.UpdatedAt
@@ -68,15 +148,32 @@ namespace newApi.Controllers
 
                 if (serviceType == null)
                 {
-                    return NotFound(new { message = "Service type not found" });
+                    _logger.LogWarning("Service type not found: {ServiceTypeId}", id);
+                    return NotFound(new 
+                    { 
+                        success = false,
+                        message = "Service type not found" 
+                    });
                 }
 
-                return Ok(serviceType);
+                _logger.LogInformation("Retrieved service type: {ServiceTypeId} - {ServiceTypeName}", id, serviceType.Name);
+                
+                return Ok(new 
+                { 
+                    success = true,
+                    data = serviceType,
+                    message = "Service type retrieved successfully"
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving service type");
-                return StatusCode(500, new { message = ex.Message });
+                _logger.LogError(ex, "Error retrieving service type: {ServiceTypeId}", id);
+                return StatusCode(500, new 
+                { 
+                    success = false,
+                    message = "Error retrieving service type",
+                    error = ex.Message 
+                });
             }
         }
 
@@ -95,6 +192,7 @@ namespace newApi.Controllers
                 {
                     Name = createDto.Name,
                     Description = createDto.Description ?? "",
+                    Position = createDto.Position,
                     IsActive = createDto.IsActive,
                     CreatedAt = DateTime.UtcNow,
                     UpdatedAt = DateTime.UtcNow
@@ -108,6 +206,7 @@ namespace newApi.Controllers
                     Id = serviceType.Id,
                     Name = serviceType.Name,
                     Description = serviceType.Description,
+                    Position = serviceType.Position,
                     IsActive = serviceType.IsActive,
                     CreatedAt = serviceType.CreatedAt,
                     UpdatedAt = serviceType.UpdatedAt
@@ -146,6 +245,7 @@ namespace newApi.Controllers
 
                 serviceType.Name = updateDto.Name;
                 serviceType.Description = updateDto.Description ?? "";
+                serviceType.Position = updateDto.Position;
                 serviceType.IsActive = updateDto.IsActive;
                 serviceType.UpdatedAt = DateTime.UtcNow;
 
@@ -156,6 +256,7 @@ namespace newApi.Controllers
                     Id = serviceType.Id,
                     Name = serviceType.Name,
                     Description = serviceType.Description,
+                    Position = serviceType.Position,
                     IsActive = serviceType.IsActive,
                     CreatedAt = serviceType.CreatedAt,
                     UpdatedAt = serviceType.UpdatedAt
@@ -206,6 +307,9 @@ namespace newApi.Controllers
         public int Id { get; set; }
         public string Name { get; set; }
         public string Description { get; set; }
+        public int? ServiceTypeCategoryId { get; set; }
+        public string? ServiceTypeCategoryName { get; set; }
+        public int Position { get; set; }
         public bool IsActive { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }

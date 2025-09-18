@@ -37,3 +37,6 @@ namespace newApi.DataLayer.Models.DTOs
         public bool IsActive { get; set; }
     }
 }
+
+
+

@@ -11,6 +11,7 @@
         public int? ServiceTypeCategoryId { get; set; } // Referencia al tipo real (Búsqueda + Revisión, Revisión, etc.)
         public int Position { get; set; } = 0; // Posición para ordenar en el frontend
         public bool IsActive { get; set; } = true;
+        public bool RequiresAppointment { get; set; } = false; // Indica si este tipo de servicio requiere cita presencial
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
         

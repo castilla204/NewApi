@@ -17,3 +17,6 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual ICollection<ServiceType> ServiceTypes { get; set; } = new List<ServiceType>();
     }
 }
+
+
+

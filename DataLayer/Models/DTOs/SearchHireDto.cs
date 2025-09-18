@@ -8,8 +8,21 @@ namespace newApi.DataLayer.Models.DTOs
     {
         public int Id { get; set; }
         public int? ExpertId { get; set; }
-        public string Status { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public DateTime CreatedAt { get; set; } // ✅ NUEVO: Fecha de contratación del servicio
         public UserDto? Expert { get; set; }
+        public ServiceInfo? Service { get; set; } // ✅ NUEVO: Información del servicio
+    }
+
+    public class ServiceInfo
+    {
+        public int Id { get; set; }
+        public int ServiceTypeId { get; set; }
+        public string ServiceTypeName { get; set; } = string.Empty;
+        public int? ServiceTypeCategoryId { get; set; }
+        public string? ServiceTypeCategoryName { get; set; }
+        public bool RequiresAppointment { get; set; }
+        public decimal Price { get; set; }
     }
     public class CreateSearchHireDto
     {
@@ -51,6 +64,8 @@ namespace newApi.DataLayer.Models.DTOs
         public int CategoryId { get; set; }
         public int ServiceTypeId { get; set; }
         public string ServiceTypeName { get; set; }
+        public int? ServiceTypeCategoryId { get; set; }
+        public bool RequiresAppointment { get; set; }
         public decimal Price { get; set; }
         public string Conditions { get; set; }
         public int DurationInHours { get; set; }

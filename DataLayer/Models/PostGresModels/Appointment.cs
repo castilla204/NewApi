@@ -35,3 +35,6 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual ICollection<AppointmentTimer> Timers { get; set; } = new List<AppointmentTimer>();
     }
 }
+
+
+

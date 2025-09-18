@@ -205,6 +205,7 @@ namespace newApi.Services
                         .ThenInclude(u => u.ReviewsReceived)
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
+                        .ThenInclude(st => st.ServiceTypeCategory)
                     .FirstOrDefaultAsync(ss => ss.Id == id);
 
                 if (service == null)
@@ -236,6 +237,7 @@ namespace newApi.Services
                         .ThenInclude(u => u.ReviewsReceived)
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
+                        .ThenInclude(st => st.ServiceTypeCategory)
                     .FirstOrDefaultAsync(ss => _context.SearchHires.Any(sh => sh.Id == id && sh.SearchServiceId == ss.Id));
 
                 if (service == null)
@@ -371,6 +373,8 @@ namespace newApi.Services
                 CategoryId = ss.CategoryId,
                 ServiceTypeId = ss.ServiceTypeId,
                 ServiceTypeName = ss.ServiceType?.Name ?? "Unknown Service Type",
+                ServiceTypeCategoryId = ss.ServiceType?.ServiceTypeCategoryId,
+                RequiresAppointment = ss.ServiceType?.RequiresAppointment ?? false,
                 Price = ss.Price,
                 Conditions = ss.Conditions,
                 DurationInHours = ss.DurationInHours ?? 0,
@@ -440,6 +444,8 @@ namespace newApi.Services
                 CategoryId = ss.CategoryId,
                 ServiceTypeId = ss.ServiceTypeId,
                 ServiceTypeName = ss.ServiceType?.Name ?? "Unknown Service Type",
+                ServiceTypeCategoryId = ss.ServiceType?.ServiceTypeCategoryId,
+                RequiresAppointment = ss.ServiceType?.RequiresAppointment ?? false,
                 Price = ss.Price,
                 Conditions = ss.Conditions,
                 DurationInHours = ss.DurationInHours ?? 0,

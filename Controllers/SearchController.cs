@@ -82,6 +82,7 @@ namespace newApi.Controllers
                         Id = s.SearchHire.Id,
                         ExpertId = s.SearchHire.ExpertId ?? 0,
                         Status = s.SearchHire.Status,
+                        CreatedAt = s.SearchHire.CreatedAt, // ✅ NUEVO: Fecha de contratación del servicio
                         Expert = s.SearchHire.Expert != null ? new UserDto
                         {
                             Name = s.SearchHire.Expert.Name,
@@ -538,6 +539,7 @@ namespace newApi.Controllers
                             Id = s.SearchHire.Id,
                             ExpertId = s.SearchHire.ExpertId ?? 0,
                             Status = s.SearchHire.Status,
+                            CreatedAt = s.SearchHire.CreatedAt, // ✅ NUEVO: Fecha de contratación del servicio
                             Expert = s.SearchHire.Expert != null ? new UserDto
                             {
                                 Name = s.SearchHire.Expert.Name,
@@ -680,6 +682,10 @@ namespace newApi.Controllers
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                         .ThenInclude(e => e.ExpertProfile)
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.SearchService)
+                        .ThenInclude(ss => ss.ServiceType)
+                        .ThenInclude(st => st.ServiceTypeCategory) // ✅ NUEVO: Incluir ServiceType y ServiceTypeCategory
                     .FirstOrDefaultAsync(s => s.Id == searchId &&
                         (s.UserId == userId || // User is the search owner
                          _authService.IsAdmin(User) || // User is an admin
@@ -719,10 +725,21 @@ namespace newApi.Controllers
                         Id = search.SearchHire.Id,
                         ExpertId = search.SearchHire.ExpertId ?? 0,
                         Status = search.SearchHire.Status,
+                        CreatedAt = search.SearchHire.CreatedAt, // ✅ NUEVO: Fecha de contratación del servicio
                         Expert = search.SearchHire.Expert != null ? new UserDto
                         {
                             Name = search.SearchHire.Expert.Name,
                             ProfilePictureUrl = search.SearchHire.Expert.ExpertProfile?.ProfilePictureUrl ?? "/default-avatar.png"
+                        } : null,
+                        Service = search.SearchHire.SearchService != null ? new ServiceInfo
+                        {
+                            Id = search.SearchHire.SearchService.Id,
+                            ServiceTypeId = search.SearchHire.SearchService.ServiceTypeId,
+                            ServiceTypeName = search.SearchHire.SearchService.ServiceType?.Name ?? "Unknown Service Type",
+                            ServiceTypeCategoryId = search.SearchHire.SearchService.ServiceType?.ServiceTypeCategoryId,
+                            ServiceTypeCategoryName = search.SearchHire.SearchService.ServiceType?.ServiceTypeCategory?.Name,
+                            RequiresAppointment = search.SearchHire.SearchService.ServiceType?.RequiresAppointment ?? false,
+                            Price = search.SearchHire.SearchService.Price
                         } : null
                     } : null
                 };

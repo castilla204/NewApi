@@ -20,3 +20,6 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual Appointment Appointment { get; set; } = null!;
     }
 }
+
+
+

@@ -17,7 +17,6 @@ namespace newApi.Services
         Task<AppointmentDto> ConfirmAppointmentAsync(ConfirmAppointmentDto dto, int userId);
         Task<AppointmentDto> RejectAppointmentAsync(RejectAppointmentDto dto, int userId);
         Task<AppointmentDto> CancelAppointmentAsync(CancelAppointmentDto dto, int userId);
-        Task<AppointmentDto> MarkCompletedAsync(MarkCompletedDto dto, int userId);
         Task CheckAppointmentTimersAsync();
         Task<AppointmentMetricsDto> GetAppointmentMetricsAsync();
     }
@@ -88,11 +87,14 @@ namespace newApi.Services
                 {
                     SearchHireId = dto.SearchHireId,
                     Status = AppointmentStatus.AwaitingAppointment.ToStringValue(),
-                    ProposedDate = dto.ProposedDate,
+                    ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc),
                     ProposedTime = dto.ProposedTime,
                     Location = dto.Location,
                     Latitude = dto.Latitude,
                     Longitude = dto.Longitude,
+                    DoorNumber = dto.DoorNumber,
+                    OwnerPhone = dto.OwnerPhone,
+                    SiteDetails = dto.SiteDetails,
                     CreatedAt = DateTime.UtcNow,
                     UpdatedAt = DateTime.UtcNow
                 };
@@ -124,23 +126,67 @@ namespace newApi.Services
                 .Include(a => a.SearchHire)
                 .FirstOrDefaultAsync(a => a.SearchHireId == searchHireId);
 
+            // ✅ NUEVO: Si no existe Appointment, crear uno automáticamente
             if (appointment == null)
-                throw new InvalidOperationException("Appointment not found");
+            {
+                // Verificar que el SearchHire existe y el usuario es el cliente
+                var searchHire = await _context.SearchHires
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+                
+                if (searchHire == null)
+                    throw new InvalidOperationException("SearchHire not found");
+                
+                if (searchHire.ClientId != userId)
+                    throw new UnauthorizedAccessException("Only the client can propose appointments");
+                
+                // Verificar que el SearchHire está en estado válido para crear citas
+                if (searchHire.Status != SearchHireStatus.Pending.ToStringValue())
+                    throw new InvalidOperationException($"Cannot create appointment when SearchHire status is: {searchHire.Status}");
+                
+                // Crear el Appointment automáticamente
+                appointment = new Appointment
+                {
+                    SearchHireId = searchHireId,
+                    Status = AppointmentStatus.AwaitingAppointment.ToStringValue(),
+                    ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc),
+                    ProposedTime = dto.ProposedTime,
+                    Location = dto.Location,
+                    Latitude = dto.Latitude,
+                    Longitude = dto.Longitude,
+                    DoorNumber = dto.DoorNumber,
+                    OwnerPhone = dto.OwnerPhone,
+                    SiteDetails = dto.SiteDetails,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                };
+                
+                _context.Appointments.Add(appointment);
+                await _context.SaveChangesAsync();
+                
+                _logger.LogInformation("Appointment created automatically for SearchHire: {SearchHireId}", searchHireId);
+            }
+            else
+            {
+                // Verificar que el usuario es el cliente
+                if (appointment.SearchHire.ClientId != userId)
+                    throw new UnauthorizedAccessException("Only the client can propose appointments");
+            }
 
-            // Verificar que el usuario es el cliente
-            if (appointment.SearchHire.ClientId != userId)
-                throw new UnauthorizedAccessException("Only the client can propose appointments");
-
-            // Verificar estado - incluir reprogramación después de primera cancelación
+            // Verificar estado - solo si el Appointment ya existía (no recién creado)
             if (appointment.Status != AppointmentStatus.AwaitingAppointment.ToStringValue() && 
                 appointment.Status != AppointmentStatus.AppointmentRejected.ToStringValue() &&
                 appointment.Status != AppointmentStatus.AppointmentCancelledByClient.ToStringValue())
                 throw new InvalidOperationException($"Cannot propose appointment in status: {appointment.Status}");
 
             // Verificar restricción de 12h
+            _logger.LogInformation("ProposedDate: {ProposedDate}, ProposedTime: {ProposedTime}", dto.ProposedDate, dto.ProposedTime);
             var appointmentDateTime = dto.ProposedDate.Date.Add(dto.ProposedTime);
-            if (appointmentDateTime <= DateTime.UtcNow.AddHours(12))
-                throw new InvalidOperationException("Cannot propose appointment less than 12 hours in advance");
+            var now = DateTime.UtcNow;
+            var minDateTime = now.AddHours(12);
+            _logger.LogInformation("AppointmentDateTime: {AppointmentDateTime}, Now: {Now}, MinDateTime: {MinDateTime}", appointmentDateTime, now, minDateTime);
+            
+            if (appointmentDateTime <= minDateTime)
+                throw new InvalidOperationException($"Cannot propose appointment less than 12 hours in advance. Appointment: {appointmentDateTime}, Minimum: {minDateTime}");
 
             using var transaction = await _context.Database.BeginTransactionAsync();
             try
@@ -153,11 +199,14 @@ namespace newApi.Services
                 }
 
                 appointment.Status = AppointmentStatus.AppointmentProposed.ToStringValue();
-                appointment.ProposedDate = dto.ProposedDate;
+                appointment.ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc);
                 appointment.ProposedTime = dto.ProposedTime;
                 appointment.Location = dto.Location;
                 appointment.Latitude = dto.Latitude;
                 appointment.Longitude = dto.Longitude;
+                appointment.DoorNumber = dto.DoorNumber;
+                appointment.OwnerPhone = dto.OwnerPhone;
+                appointment.SiteDetails = dto.SiteDetails;
                 appointment.LastProposalAt = DateTime.UtcNow;
                 appointment.UpdatedAt = DateTime.UtcNow;
 
@@ -249,14 +298,14 @@ namespace newApi.Services
                 appointment.LastResponseAt = DateTime.UtcNow;
                 appointment.UpdatedAt = DateTime.UtcNow;
 
-                // Verificar si es la tercera vez
-                if (appointment.RejectionCount >= 3)
+                // Verificar si es la segunda vez (cambiamos de 3 a 2 rechazos)
+                if (appointment.RejectionCount >= 2)
                 {
-                    appointment.Status = AppointmentStatus.AppointmentCancelledByNoResponse.ToStringValue();
+                    appointment.Status = AppointmentStatus.AppointmentCancelledByExpertRejection.ToStringValue();
                     appointment.SearchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
                     
-                    // 100% al cliente
-                    await ProcessCancellationRefundAsync(appointment.SearchHireId, 1.0m, 0.0m);
+                    // Usar configuración de BD para distribución de dinero
+                    await ProcessCancellationRefundAsync(appointment.SearchHireId, AppointmentStatus.AppointmentCancelledByExpertRejection.ToStringValue());
                 }
                 else
                 {
@@ -323,16 +372,16 @@ namespace newApi.Services
                     {
                         appointment.Status = AppointmentStatus.AppointmentCancelledByClientSecond.ToStringValue();
                         appointment.SearchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
-                        // 92% cliente, 8% experto
-                        await ProcessCancellationRefundAsync(appointment.SearchHireId, 0.92m, 0.08m);
+                        // Usar configuración de BD para distribución de dinero
+                        await ProcessCancellationRefundAsync(appointment.SearchHireId, AppointmentStatus.AppointmentCancelledByClientSecond.ToStringValue());
                     }
                 }
                 else
                 {
                     appointment.Status = AppointmentStatus.AppointmentCancelledByExpert.ToStringValue();
                     appointment.SearchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
-                    // 92% cliente, 8% experto
-                    await ProcessCancellationRefundAsync(appointment.SearchHireId, 0.92m, 0.08m);
+                    // Usar configuración de BD para distribución de dinero
+                    await ProcessCancellationRefundAsync(appointment.SearchHireId, AppointmentStatus.AppointmentCancelledByExpert.ToStringValue());
                 }
 
                 await _context.SaveChangesAsync();
@@ -351,49 +400,6 @@ namespace newApi.Services
             }
         }
 
-        public async Task<AppointmentDto> MarkCompletedAsync(MarkCompletedDto dto, int userId)
-        {
-            var appointment = await _context.Appointments
-                .Include(a => a.SearchHire)
-                .FirstOrDefaultAsync(a => a.Id == dto.AppointmentId);
-
-            if (appointment == null)
-                throw new InvalidOperationException("Appointment not found");
-
-            // Verificar que el usuario es parte de la cita
-            if (appointment.SearchHire.ClientId != userId && appointment.SearchHire.ExpertId != userId)
-                throw new UnauthorizedAccessException("Only the client or expert can mark appointments as completed");
-
-            // Verificar estado
-            if (appointment.Status != AppointmentStatus.AppointmentConfirmed.ToStringValue())
-                throw new InvalidOperationException($"Cannot mark appointment as completed in status: {appointment.Status}");
-
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                appointment.Status = AppointmentStatus.AppointmentCompleted.ToStringValue();
-                appointment.CompletedAt = DateTime.UtcNow;
-                appointment.CompletedBy = userId;
-                appointment.UpdatedAt = DateTime.UtcNow;
-
-                // Cambiar a AwaitingClientDecision para que el cliente pueda aprobar
-                appointment.SearchHire.Status = SearchHireStatus.AwaitingClientDecision.ToStringValue();
-                appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
-
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                _logger.LogInformation("Appointment marked as completed: {AppointmentId} by user: {UserId}", appointment.Id, userId);
-
-                return await GetAppointmentAsync(appointment.Id) ?? throw new InvalidOperationException("Failed to retrieve updated appointment");
-            }
-            catch (Exception ex)
-            {
-                await transaction.RollbackAsync();
-                _logger.LogError(ex, "Failed to mark appointment as completed: {AppointmentId}", appointment.Id);
-                throw;
-            }
-        }
 
 
         public async Task CheckAppointmentTimersAsync()
@@ -508,26 +514,128 @@ namespace newApi.Services
             }
         }
 
-        private async Task ProcessCancellationRefundAsync(int searchHireId, decimal clientPercentage, decimal expertPercentage)
+        private async Task ProcessCancellationRefundAsync(int searchHireId, string status)
         {
-            var searchHire = await _context.SearchHires.FindAsync(searchHireId);
+            var searchHire = await _context.SearchHires
+                .Include(sh => sh.SearchService)
+                .ThenInclude(ss => ss.ServiceType)
+                .ThenInclude(st => st.ServiceTypeCategory)
+                .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+            
             if (searchHire == null) return;
 
-            var clientAmount = searchHire.Amount * clientPercentage;
-            var expertAmount = searchHire.Amount * expertPercentage;
+            // Obtener configuración de distribución de dinero
+            var config = await GetMoneyDistributionConfigAsync(status, searchHire.SearchService?.CategoryId, searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
+            
+            if (config == null)
+            {
+                _logger.LogError("No money distribution configuration found for status: {Status} and ServiceTypeCategoryId: {ServiceTypeCategoryId}", 
+                    status, searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
+                return;
+            }
+
+            var clientAmount = searchHire.Amount * (config.ClientPercentage / 100);
+            var expertAmount = searchHire.Amount * (config.ExpertPercentage / 100);
+            var platformAmount = searchHire.Amount * (config.PlatformPercentage / 100);
 
             // Procesar devoluciones (implementar según tu sistema de pagos)
             if (clientAmount > 0)
             {
-                // Procesar devolución al cliente
-                _logger.LogInformation("Processing client refund: {Amount} for SearchHire: {SearchHireId}", clientAmount, searchHireId);
+                _logger.LogInformation("Processing client refund: {Amount} ({Percentage}%) for SearchHire: {SearchHireId} using config: {Source}", 
+                    clientAmount, config.ClientPercentage, searchHireId, config.Source);
             }
 
             if (expertAmount > 0)
             {
-                // Procesar devolución al experto
-                _logger.LogInformation("Processing expert refund: {Amount} for SearchHire: {SearchHireId}", expertAmount, searchHireId);
+                _logger.LogInformation("Processing expert refund: {Amount} ({Percentage}%) for SearchHire: {SearchHireId} using config: {Source}", 
+                    expertAmount, config.ExpertPercentage, searchHireId, config.Source);
             }
+
+            if (platformAmount > 0)
+            {
+                _logger.LogInformation("Processing platform amount: {Amount} ({Percentage}%) for SearchHire: {SearchHireId} using config: {Source}", 
+                    platformAmount, config.PlatformPercentage, searchHireId, config.Source);
+            }
+        }
+
+        private async Task<MoneyDistributionConfigDto?> GetMoneyDistributionConfigAsync(string status, int? categoryId, int? serviceTypeCategoryId)
+        {
+            // 1. Buscar configuración específica por Category + ServiceTypeCategory
+            if (categoryId.HasValue && serviceTypeCategoryId.HasValue)
+            {
+                var specificConfig = await _context.CategoryServiceTypeConfigs
+                    .Include(cst => cst.Category)
+                    .Include(cst => cst.ServiceTypeCategory)
+                    .FirstOrDefaultAsync(cst => cst.CategoryId == categoryId.Value 
+                                             && cst.ServiceTypeCategoryId == serviceTypeCategoryId.Value 
+                                             && cst.Status == status 
+                                             && cst.IsActive);
+
+                if (specificConfig != null)
+                {
+                    return new MoneyDistributionConfigDto
+                    {
+                        ClientPercentage = specificConfig.ClientPercentage,
+                        ExpertPercentage = specificConfig.ExpertPercentage,
+                        PlatformPercentage = specificConfig.PlatformPercentage,
+                        Source = "category_service_type",
+                        CategoryName = specificConfig.Category?.Name,
+                        ServiceTypeCategoryName = specificConfig.ServiceTypeCategory?.Name,
+                        Status = status
+                    };
+                }
+            }
+
+            // 2. Buscar configuración específica por ServiceTypeCategory
+            if (serviceTypeCategoryId.HasValue)
+            {
+                var categoryConfig = await _context.ServiceTypeCategoryConfigs
+                    .Include(sc => sc.ServiceTypeCategory)
+                    .FirstOrDefaultAsync(sc => sc.ServiceTypeCategoryId == serviceTypeCategoryId.Value 
+                                             && sc.Status == status 
+                                             && sc.IsActive);
+
+                if (categoryConfig != null)
+                {
+                    return new MoneyDistributionConfigDto
+                    {
+                        ClientPercentage = categoryConfig.ClientPercentage,
+                        ExpertPercentage = categoryConfig.ExpertPercentage,
+                        PlatformPercentage = categoryConfig.PlatformPercentage,
+                        Source = "service_type_category",
+                        ServiceTypeCategoryName = categoryConfig.ServiceTypeCategory?.Name,
+                        Status = status
+                    };
+                }
+            }
+
+            // 3. Buscar configuración por defecto por estado
+            var defaultConfig = await _context.AppointmentStatusConfigs
+                .FirstOrDefaultAsync(ac => ac.Status == status && ac.IsActive);
+
+            if (defaultConfig != null)
+            {
+                return new MoneyDistributionConfigDto
+                {
+                    ClientPercentage = defaultConfig.ClientPercentage,
+                    ExpertPercentage = defaultConfig.ExpertPercentage,
+                    PlatformPercentage = defaultConfig.PlatformPercentage,
+                    Source = "appointment_status",
+                    Status = status
+                };
+            }
+
+            // 4. Configuración por defecto del sistema
+            _logger.LogWarning("No configuration found for status: {Status}, categoryId: {CategoryId}, serviceTypeCategoryId: {ServiceTypeCategoryId}, using default values", 
+                status, categoryId, serviceTypeCategoryId);
+            return new MoneyDistributionConfigDto
+            {
+                ClientPercentage = 90.00m,
+                ExpertPercentage = 8.00m,
+                PlatformPercentage = 2.00m,
+                Source = "default",
+                Status = status
+            };
         }
 
         private async Task ProcessNoShowRefundAsync(int searchHireId, decimal clientPercentage, decimal expertPercentage)
@@ -563,8 +671,8 @@ namespace newApi.Services
             appointment.UpdatedAt = DateTime.UtcNow;
             appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
 
-            // 92% cliente, 8% experto
-            await ProcessCancellationRefundAsync(appointment.SearchHireId, 0.92m, 0.08m);
+            // Usar configuración de BD para distribución de dinero
+            await ProcessCancellationRefundAsync(appointment.SearchHireId, AppointmentStatus.AppointmentCancelledByNoResponse.ToStringValue());
 
             _logger.LogInformation("Appointment cancelled due to proposal timeout: {AppointmentId}", appointmentId);
         }
@@ -582,8 +690,8 @@ namespace newApi.Services
             appointment.UpdatedAt = DateTime.UtcNow;
             appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
 
-            // 92% cliente, 8% experto
-            await ProcessCancellationRefundAsync(appointment.SearchHireId, 0.92m, 0.08m);
+            // Usar configuración de BD para distribución de dinero
+            await ProcessCancellationRefundAsync(appointment.SearchHireId, AppointmentStatus.AppointmentCancelledByNoResponse.ToStringValue());
 
             _logger.LogInformation("Appointment cancelled due to response timeout: {AppointmentId}", appointmentId);
         }
@@ -596,10 +704,17 @@ namespace newApi.Services
 
             if (appointment == null) return;
 
+            // Marcar la cita como completada automáticamente
+            appointment.Status = AppointmentStatus.AppointmentCompleted.ToStringValue();
+            appointment.CompletedAt = DateTime.UtcNow;
+            appointment.CompletedBy = appointment.SearchHire.ExpertId; // El experto la completó automáticamente
+            appointment.UpdatedAt = DateTime.UtcNow;
+
+            // Cambiar SearchHire a AwaitingClientDecision para que el cliente pueda aprobar
             appointment.SearchHire.Status = SearchHireStatus.AwaitingClientDecision.ToStringValue();
             appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
 
-            _logger.LogInformation("Appointment automatically moved to AwaitingClientDecision: {AppointmentId}", appointmentId);
+            _logger.LogInformation("Appointment automatically completed and moved to AwaitingClientDecision: {AppointmentId}", appointmentId);
         }
 
         private async Task ProcessReprogramTimeoutAsync(int appointmentId)
@@ -615,8 +730,8 @@ namespace newApi.Services
             appointment.UpdatedAt = DateTime.UtcNow;
             appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
 
-            // 92% cliente, 8% experto
-            await ProcessCancellationRefundAsync(appointment.SearchHireId, 0.92m, 0.08m);
+            // Usar configuración de BD para distribución de dinero
+            await ProcessCancellationRefundAsync(appointment.SearchHireId, AppointmentStatus.AppointmentCancelledByNoResponse.ToStringValue());
 
             _logger.LogInformation("Appointment cancelled due to reprogram timeout: {AppointmentId}", appointmentId);
         }
@@ -633,6 +748,9 @@ namespace newApi.Services
                 Location = appointment.Location,
                 Latitude = appointment.Latitude,
                 Longitude = appointment.Longitude,
+                DoorNumber = appointment.DoorNumber,
+                OwnerPhone = appointment.OwnerPhone,
+                SiteDetails = appointment.SiteDetails,
                 DisputeReason = appointment.DisputeReason,
                 CompletedAt = appointment.CompletedAt,
                 CompletedBy = appointment.CompletedBy,

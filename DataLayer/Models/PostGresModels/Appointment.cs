@@ -15,6 +15,12 @@ namespace newApi.DataLayer.Models.PostGresModels
         public string Location { get; set; } = string.Empty;
         public decimal? Latitude { get; set; }
         public decimal? Longitude { get; set; }
+        
+        // ✅ NUEVOS CAMPOS: Información adicional del sitio
+        public string? DoorNumber { get; set; } // Número de puerta, garaje, etc.
+        public string? OwnerPhone { get; set; } // Teléfono del propietario del objeto
+        public string? SiteDetails { get; set; } // Detalles específicos del sitio (opcional)
+        
         public string? DisputeReason { get; set; }
         public DateTime? CompletedAt { get; set; }
         public int? CompletedBy { get; set; }
@@ -35,6 +41,7 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual ICollection<AppointmentTimer> Timers { get; set; } = new List<AppointmentTimer>();
     }
 }
+
 
 
 

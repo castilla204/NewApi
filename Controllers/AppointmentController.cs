@@ -207,32 +207,6 @@ namespace newApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Marcar una cita como completada (Cliente o Experto)
-        /// </summary>
-        [HttpPost("mark-completed")]
-        public async Task<IActionResult> MarkCompleted([FromBody] MarkCompletedDto dto)
-        {
-            try
-            {
-                var userId = GetCurrentUserId();
-                var appointment = await _appointmentService.MarkCompletedAsync(dto, userId);
-                return Ok(appointment);
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return Unauthorized(new { message = "Only the client or expert can mark appointments as completed" });
-            }
-            catch (InvalidOperationException ex)
-            {
-                return BadRequest(new { message = ex.Message });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error marking appointment as completed: {AppointmentId}", dto.AppointmentId);
-                return StatusCode(500, new { message = "Internal server error" });
-            }
-        }
 
 
         #region Admin Endpoints

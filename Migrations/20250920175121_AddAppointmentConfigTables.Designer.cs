@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using newApi.DataLayer.Models;
@@ -11,9 +12,11 @@ using newApi.DataLayer.Models;
 namespace newApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250920175121_AddAppointmentConfigTables")]
+    partial class AddAppointmentConfigTables
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -368,52 +371,6 @@ namespace newApi.Migrations
                     b.HasIndex("ParentId");
 
                     b.ToTable("Categories");
-                });
-
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.CategoryServiceTypeConfig", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("CategoryId")
-                        .HasColumnType("integer");
-
-                    b.Property<decimal>("ClientPercentage")
-                        .HasColumnType("numeric");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<decimal>("ExpertPercentage")
-                        .HasColumnType("numeric");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("boolean");
-
-                    b.Property<decimal>("PlatformPercentage")
-                        .HasColumnType("numeric");
-
-                    b.Property<int>("ServiceTypeCategoryId")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CategoryId");
-
-                    b.HasIndex("ServiceTypeCategoryId");
-
-                    b.ToTable("CategoryServiceTypeConfigs");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Conversation", b =>
@@ -1001,9 +958,6 @@ namespace newApi.Migrations
                     b.Property<DateTime>("LastExecution")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("LocationName")
-                        .HasColumnType("text");
-
                     b.Property<DateTime>("NextExecution")
                         .HasColumnType("timestamp with time zone");
 
@@ -1141,9 +1095,6 @@ namespace newApi.Migrations
 
                     b.Property<string>("Latitude")
                         .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("LocationName")
                         .HasColumnType("text");
 
                     b.Property<int?>("LocationRange")
@@ -1751,25 +1702,6 @@ namespace newApi.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Parent");
-                });
-
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.CategoryServiceTypeConfig", b =>
-                {
-                    b.HasOne("newApi.DataLayer.Models.PostGresModels.Category", "Category")
-                        .WithMany()
-                        .HasForeignKey("CategoryId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("newApi.DataLayer.Models.PostGresModels.ServiceTypeCategory", "ServiceTypeCategory")
-                        .WithMany()
-                        .HasForeignKey("ServiceTypeCategoryId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Category");
-
-                    b.Navigation("ServiceTypeCategory");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Conversation", b =>

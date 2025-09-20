@@ -60,6 +60,7 @@ namespace newApi.Controllers
                 }
                 Console.WriteLine($"[13:42 CEST] Parsed userId: {userId}");
 
+                // Admin puede ver cualquier conversación, usuarios normales solo las suyas
                 var conversation = await _context.Conversations
                     .Include(c => c.Messages)
                         .ThenInclude(m => m.Sender)
@@ -117,6 +118,72 @@ namespace newApi.Controllers
             {
                 Console.WriteLine($"[13:42 CEST] Error in GetConversation: {ex.Message}");
                 throw;
+            }
+        }
+
+        /// <summary>
+        /// Obtener todas las conversaciones (solo para Admin)
+        /// </summary>
+        [HttpGet("conversations")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<List<ConversationDto>>> GetAllConversations()
+        {
+            try
+            {
+                var conversations = await _context.Conversations
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Sender)
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Attachments)
+                    .Include(c => c.Client)
+                    .Include(c => c.Expert)
+                    .Include(c => c.SearchHire)
+                        .ThenInclude(sh => sh.Search)
+                    .OrderByDescending(c => c.UpdatedAt)
+                    .ToListAsync();
+
+                var conversationDtos = conversations.Select(ConversationDto.FromConversation).ToList();
+                return Ok(conversationDtos);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[13:42 CEST] Error getting all conversations: {ex.Message}");
+                return StatusCode(500, new { message = "An error occurred while retrieving conversations" });
+            }
+        }
+
+        /// <summary>
+        /// Obtener conversación específica por ID (solo para Admin)
+        /// </summary>
+        [HttpGet("conversation/{conversationId}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<ConversationDto>> GetConversationById(int conversationId)
+        {
+            try
+            {
+                var conversation = await _context.Conversations
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Sender)
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Attachments)
+                    .Include(c => c.Client)
+                    .Include(c => c.Expert)
+                    .Include(c => c.SearchHire)
+                        .ThenInclude(sh => sh.Search)
+                    .FirstOrDefaultAsync(c => c.Id == conversationId);
+
+                if (conversation == null)
+                {
+                    return NotFound(new { message = "Conversation not found" });
+                }
+
+                var conversationDto = ConversationDto.FromConversation(conversation);
+                return Ok(conversationDto);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[13:42 CEST] Error getting conversation {conversationId}: {ex.Message}");
+                return StatusCode(500, new { message = "An error occurred while retrieving conversation" });
             }
         }
 

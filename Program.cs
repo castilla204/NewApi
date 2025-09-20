@@ -220,6 +220,8 @@ builder.Services.AddScoped<ISearchHireService, SearchHireService>();
 builder.Services.AddScoped<ISearchServiceService, SearchServiceService>();
 builder.Services.AddScoped<ICheckingClientDecisionService, CheckingClientDecisionService>();
 builder.Services.AddScoped<IAppointmentService, AppointmentService>();
+builder.Services.AddScoped<IAppointmentConfigService, AppointmentConfigService>();
+builder.Services.AddScoped<ICategoryServiceTypeConfigService, CategoryServiceTypeConfigService>();
 
 // Background services
 builder.Services.AddHostedService<AppointmentTimerBackgroundService>();

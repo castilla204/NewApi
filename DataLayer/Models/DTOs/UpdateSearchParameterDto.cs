@@ -6,6 +6,7 @@
         public string UserSearch { get; set; }
         public string Latitude { get; set; }
         public string Longitude { get; set; }
+        public string? LocationName { get; set; } // Nombre de la ubicación (ej: "Calle Juan Sadar, Soria")
         public bool ShippingAvailable { get; set; }
         public bool StrictMatchOnly { get; set; }
         public int? Category { get; set; }

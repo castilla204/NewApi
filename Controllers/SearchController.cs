@@ -174,6 +174,7 @@ namespace newApi.Controllers
                             UserSearch = parameterDto.UserSearch,
                             Latitude = parameterDto.Latitude,
                             Longitude = parameterDto.Longitude,
+                            LocationName = parameterDto.LocationName, // ✅ NUEVO: Incluir LocationName
                             ShippingAvailable = parameterDto.ShippingAvailable,
                             StrictMatchOnly = parameterDto.StrictMatchOnly,
                             Category = parameterDto.Category,
@@ -212,6 +213,11 @@ namespace newApi.Controllers
 
                         var expertuserid = expertProfile?.UserId ?? 0;
 
+                        // Validar que el experto no se contrate a sí mismo
+                        if (expertuserid == userId)
+                        {
+                            return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
+                        }
 
                         var searchHire = new SearchHire
                         {
@@ -271,6 +277,7 @@ namespace newApi.Controllers
                                 UserSearch = parameterDto.UserSearch,
                                 Latitude = parameterDto.Latitude,
                                 Longitude = parameterDto.Longitude,
+                                LocationName = parameterDto.LocationName, // ✅ NUEVO: Incluir LocationName
                                 ShippingAvailable = parameterDto.ShippingAvailable,
                                 StrictMatchOnly = parameterDto.StrictMatchOnly,
                                 Category = parameterDto.Category,
@@ -303,6 +310,12 @@ namespace newApi.Controllers
                             var expertProfile = await _context.ExpertProfiles
                                 .FirstOrDefaultAsync(z => z.Id == service.ExpertProfileId);
                             var expertuserid = expertProfile?.UserId ?? 0;
+
+                            // Validar que el experto no se contrate a sí mismo
+                            if (expertuserid == userId)
+                            {
+                                return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
+                            }
 
                             var searchHire = new SearchHire
                             {
@@ -506,6 +519,11 @@ namespace newApi.Controllers
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                         .ThenInclude(e => e.ExpertProfile)
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Conversations)
+                        .ThenInclude(c => c.Messages) // ✅ NUEVO: Incluir mensajes para contar no leídos
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Appointment) // ✅ NUEVO: Incluir citas
                     .ToListAsync();
 
                 var searchDtos = searches.Select(s =>
@@ -528,6 +546,7 @@ namespace newApi.Controllers
                         LastExecution = s.LastExecution,
                         CreatedAt = s.CreatedAt,
                         StartDate = s.StartDate,
+                        LocationName = s.SearchParameters.FirstOrDefault()?.LocationName, // ✅ NUEVO: Nombre de la ubicación desde SearchParameters
                         Category = s.SearchParameters.FirstOrDefault()?.Category ?? 0,
                         User = new UserDto
                         {
@@ -548,6 +567,39 @@ namespace newApi.Controllers
                         } : null
                     };
                 }).ToList();
+
+                // ✅ NUEVO: Calcular indicadores de notificaciones para cada búsqueda
+                foreach (var searchDto in searchDtos)
+                {
+                    var search = searches.First(s => s.Id == searchDto.Id);
+                    
+                    if (search.SearchHire != null)
+                    {
+                        // Contar mensajes sin leer
+                        if (search.SearchHire.Conversations != null && search.SearchHire.Conversations.Any())
+                        {
+                            searchDto.UnreadMessagesCount = search.SearchHire.Conversations
+                                .SelectMany(c => c.Messages)
+                                .Count(m => m.SenderId != userId && !m.IsRead);
+                        }
+
+                        // Verificar si hay cita pendiente
+                        if (search.SearchHire.Appointment != null)
+                        {
+                            var pendingStatuses = new[] { 
+                                "awaiting_appointment", 
+                                "appointment_proposed", 
+                                "appointment_confirmed" 
+                            };
+                            
+                            if (pendingStatuses.Contains(search.SearchHire.Appointment.Status))
+                            {
+                                searchDto.HasPendingAppointment = true;
+                                searchDto.PendingAppointmentStatus = search.SearchHire.Appointment.Status;
+                            }
+                        }
+                    }
+                }
 
                 return Ok(searchDtos);
             }
@@ -686,6 +738,11 @@ namespace newApi.Controllers
                         .ThenInclude(sh => sh.SearchService)
                         .ThenInclude(ss => ss.ServiceType)
                         .ThenInclude(st => st.ServiceTypeCategory) // ✅ NUEVO: Incluir ServiceType y ServiceTypeCategory
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Conversations)
+                        .ThenInclude(c => c.Messages) // ✅ NUEVO: Incluir mensajes para contar no leídos
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Appointment) // ✅ NUEVO: Incluir citas
                     .FirstOrDefaultAsync(s => s.Id == searchId &&
                         (s.UserId == userId || // User is the search owner
                          _authService.IsAdmin(User) || // User is an admin
@@ -714,6 +771,7 @@ namespace newApi.Controllers
                     LastExecution = search.LastExecution,
                     CreatedAt = search.CreatedAt,
                     StartDate = search.StartDate,
+                    LocationName = search.SearchParameters.FirstOrDefault()?.LocationName, // ✅ NUEVO: Nombre de la ubicación desde SearchParameters
                     Category = search.SearchParameters.FirstOrDefault()?.Category ?? 0,
                     User = new UserDto
                     {
@@ -743,6 +801,34 @@ namespace newApi.Controllers
                         } : null
                     } : null
                 };
+
+                // ✅ NUEVO: Calcular indicadores de notificaciones
+                if (search.SearchHire != null)
+                {
+                    // Contar mensajes sin leer
+                    if (search.SearchHire.Conversations != null && search.SearchHire.Conversations.Any())
+                    {
+                        searchDto.UnreadMessagesCount = search.SearchHire.Conversations
+                            .SelectMany(c => c.Messages)
+                            .Count(m => m.SenderId != userId && !m.IsRead);
+                    }
+
+                    // Verificar si hay cita pendiente
+                    if (search.SearchHire.Appointment != null)
+                    {
+                        var pendingStatuses = new[] { 
+                            "awaiting_appointment", 
+                            "appointment_proposed", 
+                            "appointment_confirmed" 
+                        };
+                        
+                        if (pendingStatuses.Contains(search.SearchHire.Appointment.Status))
+                        {
+                            searchDto.HasPendingAppointment = true;
+                            searchDto.PendingAppointmentStatus = search.SearchHire.Appointment.Status;
+                        }
+                    }
+                }
 
                 return Ok(searchDto);
             }

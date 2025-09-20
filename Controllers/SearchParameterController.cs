@@ -43,6 +43,7 @@ namespace newApi.Controllers
                     UserSearch = searchParameter.UserSearch,
                     Latitude = searchParameter.Latitude,
                     Longitude = searchParameter.Longitude,
+                    LocationName = searchParameter.LocationName, // ✅ NUEVO: Incluir LocationName
                     ShippingAvailable = searchParameter.ShippingAvailable,
                     StrictMatchOnly = searchParameter.StrictMatchOnly,
                     Category = searchParameter.Category,
@@ -95,6 +96,7 @@ namespace newApi.Controllers
                     UserSearch = searchParameterDto.UserSearch,
                     Latitude = searchParameterDto.Latitude,
                     Longitude = searchParameterDto.Longitude,
+                    LocationName = searchParameterDto.LocationName, // ✅ NUEVO: Incluir LocationName
                     ShippingAvailable = searchParameterDto.ShippingAvailable,
                     StrictMatchOnly = searchParameterDto.StrictMatchOnly,
                     Category = searchParameterDto.Category,
@@ -158,6 +160,7 @@ namespace newApi.Controllers
                         UserSearch = p.UserSearch,
                         Latitude = p.Latitude,
                         Longitude = p.Longitude,
+                        LocationName = p.LocationName, // ✅ NUEVO: Nombre de la ubicación
                         ShippingAvailable = p.ShippingAvailable,
                         StrictMatchOnly = p.StrictMatchOnly,
                         Category = p.Category,

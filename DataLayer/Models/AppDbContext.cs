@@ -45,6 +45,9 @@ namespace newApi.DataLayer.Models
         public DbSet<ProcessedWebhookEvent> ProcessedWebhookEvents { get; set; }
         public DbSet<Appointment> Appointments { get; set; }
         public DbSet<AppointmentTimer> AppointmentTimers { get; set; }
+        public DbSet<AppointmentStatusConfig> AppointmentStatusConfigs { get; set; }
+        public DbSet<ServiceTypeCategoryConfig> ServiceTypeCategoryConfigs { get; set; }
+        public DbSet<CategoryServiceTypeConfig> CategoryServiceTypeConfigs { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

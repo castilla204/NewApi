@@ -2251,77 +2251,6 @@ namespace newApi.Controllers
             }
         }
 
-        [HttpPost("dispute-service")]
-        public async Task<IActionResult> DisputeService([FromBody] DisputeServiceDto request)
-        {
-            _logger.LogInformation("DisputeService endpoint invoked for searchHireId={SearchHireId}", request.SearchHireId);
-
-            try
-            {
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
-                    return Unauthorized(new { message = "Invalid user identification" });
-                }
-
-                if (string.IsNullOrWhiteSpace(request.Reason))
-                {
-                    _logger.LogError("Dispute reason is required for searchHireId={SearchHireId}", request.SearchHireId);
-                    return BadRequest(new { message = "Dispute reason is required" });
-                }
-
-                var searchHire = await _context.SearchHires
-                    .FirstOrDefaultAsync(sh => sh.Id == request.SearchHireId && sh.ClientId == userId);
-
-                if (searchHire == null)
-                {
-                    _logger.LogError("SearchHire not found or user is not the client for searchHireId={SearchHireId}, userId={UserId}", request.SearchHireId, userId);
-                    return NotFound(new { message = "Service not found or unauthorized" });
-                }
-
-                if (searchHire.Status != SearchHireStatus.AwaitingClientDecision.ToStringValue())
-                {
-                    _logger.LogError("Service is not in awaiting_client_decision status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
-                    return BadRequest(new { message = "Service is not awaiting client decision" });
-                }
-
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
-                {
-                    searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
-                    searchHire.ClientApproved = false;
-                    searchHire.UpdatedAt = DateTime.UtcNow;
-
-                    var dispute = new DataLayer.Models.PostGresModels.Dispute
-                    {
-                        SearchHireId = searchHire.Id,
-                        ReporterId = userId,
-                        Reason = request.Reason,
-                        Status = "Pending",
-                        CreatedAt = DateTime.UtcNow
-                    };
-
-                    _context.Disputes.Add(dispute);
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
-
-                    _logger.LogInformation("Dispute opened for searchHireId={SearchHireId}, disputeId={DisputeId}", searchHire.Id, dispute.Id);
-                    return Ok(new { message = "Dispute opened", disputeId = dispute.Id });
-                }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Database error disputing service for searchHireId={SearchHireId}", searchHire.Id);
-                    return StatusCode(500, new { message = "Failed to open dispute" });
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error disputing service: {ErrorMessage}", ex.Message);
-                return StatusCode(500, new { message = "Failed to open dispute" });
-            }
-        }
 
         [HttpPost("force-finalize")]
         public async Task<IActionResult> ForceFinalize([FromBody] ForceFinalizeDto request)
@@ -3008,11 +2937,6 @@ namespace newApi.Controllers
         {
             public int ServiceId { get; set; }
             public decimal Amount { get; set; }
-        }
-        public class DisputeServiceDto
-        {
-            public int SearchHireId { get; set; }
-            public string Reason { get; set; }
         }
 
         public class ForceFinalizeDto

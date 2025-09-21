@@ -9,6 +9,7 @@ namespace newApi.DataLayer.Models.DTOs
         public int Id { get; set; }
         public int? ExpertId { get; set; }
         public string Status { get; set; } = string.Empty;
+        public string StatusTranslated { get; set; } = string.Empty; // ✅ NUEVO: Estado traducido al español
         public DateTime CreatedAt { get; set; } // ✅ NUEVO: Fecha de contratación del servicio
         public UserDto? Expert { get; set; }
         public ServiceInfo? Service { get; set; } // ✅ NUEVO: Información del servicio
@@ -38,6 +39,7 @@ namespace newApi.DataLayer.Models.DTOs
         public int SearchServiceId { get; set; }
         public int? SearchId { get; set; }
         public string Status { get; set; }
+        public string StatusTranslated { get; set; } = string.Empty; // ✅ NUEVO: Estado traducido al español
         public string? ExpertTransferId { get; set; }
         public decimal Amount { get; set; }
         public DateTime CreatedAt { get; set; }
@@ -101,6 +103,7 @@ namespace newApi.DataLayer.Models.DTOs
 
     public class UserDto
     {
+        public int Id { get; set; }
         public string Email { get; set; }
         public string Name { get; set; }
         public string? ProfilePictureUrl { get; set; }

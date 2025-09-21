@@ -41,3 +41,4 @@ namespace newApi.DataLayer.Models.PostGresModels
         public bool IsValid => ClientPercentage + ExpertPercentage + PlatformPercentage == 100;
     }
 }
+

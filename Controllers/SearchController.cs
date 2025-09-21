@@ -42,7 +42,7 @@ namespace newApi.Controllers
         }
 
         [HttpGet("all")]
-        public async Task<IActionResult> GetAllSearches()
+        public async Task<IActionResult> GetAllSearches([FromQuery] SearchListRequestDto request)
         {
             try
             {
@@ -51,14 +51,61 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
-                var searches = await _context.Searches
+                // Validar parámetros
+                if (request.Page < 1) request.Page = 1;
+                if (request.PageSize < 1 || request.PageSize > 50) request.PageSize = 20;
+
+                // Construir query base con includes
+                var query = _context.Searches
                     .Include(s => s.User)
                     .Include(s => s.SearchParameters)
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                         .ThenInclude(e => e.ExpertProfile)
+                    .AsQueryable();
+
+                // Aplicar filtros
+                if (!string.IsNullOrEmpty(request.SearchTerm))
+                {
+                    var searchTerm = request.SearchTerm.ToLower();
+                    query = query.Where(s => 
+                        s.Title.ToLower().Contains(searchTerm) || 
+                        s.Description.ToLower().Contains(searchTerm));
+                }
+
+                if (request.Category.HasValue)
+                {
+                    query = query.Where(s => s.SearchParameters.Any(sp => sp.Category == request.Category.Value));
+                }
+
+                if (request.IsActive.HasValue)
+                {
+                    query = query.Where(s => s.IsActive == request.IsActive.Value);
+                }
+
+                if (request.IsRevised.HasValue)
+                {
+                    query = query.Where(s => s.IsRevised == request.IsRevised.Value);
+                }
+
+                if (!string.IsNullOrEmpty(request.SearchHireStatus))
+                {
+                    query = query.Where(s => s.SearchHire != null && s.SearchHire.Status == request.SearchHireStatus);
+                }
+
+                // Contar total de resultados
+                var totalCount = await query.CountAsync();
+
+                // Aplicar ordenamiento
+                query = ApplySorting(query, request.SortBy, request.SortDirection);
+
+                // Aplicar paginación
+                var searches = await query
+                    .Skip((request.Page - 1) * request.PageSize)
+                    .Take(request.PageSize)
                     .ToListAsync();
 
+                // Mapear a DTOs
                 var searchDtos = searches.Select(s => new SearchListDto
                 {
                     Id = s.Id,
@@ -82,6 +129,7 @@ namespace newApi.Controllers
                         Id = s.SearchHire.Id,
                         ExpertId = s.SearchHire.ExpertId ?? 0,
                         Status = s.SearchHire.Status,
+                        StatusTranslated = s.SearchHire.Status.ToSpanishTranslation(), // ✅ NUEVO: Estado traducido al español
                         CreatedAt = s.SearchHire.CreatedAt, // ✅ NUEVO: Fecha de contratación del servicio
                         Expert = s.SearchHire.Expert != null ? new UserDto
                         {
@@ -89,17 +137,51 @@ namespace newApi.Controllers
                             ProfilePictureUrl = s.SearchHire.Expert.ExpertProfile?.ProfilePictureUrl ?? "/default-avatar.png"
                         } : null
                     } : null
-                }).OrderBy(s => s.IsRevised)
-                  .ThenBy(s => s.LastExecution)
-                  .ToList();
+                }).ToList();
 
-                return Ok(searchDtos);
+                // Crear respuesta paginada
+                var response = new SearchListResponseDto
+                {
+                    Searches = searchDtos,
+                    Pagination = new PaginationMetadata
+                    {
+                        CurrentPage = request.Page,
+                        PageSize = request.PageSize,
+                        TotalCount = totalCount,
+                        TotalPages = (int)Math.Ceiling((double)totalCount / request.PageSize),
+                        HasPrevious = request.Page > 1,
+                        HasNext = request.Page < (int)Math.Ceiling((double)totalCount / request.PageSize)
+                    }
+                };
+
+                return Ok(response);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error retrieving all searches");
                 return StatusCode(500, new { message = ex.Message });
             }
+        }
+
+        /// <summary>
+        /// Aplica ordenamiento a la query según los parámetros especificados
+        /// </summary>
+        private static IQueryable<Search> ApplySorting(IQueryable<Search> query, string? sortBy, string? sortDirection)
+        {
+            var isDescending = sortDirection?.ToLower() == "desc";
+
+            return sortBy?.ToLower() switch
+            {
+                "title" => isDescending ? query.OrderByDescending(s => s.Title) : query.OrderBy(s => s.Title),
+                "description" => isDescending ? query.OrderByDescending(s => s.Description) : query.OrderBy(s => s.Description),
+                "frequency" => isDescending ? query.OrderByDescending(s => s.Frequency) : query.OrderBy(s => s.Frequency),
+                "isactive" => isDescending ? query.OrderByDescending(s => s.IsActive) : query.OrderBy(s => s.IsActive),
+                "isrevised" => isDescending ? query.OrderByDescending(s => s.IsRevised) : query.OrderBy(s => s.IsRevised),
+                "lastexecution" => isDescending ? query.OrderByDescending(s => s.LastExecution) : query.OrderBy(s => s.LastExecution),
+                "startdate" => isDescending ? query.OrderByDescending(s => s.StartDate) : query.OrderBy(s => s.StartDate),
+                "userid" => isDescending ? query.OrderByDescending(s => s.UserId) : query.OrderBy(s => s.UserId),
+                _ => isDescending ? query.OrderByDescending(s => s.CreatedAt) : query.OrderBy(s => s.CreatedAt) // Default: CreatedAt
+            };
         }
 
 
@@ -502,7 +584,7 @@ namespace newApi.Controllers
         }
 
         [HttpGet]
-        public async Task<IActionResult> GetUserSearches()
+        public async Task<IActionResult> GetUserSearches([FromQuery] UserSearchListRequestDto request)
         {
             try
             {
@@ -512,20 +594,67 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                var searches = await _context.Searches
+                // Validar parámetros
+                if (request.Page < 1) request.Page = 1;
+                if (request.PageSize < 1 || request.PageSize > 50) request.PageSize = 20;
+
+                // Construir query base con includes
+                var query = _context.Searches
                     .Where(s => s.UserId == userId)
-                    .Include(s => s.User) // Include User to prevent null reference
+                    .Include(s => s.User)
                     .Include(s => s.SearchParameters)
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                         .ThenInclude(e => e.ExpertProfile)
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Conversations)
-                        .ThenInclude(c => c.Messages) // ✅ NUEVO: Incluir mensajes para contar no leídos
+                        .ThenInclude(c => c.Messages)
                     .Include(s => s.SearchHire)
-                        .ThenInclude(sh => sh.Appointment) // ✅ NUEVO: Incluir citas
+                        .ThenInclude(sh => sh.Appointment)
+                    .AsQueryable();
+
+                // Aplicar filtros
+                if (!string.IsNullOrEmpty(request.SearchTerm))
+                {
+                    var searchTerm = request.SearchTerm.ToLower();
+                    query = query.Where(s => 
+                        s.Title.ToLower().Contains(searchTerm) || 
+                        s.Description.ToLower().Contains(searchTerm));
+                }
+
+                if (request.Category.HasValue)
+                {
+                    query = query.Where(s => s.SearchParameters.Any(sp => sp.Category == request.Category.Value));
+                }
+
+                if (request.IsActive.HasValue)
+                {
+                    query = query.Where(s => s.IsActive == request.IsActive.Value);
+                }
+
+                if (request.IsRevised.HasValue)
+                {
+                    query = query.Where(s => s.IsRevised == request.IsRevised.Value);
+                }
+
+                if (!string.IsNullOrEmpty(request.SearchHireStatus))
+                {
+                    query = query.Where(s => s.SearchHire != null && s.SearchHire.Status == request.SearchHireStatus);
+                }
+
+                // Contar total de resultados
+                var totalCount = await query.CountAsync();
+
+                // Aplicar ordenamiento
+                query = ApplySorting(query, request.SortBy, request.SortDirection);
+
+                // Aplicar paginación
+                var searches = await query
+                    .Skip((request.Page - 1) * request.PageSize)
+                    .Take(request.PageSize)
                     .ToListAsync();
 
+                // Mapear a DTOs
                 var searchDtos = searches.Select(s =>
                 {
                     if (s.User == null)
@@ -546,11 +675,11 @@ namespace newApi.Controllers
                         LastExecution = s.LastExecution,
                         CreatedAt = s.CreatedAt,
                         StartDate = s.StartDate,
-                        LocationName = s.SearchParameters.FirstOrDefault()?.LocationName, // ✅ NUEVO: Nombre de la ubicación desde SearchParameters
+                        LocationName = s.SearchParameters.FirstOrDefault()?.LocationName,
                         Category = s.SearchParameters.FirstOrDefault()?.Category ?? 0,
                         User = new UserDto
                         {
-                            Email = s.User.Email, // Fixed: Changed from s.User to s.User.Email
+                            Email = s.User.Email,
                             Name = s.User.Name
                         },
                         SearchHire = s.SearchHire != null ? new SearchHireDto
@@ -558,7 +687,8 @@ namespace newApi.Controllers
                             Id = s.SearchHire.Id,
                             ExpertId = s.SearchHire.ExpertId ?? 0,
                             Status = s.SearchHire.Status,
-                            CreatedAt = s.SearchHire.CreatedAt, // ✅ NUEVO: Fecha de contratación del servicio
+                            StatusTranslated = s.SearchHire.Status.ToSpanishTranslation(), // ✅ NUEVO: Estado traducido al español
+                            CreatedAt = s.SearchHire.CreatedAt,
                             Expert = s.SearchHire.Expert != null ? new UserDto
                             {
                                 Name = s.SearchHire.Expert.Name,
@@ -601,13 +731,78 @@ namespace newApi.Controllers
                     }
                 }
 
-                return Ok(searchDtos);
+                // ✅ NUEVO: Calcular estadísticas del usuario
+                var userStats = await CalculateUserSearchStats(userId);
+
+                // Crear respuesta paginada
+                var response = new UserSearchListResponseDto
+                {
+                    Searches = searchDtos,
+                    Pagination = new PaginationMetadata
+                    {
+                        CurrentPage = request.Page,
+                        PageSize = request.PageSize,
+                        TotalCount = totalCount,
+                        TotalPages = (int)Math.Ceiling((double)totalCount / request.PageSize),
+                        HasPrevious = request.Page > 1,
+                        HasNext = request.Page < (int)Math.Ceiling((double)totalCount / request.PageSize)
+                    },
+                    Stats = userStats
+                };
+
+                return Ok(response);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error retrieving user searches");
                 return StatusCode(500, new { message = ex.Message });
             }
+        }
+
+        /// <summary>
+        /// Calcula estadísticas de búsquedas del usuario
+        /// </summary>
+        private async Task<UserSearchStats> CalculateUserSearchStats(int userId)
+        {
+            var userSearches = _context.Searches
+                .Where(s => s.UserId == userId)
+                .Include(s => s.SearchHire)
+                    .ThenInclude(sh => sh.Conversations)
+                    .ThenInclude(c => c.Messages)
+                .Include(s => s.SearchHire)
+                    .ThenInclude(sh => sh.Appointment)
+                .AsQueryable();
+
+            var activeSearches = await userSearches.CountAsync(s => s.IsActive);
+            var inactiveSearches = await userSearches.CountAsync(s => !s.IsActive);
+            var searchesWithHire = await userSearches.CountAsync(s => s.SearchHire != null);
+            var searchesWithoutHire = await userSearches.CountAsync(s => s.SearchHire == null);
+
+            // Calcular mensajes sin leer
+            var unreadMessages = await userSearches
+                .Where(s => s.SearchHire != null)
+                .SelectMany(s => s.SearchHire.Conversations)
+                .SelectMany(c => c.Messages)
+                .CountAsync(m => m.SenderId != userId && !m.IsRead);
+
+            // Calcular citas pendientes
+            var pendingAppointments = await userSearches
+                .Where(s => s.SearchHire != null && s.SearchHire.Appointment != null)
+                .CountAsync(s => new[] { 
+                    "awaiting_appointment", 
+                    "appointment_proposed", 
+                    "appointment_confirmed" 
+                }.Contains(s.SearchHire.Appointment.Status));
+
+            return new UserSearchStats
+            {
+                ActiveSearches = activeSearches,
+                InactiveSearches = inactiveSearches,
+                SearchesWithHire = searchesWithHire,
+                SearchesWithoutHire = searchesWithoutHire,
+                UnreadMessages = unreadMessages,
+                PendingAppointments = pendingAppointments
+            };
         }
 
         [HttpPut("{searchId}/toggle-active")]
@@ -783,6 +978,7 @@ namespace newApi.Controllers
                         Id = search.SearchHire.Id,
                         ExpertId = search.SearchHire.ExpertId ?? 0,
                         Status = search.SearchHire.Status,
+                        StatusTranslated = search.SearchHire.Status.ToSpanishTranslation(), // ✅ NUEVO: Estado traducido al español
                         CreatedAt = search.SearchHire.CreatedAt, // ✅ NUEVO: Fecha de contratación del servicio
                         Expert = search.SearchHire.Expert != null ? new UserDto
                         {

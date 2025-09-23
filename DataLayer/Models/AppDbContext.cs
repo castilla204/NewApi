@@ -35,6 +35,7 @@ namespace newApi.DataLayer.Models
         public DbSet<ReviewImage> ReviewImages { get; set; }
         public DbSet<Review> Reviews { get; set; }
         public DbSet<Dispute> Disputes { get; set; }
+        public DbSet<DisputeFile> DisputeFiles { get; set; }
         public DbSet<FinancialTransaction> FinancialTransactions { get; set; }
         public DbSet<ServiceType> ServiceTypes { get; set; }
         public DbSet<ServiceTypeCategory> ServiceTypeCategories { get; set; }
@@ -292,6 +293,12 @@ namespace newApi.DataLayer.Models
                 .WithMany(u => u.DisputesReported)
                 .HasForeignKey(d => d.ReporterId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<DisputeFile>()
+                .HasOne(df => df.Dispute)
+                .WithMany(d => d.Files)
+                .HasForeignKey(df => df.DisputeId)
+                .OnDelete(DeleteBehavior.Cascade);
 
             modelBuilder.Entity<FinancialTransaction>()
                 .HasOne(ft => ft.User)

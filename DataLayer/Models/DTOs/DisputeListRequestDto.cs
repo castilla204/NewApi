@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using Microsoft.AspNetCore.Http;
 
 namespace newApi.DataLayer.Models.DTOs
 {
@@ -132,6 +133,26 @@ namespace newApi.DataLayer.Models.DTOs
         public DateTime CreatedAt { get; set; }
 
         /// <summary>
+        /// Respuesta del experto a la disputa del cliente
+        /// </summary>
+        public string? ExpertResponse { get; set; }
+
+        /// <summary>
+        /// Fecha límite para que el experto responda (48h después de la disputa)
+        /// </summary>
+        public DateTime? ExpertResponseDeadline { get; set; }
+
+        /// <summary>
+        /// Fecha cuando el experto respondió
+        /// </summary>
+        public DateTime? ExpertResponseAt { get; set; }
+
+        /// <summary>
+        /// Indica si el experto puede aún responder (dentro de las 48h)
+        /// </summary>
+        public bool CanExpertRespond { get; set; }
+
+        /// <summary>
         /// Información del SearchHire asociado
         /// </summary>
         public SearchHireInfoDto SearchHire { get; set; } = new SearchHireInfoDto();
@@ -155,6 +176,11 @@ namespace newApi.DataLayer.Models.DTOs
         /// Información de la búsqueda asociada
         /// </summary>
         public SearchInfoDto Search { get; set; } = new SearchInfoDto();
+        
+        /// <summary>
+        /// Archivos adjuntos de la disputa
+        /// </summary>
+        public List<DisputeFileDto> Files { get; set; } = new List<DisputeFileDto>();
     }
 
     /// <summary>
@@ -267,6 +293,52 @@ namespace newApi.DataLayer.Models.DTOs
         [Required(ErrorMessage = "La razón de la disputa es obligatoria")]
         [StringLength(1000, ErrorMessage = "La razón no puede exceder 1000 caracteres")]
         public string Reason { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Archivos adjuntos de la disputa (opcional)
+        /// </summary>
+        public List<IFormFile>? Files { get; set; }
+    }
+
+    /// <summary>
+    /// DTO para archivos adjuntos en disputas
+    /// </summary>
+    public class DisputeFileDto
+    {
+        /// <summary>
+        /// Identificador único del archivo
+        /// </summary>
+        public int Id { get; set; }
+
+        /// <summary>
+        /// Nombre original del archivo
+        /// </summary>
+        public string FileName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// URL del archivo en Google Cloud Storage
+        /// </summary>
+        public string FilePath { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Tipo de archivo (extensión)
+        /// </summary>
+        public string FileType { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Tamaño del archivo en bytes
+        /// </summary>
+        public long FileSize { get; set; }
+
+        /// <summary>
+        /// Fecha de creación del archivo
+        /// </summary>
+        public DateTime CreatedAt { get; set; }
+
+        /// <summary>
+        /// URL completa para acceder al archivo (igual que FilePath)
+        /// </summary>
+        public string FileUrl { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -282,9 +354,27 @@ namespace newApi.DataLayer.Models.DTOs
         public string ResolutionComments { get; set; } = string.Empty;
 
         /// <summary>
-        /// Acción a tomar: refund_client (reembolsar cliente), pay_expert (pagar experto), no_action (sin acción financiera)
+        /// Acción a tomar: refund_client (reembolsar cliente), pay_expert (pagar experto)
         /// </summary>
         [Required(ErrorMessage = "La acción es obligatoria")]
         public string Action { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// DTO para que el experto responda a una disputa del cliente
+    /// </summary>
+    public class ExpertResponseDto
+    {
+        /// <summary>
+        /// Respuesta del experto a la disputa
+        /// </summary>
+        [Required(ErrorMessage = "La respuesta del experto es obligatoria")]
+        [StringLength(2000, ErrorMessage = "La respuesta no puede exceder 2000 caracteres")]
+        public string Response { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Archivos adjuntos de la respuesta del experto (opcional)
+        /// </summary>
+        public List<IFormFile>? Files { get; set; }
     }
 }

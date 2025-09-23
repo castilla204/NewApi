@@ -20,6 +20,7 @@ using newApi.Services;
 using SubscriptionService = Stripe.SubscriptionService;
 using newApi.Common;
 using Google.Api;
+using Google.Cloud.Storage.V1;
 
 namespace newApi.Controllers
 {
@@ -32,16 +33,18 @@ namespace newApi.Controllers
         private readonly ILogger<SubscriptionController> _logger;
         private readonly ISubscriptionService _subscriptionService;
         private readonly IConfiguration _configuration;
+        private readonly StorageClient _storageClient;
         private readonly string? _webhookSecret;
         private readonly string? _generalWebhookSecret;
 
-        public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService)
+        public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient)
         {
             _logger = logger;
             _logger.LogInformation("Initializing SubscriptionController");
             _context = context;
             _subscriptionService = subscriptionService;
             _configuration = configuration;
+            _storageClient = storageClient;
             _webhookSecret = _configuration["Stripe:WebhookSecret"];
             _generalWebhookSecret = _configuration["Stripe:GeneralWebhookSecret"];
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];

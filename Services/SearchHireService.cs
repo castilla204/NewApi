@@ -4,6 +4,7 @@ using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.Controllers;
+using newApi.Common;
 
 namespace newApi.Services
 {
@@ -87,6 +88,7 @@ namespace newApi.Services
                 SearchServiceId = hire.SearchServiceId,
                 SearchId = hire.SearchId,
                 Status = hire.Status,
+                StatusTranslated = hire.Status.ToSpanishTranslation(), // ✅ NUEVO: Estado traducido al español
                 ExpertTransferId = hire.ExpertTransferId,
                 Amount = hire.Amount,
                 CreatedAt = hire.CreatedAt,

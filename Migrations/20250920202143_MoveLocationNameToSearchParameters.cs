@@ -26,10 +26,20 @@ namespace newApi.Migrations
                 AND s.""LocationName"" IS NOT NULL
             ");
 
-            // Eliminar LocationName de Searches
-            migrationBuilder.DropColumn(
-                name: "LocationName",
-                table: "Searches");
+            // Eliminar LocationName de Searches (solo si existe)
+            migrationBuilder.Sql(@"
+                DO $$ 
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 
+                        FROM information_schema.columns 
+                        WHERE table_name = 'Searches' 
+                        AND column_name = 'LocationName'
+                    ) THEN
+                        ALTER TABLE ""Searches"" DROP COLUMN ""LocationName"";
+                    END IF;
+                END $$;
+            ");
         }
 
         /// <inheritdoc />

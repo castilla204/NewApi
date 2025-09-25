@@ -55,8 +55,8 @@
             {
                 try
                 {
-                    var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
-                    if (adminEmail != "dcastillaa@gmail.com")
+                    // 🔐 SEGURIDAD: Verificar rol en lugar de email
+                    if (!User.IsInRole("Admin"))
                     {
                         return Unauthorized(new { message = "Admin access required" });
                     }
@@ -123,8 +123,8 @@
             {
                 try
                 {
-                    var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
-                    if (adminEmail != "dcastillaa@gmail.com")
+                    // 🔐 SEGURIDAD: Verificar rol en lugar de email
+                    if (!User.IsInRole("Admin"))
                     {
                         return Unauthorized(new { message = "Admin access required" });
                     }

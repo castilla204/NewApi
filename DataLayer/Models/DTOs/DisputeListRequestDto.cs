@@ -339,6 +339,31 @@ namespace newApi.DataLayer.Models.DTOs
         /// URL completa para acceder al archivo (igual que FilePath)
         /// </summary>
         public string FileUrl { get; set; } = string.Empty;
+
+        /// <summary>
+        /// ID del usuario que subió el archivo
+        /// </summary>
+        public int UploadedByUserId { get; set; }
+
+        /// <summary>
+        /// Nombre del usuario que subió el archivo
+        /// </summary>
+        public string UploadedByUserName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Email del usuario que subió el archivo
+        /// </summary>
+        public string UploadedByUserEmail { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Categoría del archivo: "client" o "expert"
+        /// </summary>
+        public string FileCategory { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Etiqueta para mostrar en el frontend (ej: "Archivo del Cliente", "Archivo del Experto")
+        /// </summary>
+        public string FileCategoryLabel { get; set; } = string.Empty;
     }
 
     /// <summary>

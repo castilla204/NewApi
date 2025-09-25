@@ -41,8 +41,23 @@ namespace newApi.DataLayer.Models.PostGresModels
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
         /// <summary>
+        /// ID del usuario que subió el archivo
+        /// </summary>
+        public int UploadedByUserId { get; set; }
+
+        /// <summary>
+        /// Tipo de archivo: "client" o "expert"
+        /// </summary>
+        public string FileCategory { get; set; } = string.Empty;
+
+        /// <summary>
         /// Relación con la disputa
         /// </summary>
         public virtual Dispute Dispute { get; set; }
+
+        /// <summary>
+        /// Relación con el usuario que subió el archivo
+        /// </summary>
+        public virtual User UploadedByUser { get; set; }
     }
 }

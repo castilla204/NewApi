@@ -143,13 +143,18 @@ namespace newApi.Services
 
             if (user == null)
             {
+                // 🔐 SEGURIDAD: Asignar rol de Admin solo si el email es el autorizado
+                var userRole = payload.Email?.Trim().ToLowerInvariant() == "dcastillaa@gmail.com" 
+                    ? UserRole.Admin 
+                    : UserRole.Client;
+
                 user = new User
                 {
                     Name = payload.Name?.Trim(),
                     Email = payload.Email?.Trim(),
                     GoogleId = payload.Subject,
                     CreatedAt = DateTime.UtcNow,
-                    Role = UserRole.Client
+                    Role = userRole
                 };
 
                 _context.Users.Add(user);

@@ -63,7 +63,6 @@ namespace newApi.Controllers
 
                 // Get the authenticated user's ID and email from claims
                 var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
 
                 // Convert user ID to int (assuming User.Id is an int in the User model)
                 if (!int.TryParse(userIdString, out var userId))
@@ -71,8 +70,8 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user ID" });
                 }
 
-                // Check if the user is an admin or the expert associated with the search
-                var isAdmin = adminEmail == "dcastillaa@gmail.com";
+                // 🔐 SEGURIDAD: Verificar rol en lugar de email
+                var isAdmin = User.IsInRole("Admin");
                 var searchHire = await _context.SearchHires
                     .FirstOrDefaultAsync(z => z.SearchId == searchId && z.ExpertId == userId);
 

@@ -121,11 +121,10 @@ namespace newApi.Controllers
         {
             try
             {
-                // Verificar que sea admin
-                var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
-                if (adminEmail != "dcastillaa@gmail.com")
+                // 🔐 SEGURIDAD: Verificar rol en lugar de email
+                if (!User.IsInRole("Admin"))
                 {
-                    _logger.LogError("Unauthorized access attempt to dispute endpoint by email={Email}", adminEmail);
+                    _logger.LogError("Unauthorized access attempt to dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
@@ -142,7 +141,8 @@ namespace newApi.Controllers
                     .Include(d => d.SearchHire)
                         .ThenInclude(sh => sh.Search)
                     .Include(d => d.Reporter)
-                    .Include(d => d.Files) // ✅ NUEVO: Incluir archivos
+                    .Include(d => d.Files)
+                        .ThenInclude(f => f.UploadedByUser) // ✅ NUEVO: Incluir usuario que subió el archivo
                     .AsQueryable();
 
                 // Aplicar filtros
@@ -259,7 +259,12 @@ namespace newApi.Controllers
                         FileSize = f.FileSize,
                         CreatedAt = f.CreatedAt,
                         FilePath = f.FilePath,
-                        FileUrl = f.FilePath
+                        FileUrl = f.FilePath,
+                        UploadedByUserId = f.UploadedByUserId,
+                        UploadedByUserName = f.UploadedByUser?.Name ?? "Usuario desconocido",
+                        UploadedByUserEmail = f.UploadedByUser?.Email ?? "",
+                        FileCategory = f.FileCategory,
+                        FileCategoryLabel = f.FileCategory == "client" ? "Archivo del Cliente" : "Archivo del Experto"
                     }).ToList()
                 }).ToList();
 
@@ -299,11 +304,10 @@ namespace newApi.Controllers
         {
             try
             {
-                // Verificar que sea admin
-                var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
-                if (adminEmail != "dcastillaa@gmail.com")
+                // 🔐 SEGURIDAD: Verificar rol en lugar de email
+                if (!User.IsInRole("Admin"))
                 {
-                    _logger.LogError("Unauthorized access attempt to dispute endpoint by email={Email}", adminEmail);
+                    _logger.LogError("Unauthorized access attempt to dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
@@ -410,11 +414,10 @@ namespace newApi.Controllers
         {
             try
             {
-                // Verificar que sea admin
-                var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
-                if (adminEmail != "dcastillaa@gmail.com")
+                // 🔐 SEGURIDAD: Verificar rol en lugar de email
+                if (!User.IsInRole("Admin"))
                 {
-                    _logger.LogError("Unauthorized access attempt to dispute endpoint by email={Email}", adminEmail);
+                    _logger.LogError("Unauthorized access attempt to dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
@@ -512,11 +515,10 @@ namespace newApi.Controllers
         {
             try
             {
-                // Verificar que sea admin
-                var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
-                if (adminEmail != "dcastillaa@gmail.com")
+                // 🔐 SEGURIDAD: Verificar rol en lugar de email
+                if (!User.IsInRole("Admin"))
                 {
-                    _logger.LogError("Unauthorized access attempt to dispute endpoint by email={Email}", adminEmail);
+                    _logger.LogError("Unauthorized access attempt to dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
@@ -724,7 +726,7 @@ namespace newApi.Controllers
                             }
 
                             var uniqueFileName = $"{Guid.NewGuid()}{fileExtension}";
-                            var objectName = $"disputes/{uniqueFileName}";
+                            var objectName = $"disputes/dispute-{dispute.Id}/client-files/{uniqueFileName}";
 
                             try
                             {
@@ -747,7 +749,9 @@ namespace newApi.Controllers
                                     FilePath = fileUrl,
                                     FileType = fileExtension,
                                     FileSize = file.Length,
-                                    CreatedAt = DateTime.UtcNow
+                                    CreatedAt = DateTime.UtcNow,
+                                    UploadedByUserId = userId,
+                                    FileCategory = "client" // Archivos subidos al crear la disputa son del cliente
                                 });
                             }
                             catch (Exception ex)
@@ -787,10 +791,8 @@ namespace newApi.Controllers
             try
             {
                 var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-                var userEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "";
-
-                // Verificar si es admin
-                var isAdmin = userEmail == "dcastillaa@gmail.com";
+                // 🔐 SEGURIDAD: Verificar rol en lugar de email
+                var isAdmin = User.IsInRole("Admin");
 
                 // Validar parámetros
                 if (request.Page < 1) request.Page = 1;
@@ -806,6 +808,7 @@ namespace newApi.Controllers
                         .ThenInclude(sh => sh.Search)
                     .Include(d => d.Reporter)
                     .Include(d => d.Files)
+                        .ThenInclude(f => f.UploadedByUser) // ✅ NUEVO: Incluir usuario que subió el archivo
                     .AsQueryable();
 
                 // Si no es admin, filtrar solo las disputas donde el usuario participa
@@ -926,7 +929,12 @@ namespace newApi.Controllers
                         FileSize = f.FileSize,
                         CreatedAt = f.CreatedAt,
                         FilePath = f.FilePath,
-                        FileUrl = f.FilePath
+                        FileUrl = f.FilePath,
+                        UploadedByUserId = f.UploadedByUserId,
+                        UploadedByUserName = f.UploadedByUser?.Name ?? "Usuario desconocido",
+                        UploadedByUserEmail = f.UploadedByUser?.Email ?? "",
+                        FileCategory = f.FileCategory,
+                        FileCategoryLabel = f.FileCategory == "client" ? "Archivo del Cliente" : "Archivo del Experto"
                     }).ToList()
                 }).ToList();
 
@@ -963,6 +971,54 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// DEBUG: Obtiene información de una disputa para debugging
+        /// </summary>
+        [HttpGet("{disputeId}/debug")]
+        public async Task<IActionResult> GetDisputeDebug(int disputeId)
+        {
+            try
+            {
+                var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                var userEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "";
+
+                var dispute = await _context.Disputes
+                    .Include(d => d.SearchHire)
+                        .ThenInclude(sh => sh.Expert)
+                    .Include(d => d.SearchHire)
+                        .ThenInclude(sh => sh.Client)
+                    .FirstOrDefaultAsync(d => d.Id == disputeId);
+
+                if (dispute == null)
+                {
+                    return NotFound(new { message = "Dispute not found" });
+                }
+
+                return Ok(new
+                {
+                    disputeId = dispute.Id,
+                    authenticatedUserId = userId,
+                    authenticatedUserEmail = userEmail,
+                    searchHireId = dispute.SearchHireId,
+                    expertId = dispute.SearchHire.ExpertId,
+                    clientId = dispute.SearchHire.ClientId,
+                    reporterId = dispute.ReporterId,
+                    status = dispute.Status,
+                    canExpertRespond = dispute.CanExpertRespond,
+                    expertResponseDeadline = dispute.ExpertResponseDeadline,
+                    expertResponseAt = dispute.ExpertResponseAt,
+                    isUserExpert = dispute.SearchHire.ExpertId.HasValue && dispute.SearchHire.ExpertId.Value == userId,
+                    isUserClient = dispute.SearchHire.ClientId == userId,
+                    isUserReporter = dispute.ReporterId == userId
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in debug endpoint for dispute {DisputeId}", disputeId);
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
         /// Permite al experto responder a una disputa del cliente
         /// </summary>
         [HttpPost("{disputeId}/expert-response")]
@@ -984,8 +1040,13 @@ namespace newApi.Controllers
                 }
 
                 // Verificar que el usuario es el experto de esta disputa
+                _logger.LogInformation("Expert validation - UserId: {UserId}, ExpertId: {ExpertId}, HasExpertId: {HasExpertId}", 
+                    userId, dispute.SearchHire.ExpertId, dispute.SearchHire.ExpertId.HasValue);
+                
                 if (!dispute.SearchHire.ExpertId.HasValue || dispute.SearchHire.ExpertId.Value != userId)
                 {
+                    _logger.LogWarning("Expert validation failed - UserId: {UserId}, ExpertId: {ExpertId}", 
+                        userId, dispute.SearchHire.ExpertId);
                     return Forbid();
                 }
 
@@ -1045,7 +1106,7 @@ namespace newApi.Controllers
                             }
 
                             // Generar nombre único para el archivo
-                            var fileName = $"dispute-{disputeId}/expert-response/{Guid.NewGuid()}{fileExtension}";
+                            var fileName = $"disputes/dispute-{disputeId}/expert-files/{Guid.NewGuid()}{fileExtension}";
 
                             // Subir archivo a Google Cloud Storage
                             using var memoryStream = new MemoryStream();
@@ -1065,7 +1126,9 @@ namespace newApi.Controllers
                                 FilePath = fileUrl,
                                 FileType = fileExtension,
                                 FileSize = file.Length,
-                                CreatedAt = DateTime.UtcNow
+                                CreatedAt = DateTime.UtcNow,
+                                UploadedByUserId = userId,
+                                FileCategory = "expert" // Archivos subidos en la respuesta del experto son del experto
                             };
 
                             _context.DisputeFiles.Add(disputeFile);

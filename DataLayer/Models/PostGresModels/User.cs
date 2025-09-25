@@ -3,8 +3,9 @@ namespace newApi.DataLayer.Models.PostGresModels
 {
     public enum UserRole
     {
-        Client,
-        Expert
+        Client = 0,
+        Expert = 1,
+        Admin = 2
     }
     public class User
     {

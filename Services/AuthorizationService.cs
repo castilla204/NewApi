@@ -17,8 +17,9 @@ namespace newApi.Services
 
         public bool IsAdmin(ClaimsPrincipal user)
         {
-            var email = user.FindFirst(ClaimTypes.Email)?.Value;
-            return email == "dcastillaa@gmail.com";
+            // 🔐 SEGURIDAD: Verificar rol en lugar de email
+            var roleClaim = user.FindFirst(ClaimTypes.Role)?.Value;
+            return roleClaim == "Admin";
         }
 
         public bool CanAccessSearch(ClaimsPrincipal user, int searchId)

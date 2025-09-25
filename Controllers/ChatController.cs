@@ -89,9 +89,14 @@ namespace newApi.Controllers
                         return BadRequest(new { message = "Cannot create conversation: No expert assigned to this search hire" });
                     }
 
-                    if (searchHire.ClientId != userId && searchHire.ExpertId != userId && !User.IsInRole("Admin"))
+                    // Verificar autorización: debe ser cliente, experto o admin
+                    var isClient = searchHire.ClientId == userId;
+                    var isExpert = searchHire.ExpertId == userId;
+                    var isAdmin = User.IsInRole("Admin");
+                    
+                    if (!isClient && !isExpert && !isAdmin)
                     {
-                        Console.WriteLine($"[13:42 CEST] Authorization check failed - ClientId: {searchHire.ClientId}, ExpertId: {searchHire.ExpertId}, UserId: {userId}, IsAdmin: {User.IsInRole("Admin")}");
+                        Console.WriteLine($"[13:42 CEST] Authorization check failed - ClientId: {searchHire.ClientId}, ExpertId: {searchHire.ExpertId}, UserId: {userId}, IsAdmin: {isAdmin}");
                         return Unauthorized(new { message = "You are not authorized to create a conversation for this search" });
                     }
 

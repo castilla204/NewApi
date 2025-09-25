@@ -300,6 +300,12 @@ namespace newApi.DataLayer.Models
                 .HasForeignKey(df => df.DisputeId)
                 .OnDelete(DeleteBehavior.Cascade);
 
+            modelBuilder.Entity<DisputeFile>()
+                .HasOne(df => df.UploadedByUser)
+                .WithMany()
+                .HasForeignKey(df => df.UploadedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
             modelBuilder.Entity<FinancialTransaction>()
                 .HasOne(ft => ft.User)
                 .WithMany(u => u.FinancialTransactions)

@@ -2258,10 +2258,10 @@ namespace newApi.Controllers
         [HttpPost("force-finalize")]
         public async Task<IActionResult> ForceFinalize([FromBody] ForceFinalizeDto request)
         {
-            var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
-            if (adminEmail != "dcastillaa@gmail.com")
+            // 🔐 SEGURIDAD: Verificar rol en lugar de email
+            if (!User.IsInRole("Admin"))
             {
-                _logger.LogError("Unauthorized access attempt to force-finalize endpoint by email={Email}", adminEmail);
+                _logger.LogError("Unauthorized access attempt to force-finalize endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                 return Unauthorized(new { message = "Admin access required" });
             }
 
@@ -2352,10 +2352,10 @@ namespace newApi.Controllers
         [HttpPost("resolve-dispute")]
         public async Task<IActionResult> ResolveDispute([FromBody] ResolveDisputeDto request)
         {
-            var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
-            if (adminEmail != "dcastillaa@gmail.com")
+            // 🔐 SEGURIDAD: Verificar rol en lugar de email
+            if (!User.IsInRole("Admin"))
             {
-                _logger.LogError("Unauthorized access attempt to resolve-dispute endpoint by email={Email}", adminEmail);
+                _logger.LogError("Unauthorized access attempt to resolve-dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                 return Unauthorized(new { message = "Admin access required" });
             }
 
@@ -2462,10 +2462,10 @@ namespace newApi.Controllers
         [HttpPost("process-expired-services")]
         public async Task<IActionResult> ProcessExpiredServices()
         {
-            var adminEmail = User.FindFirst(ClaimTypes.Email)?.Value;
-            if (adminEmail != "dcastillaa@gmail.com")
+            // 🔐 SEGURIDAD: Verificar rol en lugar de email
+            if (!User.IsInRole("Admin"))
             {
-                _logger.LogError("Unauthorized access attempt by email={Email}", adminEmail);
+                _logger.LogError("Unauthorized access attempt by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                 return Unauthorized(new { message = "Admin access required" });
             }
 

@@ -222,6 +222,7 @@ builder.Services.AddScoped<ICheckingClientDecisionService, CheckingClientDecisio
 builder.Services.AddScoped<IAppointmentService, AppointmentService>();
 builder.Services.AddScoped<IAppointmentConfigService, AppointmentConfigService>();
 builder.Services.AddScoped<ICategoryServiceTypeConfigService, CategoryServiceTypeConfigService>();
+builder.Services.AddScoped<IUserActionLoggingService, UserActionLoggingService>();
 
 // Background services
 builder.Services.AddHostedService<AppointmentTimerBackgroundService>();

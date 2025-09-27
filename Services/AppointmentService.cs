@@ -516,11 +516,15 @@ namespace newApi.Services
 
         private async Task ProcessCancellationRefundAsync(int searchHireId, string status)
         {
+            // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
             var searchHire = await _context.SearchHires
+                .FromSqlRaw("SELECT * FROM \"SearchHires\" WHERE \"Id\" = {0} FOR UPDATE", searchHireId)
                 .Include(sh => sh.SearchService)
                 .ThenInclude(ss => ss.ServiceType)
                 .ThenInclude(st => st.ServiceTypeCategory)
-                .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+                .Include(sh => sh.Client)
+                .Include(sh => sh.Expert)
+                .FirstOrDefaultAsync();
             
             if (searchHire == null) return;
 
@@ -538,23 +542,68 @@ namespace newApi.Services
             var expertAmount = searchHire.Amount * (config.ExpertPercentage / 100);
             var platformAmount = searchHire.Amount * (config.PlatformPercentage / 100);
 
-            // Procesar devoluciones (implementar según tu sistema de pagos)
-            if (clientAmount > 0)
+            // Procesar devoluciones reales
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
             {
-                _logger.LogInformation("Processing client refund: {Amount} ({Percentage}%) for SearchHire: {SearchHireId} using config: {Source}", 
-                    clientAmount, config.ClientPercentage, searchHireId, config.Source);
-            }
+                if (clientAmount > 0)
+                {
+                    // Reembolsar al cliente
+                    searchHire.Client.Balance += clientAmount;
+                    
+                    // Crear transacción financiera de reembolso
+                    var clientRefundTransaction = new FinancialTransaction
+                    {
+                        UserId = searchHire.ClientId,
+                        Amount = clientAmount,
+                        TransactionType = "Refund",
+                        RelatedEntityType = "SearchHire",
+                        RelatedEntityId = searchHireId,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    _context.FinancialTransactions.Add(clientRefundTransaction);
+                    
+                    _logger.LogInformation("Processing client refund: {Amount} ({Percentage}%) for SearchHire: {SearchHireId} using config: {Source}", 
+                        clientAmount, config.ClientPercentage, searchHireId, config.Source);
+                }
 
-            if (expertAmount > 0)
-            {
-                _logger.LogInformation("Processing expert refund: {Amount} ({Percentage}%) for SearchHire: {SearchHireId} using config: {Source}", 
-                    expertAmount, config.ExpertPercentage, searchHireId, config.Source);
-            }
+                if (expertAmount > 0)
+                {
+                    // Reembolsar al experto
+                    searchHire.Expert.Balance += expertAmount;
+                    
+                    // Crear transacción financiera de reembolso
+                    var expertRefundTransaction = new FinancialTransaction
+                    {
+                        UserId = searchHire.ExpertId ?? 0,
+                        Amount = expertAmount,
+                        TransactionType = "Refund",
+                        RelatedEntityType = "SearchHire",
+                        RelatedEntityId = searchHireId,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    _context.FinancialTransactions.Add(expertRefundTransaction);
+                    
+                    _logger.LogInformation("Processing expert refund: {Amount} ({Percentage}%) for SearchHire: {SearchHireId} using config: {Source}", 
+                        expertAmount, config.ExpertPercentage, searchHireId, config.Source);
+                }
 
-            if (platformAmount > 0)
+                if (platformAmount > 0)
+                {
+                    _logger.LogInformation("Platform keeps: {Amount} ({Percentage}%) for SearchHire: {SearchHireId} using config: {Source}", 
+                        platformAmount, config.PlatformPercentage, searchHireId, config.Source);
+                }
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+                
+                _logger.LogInformation("Successfully processed cancellation refunds for SearchHire: {SearchHireId}", searchHireId);
+            }
+            catch (Exception ex)
             {
-                _logger.LogInformation("Processing platform amount: {Amount} ({Percentage}%) for SearchHire: {SearchHireId} using config: {Source}", 
-                    platformAmount, config.PlatformPercentage, searchHireId, config.Source);
+                await transaction.RollbackAsync();
+                _logger.LogError(ex, "Error processing cancellation refunds for SearchHire: {SearchHireId}", searchHireId);
+                throw;
             }
         }
 
@@ -625,17 +674,10 @@ namespace newApi.Services
                 };
             }
 
-            // 4. Configuración por defecto del sistema
-            _logger.LogWarning("No configuration found for status: {Status}, categoryId: {CategoryId}, serviceTypeCategoryId: {ServiceTypeCategoryId}, using default values", 
+            // 4. NO HAY CONFIGURACIÓN - FALLAR EN LUGAR DE INVENTAR VALORES
+            _logger.LogError("No money distribution configuration found for status: {Status}, categoryId: {CategoryId}, serviceTypeCategoryId: {ServiceTypeCategoryId}. Configuration must be created by admin.", 
                 status, categoryId, serviceTypeCategoryId);
-            return new MoneyDistributionConfigDto
-            {
-                ClientPercentage = 90.00m,
-                ExpertPercentage = 8.00m,
-                PlatformPercentage = 2.00m,
-                Source = "default",
-                Status = status
-            };
+            return null;
         }
 
         private async Task ProcessNoShowRefundAsync(int searchHireId, decimal clientPercentage, decimal expertPercentage)

@@ -151,6 +151,10 @@ namespace newApi.DataLayer.Models
                 .HasForeignKey(u => u.SubscriptionPlanId)
                 .OnDelete(DeleteBehavior.SetNull);
 
+            // 🚨 RESTRICCIÓN DE BASE DE DATOS: Prevenir balances negativos
+            modelBuilder.Entity<User>()
+                .HasCheckConstraint("CK_Users_Balance_NonNegative", "\"Balance\" >= 0");
+
             modelBuilder.Entity<UserSubscription>()
                 .HasOne(us => us.User)
                 .WithMany(u => u.UserSubscriptions)

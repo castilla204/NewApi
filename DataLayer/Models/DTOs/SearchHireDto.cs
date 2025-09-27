@@ -31,6 +31,9 @@ namespace newApi.DataLayer.Models.DTOs
         public string? SpecialRequirements { get; set; }
     }
 
+    /// <summary>
+    /// DTO for search hire response data
+    /// </summary>
     public class SearchHireResponseDto
     {
         public int Id { get; set; }

@@ -9,6 +9,9 @@
         public string? RelatedEntityType { get; set; } // Ej. "SearchHire"
         public int? RelatedEntityId { get; set; }
         public string? StripeTransferId { get; set; } // ID de transferencia de Stripe para trazabilidad
+        public string? StripePaymentIntentId { get; set; } // ID del pago original de Stripe
+        public string? StripeRefundId { get; set; } // ID del refund de Stripe
+        public bool IsRefunded { get; set; } = false; // Si ya fue refundado
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public virtual User User { get; set; }
     }

@@ -843,34 +843,6 @@ namespace newApi.Controllers
             }
         }
 
-        [HttpDelete("{searchId}")]
-        public async Task<IActionResult> DeleteSearch(int searchId)
-        {
-            try
-            {
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                {
-                    return Unauthorized(new { message = "Invalid user identification" });
-                }
-
-                var search = await _context.Searches.FirstOrDefaultAsync(s => s.Id == searchId);
-                if (search == null)
-                {
-                    return NotFound(new { message = "Search not found" });
-                }
-
-                _context.Searches.Remove(search);
-                await _context.SaveChangesAsync();
-
-                return NoContent();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error deleting search");
-                return StatusCode(500, new { message = ex.Message });
-            }
-        }
 
         [HttpPut("{searchId}")]
         public async Task<IActionResult> UpdateSearch(int searchId, [FromBody] UpdateSearchDto updateDto)

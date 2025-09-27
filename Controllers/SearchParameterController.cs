@@ -147,12 +147,23 @@ namespace newApi.Controllers
         }
 
         [HttpGet]
+        [Authorize] // 🔐 SEGURIDAD: Requerir autenticación para acceder a parámetros de búsqueda
         public async Task<IActionResult> GetAllSearchParameters()
         {
             try
             {
+                // 🔐 SEGURIDAD: Verificar autenticación del usuario
+                var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                // 🔐 SEGURIDAD: Solo devolver parámetros de búsqueda del usuario autenticado
                 var parameterDtos = await _context.SearchParameters
-                    .Include(sp => sp.ServiceType) // Added: Include ServiceType
+                    .Include(sp => sp.ServiceType)
+                    .Include(sp => sp.Search) // Incluir Search para filtrar por usuario
+                    .Where(sp => sp.Search.UserId == userId) // 🔐 FILTRAR POR USUARIO AUTENTICADO
                     .Select(p => new SearchParameterDto
                     {
                         SearchParameterId = p.SearchParameterId,
@@ -160,7 +171,7 @@ namespace newApi.Controllers
                         UserSearch = p.UserSearch,
                         Latitude = p.Latitude,
                         Longitude = p.Longitude,
-                        LocationName = p.LocationName, // ✅ NUEVO: Nombre de la ubicación
+                        LocationName = p.LocationName,
                         ShippingAvailable = p.ShippingAvailable,
                         StrictMatchOnly = p.StrictMatchOnly,
                         Category = p.Category,
@@ -169,7 +180,7 @@ namespace newApi.Controllers
                         MaxPrice = p.MaxPrice,
                         BrandId = p.BrandId,
                         ModelId = p.ModelId,
-                        ServiceTypeId = p.ServiceTypeId, // Added: ServiceTypeId
+                        ServiceTypeId = p.ServiceTypeId,
                         SearchId = p.SearchId,
                         PlatformIds = p.SearchParameterPlatforms
                             .Select(spp => spp.PlatformId)

@@ -125,6 +125,7 @@ namespace newApi.Controllers
             }
         }
 
+        [Authorize] // 🔐 SEGURIDAD: Requerir autenticación para eliminar resultados filtrados
         [HttpDelete("{id:int}")]
         public async Task<IActionResult> RemoveFromFiltered(int id)
         {

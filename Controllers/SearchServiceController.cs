@@ -134,7 +134,7 @@ namespace newApi.Controllers
 
 
 
-        [Authorize]
+        [Authorize(Roles = "Expert")] // 🔐 SEGURIDAD: Solo expertos pueden crear servicios
         [HttpPost]
         public async Task<IActionResult> CreateSearchService([FromForm] CreateSearchServiceRequestDto request)
         {
@@ -248,7 +248,7 @@ namespace newApi.Controllers
             }
         }
 
-        [Authorize]
+        [Authorize(Roles = "Expert")] // 🔐 SEGURIDAD: Solo expertos pueden actualizar servicios
         [HttpPut]
         public async Task<IActionResult> UpdateSearchService([FromForm] UpdateSearchServiceRequestDto request)
         {
@@ -368,7 +368,7 @@ namespace newApi.Controllers
             }
         }
 
-        [Authorize]
+        [Authorize(Roles = "Expert")] // 🔐 SEGURIDAD: Solo expertos pueden eliminar servicios
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteSearchService(int id)
         {

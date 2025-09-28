@@ -77,3 +77,4 @@ namespace newApi.DataLayer.Models.DTOs
         public int DaysRemaining { get; set; }
     }
 }
+

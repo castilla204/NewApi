@@ -6,9 +6,10 @@
         AwaitingClientDecision,
         Disputed,
         Completed,
-        Cancelled,
+        Cancelled,                           // Cancelado (genérico)
         TransferFailed,
-        DisputeResolved
+        DisputeResolvedClient,               // Disputa resuelta a favor del cliente
+        DisputeResolvedExpert                // Disputa resuelta a favor del experto
     }
 
     public static class SearchHireStatusExtensions
@@ -23,7 +24,8 @@
                 SearchHireStatus.Completed => "completed",
                 SearchHireStatus.Cancelled => "cancelled",
                 SearchHireStatus.TransferFailed => "transfer_failed",
-                SearchHireStatus.DisputeResolved => "dispute-resolved",
+                SearchHireStatus.DisputeResolvedClient => "dispute-resolved-client",
+                SearchHireStatus.DisputeResolvedExpert => "dispute-resolved-expert",
                 _ => throw new ArgumentException($"Unknown status: {status}")
             };
         }
@@ -38,7 +40,8 @@
                 SearchHireStatus.Completed => "Completado",
                 SearchHireStatus.Cancelled => "Cancelado",
                 SearchHireStatus.TransferFailed => "Transferencia fallida",
-                SearchHireStatus.DisputeResolved => "Disputa resuelta",
+                SearchHireStatus.DisputeResolvedClient => "Disputa resuelta a favor del cliente",
+                SearchHireStatus.DisputeResolvedExpert => "Disputa resuelta a favor del experto",
                 _ => throw new ArgumentException($"Unknown status: {status}")
             };
         }
@@ -53,7 +56,8 @@
                 "completed" => "Completado",
                 "cancelled" => "Cancelado",
                 "transfer_failed" => "Transferencia fallida",
-                "dispute-resolved" => "Disputa resuelta",
+                "dispute-resolved-client" => "Disputa resuelta a favor del cliente",
+                "dispute-resolved-expert" => "Disputa resuelta a favor del experto",
                 _ => statusString // Si no se encuentra, devolver el original
             };
         }

@@ -86,7 +86,9 @@ namespace newApi.Services
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
                     .Include(ss => ss.Category)
-                    .Include(ss => ss.ServiceType);
+                    .Include(ss => ss.ServiceType)
+                    .Include(ss => ss.SelectedDeliverableTypes)
+                        .ThenInclude(ssdt => ssdt.DeliverableType);
 
                 var services = await query.ToListAsync();
 
@@ -176,7 +178,9 @@ namespace newApi.Services
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
                     .Include(ss => ss.Category)
-                    .Include(ss => ss.ServiceType);
+                    .Include(ss => ss.ServiceType)
+                    .Include(ss => ss.SelectedDeliverableTypes)
+                        .ThenInclude(ssdt => ssdt.DeliverableType);
 
                 var services = await query
                     .Select(ss => MapToResponseDto(ss))
@@ -206,6 +210,8 @@ namespace newApi.Services
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                         .ThenInclude(st => st.ServiceTypeCategory)
+                    .Include(ss => ss.SelectedDeliverableTypes)
+                        .ThenInclude(ssdt => ssdt.DeliverableType)
                     .FirstOrDefaultAsync(ss => ss.Id == id);
 
                 if (service == null)
@@ -238,6 +244,8 @@ namespace newApi.Services
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                         .ThenInclude(st => st.ServiceTypeCategory)
+                    .Include(ss => ss.SelectedDeliverableTypes)
+                        .ThenInclude(ssdt => ssdt.DeliverableType)
                     .FirstOrDefaultAsync(ss => _context.SearchHires.Any(sh => sh.Id == id && sh.SearchServiceId == ss.Id));
 
                 if (service == null)
@@ -267,6 +275,7 @@ namespace newApi.Services
             try
             {
                 _logger.LogInformation("Creating SearchService with ServiceTypeId: {ServiceTypeId}", request.ServiceTypeId);
+                _logger.LogInformation("SelectedDeliverableTypes received: {SelectedDeliverableTypes}", request.SelectedDeliverableTypes);
 
                 var serviceTypeExists = await _context.ServiceTypes.AnyAsync(st => st.Id == request.ServiceTypeId);
                 if (!serviceTypeExists)
@@ -306,6 +315,51 @@ namespace newApi.Services
                 _logger.LogInformation("Attempting to save SearchService with ServiceTypeId: {ServiceTypeId}", searchService.ServiceTypeId);
                 await _context.SaveChangesAsync();
                 _logger.LogInformation("Successfully saved SearchService with Id: {ServiceId}", searchService.Id);
+
+                // Procesar tipos de entregables seleccionados
+                if (!string.IsNullOrEmpty(request.SelectedDeliverableTypes))
+                {
+                    try
+                    {
+                        var deliverableTypeIds = System.Text.Json.JsonSerializer.Deserialize<int[]>(request.SelectedDeliverableTypes);
+                        _logger.LogInformation("Processing {Count} deliverable types for SearchService {ServiceId}", deliverableTypeIds.Length, searchService.Id);
+                        
+                        foreach (var deliverableTypeId in deliverableTypeIds)
+                        {
+                            var deliverableType = await _context.DeliverableTypes.FindAsync(deliverableTypeId);
+                            if (deliverableType != null)
+                            {
+                                var searchServiceDeliverableType = new SearchServiceDeliverableType
+                                {
+                                    SearchServiceId = searchService.Id,
+                                    DeliverableTypeId = deliverableTypeId,
+                                    IsSelected = true,
+                                    CreatedAt = DateTime.UtcNow,
+                                    UpdatedAt = DateTime.UtcNow
+                                };
+                                _context.SearchServiceDeliverableTypes.Add(searchServiceDeliverableType);
+                                _logger.LogInformation("Added deliverable type {DeliverableTypeId} ({Name}) to SearchService {ServiceId}", 
+                                    deliverableTypeId, deliverableType.Name, searchService.Id);
+                            }
+                            else
+                            {
+                                _logger.LogWarning("DeliverableType {DeliverableTypeId} not found", deliverableTypeId);
+                            }
+                        }
+                        
+                        await _context.SaveChangesAsync();
+                        _logger.LogInformation("Successfully saved deliverable types for SearchService {ServiceId}", searchService.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error processing deliverable types for SearchService {ServiceId}: {SelectedDeliverableTypes}", 
+                            searchService.Id, request.SelectedDeliverableTypes);
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("No deliverable types selected for SearchService {ServiceId}", searchService.Id);
+                }
 
                 var imageUrls = new List<string>();
                 if (request.Images != null && request.Images.Any())
@@ -380,7 +434,20 @@ namespace newApi.Services
                 DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,
                 IsActive = ss.IsActive,
-                ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>()
+                ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>(),
+                SelectedDeliverableTypes = ss.SelectedDeliverableTypes?
+                    .Where(ssdt => ssdt.IsSelected)
+                    .Select(ssdt => new DeliverableTypeDto
+                    {
+                        Id = ssdt.DeliverableType.Id,
+                        Name = ssdt.DeliverableType.Name,
+                        DisplayName = ssdt.DeliverableType.DisplayName,
+                        Description = ssdt.DeliverableType.Description,
+                        IsRequired = ssdt.DeliverableType.IsRequired,
+                        IsActive = ssdt.DeliverableType.IsActive,
+                        SortOrder = ssdt.DeliverableType.SortOrder
+                    })
+                    .ToList() ?? new List<DeliverableTypeDto>()
             };
 
             ExpertProfileDto expertProfileDto = null;
@@ -426,6 +493,7 @@ namespace newApi.Services
                 CreatedAt = baseDto.CreatedAt,
                 ImageUrls = baseDto.ImageUrls,
                 Expert = baseDto.Expert,
+                SelectedDeliverableTypes = baseDto.SelectedDeliverableTypes,
                 CategoryName = ss.Category?.Name ?? "Unknown Category",
                 CompletedSearches = ss.ExpertProfile?.User?.SearchHiresAsExpert?.Count(sh => sh.Status == "Completed") ?? 0,
                 AverageRating = ss.ExpertProfile?.User?.ReviewsReceived != null && ss.ExpertProfile.User.ReviewsReceived.Any()
@@ -451,7 +519,20 @@ namespace newApi.Services
                 DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,
                 IsActive = ss.IsActive,
-                ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>()
+                ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>(),
+                SelectedDeliverableTypes = ss.SelectedDeliverableTypes?
+                    .Where(ssdt => ssdt.IsSelected)
+                    .Select(ssdt => new DeliverableTypeDto
+                    {
+                        Id = ssdt.DeliverableType.Id,
+                        Name = ssdt.DeliverableType.Name,
+                        DisplayName = ssdt.DeliverableType.DisplayName,
+                        Description = ssdt.DeliverableType.Description,
+                        IsRequired = ssdt.DeliverableType.IsRequired,
+                        IsActive = ssdt.DeliverableType.IsActive,
+                        SortOrder = ssdt.DeliverableType.SortOrder
+                    })
+                    .ToList() ?? new List<DeliverableTypeDto>()
             };
 
             ExpertProfileDto expertProfileDto = null;
@@ -553,7 +634,52 @@ namespace newApi.Services
                 _logger.LogInformation("Successfully created new SearchService with Id: {NewServiceId} and deactivated old service with Id: {OldServiceId}", 
                     newSearchService.Id, existingService.Id);
 
-                // Paso 3: Procesar las imágenes si se proporcionaron
+                // Paso 3: Procesar tipos de entregables seleccionados
+                if (!string.IsNullOrEmpty(request.SelectedDeliverableTypes))
+                {
+                    try
+                    {
+                        var deliverableTypeIds = System.Text.Json.JsonSerializer.Deserialize<int[]>(request.SelectedDeliverableTypes);
+                        _logger.LogInformation("Processing {Count} deliverable types for updated SearchService {ServiceId}", deliverableTypeIds.Length, newSearchService.Id);
+                        
+                        foreach (var deliverableTypeId in deliverableTypeIds)
+                        {
+                            var deliverableType = await _context.DeliverableTypes.FindAsync(deliverableTypeId);
+                            if (deliverableType != null)
+                            {
+                                var searchServiceDeliverableType = new SearchServiceDeliverableType
+                                {
+                                    SearchServiceId = newSearchService.Id,
+                                    DeliverableTypeId = deliverableTypeId,
+                                    IsSelected = true,
+                                    CreatedAt = DateTime.UtcNow,
+                                    UpdatedAt = DateTime.UtcNow
+                                };
+                                _context.SearchServiceDeliverableTypes.Add(searchServiceDeliverableType);
+                                _logger.LogInformation("Added deliverable type {DeliverableTypeId} ({Name}) to updated SearchService {ServiceId}", 
+                                    deliverableTypeId, deliverableType.Name, newSearchService.Id);
+                            }
+                            else
+                            {
+                                _logger.LogWarning("DeliverableType {DeliverableTypeId} not found", deliverableTypeId);
+                            }
+                        }
+                        
+                        await _context.SaveChangesAsync();
+                        _logger.LogInformation("Successfully saved deliverable types for updated SearchService {ServiceId}", newSearchService.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error processing deliverable types for updated SearchService {ServiceId}: {SelectedDeliverableTypes}", 
+                            newSearchService.Id, request.SelectedDeliverableTypes);
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("No deliverable types selected for updated SearchService {ServiceId}", newSearchService.Id);
+                }
+
+                // Paso 4: Procesar las imágenes si se proporcionaron
                 var imageUrls = new List<string>();
                 if (request.Images != null && request.Images.Any())
                 {

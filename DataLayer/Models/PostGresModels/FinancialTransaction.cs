@@ -6,7 +6,7 @@
         public int UserId { get; set; }
         public decimal Amount { get; set; }
         public string TransactionType { get; set; } // "Deposit", "ServicePayment", "Refund", "Payout"
-        public string? RelatedEntityType { get; set; } // Ej. "SearchHire"
+        public string? RelatedEntityType { get; set; } // "SearchHire" para ServicePayment, NULL para Deposit
         public int? RelatedEntityId { get; set; }
         public string? StripeTransferId { get; set; } // ID de transferencia de Stripe para trazabilidad
         public string? StripePaymentIntentId { get; set; } // ID del pago original de Stripe

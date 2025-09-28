@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using newApi.DataLayer.Models;
@@ -11,9 +12,11 @@ using newApi.DataLayer.Models;
 namespace newApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250928191752_InsertDeliverableTypesData")]
+    partial class InsertDeliverableTypesData
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1148,6 +1151,45 @@ namespace newApi.Migrations
                     b.ToTable("SearchHireDeliverables");
                 });
 
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchHireDeliverableType", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<int>("DeliverableTypeId")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("IsSelected")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<int>("SearchHireId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeliverableTypeId");
+
+                    b.HasIndex("SearchHireId", "DeliverableTypeId")
+                        .IsUnique();
+
+                    b.ToTable("SearchHireDeliverableTypes");
+                });
+
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchParameter", b =>
                 {
                     b.Property<int>("SearchParameterId")
@@ -2198,6 +2240,25 @@ namespace newApi.Migrations
                     b.Navigation("SearchHire");
                 });
 
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchHireDeliverableType", b =>
+                {
+                    b.HasOne("newApi.DataLayer.Models.PostGresModels.DeliverableType", "DeliverableType")
+                        .WithMany("SearchHireDeliverableTypes")
+                        .HasForeignKey("DeliverableTypeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("newApi.DataLayer.Models.PostGresModels.SearchHire", "SearchHire")
+                        .WithMany("SelectedDeliverableTypes")
+                        .HasForeignKey("SearchHireId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("DeliverableType");
+
+                    b.Navigation("SearchHire");
+                });
+
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchParameter", b =>
                 {
                     b.HasOne("newApi.DataLayer.Models.PostGresModels.Search", "Search")
@@ -2471,6 +2532,8 @@ namespace newApi.Migrations
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.DeliverableType", b =>
                 {
+                    b.Navigation("SearchHireDeliverableTypes");
+
                     b.Navigation("SearchServiceDeliverableTypes");
                 });
 
@@ -2520,6 +2583,8 @@ namespace newApi.Migrations
                     b.Navigation("Deliverables");
 
                     b.Navigation("Disputes");
+
+                    b.Navigation("SelectedDeliverableTypes");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchParameter", b =>

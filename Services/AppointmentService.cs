@@ -26,15 +26,18 @@ namespace newApi.Services
         private readonly AppDbContext _context;
         private readonly ILogger<AppointmentService> _logger;
         private readonly ICheckingClientDecisionService _checkingClientDecisionService;
+        private readonly SystemStatusService _systemStatusService;
 
         public AppointmentService(
             AppDbContext context, 
             ILogger<AppointmentService> logger,
-            ICheckingClientDecisionService checkingClientDecisionService)
+            ICheckingClientDecisionService checkingClientDecisionService,
+            SystemStatusService systemStatusService)
         {
             _context = context;
             _logger = logger;
             _checkingClientDecisionService = checkingClientDecisionService;
+            _systemStatusService = systemStatusService;
         }
 
         public async Task<AppointmentDto?> GetAppointmentAsync(int appointmentId)
@@ -86,7 +89,7 @@ namespace newApi.Services
                 var appointment = new Appointment
                 {
                     SearchHireId = dto.SearchHireId,
-                    Status = AppointmentStatus.AwaitingAppointment.ToStringValue(),
+                    StatusId = (await GetSystemStatusByValueAsync(AppointmentStatus.AwaitingAppointment.ToStringValue())).Id,
                     ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc),
                     ProposedTime = dto.ProposedTime,
                     Location = dto.Location,
@@ -147,7 +150,7 @@ namespace newApi.Services
                 appointment = new Appointment
                 {
                     SearchHireId = searchHireId,
-                    Status = AppointmentStatus.AwaitingAppointment.ToStringValue(),
+                    StatusId = (await GetSystemStatusByValueAsync(AppointmentStatus.AwaitingAppointment.ToStringValue())).Id,
                     ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc),
                     ProposedTime = dto.ProposedTime,
                     Location = dto.Location,
@@ -173,10 +176,10 @@ namespace newApi.Services
             }
 
             // Verificar estado - solo si el Appointment ya existía (no recién creado)
-            if (appointment.Status != AppointmentStatus.AwaitingAppointment.ToStringValue() && 
-                appointment.Status != AppointmentStatus.AppointmentRejected.ToStringValue() &&
-                appointment.Status != AppointmentStatus.AppointmentCancelledByClient.ToStringValue())
-                throw new InvalidOperationException($"Cannot propose appointment in status: {appointment.Status}");
+            if (!await IsAppointmentStatusAsync(appointment, AppointmentStatus.AwaitingAppointment) && 
+                !await IsAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentRejected) &&
+                !await IsAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentCancelledByClient))
+                throw new InvalidOperationException($"Cannot propose appointment in current status");
 
             // Verificar restricción de 12h
             _logger.LogInformation("ProposedDate: {ProposedDate}, ProposedTime: {ProposedTime}", dto.ProposedDate, dto.ProposedTime);
@@ -192,13 +195,13 @@ namespace newApi.Services
             try
             {
                 // Si es reprogramación después de primera cancelación, cancelar timer de reprogramación
-                if (appointment.Status == AppointmentStatus.AppointmentCancelledByClient.ToStringValue())
+                if (await IsAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentCancelledByClient))
                 {
                     await CancelReprogramTimerAsync(appointment.Id);
                     _logger.LogInformation("Cancelled reprogram timer for appointment: {AppointmentId}", appointment.Id);
                 }
 
-                appointment.Status = AppointmentStatus.AppointmentProposed.ToStringValue();
+                await SetAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentProposed);
                 appointment.ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc);
                 appointment.ProposedTime = dto.ProposedTime;
                 appointment.Location = dto.Location;
@@ -242,13 +245,13 @@ namespace newApi.Services
                 throw new UnauthorizedAccessException("Only the expert can confirm appointments");
 
             // Verificar estado
-            if (appointment.Status != AppointmentStatus.AppointmentProposed.ToStringValue())
-                throw new InvalidOperationException($"Cannot confirm appointment in status: {appointment.Status}");
+            if (!await IsAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentProposed))
+                throw new InvalidOperationException($"Cannot confirm appointment in current status");
 
             using var transaction = await _context.Database.BeginTransactionAsync();
             try
             {
-                appointment.Status = AppointmentStatus.AppointmentConfirmed.ToStringValue();
+                await SetAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentConfirmed);
                 appointment.LastResponseAt = DateTime.UtcNow;
                 appointment.UpdatedAt = DateTime.UtcNow;
 
@@ -287,8 +290,8 @@ namespace newApi.Services
                 throw new UnauthorizedAccessException("Only the expert can reject appointments");
 
             // Verificar estado
-            if (appointment.Status != AppointmentStatus.AppointmentProposed.ToStringValue())
-                throw new InvalidOperationException($"Cannot reject appointment in status: {appointment.Status}");
+            if (!await IsAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentProposed))
+                throw new InvalidOperationException($"Cannot reject appointment in current status");
 
             using var transaction = await _context.Database.BeginTransactionAsync();
             try
@@ -301,7 +304,7 @@ namespace newApi.Services
                 // Verificar si es la segunda vez (cambiamos de 3 a 2 rechazos)
                 if (appointment.RejectionCount >= 2)
                 {
-                    appointment.Status = AppointmentStatus.AppointmentCancelledByExpertRejection.ToStringValue();
+                    await SetAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentCancelledByExpertRejection);
                     appointment.SearchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
                     
                     // Usar configuración de BD para distribución de dinero
@@ -309,7 +312,7 @@ namespace newApi.Services
                 }
                 else
                 {
-                    appointment.Status = AppointmentStatus.AppointmentRejected.ToStringValue();
+                    await SetAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentRejected);
                     // Crear timer de 48h para nueva propuesta del cliente
                     await CreateTimerAsync(appointment.Id, "proposal", 48);
                 }
@@ -344,8 +347,8 @@ namespace newApi.Services
                 throw new UnauthorizedAccessException("Only the client or expert can cancel appointments");
 
             // Verificar estado
-            if (appointment.Status != AppointmentStatus.AppointmentConfirmed.ToStringValue())
-                throw new InvalidOperationException($"Cannot cancel appointment in status: {appointment.Status}");
+            if (!await IsAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentConfirmed))
+                throw new InvalidOperationException($"Cannot cancel appointment in current status");
 
             // Verificar restricción de 12h
             var appointmentDateTime = appointment.ProposedDate.Date.Add(appointment.ProposedTime);
@@ -363,14 +366,14 @@ namespace newApi.Services
                 {
                     if (appointment.CancellationCount == 1)
                     {
-                        appointment.Status = AppointmentStatus.AppointmentCancelledByClient.ToStringValue();
+                        await SetAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentCancelledByClient);
                         // NO cambiar SearchHire.Status - dinero retenido
                         // Crear timer de 24h para reprogramar
                         await CreateTimerAsync(appointment.Id, "reprogram", 24);
                     }
                     else
                     {
-                        appointment.Status = AppointmentStatus.AppointmentCancelledByClientSecond.ToStringValue();
+                        await SetAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentCancelledByClientSecond);
                         appointment.SearchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
                         // Usar configuración de BD para distribución de dinero
                         await ProcessCancellationRefundAsync(appointment.SearchHireId, AppointmentStatus.AppointmentCancelledByClientSecond.ToStringValue());
@@ -378,7 +381,7 @@ namespace newApi.Services
                 }
                 else
                 {
-                    appointment.Status = AppointmentStatus.AppointmentCancelledByExpert.ToStringValue();
+                    await SetAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentCancelledByExpert);
                     appointment.SearchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
                     // Usar configuración de BD para distribución de dinero
                     await ProcessCancellationRefundAsync(appointment.SearchHireId, AppointmentStatus.AppointmentCancelledByExpert.ToStringValue());
@@ -451,18 +454,17 @@ namespace newApi.Services
             {
                 TotalAppointments = await _context.Appointments.CountAsync(),
                 PendingDisputes = 0, // Las disputas se manejan en el sistema general de Disputes
-                ClientNoShows = await _context.Appointments.CountAsync(a => a.Status == AppointmentStatus.AppointmentCancelledByClientSecond.ToStringValue()),
-                ExpertNoShows = await _context.Appointments.CountAsync(a => a.Status == AppointmentStatus.AppointmentCancelledByExpert.ToStringValue()),
-                SuccessfulAppointments = await _context.Appointments.CountAsync(a => a.Status == AppointmentStatus.AppointmentCompleted.ToStringValue()),
-                CancelledAppointments = await _context.Appointments.CountAsync(a => 
-                    a.Status == AppointmentStatus.AppointmentCancelledByClient.ToStringValue() ||
-                    a.Status == AppointmentStatus.AppointmentCancelledByClientSecond.ToStringValue() ||
-                    a.Status == AppointmentStatus.AppointmentCancelledByExpert.ToStringValue() ||
-                    a.Status == AppointmentStatus.AppointmentCancelledByNoResponse.ToStringValue()),
-                AwaitingAppointment = await _context.Appointments.CountAsync(a => a.Status == AppointmentStatus.AwaitingAppointment.ToStringValue()),
-                AppointmentProposed = await _context.Appointments.CountAsync(a => a.Status == AppointmentStatus.AppointmentProposed.ToStringValue()),
-                AppointmentConfirmed = await _context.Appointments.CountAsync(a => a.Status == AppointmentStatus.AppointmentConfirmed.ToStringValue()),
-                AppointmentRejected = await _context.Appointments.CountAsync(a => a.Status == AppointmentStatus.AppointmentRejected.ToStringValue())
+                ClientNoShows = await CountAppointmentsByStatusAsync(AppointmentStatus.AppointmentCancelledByClientSecond),
+                ExpertNoShows = await CountAppointmentsByStatusAsync(AppointmentStatus.AppointmentCancelledByExpert),
+                SuccessfulAppointments = await CountAppointmentsByStatusAsync(AppointmentStatus.AppointmentCompleted),
+                CancelledAppointments = await CountAppointmentsByStatusAsync(AppointmentStatus.AppointmentCancelledByClient) +
+                                      await CountAppointmentsByStatusAsync(AppointmentStatus.AppointmentCancelledByClientSecond) +
+                                      await CountAppointmentsByStatusAsync(AppointmentStatus.AppointmentCancelledByExpert) +
+                                      await CountAppointmentsByStatusAsync(AppointmentStatus.AppointmentCancelledByNoResponse),
+                AwaitingAppointment = await CountAppointmentsByStatusAsync(AppointmentStatus.AwaitingAppointment),
+                AppointmentProposed = await CountAppointmentsByStatusAsync(AppointmentStatus.AppointmentProposed),
+                AppointmentConfirmed = await CountAppointmentsByStatusAsync(AppointmentStatus.AppointmentConfirmed),
+                AppointmentRejected = await CountAppointmentsByStatusAsync(AppointmentStatus.AppointmentRejected)
             };
 
             return metrics;
@@ -607,74 +609,55 @@ namespace newApi.Services
             }
         }
 
+        private async Task<SystemStatus> GetSystemStatusByValueAsync(string statusValue)
+        {
+            var status = await _context.SystemStatuses
+                .FirstOrDefaultAsync(s => s.StatusValue == statusValue && s.IsActive);
+            
+            if (status == null)
+            {
+                throw new InvalidOperationException($"SystemStatus not found for value: {statusValue}");
+            }
+            
+            return status;
+        }
+
+        private async Task<bool> IsAppointmentStatusAsync(Appointment appointment, AppointmentStatus expectedStatus)
+        {
+            var expectedSystemStatus = await GetSystemStatusByValueAsync(expectedStatus.ToStringValue());
+            return appointment.StatusId == expectedSystemStatus.Id;
+        }
+
+        private async Task SetAppointmentStatusAsync(Appointment appointment, AppointmentStatus status)
+        {
+            var systemStatus = await GetSystemStatusByValueAsync(status.ToStringValue());
+            appointment.StatusId = systemStatus.Id;
+        }
+
+        private async Task<int> CountAppointmentsByStatusAsync(AppointmentStatus status)
+        {
+            var systemStatus = await GetSystemStatusByValueAsync(status.ToStringValue());
+            return await _context.Appointments.CountAsync(a => a.StatusId == systemStatus.Id);
+        }
+
         private async Task<MoneyDistributionConfigDto?> GetMoneyDistributionConfigAsync(string status, int? categoryId, int? serviceTypeCategoryId)
         {
-            // 1. Buscar configuración específica por Category + ServiceTypeCategory
-            if (categoryId.HasValue && serviceTypeCategoryId.HasValue)
-            {
-                var specificConfig = await _context.CategoryServiceTypeConfigs
-                    .Include(cst => cst.Category)
-                    .Include(cst => cst.ServiceTypeCategory)
-                    .FirstOrDefaultAsync(cst => cst.CategoryId == categoryId.Value 
-                                             && cst.ServiceTypeCategoryId == serviceTypeCategoryId.Value 
-                                             && cst.Status == status 
-                                             && cst.IsActive);
-
-                if (specificConfig != null)
-                {
-                    return new MoneyDistributionConfigDto
-                    {
-                        ClientPercentage = specificConfig.ClientPercentage,
-                        ExpertPercentage = specificConfig.ExpertPercentage,
-                        PlatformPercentage = specificConfig.PlatformPercentage,
-                        Source = "category_service_type",
-                        CategoryName = specificConfig.Category?.Name,
-                        ServiceTypeCategoryName = specificConfig.ServiceTypeCategory?.Name,
-                        Status = status
-                    };
-                }
-            }
-
-            // 2. Buscar configuración específica por ServiceTypeCategory
-            if (serviceTypeCategoryId.HasValue)
-            {
-                var categoryConfig = await _context.ServiceTypeCategoryConfigs
-                    .Include(sc => sc.ServiceTypeCategory)
-                    .FirstOrDefaultAsync(sc => sc.ServiceTypeCategoryId == serviceTypeCategoryId.Value 
-                                             && sc.Status == status 
-                                             && sc.IsActive);
-
-                if (categoryConfig != null)
-                {
-                    return new MoneyDistributionConfigDto
-                    {
-                        ClientPercentage = categoryConfig.ClientPercentage,
-                        ExpertPercentage = categoryConfig.ExpertPercentage,
-                        PlatformPercentage = categoryConfig.PlatformPercentage,
-                        Source = "service_type_category",
-                        ServiceTypeCategoryName = categoryConfig.ServiceTypeCategory?.Name,
-                        Status = status
-                    };
-                }
-            }
-
-            // 3. Buscar configuración por defecto por estado
-            var defaultConfig = await _context.AppointmentStatusConfigs
-                .FirstOrDefaultAsync(ac => ac.Status == status && ac.IsActive);
-
-            if (defaultConfig != null)
+            // Usar el nuevo sistema centralizado de estados
+            var config = await _systemStatusService.GetMoneyDistributionAsync(status, categoryId, serviceTypeCategoryId);
+            
+            if (config != null)
             {
                 return new MoneyDistributionConfigDto
                 {
-                    ClientPercentage = defaultConfig.ClientPercentage,
-                    ExpertPercentage = defaultConfig.ExpertPercentage,
-                    PlatformPercentage = defaultConfig.PlatformPercentage,
-                    Source = "appointment_status",
+                    ClientPercentage = config.ClientPercentage,
+                    ExpertPercentage = config.ExpertPercentage,
+                    PlatformPercentage = config.PlatformPercentage,
+                    Source = "centralized_status_system",
                     Status = status
                 };
             }
 
-            // 4. NO HAY CONFIGURACIÓN - FALLAR EN LUGAR DE INVENTAR VALORES
+            // NO HAY CONFIGURACIÓN - FALLAR EN LUGAR DE INVENTAR VALORES
             _logger.LogError("No money distribution configuration found for status: {Status}, categoryId: {CategoryId}, serviceTypeCategoryId: {ServiceTypeCategoryId}. Configuration must be created by admin.", 
                 status, categoryId, serviceTypeCategoryId);
             return null;
@@ -708,7 +691,7 @@ namespace newApi.Services
 
             if (appointment == null) return;
 
-            appointment.Status = AppointmentStatus.AppointmentCancelledByNoResponse.ToStringValue();
+            await SetAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentCancelledByNoResponse);
             appointment.SearchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
             appointment.UpdatedAt = DateTime.UtcNow;
             appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
@@ -727,7 +710,7 @@ namespace newApi.Services
 
             if (appointment == null) return;
 
-            appointment.Status = AppointmentStatus.AppointmentCancelledByNoResponse.ToStringValue();
+            await SetAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentCancelledByNoResponse);
             appointment.SearchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
             appointment.UpdatedAt = DateTime.UtcNow;
             appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
@@ -747,7 +730,7 @@ namespace newApi.Services
             if (appointment == null) return;
 
             // Marcar la cita como completada automáticamente
-            appointment.Status = AppointmentStatus.AppointmentCompleted.ToStringValue();
+            await SetAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentCompleted);
             appointment.CompletedAt = DateTime.UtcNow;
             appointment.CompletedBy = appointment.SearchHire.ExpertId; // El experto la completó automáticamente
             appointment.UpdatedAt = DateTime.UtcNow;
@@ -767,7 +750,7 @@ namespace newApi.Services
 
             if (appointment == null) return;
 
-            appointment.Status = AppointmentStatus.AppointmentCancelledByNoResponse.ToStringValue();
+            await SetAppointmentStatusAsync(appointment, AppointmentStatus.AppointmentCancelledByNoResponse);
             appointment.SearchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
             appointment.UpdatedAt = DateTime.UtcNow;
             appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
@@ -784,7 +767,7 @@ namespace newApi.Services
             {
                 Id = appointment.Id,
                 SearchHireId = appointment.SearchHireId,
-                Status = appointment.Status,
+                Status = appointment.Status.StatusValue,
                 ProposedDate = appointment.ProposedDate,
                 ProposedTime = appointment.ProposedTime,
                 Location = appointment.Location,

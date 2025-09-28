@@ -67,10 +67,11 @@ namespace newApi.Controllers
                 }
 
                 // Verificar el estado del SearchHire
-                if (searchHire.Status != SearchHireStatus.DisputeResolved.ToStringValue() &&
+                if (searchHire.Status != SearchHireStatus.DisputeResolvedClient.ToStringValue() &&
+                    searchHire.Status != SearchHireStatus.DisputeResolvedExpert.ToStringValue() &&
                     searchHire.Status != SearchHireStatus.Completed.ToStringValue())
                 {
-                    return BadRequest(new { message = "Reviews can only be submitted for SearchHires in 'dispute-resolved' or 'completed' status" });
+                    return BadRequest(new { message = "Reviews can only be submitted for SearchHires in 'dispute-resolved-client', 'dispute-resolved-expert' or 'completed' status" });
                 }
 
                 // Verificar si ya existe una reseña para este SearchHire

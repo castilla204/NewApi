@@ -332,102 +332,8 @@ namespace newApi.Controllers
                     }
                     else
                     {
-                        // Calculate the amount to charge after deducting user balance
-                        var amountToCharge = Math.Max(0, service.Price - user.Balance);
-                        
-                        // If amount to charge is 0, user has enough balance to cover the service
-                        if (amountToCharge == 0)
-                        {
-                            // Process the hire directly without payment link since balance covers it
-                            var search = new Search
-                            {
-                                UserId = userId,
-                                Frequency = searchDto.Frequency,
-                                Title = searchDto.Title,
-                                Description = searchDto.Description,
-                                IsActive = searchDto.IsActive,
-                                NextExecution = DateTime.UtcNow,
-                                StartDate = searchDto.StartDate,
-                                CreatedAt = DateTime.UtcNow
-                            };
-                            await _context.Searches.AddAsync(search);
-                            await _context.SaveChangesAsync();
-
-                            var searchParameter = new SearchParameter
-                            {
-                                Keywords = parameterDto.Keywords,
-                                UserSearch = parameterDto.UserSearch,
-                                Latitude = parameterDto.Latitude,
-                                Longitude = parameterDto.Longitude,
-                                LocationName = parameterDto.LocationName, // ✅ NUEVO: Incluir LocationName
-                                ShippingAvailable = parameterDto.ShippingAvailable,
-                                StrictMatchOnly = parameterDto.StrictMatchOnly,
-                                Category = parameterDto.Category,
-                                LocationRange = parameterDto.LocationRange,
-                                MinPrice = parameterDto.MinPrice,
-                                MaxPrice = parameterDto.MaxPrice,
-                                BrandId = parameterDto.BrandId,
-                                ModelId = parameterDto.ModelId,
-                                ServiceTypeId = parameterDto.ServiceTypeId,
-                                SearchId = search.Id
-                            };
-                            await _context.SearchParameters.AddAsync(searchParameter);
-                            await _context.SaveChangesAsync();
-
-                            if (parameterDto.PlatformIds != null && parameterDto.PlatformIds.Any())
-                            {
-                                var platforms = await _context.Platforms
-                                    .Where(p => parameterDto.PlatformIds.Contains(p.Id))
-                                    .ToListAsync();
-                                foreach (var platform in platforms)
-                                {
-                                    _context.SearchParameterPlatforms.Add(new SearchParameterPlatform
-                                    {
-                                        SearchParameterId = searchParameter.SearchParameterId,
-                                        PlatformId = platform.Id
-                                    });
-                                }
-                            }
-
-                            var expertProfile = await _context.ExpertProfiles
-                                .FirstOrDefaultAsync(z => z.Id == service.ExpertProfileId);
-                            var expertuserid = expertProfile?.UserId ?? 0;
-
-                            // Validar que el experto no se contrate a sí mismo
-                            if (expertuserid == userId)
-                            {
-                                return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
-                            }
-
-                            var searchHire = new SearchHire
-                            {
-                                ClientId = userId,
-                                ExpertId = expertuserid,
-                                SearchServiceId = service.Id,
-                                SearchId = search.Id,
-                                Status = SearchHireStatus.Pending.ToStringValue(),
-                                Amount = service.Price,
-                                CreatedAt = DateTime.UtcNow,
-                                CompletionDeadline = DateTime.UtcNow.AddDays(7)
-                            };
-                            _context.SearchHires.Add(searchHire);
-
-                            user.Balance -= service.Price;
-                            _context.FinancialTransactions.Add(new FinancialTransaction
-                            {
-                                UserId = userId,
-                                Amount = -service.Price,
-                                TransactionType = "ServicePayment",
-                                RelatedEntityType = "SearchHire",
-                                RelatedEntityId = searchHire.Id,
-                                CreatedAt = DateTime.UtcNow
-                            });
-
-                            await _context.SaveChangesAsync();
-                            await transaction.CommitAsync();
-
-                            return Ok(new { message = "Search created and service hired successfully using balance", searchId = search.Id, searchHireId = searchHire.Id });
-                        }
+                        // 💳 SIEMPRE PAGAR CON STRIPE - NO USAR SALDO INTERNO
+                        var amountToCharge = service.Price;
 
                         var domain = "https://atrapo.io";
                         var options = new SessionCreateOptions
@@ -443,7 +349,7 @@ namespace newApi.Controllers
                                         UnitAmount = (long)(amountToCharge * 100),
                                         ProductData = new SessionLineItemPriceDataProductDataOptions
                                         {
-                                            Name = $"Payment for Service {service.Id} (after balance deduction)"
+                                            Name = $"Payment for Service {service.Id}"
                                         }
                                     },
                                     Quantity = 1
@@ -457,9 +363,7 @@ namespace newApi.Controllers
                             {
                                 { "userId", userId.ToString() },
                                 { "serviceId", service.Id.ToString() },
-                                { "amount", service.Price.ToString() },
-                                { "chargedAmount", amountToCharge.ToString() },
-                                { "balanceUsed", Math.Min(user.Balance, service.Price).ToString() },
+                                { "amount", amountToCharge.ToString() },
                                 { "pendingHire", "true" },
                                 { "searchData", JsonSerializer.Serialize(searchDto) },
                                 { "parameters", JsonSerializer.Serialize(parameterDto) }
@@ -722,10 +626,10 @@ namespace newApi.Controllers
                                 "appointment_confirmed" 
                             };
                             
-                            if (pendingStatuses.Contains(search.SearchHire.Appointment.Status))
+                            if (pendingStatuses.Contains(search.SearchHire.Appointment.Status.StatusValue))
                             {
                                 searchDto.HasPendingAppointment = true;
-                                searchDto.PendingAppointmentStatus = search.SearchHire.Appointment.Status;
+                                searchDto.PendingAppointmentStatus = search.SearchHire.Appointment.Status.StatusValue;
                             }
                         }
                     }
@@ -792,7 +696,7 @@ namespace newApi.Controllers
                     "awaiting_appointment", 
                     "appointment_proposed", 
                     "appointment_confirmed" 
-                }.Contains(s.SearchHire.Appointment.Status));
+                }.Contains(s.SearchHire.Appointment.Status.StatusValue));
 
             return new UserSearchStats
             {
@@ -990,10 +894,10 @@ namespace newApi.Controllers
                             "appointment_confirmed" 
                         };
                         
-                        if (pendingStatuses.Contains(search.SearchHire.Appointment.Status))
+                        if (pendingStatuses.Contains(search.SearchHire.Appointment.Status.StatusValue))
                         {
                             searchDto.HasPendingAppointment = true;
-                            searchDto.PendingAppointmentStatus = search.SearchHire.Appointment.Status;
+                            searchDto.PendingAppointmentStatus = search.SearchHire.Appointment.Status.StatusValue;
                         }
                     }
                 }

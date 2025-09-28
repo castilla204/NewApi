@@ -220,9 +220,11 @@ builder.Services.AddScoped<ISearchHireService, SearchHireService>();
 builder.Services.AddScoped<ISearchServiceService, SearchServiceService>();
 builder.Services.AddScoped<ICheckingClientDecisionService, CheckingClientDecisionService>();
 builder.Services.AddScoped<IAppointmentService, AppointmentService>();
-builder.Services.AddScoped<IAppointmentConfigService, AppointmentConfigService>();
-builder.Services.AddScoped<ICategoryServiceTypeConfigService, CategoryServiceTypeConfigService>();
+// Servicios redundantes eliminados - reemplazados por SystemStatusService
+// builder.Services.AddScoped<IAppointmentConfigService, AppointmentConfigService>();
+// builder.Services.AddScoped<ICategoryServiceTypeConfigService, CategoryServiceTypeConfigService>();
 builder.Services.AddScoped<IUserActionLoggingService, UserActionLoggingService>();
+builder.Services.AddScoped<SystemStatusService>();
 
 // Background services
 builder.Services.AddHostedService<AppointmentTimerBackgroundService>();

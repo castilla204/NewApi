@@ -3,15 +3,19 @@ using System.ComponentModel.DataAnnotations;
 namespace newApi.DataLayer.Models.PostGresModels
 {
     /// <summary>
-    /// Configuración de porcentajes de distribución de dinero por estado de cita
+    /// Configuración de distribución de dinero por estado, categoría y tipo de servicio
+    /// Reemplaza CategoryServiceTypeConfigs con mayor flexibilidad
     /// </summary>
-    public class AppointmentStatusConfig
+    public class StatusConfiguration
     {
         public int Id { get; set; }
         
         [Required]
-        [MaxLength(50)]
-        public string Status { get; set; } = string.Empty;
+        public int StatusId { get; set; } // Referencia a SystemStatus
+        
+        public int? CategoryId { get; set; } // NULL = aplica a todas las categorías
+        
+        public int? ServiceTypeCategoryId { get; set; } // NULL = aplica a todos los tipos
         
         [Required]
         [Range(0, 100)]
@@ -31,8 +35,12 @@ namespace newApi.DataLayer.Models.PostGresModels
         
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
         
+        // Navigation properties
+        public virtual SystemStatus Status { get; set; } = null!;
+        public virtual Category? Category { get; set; }
+        public virtual ServiceTypeCategory? ServiceTypeCategory { get; set; }
+        
         // Validación: los porcentajes deben sumar 100%
         public bool IsValid => ClientPercentage + ExpertPercentage + PlatformPercentage == 100;
     }
 }
-

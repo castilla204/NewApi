@@ -78,6 +78,7 @@ namespace newApi.DataLayer.Models.DTOs
         public bool IsActive { get; set; }
         public List<string> ImageUrls { get; set; }
         public ExpertProfileDto? Expert { get; set; }
+        public List<DeliverableTypeDto> SelectedDeliverableTypes { get; set; } = new List<DeliverableTypeDto>();
     }
 
     public class SearchServiceDetailDto : SearchServiceResponseDto
@@ -129,6 +130,7 @@ namespace newApi.DataLayer.Models.DTOs
         public string Conditions { get; set; }
         public int? DurationInHours { get; set; }
         public List<IFormFile> Images { get; set; }
+        public string? SelectedDeliverableTypes { get; set; } // JSON string from FormData
     }
 
     public class UpdateSearchServiceRequestDto
@@ -140,6 +142,7 @@ namespace newApi.DataLayer.Models.DTOs
         public string Conditions { get; set; }
         public int? DurationInHours { get; set; }
         public List<IFormFile>? Images { get; set; }
+        public string? SelectedDeliverableTypes { get; set; } // JSON string from FormData
     }
 
 

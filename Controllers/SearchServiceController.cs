@@ -167,7 +167,8 @@ namespace newApi.Controllers
                         request.Price,
                         request.Conditions,
                         request.DurationInHours,
-                        ImageCount = request.Images?.Count ?? 0
+                        ImageCount = request.Images?.Count ?? 0,
+                        SelectedDeliverableTypes = request.SelectedDeliverableTypes
                     });
 
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
@@ -281,7 +282,8 @@ namespace newApi.Controllers
                         request.Price,
                         request.Conditions,
                         request.DurationInHours,
-                        ImageCount = request.Images?.Count ?? 0
+                        ImageCount = request.Images?.Count ?? 0,
+                        SelectedDeliverableTypes = request.SelectedDeliverableTypes
                     });
 
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;

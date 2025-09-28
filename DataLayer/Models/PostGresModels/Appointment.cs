@@ -9,7 +9,7 @@ namespace newApi.DataLayer.Models.PostGresModels
     {
         public int Id { get; set; }
         public int SearchHireId { get; set; }
-        public string Status { get; set; } = AppointmentStatus.AwaitingAppointment.ToStringValue();
+        public int StatusId { get; set; } // Referencia a SystemStatus
         public DateTime ProposedDate { get; set; }
         public TimeSpan ProposedTime { get; set; }
         public string Location { get; set; } = string.Empty;
@@ -38,6 +38,7 @@ namespace newApi.DataLayer.Models.PostGresModels
         
         // Navigation properties
         public virtual SearchHire SearchHire { get; set; } = null!;
+        public virtual SystemStatus Status { get; set; } = null!;
         public virtual ICollection<AppointmentTimer> Timers { get; set; } = new List<AppointmentTimer>();
     }
 }

@@ -18,11 +18,13 @@ namespace newApi.Services
     {
         private readonly AppDbContext _context;
         private readonly ILogger<CheckingClientDecisionService> _logger;
+        private readonly SystemStatusService _systemStatusService;
 
-        public CheckingClientDecisionService(AppDbContext context, ILogger<CheckingClientDecisionService> logger)
+        public CheckingClientDecisionService(AppDbContext context, ILogger<CheckingClientDecisionService> logger, SystemStatusService systemStatusService)
         {
             _context = context;
             _logger = logger;
+            _systemStatusService = systemStatusService;
         }
 
         public async Task ProcessTransferToExpert(int searchHireId)
@@ -130,72 +132,22 @@ namespace newApi.Services
 
         private async Task<MoneyDistributionConfigDto?> GetMoneyDistributionConfigAsync(string status, int? categoryId, int? serviceTypeCategoryId)
         {
-            // 1. Buscar configuración específica por Category + ServiceTypeCategory
-            if (categoryId.HasValue && serviceTypeCategoryId.HasValue)
-            {
-                var specificConfig = await _context.CategoryServiceTypeConfigs
-                    .Include(cst => cst.Category)
-                    .Include(cst => cst.ServiceTypeCategory)
-                    .FirstOrDefaultAsync(cst => cst.CategoryId == categoryId.Value 
-                                             && cst.ServiceTypeCategoryId == serviceTypeCategoryId.Value 
-                                             && cst.Status == status 
-                                             && cst.IsActive);
-
-                if (specificConfig != null)
-                {
-                    return new MoneyDistributionConfigDto
-                    {
-                        ClientPercentage = specificConfig.ClientPercentage,
-                        ExpertPercentage = specificConfig.ExpertPercentage,
-                        PlatformPercentage = specificConfig.PlatformPercentage,
-                        Source = "category_service_type",
-                        CategoryName = specificConfig.Category?.Name,
-                        ServiceTypeCategoryName = specificConfig.ServiceTypeCategory?.Name,
-                        Status = status
-                    };
-                }
-            }
-
-            // 2. Buscar configuración específica por ServiceTypeCategory
-            if (serviceTypeCategoryId.HasValue)
-            {
-                var categoryConfig = await _context.ServiceTypeCategoryConfigs
-                    .Include(sc => sc.ServiceTypeCategory)
-                    .FirstOrDefaultAsync(sc => sc.ServiceTypeCategoryId == serviceTypeCategoryId.Value 
-                                             && sc.Status == status 
-                                             && sc.IsActive);
-
-                if (categoryConfig != null)
-                {
-                    return new MoneyDistributionConfigDto
-                    {
-                        ClientPercentage = categoryConfig.ClientPercentage,
-                        ExpertPercentage = categoryConfig.ExpertPercentage,
-                        PlatformPercentage = categoryConfig.PlatformPercentage,
-                        Source = "service_type_category",
-                        ServiceTypeCategoryName = categoryConfig.ServiceTypeCategory?.Name,
-                        Status = status
-                    };
-                }
-            }
-
-            // 3. Buscar configuración por defecto por estado
-            var defaultConfig = await _context.AppointmentStatusConfigs
-                .FirstOrDefaultAsync(ac => ac.Status == status && ac.IsActive);
-
-            if (defaultConfig != null)
+            // Usar el nuevo sistema centralizado de estados
+            var config = await _systemStatusService.GetMoneyDistributionAsync(status, categoryId, serviceTypeCategoryId);
+            
+            if (config != null)
             {
                 return new MoneyDistributionConfigDto
                 {
-                    ClientPercentage = defaultConfig.ClientPercentage,
-                    ExpertPercentage = defaultConfig.ExpertPercentage,
-                    PlatformPercentage = defaultConfig.PlatformPercentage,
-                    Source = "appointment_status",
+                    ClientPercentage = config.ClientPercentage,
+                    ExpertPercentage = config.ExpertPercentage,
+                    PlatformPercentage = config.PlatformPercentage,
+                    Source = "centralized_status_system",
                     Status = status
                 };
             }
 
-            // 4. NO HAY CONFIGURACIÓN - FALLAR EN LUGAR DE INVENTAR VALORES
+            // NO HAY CONFIGURACIÓN - FALLAR EN LUGAR DE INVENTAR VALORES
             _logger.LogError("No money distribution configuration found for status: {Status}, categoryId: {CategoryId}, serviceTypeCategoryId: {ServiceTypeCategoryId}. Configuration must be created by admin.", 
                 status, categoryId, serviceTypeCategoryId);
             return null;

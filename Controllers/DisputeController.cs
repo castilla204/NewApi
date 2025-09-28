@@ -353,8 +353,8 @@ namespace newApi.Controllers
                                 CreatedAt = DateTime.UtcNow
                             });
 
-                            // Actualizar estado del SearchHire
-                            dispute.SearchHire.Status = "dispute-resolved";
+                            // Actualizar estado del SearchHire a disputa resuelta a favor del cliente
+                            dispute.SearchHire.Status = "dispute-resolved-client";
                             dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
                             break;
 
@@ -376,8 +376,8 @@ namespace newApi.Controllers
                                 });
                             }
 
-                            // Actualizar estado del SearchHire
-                            dispute.SearchHire.Status = "dispute-resolved";
+                            // Actualizar estado del SearchHire a disputa resuelta a favor del experto
+                            dispute.SearchHire.Status = "dispute-resolved-expert";
                             dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
                             break;
 

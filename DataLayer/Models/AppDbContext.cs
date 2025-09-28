@@ -46,9 +46,17 @@ namespace newApi.DataLayer.Models
         public DbSet<ProcessedWebhookEvent> ProcessedWebhookEvents { get; set; }
         public DbSet<Appointment> Appointments { get; set; }
         public DbSet<AppointmentTimer> AppointmentTimers { get; set; }
-        public DbSet<AppointmentStatusConfig> AppointmentStatusConfigs { get; set; }
-        public DbSet<ServiceTypeCategoryConfig> ServiceTypeCategoryConfigs { get; set; }
-        public DbSet<CategoryServiceTypeConfig> CategoryServiceTypeConfigs { get; set; }
+        public DbSet<DeliverableType> DeliverableTypes { get; set; }
+        public DbSet<SearchServiceDeliverableType> SearchServiceDeliverableTypes { get; set; }
+        // Tablas redundantes eliminadas - reemplazadas por StatusConfigurations
+        // public DbSet<AppointmentStatusConfig> AppointmentStatusConfigs { get; set; }
+        // public DbSet<ServiceTypeCategoryConfig> ServiceTypeCategoryConfigs { get; set; }
+        // public DbSet<CategoryServiceTypeConfig> CategoryServiceTypeConfigs { get; set; }
+        
+        // Nueva arquitectura de estados centralizados
+        public DbSet<SystemStatus> SystemStatuses { get; set; }
+        public DbSet<StatusMapping> StatusMappings { get; set; }
+        public DbSet<StatusConfiguration> StatusConfigurations { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -496,10 +504,6 @@ namespace newApi.DataLayer.Models
             modelBuilder.Entity<Appointment>(entity =>
             {
                 entity.HasKey(e => e.Id);
-                entity.Property(e => e.Status)
-                    .IsRequired()
-                    .HasMaxLength(50)
-                    .HasDefaultValue("awaiting_appointment");
                 entity.Property(e => e.Location)
                     .IsRequired()
                     .HasMaxLength(500);
@@ -524,9 +528,15 @@ namespace newApi.DataLayer.Models
                     .HasForeignKey<Appointment>(a => a.SearchHireId)
                     .OnDelete(DeleteBehavior.Cascade);
 
+                // Relación con SystemStatus
+                entity.HasOne(a => a.Status)
+                    .WithMany()
+                    .HasForeignKey(a => a.StatusId)
+                    .OnDelete(DeleteBehavior.Restrict);
+
                 // Índices
                 entity.HasIndex(e => e.SearchHireId);
-                entity.HasIndex(e => e.Status);
+                entity.HasIndex(e => e.StatusId);
                 entity.HasIndex(e => e.ProposedDate);
             });
 
@@ -557,6 +567,115 @@ namespace newApi.DataLayer.Models
                 entity.HasIndex(e => e.TimerType);
                 entity.HasIndex(e => e.EndTime);
                 entity.HasIndex(e => e.IsExpired);
+            });
+
+            // Configuración de la nueva arquitectura de estados
+            modelBuilder.Entity<SystemStatus>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => new { e.StatusType, e.StatusValue }).IsUnique();
+                entity.HasIndex(e => e.StatusType);
+                entity.HasIndex(e => e.IsActive);
+            });
+
+            modelBuilder.Entity<StatusMapping>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                
+                // Relación SourceStatus
+                entity.HasOne(sm => sm.SourceStatus)
+                    .WithMany(ss => ss.SourceMappings)
+                    .HasForeignKey(sm => sm.SourceStatusId)
+                    .OnDelete(DeleteBehavior.Restrict);
+                
+                // Relación TargetStatus
+                entity.HasOne(sm => sm.TargetStatus)
+                    .WithMany(ts => ts.TargetMappings)
+                    .HasForeignKey(sm => sm.TargetStatusId)
+                    .OnDelete(DeleteBehavior.Restrict);
+                
+                entity.HasIndex(e => new { e.SourceStatusId, e.TargetStatusId }).IsUnique();
+                entity.HasIndex(e => e.IsActive);
+            });
+
+            modelBuilder.Entity<StatusConfiguration>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                
+                // Relación con SystemStatus
+                entity.HasOne(sc => sc.Status)
+                    .WithMany(ss => ss.StatusConfigurations)
+                    .HasForeignKey(sc => sc.StatusId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                
+                // Relación con Category (opcional)
+                entity.HasOne(sc => sc.Category)
+                    .WithMany()
+                    .HasForeignKey(sc => sc.CategoryId)
+                    .OnDelete(DeleteBehavior.SetNull);
+                
+                // Relación con ServiceTypeCategory (opcional)
+                entity.HasOne(sc => sc.ServiceTypeCategory)
+                    .WithMany()
+                    .HasForeignKey(sc => sc.ServiceTypeCategoryId)
+                    .OnDelete(DeleteBehavior.SetNull);
+                
+                entity.HasIndex(e => new { e.StatusId, e.CategoryId, e.ServiceTypeCategoryId }).IsUnique();
+                entity.HasIndex(e => e.IsActive);
+            });
+
+            // Configuración para DeliverableType
+            modelBuilder.Entity<DeliverableType>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Name)
+                    .IsRequired()
+                    .HasMaxLength(50);
+                entity.Property(e => e.DisplayName)
+                    .IsRequired()
+                    .HasMaxLength(100);
+                entity.Property(e => e.Description)
+                    .HasMaxLength(500);
+                entity.Property(e => e.IsRequired)
+                    .HasDefaultValue(false);
+                entity.Property(e => e.IsActive)
+                    .HasDefaultValue(true);
+                entity.Property(e => e.CreatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.UpdatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                
+                // Índice único para Name
+                entity.HasIndex(e => e.Name)
+                    .IsUnique();
+            });
+
+            // Configuración para SearchServiceDeliverableType
+            modelBuilder.Entity<SearchServiceDeliverableType>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.IsSelected)
+                    .HasDefaultValue(false);
+                entity.Property(e => e.CreatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.UpdatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                
+                // Relación con SearchService
+                entity.HasOne(ssdt => ssdt.SearchService)
+                    .WithMany(ss => ss.SelectedDeliverableTypes)
+                    .HasForeignKey(ssdt => ssdt.SearchServiceId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                
+                // Relación con DeliverableType
+                entity.HasOne(ssdt => ssdt.DeliverableType)
+                    .WithMany(dt => dt.SearchServiceDeliverableTypes)
+                    .HasForeignKey(ssdt => ssdt.DeliverableTypeId)
+                    .OnDelete(DeleteBehavior.Restrict);
+                
+                // Índice único para evitar duplicados
+                entity.HasIndex(e => new { e.SearchServiceId, e.DeliverableTypeId })
+                    .IsUnique();
             });
         }
     }

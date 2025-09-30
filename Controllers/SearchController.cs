@@ -231,164 +231,169 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Service not found" });
                 }
 
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
+                // Usar la estrategia de ejecución de Entity Framework para manejar transacciones
+                var strategy = _context.Database.CreateExecutionStrategy();
+                return await strategy.ExecuteAsync(async () =>
                 {
-                    if (user.Balance >= service.Price)
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
                     {
-                        var search = new Search
+                        if (user.Balance >= service.Price)
                         {
-                            UserId = userId,
-                            Frequency = searchDto.Frequency,
-                            Title = searchDto.Title,
-                            Description = searchDto.Description,
-                            IsActive = searchDto.IsActive,
-                            NextExecution = DateTime.UtcNow,
-                            StartDate = searchDto.StartDate,
-                            CreatedAt = DateTime.UtcNow
-                        };
-                        await _context.Searches.AddAsync(search);
-                        await _context.SaveChangesAsync(); // Save Search to generate Search.Id
-
-                        var searchParameter = new SearchParameter
-                        {
-                            Keywords = parameterDto.Keywords,
-                            UserSearch = parameterDto.UserSearch,
-                            Latitude = parameterDto.Latitude,
-                            Longitude = parameterDto.Longitude,
-                            LocationName = parameterDto.LocationName, // ✅ NUEVO: Incluir LocationName
-                            ShippingAvailable = parameterDto.ShippingAvailable,
-                            StrictMatchOnly = parameterDto.StrictMatchOnly,
-                            Category = parameterDto.Category,
-                            LocationRange = parameterDto.LocationRange,
-                            MinPrice = parameterDto.MinPrice,
-                            MaxPrice = parameterDto.MaxPrice,
-                            BrandId = parameterDto.BrandId,
-                            ModelId = parameterDto.ModelId,
-                            ServiceTypeId = parameterDto.ServiceTypeId,
-                            SearchId = search.Id
-                        };
-                        await _context.SearchParameters.AddAsync(searchParameter);
-                        await _context.SaveChangesAsync(); // Save SearchParameter to generate SearchParameterId
-
-                        if (parameterDto.PlatformIds != null && parameterDto.PlatformIds.Any())
-                        {
-                            var platforms = await _context.Platforms
-                                .Where(p => parameterDto.PlatformIds.Contains(p.Id))
-                                .ToListAsync();
-                            if (platforms.Count != parameterDto.PlatformIds.Count)
+                            var search = new Search
                             {
-                                return BadRequest(new { message = "Some platform IDs are invalid" });
-                            }
-                            foreach (var platform in platforms)
+                                UserId = userId,
+                                Frequency = searchDto.Frequency,
+                                Title = searchDto.Title,
+                                Description = searchDto.Description,
+                                IsActive = searchDto.IsActive,
+                                NextExecution = DateTime.UtcNow,
+                                StartDate = searchDto.StartDate,
+                                CreatedAt = DateTime.UtcNow
+                            };
+                            await _context.Searches.AddAsync(search);
+                            await _context.SaveChangesAsync(); // Save Search to generate Search.Id
+
+                            var searchParameter = new SearchParameter
                             {
-                                _context.SearchParameterPlatforms.Add(new SearchParameterPlatform
+                                Keywords = parameterDto.Keywords,
+                                UserSearch = parameterDto.UserSearch,
+                                Latitude = parameterDto.Latitude,
+                                Longitude = parameterDto.Longitude,
+                                LocationName = parameterDto.LocationName, // ✅ NUEVO: Incluir LocationName
+                                ShippingAvailable = parameterDto.ShippingAvailable,
+                                StrictMatchOnly = parameterDto.StrictMatchOnly,
+                                Category = parameterDto.Category,
+                                LocationRange = parameterDto.LocationRange,
+                                MinPrice = parameterDto.MinPrice,
+                                MaxPrice = parameterDto.MaxPrice,
+                                BrandId = parameterDto.BrandId,
+                                ModelId = parameterDto.ModelId,
+                                ServiceTypeId = parameterDto.ServiceTypeId,
+                                SearchId = search.Id
+                            };
+                            await _context.SearchParameters.AddAsync(searchParameter);
+                            await _context.SaveChangesAsync(); // Save SearchParameter to generate SearchParameterId
+
+                            if (parameterDto.PlatformIds != null && parameterDto.PlatformIds.Any())
+                            {
+                                var platforms = await _context.Platforms
+                                    .Where(p => parameterDto.PlatformIds.Contains(p.Id))
+                                    .ToListAsync();
+                                if (platforms.Count != parameterDto.PlatformIds.Count)
                                 {
-                                    SearchParameterId = searchParameter.SearchParameterId,
-                                    PlatformId = platform.Id
-                                });
-                            }
-                        }
-
-                        var expertProfile = await _context.ExpertProfiles
-                        .FirstOrDefaultAsync(z => z.Id == service.ExpertProfileId);
-
-                        var expertuserid = expertProfile?.UserId ?? 0;
-
-                        // Validar que el experto no se contrate a sí mismo
-                        if (expertuserid == userId)
-                        {
-                            return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
-                        }
-
-                        var searchHire = new SearchHire
-                        {
-                            ClientId = userId,
-                            ExpertId = expertuserid,
-                            SearchServiceId = service.Id,
-                            SearchId = search.Id,
-                            Status = SearchHireStatus.Pending.ToStringValue(),
-                            Amount = service.Price,
-                            CreatedAt = DateTime.UtcNow,
-                            CompletionDeadline = DateTime.UtcNow.AddDays(7)
-                        };
-                        _context.SearchHires.Add(searchHire);
-
-                        user.Balance -= service.Price;
-                        _context.FinancialTransactions.Add(new FinancialTransaction
-                        {
-                            UserId = userId,
-                            Amount = -service.Price,
-                            TransactionType = "ServicePayment",
-                            RelatedEntityType = "SearchHire",
-                            RelatedEntityId = searchHire.Id,
-                            CreatedAt = DateTime.UtcNow
-                        });
-
-                        await _context.SaveChangesAsync();
-                        await transaction.CommitAsync();
-
-                        return Ok(new { message = "Search created and service hired successfully", searchId = search.Id, searchHireId = searchHire.Id });
-                    }
-                    else
-                    {
-                        // 💳 SIEMPRE PAGAR CON STRIPE - NO USAR SALDO INTERNO
-                        var amountToCharge = service.Price;
-
-                        var domain = "https://atrapo.io";
-                        var options = new SessionCreateOptions
-                        {
-                            PaymentMethodTypes = new List<string> { "card" },
-                            LineItems = new List<SessionLineItemOptions>
-                            {
-                                new SessionLineItemOptions
-                                {
-                                    PriceData = new SessionLineItemPriceDataOptions
-                                    {
-                                        Currency = "eur",
-                                        UnitAmount = (long)(amountToCharge * 100),
-                                        ProductData = new SessionLineItemPriceDataProductDataOptions
-                                        {
-                                            Name = $"Payment for Service {service.Id}"
-                                        }
-                                    },
-                                    Quantity = 1
+                                    return BadRequest(new { message = "Some platform IDs are invalid" });
                                 }
-                            },
-                            Mode = "payment",
-                            SuccessUrl = $"{domain}/success?userId={userId}&serviceId={service.Id}",
-                            CancelUrl = $"{domain}/cancel",
-                            CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "unknown@example.com",
-                            Metadata = new Dictionary<string, string>
-                            {
-                                { "userId", userId.ToString() },
-                                { "serviceId", service.Id.ToString() },
-                                { "amount", amountToCharge.ToString() },
-                                { "pendingHire", "true" },
-                                { "searchData", JsonSerializer.Serialize(searchDto) },
-                                { "parameters", JsonSerializer.Serialize(parameterDto) }
+                                foreach (var platform in platforms)
+                                {
+                                    _context.SearchParameterPlatforms.Add(new SearchParameterPlatform
+                                    {
+                                        SearchParameterId = searchParameter.SearchParameterId,
+                                        PlatformId = platform.Id
+                                    });
+                                }
                             }
-                        };
 
-                        var serviceStripe = new SessionService();
-                        var session = await serviceStripe.CreateAsync(options);
-                        await transaction.CommitAsync();
+                            var expertProfile = await _context.ExpertProfiles
+                            .FirstOrDefaultAsync(z => z.Id == service.ExpertProfileId);
 
-                        return Ok(new { url = session.Url });
+                            var expertuserid = expertProfile?.UserId ?? 0;
+
+                            // Validar que el experto no se contrate a sí mismo
+                            if (expertuserid == userId)
+                            {
+                                return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
+                            }
+
+                            var searchHire = new SearchHire
+                            {
+                                ClientId = userId,
+                                ExpertId = expertuserid,
+                                SearchServiceId = service.Id,
+                                SearchId = search.Id,
+                                Status = SearchHireStatus.Pending.ToStringValue(),
+                                Amount = service.Price,
+                                CreatedAt = DateTime.UtcNow,
+                                CompletionDeadline = DateTime.UtcNow.AddDays(7)
+                            };
+                            _context.SearchHires.Add(searchHire);
+
+                            user.Balance -= service.Price;
+                            _context.FinancialTransactions.Add(new FinancialTransaction
+                            {
+                                UserId = userId,
+                                Amount = -service.Price,
+                                TransactionType = "ServicePayment",
+                                RelatedEntityType = "SearchHire",
+                                RelatedEntityId = searchHire.Id,
+                                CreatedAt = DateTime.UtcNow
+                            });
+
+                            await _context.SaveChangesAsync();
+                            await transaction.CommitAsync();
+
+                            return Ok(new { message = "Search created and service hired successfully", searchId = search.Id, searchHireId = searchHire.Id });
+                        }
+                        else
+                        {
+                            // 💳 SIEMPRE PAGAR CON STRIPE - NO USAR SALDO INTERNO
+                            var amountToCharge = service.Price;
+
+                            var domain = "https://atrapo.io";
+                            var options = new SessionCreateOptions
+                            {
+                                PaymentMethodTypes = new List<string> { "card" },
+                                LineItems = new List<SessionLineItemOptions>
+                                {
+                                    new SessionLineItemOptions
+                                    {
+                                        PriceData = new SessionLineItemPriceDataOptions
+                                        {
+                                            Currency = "eur",
+                                            UnitAmount = (long)(amountToCharge * 100),
+                                            ProductData = new SessionLineItemPriceDataProductDataOptions
+                                            {
+                                                Name = $"Payment for Service {service.Id}"
+                                            }
+                                        },
+                                        Quantity = 1
+                                    }
+                                },
+                                Mode = "payment",
+                                SuccessUrl = $"{domain}/success?userId={userId}&serviceId={service.Id}",
+                                CancelUrl = $"{domain}/cancel",
+                                CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "unknown@example.com",
+                                Metadata = new Dictionary<string, string>
+                                {
+                                    { "userId", userId.ToString() },
+                                    { "serviceId", service.Id.ToString() },
+                                    { "amount", amountToCharge.ToString() },
+                                    { "pendingHire", "true" },
+                                    { "searchData", JsonSerializer.Serialize(searchDto) },
+                                    { "parameters", JsonSerializer.Serialize(parameterDto) }
+                                }
+                            };
+
+                            var serviceStripe = new SessionService();
+                            var session = await serviceStripe.CreateAsync(options);
+                            await transaction.CommitAsync();
+
+                            return Ok(new { url = session.Url });
+                        }
                     }
-                }
-                catch (StripeException ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Stripe error creating checkout session for userId={UserId}, serviceId={ServiceId}", userId, searchDto.ServiceId);
-                    return StatusCode(500, new { message = ex.Message });
-                }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Error creating search with hire for userId={UserId}", userId);
-                    return StatusCode(500, new { message = ex.Message });
-                }
+                        catch (StripeException ex)
+                        {
+                            await transaction.RollbackAsync();
+                            _logger.LogError(ex, "Stripe error creating checkout session for userId={UserId}, serviceId={ServiceId}", userId, searchDto.ServiceId);
+                            return StatusCode(500, new { message = ex.Message });
+                        }
+                        catch (Exception ex)
+                        {
+                            await transaction.RollbackAsync();
+                            _logger.LogError(ex, "Error creating search with hire for userId={UserId}", userId);
+                            return StatusCode(500, new { message = ex.Message });
+                        }
+                    });
             }
             catch (Exception ex)
             {
@@ -618,7 +623,7 @@ namespace newApi.Controllers
                         }
 
                         // Verificar si hay cita pendiente
-                        if (search.SearchHire.Appointment != null)
+                        if (search.SearchHire.Appointment != null && search.SearchHire.Appointment.Status != null)
                         {
                             var pendingStatuses = new[] { 
                                 "awaiting_appointment", 
@@ -691,7 +696,7 @@ namespace newApi.Controllers
 
             // Calcular citas pendientes
             var pendingAppointments = await userSearches
-                .Where(s => s.SearchHire != null && s.SearchHire.Appointment != null)
+                .Where(s => s.SearchHire != null && s.SearchHire.Appointment != null && s.SearchHire.Appointment.Status != null)
                 .CountAsync(s => new[] { 
                     "awaiting_appointment", 
                     "appointment_proposed", 
@@ -886,7 +891,7 @@ namespace newApi.Controllers
                     }
 
                     // Verificar si hay cita pendiente
-                    if (search.SearchHire.Appointment != null)
+                    if (search.SearchHire.Appointment != null && search.SearchHire.Appointment.Status != null)
                     {
                         var pendingStatuses = new[] { 
                             "awaiting_appointment", 

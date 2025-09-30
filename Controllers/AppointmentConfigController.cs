@@ -1057,6 +1057,7 @@ namespace newApi.Controllers
         }
 
 
+
         /// <summary>
         /// Obtener configuración de distribución de dinero con sistema de prioridades
         /// </summary>
@@ -1214,7 +1215,7 @@ namespace newApi.Controllers
         {
             return statusValue switch
             {
-                "appointment_completed" => 0,
+                "appointment_awaiting_report" => 0,
                 "appointment_cancelled_by_client" => 20,
                 "appointment_cancelled_by_client_second" => 100,
                 "appointment_cancelled_by_expert" => 100,
@@ -1232,7 +1233,7 @@ namespace newApi.Controllers
         {
             return statusValue switch
             {
-                "appointment_completed" => 80,
+                "appointment_awaiting_report" => 80,
                 "appointment_cancelled_by_client" => 20,
                 "appointment_cancelled_by_client_second" => 0,
                 "appointment_cancelled_by_expert" => 0,
@@ -1250,7 +1251,7 @@ namespace newApi.Controllers
         {
             return statusValue switch
             {
-                "appointment_completed" => 20,
+                "appointment_awaiting_report" => 20,
                 "appointment_cancelled_by_client" => 60,
                 "appointment_cancelled_by_client_second" => 0,
                 "appointment_cancelled_by_expert" => 0,

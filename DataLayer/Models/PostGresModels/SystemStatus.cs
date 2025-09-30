@@ -43,3 +43,4 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual ICollection<StatusConfiguration> StatusConfigurations { get; set; } = new List<StatusConfiguration>();
     }
 }
+

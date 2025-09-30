@@ -25,3 +25,4 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual SystemStatus TargetStatus { get; set; } = null!;
     }
 }
+

@@ -14,3 +14,4 @@ namespace newApi.DataLayer.Models.DTOs
         public string Status { get; set; } = string.Empty;
     }
 }
+

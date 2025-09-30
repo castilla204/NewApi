@@ -33,3 +33,4 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual ICollection<SearchServiceDeliverableType> SearchServiceDeliverableTypes { get; set; } = new List<SearchServiceDeliverableType>();
     }
 }
+

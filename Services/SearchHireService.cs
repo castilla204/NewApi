@@ -57,20 +57,84 @@ namespace newApi.Services
             return hires.Select(MapToResponseDto).ToList();
         }
 
-        public async Task<bool> UpdateHireStatus(int userId, int hireId, string status)
+        public async Task<(bool Success, string ErrorMessage)> UpdateHireStatus(int userId, int hireId, string status)
         {
-            var hire = await _context.SearchHires.FindAsync(hireId);
-            if (hire == null || hire.ExpertId != userId)
-                return false;
+            var hire = await _context.SearchHires
+                .Include(sh => sh.SearchService)
+                    .ThenInclude(ss => ss.SelectedDeliverableTypes)
+                        .ThenInclude(ssdt => ssdt.DeliverableType)
+                .Include(sh => sh.Deliverables)
+                .FirstOrDefaultAsync(sh => sh.Id == hireId && sh.ExpertId == userId);
+            
+            if (hire == null)
+                return (false, "Servicio no encontrado o no tienes permisos para modificarlo");
 
-            hire.Status = status;
+            // Validar archivos obligatorios cuando se cambia a "Completed"
             if (status == "Completed")
             {
+                var validationResult = await ValidateRequiredDeliverables(hire);
+                if (!validationResult.IsValid)
+                {
+                    _logger.LogWarning("Cannot complete SearchHire {HireId}: {ValidationError}", hireId, validationResult.ErrorMessage);
+                    return (false, validationResult.ErrorMessage);
+                }
+                
                 hire.UpdatedAt = DateTime.UtcNow;
             }
 
+            hire.Status = status;
             await _context.SaveChangesAsync();
-            return true;
+            return (true, string.Empty);
+        }
+
+        private async Task<(bool IsValid, string ErrorMessage)> ValidateRequiredDeliverables(SearchHire hire)
+        {
+            try
+            {
+                // Obtener los tipos de entregables requeridos para este servicio
+                var requiredDeliverableTypes = hire.SearchService.SelectedDeliverableTypes
+                    .Where(ssdt => ssdt.IsSelected)
+                    .Select(ssdt => ssdt.DeliverableType)
+                    .ToList();
+
+                if (!requiredDeliverableTypes.Any())
+                {
+                    return (false, "No se encontraron tipos de entregables configurados para este servicio");
+                }
+
+                // Obtener los archivos ya subidos
+                var uploadedDeliverables = hire.Deliverables.ToList();
+
+                // Verificar PDF obligatorio
+                var pdfType = requiredDeliverableTypes.FirstOrDefault(dt => dt.Name == "PDF");
+                if (pdfType != null)
+                {
+                    var hasPdf = uploadedDeliverables.Any(d => d.Type == "pdf");
+                    if (!hasPdf)
+                    {
+                        return (false, "Es obligatorio subir un archivo PDF antes de completar el servicio");
+                    }
+                }
+
+                // Verificar video si está configurado
+                var videoType = requiredDeliverableTypes.FirstOrDefault(dt => dt.Name == "Video");
+                if (videoType != null)
+                {
+                    var hasVideo = uploadedDeliverables.Any(d => d.Type == "video");
+                    if (!hasVideo)
+                    {
+                        return (false, "Es obligatorio subir un archivo de video antes de completar el servicio");
+                    }
+                }
+
+                _logger.LogInformation("All required deliverables validated for SearchHire {HireId}", hire.Id);
+                return (true, string.Empty);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error validating required deliverables for SearchHire {HireId}", hire.Id);
+                return (false, "Error interno al validar los archivos obligatorios");
+            }
         }
 
         private static SearchHireResponseDto MapToResponseDto(SearchHire hire)

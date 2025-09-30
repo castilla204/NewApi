@@ -331,10 +331,10 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                var success = await _searchHireService.UpdateHireStatus(userId, hireId, request.Status);
-                if (!success)
+                var result = await _searchHireService.UpdateHireStatus(userId, hireId, request.Status);
+                if (!result.Success)
                 {
-                    return BadRequest(new { message = "Failed to update status" });
+                    return BadRequest(new { message = result.ErrorMessage });
                 }
 
                 return Ok(new { message = "Status updated successfully" });

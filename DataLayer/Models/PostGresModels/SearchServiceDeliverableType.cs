@@ -26,3 +26,4 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual DeliverableType DeliverableType { get; set; }
     }
 }
+

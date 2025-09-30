@@ -207,6 +207,33 @@ namespace newApi.Controllers
             }
         }
 
+        /// <summary>
+        /// Subir reporte del experto (Experto)
+        /// </summary>
+        [HttpPost("submit-report/{appointmentId}")]
+        public async Task<IActionResult> SubmitExpertReport(int appointmentId, [FromBody] SubmitExpertReportDto dto)
+        {
+            try
+            {
+                var userId = GetCurrentUserId();
+                var appointment = await _appointmentService.SubmitExpertReportAsync(appointmentId, userId, dto.Notes);
+                return Ok(appointment);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = "Only the expert can submit reports" });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error submitting expert report for appointment: {AppointmentId}", appointmentId);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
+        }
+
 
 
         #region Admin Endpoints

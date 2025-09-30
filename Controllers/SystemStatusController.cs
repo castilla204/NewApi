@@ -362,6 +362,275 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// Actualiza un estado del sistema (Solo Admin)
+        /// </summary>
+        [HttpPut("statuses/{statusId}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> UpdateStatus(int statusId, [FromBody] UpdateSystemStatusRequest request)
+        {
+            try
+            {
+                var status = await _context.SystemStatuses.FindAsync(statusId);
+                if (status == null)
+                {
+                    return NotFound(new { message = "Estado no encontrado" });
+                }
+
+                // Validar que no exista otro estado con el mismo StatusValue en el mismo StatusType
+                var existingStatus = await _context.SystemStatuses
+                    .FirstOrDefaultAsync(s => s.StatusType == request.StatusType && 
+                                            s.StatusValue == request.StatusValue &&
+                                            s.Id != statusId);
+
+                if (existingStatus != null)
+                {
+                    return BadRequest(new { message = $"Ya existe un estado con el valor '{request.StatusValue}' en el tipo '{request.StatusType}'" });
+                }
+
+                // Actualizar campos
+                status.StatusType = request.StatusType;
+                status.StatusName = request.StatusName;
+                status.StatusValue = request.StatusValue;
+                status.DisplayName = request.DisplayName;
+                status.Description = request.Description;
+                status.SortOrder = request.SortOrder;
+                status.IsActive = request.IsActive;
+                status.UpdatedAt = DateTime.UtcNow;
+
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Updated system status: {StatusType} - {StatusValue}", 
+                    request.StatusType, request.StatusValue);
+
+                return Ok(new
+                {
+                    status.Id,
+                    status.StatusType,
+                    status.StatusName,
+                    status.StatusValue,
+                    status.DisplayName,
+                    status.Description,
+                    status.SortOrder,
+                    status.IsActive,
+                    status.UpdatedAt
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating system status");
+                return StatusCode(500, new { message = "Error interno del servidor" });
+            }
+        }
+
+        /// <summary>
+        /// Elimina un estado del sistema (Solo Admin)
+        /// </summary>
+        [HttpDelete("statuses/{statusId}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> DeleteStatus(int statusId)
+        {
+            try
+            {
+                var status = await _context.SystemStatuses.FindAsync(statusId);
+                if (status == null)
+                {
+                    return NotFound(new { message = "Estado no encontrado" });
+                }
+
+                // Verificar si hay mapeos que usan este estado
+                var hasMappings = await _context.StatusMappings
+                    .AnyAsync(sm => sm.SourceStatusId == statusId || sm.TargetStatusId == statusId);
+
+                if (hasMappings)
+                {
+                    return BadRequest(new { message = "No se puede eliminar el estado porque tiene mapeos asociados" });
+                }
+
+                // Verificar si hay configuraciones que usan este estado
+                var hasConfigurations = await _context.StatusConfigurations
+                    .AnyAsync(sc => sc.StatusId == statusId);
+
+                if (hasConfigurations)
+                {
+                    return BadRequest(new { message = "No se puede eliminar el estado porque tiene configuraciones asociadas" });
+                }
+
+                _context.SystemStatuses.Remove(status);
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Deleted system status: {StatusType} - {StatusValue}", 
+                    status.StatusType, status.StatusValue);
+
+                return Ok(new { message = "Estado eliminado exitosamente" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error deleting system status");
+                return StatusCode(500, new { message = "Error interno del servidor" });
+            }
+        }
+
+        /// <summary>
+        /// Actualiza un mapeo de estados (Solo Admin)
+        /// </summary>
+        [HttpPut("mappings/{mappingId}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> UpdateStatusMapping(int mappingId, [FromBody] UpdateStatusMappingRequest request)
+        {
+            try
+            {
+                var mapping = await _context.StatusMappings
+                    .Include(sm => sm.SourceStatus)
+                    .Include(sm => sm.TargetStatus)
+                    .FirstOrDefaultAsync(sm => sm.Id == mappingId);
+
+                if (mapping == null)
+                {
+                    return NotFound(new { message = "Mapeo no encontrado" });
+                }
+
+                // Validar que los estados existan
+                var sourceStatus = await _context.SystemStatuses.FindAsync(request.SourceStatusId);
+                var targetStatus = await _context.SystemStatuses.FindAsync(request.TargetStatusId);
+
+                if (sourceStatus == null || targetStatus == null)
+                {
+                    var missingStatuses = new List<string>();
+                    if (sourceStatus == null) missingStatuses.Add($"SourceStatusId: {request.SourceStatusId}");
+                    if (targetStatus == null) missingStatuses.Add($"TargetStatusId: {request.TargetStatusId}");
+                    
+                    return BadRequest(new { 
+                        message = "Uno o ambos estados no existen",
+                        missingStatuses = missingStatuses,
+                        availableStatuses = await _context.SystemStatuses
+                            .Where(s => s.IsActive)
+                            .Select(s => new { s.Id, s.StatusType, s.StatusValue, s.DisplayName })
+                            .ToListAsync()
+                    });
+                }
+
+                // Validar que no exista ya el mapeo (excluyendo el actual)
+                var existingMapping = await _context.StatusMappings
+                    .FirstOrDefaultAsync(sm => sm.SourceStatusId == request.SourceStatusId && 
+                                             sm.TargetStatusId == request.TargetStatusId &&
+                                             sm.Id != mappingId);
+
+                if (existingMapping != null)
+                {
+                    return BadRequest(new { message = "Ya existe este mapeo de estados" });
+                }
+
+                // Actualizar campos
+                mapping.SourceStatusId = request.SourceStatusId;
+                mapping.TargetStatusId = request.TargetStatusId;
+                mapping.IsActive = request.IsActive;
+
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Updated status mapping: {SourceStatus} → {TargetStatus}", 
+                    sourceStatus.StatusValue, targetStatus.StatusValue);
+
+                return Ok(new
+                {
+                    mapping.Id,
+                    SourceStatus = new { sourceStatus.Id, sourceStatus.StatusValue, sourceStatus.DisplayName },
+                    TargetStatus = new { targetStatus.Id, targetStatus.StatusValue, targetStatus.DisplayName },
+                    mapping.IsActive
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating status mapping");
+                return StatusCode(500, new { message = "Error interno del servidor" });
+            }
+        }
+
+        /// <summary>
+        /// Elimina un mapeo de estados (Solo Admin)
+        /// </summary>
+        [HttpDelete("mappings/{mappingId}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> DeleteStatusMapping(int mappingId)
+        {
+            try
+            {
+                var mapping = await _context.StatusMappings
+                    .Include(sm => sm.SourceStatus)
+                    .Include(sm => sm.TargetStatus)
+                    .FirstOrDefaultAsync(sm => sm.Id == mappingId);
+
+                if (mapping == null)
+                {
+                    return NotFound(new { message = "Mapeo no encontrado" });
+                }
+
+                _context.StatusMappings.Remove(mapping);
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Deleted status mapping: {SourceStatus} → {TargetStatus}", 
+                    mapping.SourceStatus.StatusValue, mapping.TargetStatus.StatusValue);
+
+                return Ok(new { message = "Mapeo eliminado exitosamente" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error deleting status mapping");
+                return StatusCode(500, new { message = "Error interno del servidor" });
+            }
+        }
+
+        /// <summary>
+        /// Endpoint temporal para debug - verificar estados y mapeos existentes
+        /// </summary>
+        [HttpGet("debug-info")]
+        public async Task<IActionResult> GetDebugInfo()
+        {
+            try
+            {
+                var statuses = await _context.SystemStatuses
+                    .Where(s => s.IsActive)
+                    .OrderBy(s => s.StatusType)
+                    .ThenBy(s => s.SortOrder)
+                    .Select(s => new
+                    {
+                        s.Id,
+                        s.StatusType,
+                        s.StatusValue,
+                        s.DisplayName,
+                        s.Description,
+                        s.SortOrder
+                    })
+                    .ToListAsync();
+
+                var mappings = await _context.StatusMappings
+                    .Include(sm => sm.SourceStatus)
+                    .Include(sm => sm.TargetStatus)
+                    .Where(sm => sm.IsActive)
+                    .Select(sm => new
+                    {
+                        sm.Id,
+                        SourceStatus = new { sm.SourceStatus.Id, sm.SourceStatus.StatusValue, sm.SourceStatus.DisplayName },
+                        TargetStatus = new { sm.TargetStatus.Id, sm.TargetStatus.StatusValue, sm.TargetStatus.DisplayName },
+                        sm.IsActive
+                    })
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    Statuses = statuses,
+                    Mappings = mappings,
+                    TotalStatuses = statuses.Count,
+                    TotalMappings = mappings.Count
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting debug info");
+                return StatusCode(500, new { message = "Error interno del servidor" });
+            }
+        }
+
+        /// <summary>
         /// Prueba la obtención de configuración de distribución de dinero
         /// </summary>
         [HttpGet("test-distribution")]
@@ -409,10 +678,28 @@ namespace newApi.Controllers
         public int SortOrder { get; set; } = 0;
     }
 
+    public class UpdateSystemStatusRequest
+    {
+        public string StatusType { get; set; } = string.Empty;
+        public string StatusName { get; set; } = string.Empty;
+        public string StatusValue { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public int SortOrder { get; set; } = 0;
+        public bool IsActive { get; set; } = true;
+    }
+
     public class CreateStatusMappingRequest
     {
         public int SourceStatusId { get; set; }
         public int TargetStatusId { get; set; }
+    }
+
+    public class UpdateStatusMappingRequest
+    {
+        public int SourceStatusId { get; set; }
+        public int TargetStatusId { get; set; }
+        public bool IsActive { get; set; } = true;
     }
 
     public class CreateStatusConfigurationRequest

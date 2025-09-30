@@ -7,6 +7,6 @@ namespace newApi.Services
     {
         Task<IEnumerable<SearchHireResponseDto>> GetClientHires(int userId);
         Task<IEnumerable<SearchHireResponseDto>> GetExpertHires(int userId);
-        Task<bool> UpdateHireStatus(int userId, int hireId, string status);
+        Task<(bool Success, string ErrorMessage)> UpdateHireStatus(int userId, int hireId, string status);
     }
 }

@@ -200,7 +200,7 @@ namespace newApi.Services
         {
             return appointmentStatus switch
             {
-                AppointmentStatus.AppointmentCompleted => SearchHireStatus.AwaitingClientDecision,
+                AppointmentStatus.AppointmentAwaitingReport => SearchHireStatus.AwaitingClientDecision,
                 AppointmentStatus.AppointmentCancelledByClient => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCancelledByClientSecond => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCancelledByExpert => SearchHireStatus.Cancelled,

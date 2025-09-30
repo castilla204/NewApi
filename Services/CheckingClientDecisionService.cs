@@ -64,7 +64,7 @@ namespace newApi.Services
             }
 
                 // 🎯 USAR SISTEMA DE CONFIGURACIONES EN LUGAR DE COMISIÓN FIJA
-                var config = await GetMoneyDistributionConfigAsync("appointment_completed", 
+                var config = await GetMoneyDistributionConfigAsync("appointment_awaiting_report", 
                     searchHire.SearchService?.CategoryId, 
                     searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
                 

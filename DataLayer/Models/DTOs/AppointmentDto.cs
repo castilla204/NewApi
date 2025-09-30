@@ -100,6 +100,14 @@ namespace newApi.DataLayer.Models.DTOs
         public string Reason { get; set; } = string.Empty;
     }
 
+    /// <summary>
+    /// DTO para subir reporte del experto
+    /// </summary>
+    public class SubmitExpertReportDto
+    {
+        public string? Notes { get; set; }
+    }
+
 
 
     /// <summary>

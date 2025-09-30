@@ -65,11 +65,11 @@ builder.Configuration["GoogleCloud:BucketName"] = "atrapobucket";
 // Configurar la cadena de conexi�n seg�n el entorno
 if (builder.Environment.IsDevelopment())
 {
-    builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=185.166.39.4;Port=30000;Username=admin;Password=Pedrohabo1//;Database=atrapo";
+    builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=185.166.39.4;Port=30000;Username=admin;Password=Pedrohabo1//;Database=atrapo;Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
 }
 else
 {
-    builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=185.166.39.4;Port=30000;Username=admin;Password=Pedrohabo1//;Database=atrapo";
+    builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=185.166.39.4;Port=30000;Username=admin;Password=Pedrohabo1//;Database=atrapo;Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
 }
 
 // Add services to the container
@@ -162,7 +162,11 @@ builder.Services.AddAuthentication(options =>
 
 // Configure PostgreSQL
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("PostgresConnection")));
+    options.UseNpgsql(builder.Configuration.GetConnectionString("PostgresConnection"), npgsqlOptions =>
+    {
+        npgsqlOptions.CommandTimeout(30);
+        npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null);
+    }));
 
 // Configure Google Cloud Storage
 builder.Services.AddSingleton(StorageClient.Create());
@@ -204,7 +208,13 @@ builder.Services.AddHangfire(config => config
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
     .UseRecommendedSerializerSettings()
-    .UsePostgreSqlStorage(builder.Configuration.GetConnectionString("PostgresConnection")));
+    .UsePostgreSqlStorage(builder.Configuration.GetConnectionString("PostgresConnection"), new PostgreSqlStorageOptions
+    {
+        QueuePollInterval = TimeSpan.FromSeconds(15),
+        InvisibilityTimeout = TimeSpan.FromMinutes(30),
+        DistributedLockTimeout = TimeSpan.FromMinutes(10),
+        PrepareSchemaIfNecessary = true
+    }));
 
 builder.Services.AddHangfireServer();
 
@@ -234,6 +244,9 @@ builder.Services.AddScoped<SearchServiceService>();
 builder.Services.AddScoped<SearchHireService>();
 
 builder.Services.AddHttpClient();
+
+// Add Health Checks
+builder.Services.AddHealthChecks();
 
 // Register AutoMapper
 builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly, typeof(PlatformMappingProfile).Assembly, typeof(CategoryMappingProfile).Assembly);
@@ -276,6 +289,10 @@ if (app.Environment.IsDevelopment())
 app.UseCors("AllowSpecificOrigin"); // Aplicar CORS antes de otros middleware
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Add health check endpoint
+app.MapHealthChecks("/health");
+
 app.MapControllers();
 app.MapHub<ChatHub>("/chatHub");
 

@@ -97,17 +97,22 @@ namespace newApi.Controllers
                     var isExpert = searchHire.ExpertId == userId || (searchHire.Expert != null && searchHire.Expert.Id == userId);
                     var isAdmin = User.IsInRole("Admin");
                     
+                    Console.WriteLine($"[13:42 CEST] Authorization check - ClientId: {searchHire.ClientId}, ExpertId: {searchHire.ExpertId}, Expert.Id: {searchHire.Expert?.Id}, UserId: {userId}, IsClient: {isClient}, IsExpert: {isExpert}, IsAdmin: {isAdmin}");
+                    
                     if (!isClient && !isExpert && !isAdmin)
                     {
                         Console.WriteLine($"[13:42 CEST] Authorization check failed - ClientId: {searchHire.ClientId}, ExpertId: {searchHire.ExpertId}, UserId: {userId}, IsAdmin: {isAdmin}");
                         return Unauthorized(new { message = "You are not authorized to create a conversation for this search" });
                     }
 
+                    var expertId = searchHire.ExpertId ?? searchHire.Expert?.Id ?? 0;
+                    Console.WriteLine($"[13:42 CEST] Creating conversation - SearchHireId: {searchHire.Id}, ClientId: {searchHire.ClientId}, ExpertId: {expertId}");
+                    
                     conversation = new Conversation
                     {
                         SearchHireId = searchHire.Id,
                         ClientId = searchHire.ClientId,
-                        ExpertId = searchHire.ExpertId ?? searchHire.Expert?.Id ?? 0,
+                        ExpertId = expertId,
                         IsActive = true,
                         CreatedAt = DateTime.UtcNow,
                         UpdatedAt = DateTime.UtcNow,
@@ -116,7 +121,7 @@ namespace newApi.Controllers
 
                     _context.Conversations.Add(conversation);
                     await _context.SaveChangesAsync();
-                    Console.WriteLine($"[13:42 CEST] New conversation created with Id: {conversation.Id}");
+                    Console.WriteLine($"[13:42 CEST] New conversation created with Id: {conversation.Id}, ExpertId: {conversation.ExpertId}");
                 }
 
                 var conversationDto = ConversationDto.FromConversation(conversation);

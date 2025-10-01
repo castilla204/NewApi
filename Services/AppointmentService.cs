@@ -589,15 +589,72 @@ namespace newApi.Services
                                 timer.Appointment.UpdatedAt = DateTime.UtcNow;
                             }
                             break;
+                            
+                        case "expert_report":
+                            // Verificar si se han subido todos los archivos requeridos
+                            var validationResult = await ValidateRequiredDeliverablesAsync(timer.Appointment.SearchHire);
+                            
+                            if (validationResult.IsValid)
+                            {
+                                // Si todos los archivos están listos, enviar el reporte automáticamente
+                                // La cita se marca como completada
+                                var appointmentCompletedStatus = await _context.SystemStatuses
+                                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                                            s.StatusValue == "appointment_completed");
+                                
+                                // El SearchHire pasa a esperar decisión del cliente
+                                var awaitingClientDecisionStatus = await _context.SystemStatuses
+                                    .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                            s.StatusValue == "awaiting_client_decision");
+                                
+                                if (appointmentCompletedStatus != null && awaitingClientDecisionStatus != null)
+                                {
+                                    // Marcar la cita como completada
+                                    timer.Appointment.StatusId = appointmentCompletedStatus.Id;
+                                    timer.Appointment.UpdatedAt = DateTime.UtcNow;
+                                    
+                                    // Actualizar el SearchHire para que use el estado del sistema centralizado
+                                    timer.Appointment.SearchHire.Status = "awaiting_client_decision";
+                                    timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                                    
+                                    _logger.LogInformation("Appointment {AppointmentId} automatically completed and SearchHire moved to awaiting_client_decision - all required files were uploaded", timer.Appointment.Id);
+                                }
+                            }
+                            else
+                            {
+                                // Si faltan archivos, cancelar por no reporte
+                                var noReportStatus = await _context.SystemStatuses
+                                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                                            s.StatusValue == "appointment_cancelled_by_no_report");
+                                
+                                if (noReportStatus != null)
+                                {
+                                    timer.Appointment.StatusId = noReportStatus.Id;
+                                    timer.Appointment.UpdatedAt = DateTime.UtcNow;
+                                    
+                                    // También actualizar el SearchHire para que use el estado del sistema centralizado
+                                    timer.Appointment.SearchHire.Status = "cancelled";
+                                    timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                                    
+                                    _logger.LogInformation("Appointment {AppointmentId} cancelled due to expert not submitting report within 24h - missing files: {MissingFiles}", 
+                                        timer.Appointment.Id, validationResult.ErrorMessage);
+                                }
+                            }
+                            break;
                     }
                 }
 
                 // 2. Verificar citas confirmadas que deben cambiar a awaiting_report (3 horas después)
+                var cutoffTime = DateTime.UtcNow.AddHours(-3);
                 var confirmedAppointments = await _context.Appointments
                     .Include(a => a.Status)
-                    .Where(a => a.Status.StatusValue == "appointment_confirmed" &&
-                               a.ProposedDate.Add(a.ProposedTime).AddHours(3) <= DateTime.UtcNow)
+                    .Where(a => a.Status.StatusValue == "appointment_confirmed")
                     .ToListAsync();
+
+                // Filtrar en memoria para evitar problemas de traducción de EF
+                confirmedAppointments = confirmedAppointments
+                    .Where(a => a.ProposedDate.Add(a.ProposedTime) <= cutoffTime)
+                    .ToList();
 
                 var awaitingReportStatus = await _context.SystemStatuses
                     .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
@@ -610,7 +667,20 @@ namespace newApi.Services
                         appointment.StatusId = awaitingReportStatus.Id;
                         appointment.UpdatedAt = DateTime.UtcNow;
                         
-                        _logger.LogInformation("Appointment {AppointmentId} changed from confirmed to awaiting_report", appointment.Id);
+                        // Crear timer para reporte del experto (24 horas)
+                        var expertReportTimer = new AppointmentTimer
+                        {
+                            AppointmentId = appointment.Id,
+                            TimerType = "expert_report",
+                            StartTime = DateTime.UtcNow,
+                            EndTime = DateTime.UtcNow.AddHours(24),
+                            IsExpired = false,
+                            CreatedAt = DateTime.UtcNow
+                        };
+
+                        _context.AppointmentTimers.Add(expertReportTimer);
+                        
+                        _logger.LogInformation("Appointment {AppointmentId} changed from confirmed to awaiting_report with 24h timer for expert report", appointment.Id);
                     }
                 }
 
@@ -648,21 +718,49 @@ namespace newApi.Services
                 if (appointment.Status.StatusValue != "appointment_awaiting_report")
                     throw new InvalidOperationException("Appointment must be in awaiting_report status to submit report");
 
-                // Obtener el estado awaiting_client_decision
+                // Validar que se hayan subido los archivos obligatorios
+                var validationResult = await ValidateRequiredDeliverablesAsync(appointment.SearchHire);
+                if (!validationResult.IsValid)
+                {
+                    throw new InvalidOperationException(validationResult.ErrorMessage);
+                }
+
+                // Obtener el estado appointment_completed para la cita
+                var appointmentCompletedStatus = await _context.SystemStatuses
+                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                            s.StatusValue == "appointment_completed");
+
+                // Obtener el estado awaiting_client_decision para el SearchHire
                 var awaitingClientDecisionStatus = await _context.SystemStatuses
                     .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
                                             s.StatusValue == "awaiting_client_decision");
 
+                if (appointmentCompletedStatus == null)
+                    throw new InvalidOperationException("Appointment completed status not found");
+                
                 if (awaitingClientDecisionStatus == null)
                     throw new InvalidOperationException("Awaiting client decision status not found");
 
-                // Actualizar la cita
-                appointment.StatusId = awaitingClientDecisionStatus.Id;
+                // Actualizar la cita como completada
+                appointment.StatusId = appointmentCompletedStatus.Id;
                 appointment.UpdatedAt = DateTime.UtcNow;
 
                 // Actualizar el SearchHire para que use el estado del sistema centralizado
                 appointment.SearchHire.Status = "awaiting_client_decision";
                 appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+
+                // Marcar timers de expert_report como expirados
+                var expertReportTimers = await _context.AppointmentTimers
+                    .Where(t => t.AppointmentId == appointment.Id && 
+                               t.TimerType == "expert_report" && 
+                               !t.IsExpired)
+                    .ToListAsync();
+
+                foreach (var timer in expertReportTimers)
+                {
+                    timer.IsExpired = true;
+                    timer.ExpiredAt = DateTime.UtcNow;
+                }
 
                 await _context.SaveChangesAsync();
 
@@ -684,6 +782,69 @@ namespace newApi.Services
             {
                 _logger.LogError(ex, "Error submitting expert report for appointment {AppointmentId}", appointmentId);
                 throw;
+            }
+        }
+
+        private async Task<(bool IsValid, string ErrorMessage)> ValidateRequiredDeliverablesAsync(SearchHire searchHire)
+        {
+            try
+            {
+                // Cargar el SearchHire con todas las relaciones necesarias
+                var hire = await _context.SearchHires
+                    .Include(sh => sh.SearchService)
+                        .ThenInclude(ss => ss.SelectedDeliverableTypes)
+                            .ThenInclude(ssdt => ssdt.DeliverableType)
+                    .Include(sh => sh.Deliverables)
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHire.Id);
+
+                if (hire == null)
+                {
+                    return (false, "SearchHire not found");
+                }
+
+                // Obtener los tipos de entregables requeridos para este servicio
+                var requiredDeliverableTypes = hire.SearchService.SelectedDeliverableTypes
+                    .Where(ssdt => ssdt.IsSelected)
+                    .Select(ssdt => ssdt.DeliverableType)
+                    .ToList();
+
+                if (!requiredDeliverableTypes.Any())
+                {
+                    return (true, string.Empty); // No hay entregables requeridos
+                }
+
+                // Obtener los archivos ya subidos
+                var uploadedDeliverables = hire.Deliverables.ToList();
+
+                // Verificar PDF obligatorio
+                var pdfType = requiredDeliverableTypes.FirstOrDefault(dt => dt.Name == "PDF");
+                if (pdfType != null)
+                {
+                    var hasPdf = uploadedDeliverables.Any(d => d.Type == "pdf");
+                    if (!hasPdf)
+                    {
+                        return (false, "Es obligatorio subir un archivo PDF antes de enviar el reporte");
+                    }
+                }
+
+                // Verificar video si está configurado
+                var videoType = requiredDeliverableTypes.FirstOrDefault(dt => dt.Name == "Video");
+                if (videoType != null)
+                {
+                    var hasVideo = uploadedDeliverables.Any(d => d.Type == "video");
+                    if (!hasVideo)
+                    {
+                        return (false, "Es obligatorio subir un archivo de video antes de enviar el reporte");
+                    }
+                }
+
+                _logger.LogInformation("All required deliverables validated for SearchHire {HireId}", hire.Id);
+                return (true, string.Empty);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error validating required deliverables for SearchHire {HireId}", searchHire.Id);
+                return (false, "Error validating required deliverables");
             }
         }
 

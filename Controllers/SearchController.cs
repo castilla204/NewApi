@@ -129,8 +129,8 @@ namespace newApi.Controllers
                         Id = s.SearchHire.Id,
                         ExpertId = s.SearchHire.ExpertId ?? 0,
                         Status = s.SearchHire.Status,
-                        StatusTranslated = s.SearchHire.Status.ToSpanishTranslation(), // ✅ NUEVO: Estado traducido al español
-                        CreatedAt = s.SearchHire.CreatedAt, // ✅ NUEVO: Fecha de contratación del servicio
+                        StatusTranslated = s.SearchHire.Status.ToSpanishTranslation(),
+                        CreatedAt = s.SearchHire.CreatedAt,
                         Expert = s.SearchHire.Expert != null ? new UserDto
                         {
                             Name = s.SearchHire.Expert.Name,
@@ -180,11 +180,9 @@ namespace newApi.Controllers
                 "lastexecution" => isDescending ? query.OrderByDescending(s => s.LastExecution) : query.OrderBy(s => s.LastExecution),
                 "startdate" => isDescending ? query.OrderByDescending(s => s.StartDate) : query.OrderBy(s => s.StartDate),
                 "userid" => isDescending ? query.OrderByDescending(s => s.UserId) : query.OrderBy(s => s.UserId),
-                _ => isDescending ? query.OrderByDescending(s => s.CreatedAt) : query.OrderBy(s => s.CreatedAt) // Default: CreatedAt
+                _ => isDescending ? query.OrderByDescending(s => s.CreatedAt) : query.OrderBy(s => s.CreatedAt)
             };
         }
-
-
 
         [HttpPost("create-with-hire")]
         public async Task<IActionResult> CreateSearchWithHire([FromBody] CreateSearchWithHireDto request)
@@ -203,17 +201,6 @@ namespace newApi.Controllers
                 var activeSearchCount = await _context.Searches.CountAsync(s => s.UserId == userId && s.IsActive);
                 var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
 
-
-                //PARA MANEJAR SUSCRIPCIONES
-                //if (activeSearchCount >= subscriptionLimits.MaxSearches)
-                //{
-                //    return StatusCode(403, new { message = $"You've reached your plan's limit of {subscriptionLimits.MaxSearches} active searches" });
-                //}
-                //if (searchDto.Frequency < subscriptionLimits.MinSearchInterval)
-                //{
-                //    return StatusCode(403, new { message = $"Minimum search interval for your plan is {subscriptionLimits.MinSearchInterval} hours" });
-                //}
-
                 var user = await _userService.GetUserAsync(userId);
                 if (user == null)
                 {
@@ -231,7 +218,6 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Service not found" });
                 }
 
-                // Usar la estrategia de ejecución de Entity Framework para manejar transacciones
                 var strategy = _context.Database.CreateExecutionStrategy();
                 return await strategy.ExecuteAsync(async () =>
                 {
@@ -252,7 +238,7 @@ namespace newApi.Controllers
                                 CreatedAt = DateTime.UtcNow
                             };
                             await _context.Searches.AddAsync(search);
-                            await _context.SaveChangesAsync(); // Save Search to generate Search.Id
+                            await _context.SaveChangesAsync();
 
                             var searchParameter = new SearchParameter
                             {
@@ -260,7 +246,7 @@ namespace newApi.Controllers
                                 UserSearch = parameterDto.UserSearch,
                                 Latitude = parameterDto.Latitude,
                                 Longitude = parameterDto.Longitude,
-                                LocationName = parameterDto.LocationName, // ✅ NUEVO: Incluir LocationName
+                                LocationName = parameterDto.LocationName,
                                 ShippingAvailable = parameterDto.ShippingAvailable,
                                 StrictMatchOnly = parameterDto.StrictMatchOnly,
                                 Category = parameterDto.Category,
@@ -273,7 +259,7 @@ namespace newApi.Controllers
                                 SearchId = search.Id
                             };
                             await _context.SearchParameters.AddAsync(searchParameter);
-                            await _context.SaveChangesAsync(); // Save SearchParameter to generate SearchParameterId
+                            await _context.SaveChangesAsync();
 
                             if (parameterDto.PlatformIds != null && parameterDto.PlatformIds.Any())
                             {
@@ -299,7 +285,6 @@ namespace newApi.Controllers
 
                             var expertuserid = expertProfile?.UserId ?? 0;
 
-                            // Validar que el experto no se contrate a sí mismo
                             if (expertuserid == userId)
                             {
                                 return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
@@ -336,7 +321,6 @@ namespace newApi.Controllers
                         }
                         else
                         {
-                            // 💳 SIEMPRE PAGAR CON STRIPE - NO USAR SALDO INTERNO
                             var amountToCharge = service.Price;
 
                             var domain = "https://atrapo.io";
@@ -402,9 +386,6 @@ namespace newApi.Controllers
             }
         }
 
-
-
-
         [HttpPut("{searchId}/revise")]
         public async Task<IActionResult> MarkAsRevised(int searchId)
         {
@@ -445,17 +426,6 @@ namespace newApi.Controllers
                 }
 
                 var activeSearchCount = await _context.Searches.CountAsync(s => s.UserId == userId && s.IsActive);
-
-                // Uncomment to active search limits by subscription
-                // var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
-                // if (activeSearchCount >= subscriptionLimits.MaxSearches)
-                // {
-                //     return StatusCode(403, new { message = $"You've reached your plan's limit of {subscriptionLimits.MaxSearches} active searches" });
-                // }
-                // if (searchDto.Frequency < subscriptionLimits.MinSearchInterval)
-                // {
-                //     return StatusCode(403, new { message = $"Minimum search interval for your plan is {subscriptionLimits.MinSearchInterval} hours" });
-                // }
 
                 var user = await _userService.GetUserAsync(userId);
                 if (user == null)
@@ -503,11 +473,9 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                // Validar parámetros
                 if (request.Page < 1) request.Page = 1;
                 if (request.PageSize < 1 || request.PageSize > 50) request.PageSize = 20;
 
-                // Construir query base con includes
                 var query = _context.Searches
                     .Where(s => s.UserId == userId)
                     .Include(s => s.User)
@@ -522,7 +490,6 @@ namespace newApi.Controllers
                         .ThenInclude(sh => sh.Appointment)
                     .AsQueryable();
 
-                // Aplicar filtros
                 if (!string.IsNullOrEmpty(request.SearchTerm))
                 {
                     var searchTerm = request.SearchTerm.ToLower();
@@ -551,19 +518,14 @@ namespace newApi.Controllers
                     query = query.Where(s => s.SearchHire != null && s.SearchHire.Status == request.SearchHireStatus);
                 }
 
-                // Contar total de resultados
                 var totalCount = await query.CountAsync();
-
-                // Aplicar ordenamiento
                 query = ApplySorting(query, request.SortBy, request.SortDirection);
 
-                // Aplicar paginación
                 var searches = await query
                     .Skip((request.Page - 1) * request.PageSize)
                     .Take(request.PageSize)
                     .ToListAsync();
 
-                // Mapear a DTOs
                 var searchDtos = searches.Select(s =>
                 {
                     if (s.User == null)
@@ -596,7 +558,7 @@ namespace newApi.Controllers
                             Id = s.SearchHire.Id,
                             ExpertId = s.SearchHire.ExpertId ?? 0,
                             Status = s.SearchHire.Status,
-                            StatusTranslated = s.SearchHire.Status.ToSpanishTranslation(), // ✅ NUEVO: Estado traducido al español
+                            StatusTranslated = s.SearchHire.Status.ToSpanishTranslation(),
                             CreatedAt = s.SearchHire.CreatedAt,
                             Expert = s.SearchHire.Expert != null ? new UserDto
                             {
@@ -607,14 +569,12 @@ namespace newApi.Controllers
                     };
                 }).ToList();
 
-                // ✅ NUEVO: Calcular indicadores de notificaciones para cada búsqueda
                 foreach (var searchDto in searchDtos)
                 {
                     var search = searches.First(s => s.Id == searchDto.Id);
                     
                     if (search.SearchHire != null)
                     {
-                        // Contar mensajes sin leer
                         if (search.SearchHire.Conversations != null && search.SearchHire.Conversations.Any())
                         {
                             searchDto.UnreadMessagesCount = search.SearchHire.Conversations
@@ -622,7 +582,6 @@ namespace newApi.Controllers
                                 .Count(m => m.SenderId != userId && !m.IsRead);
                         }
 
-                        // Verificar si hay cita pendiente
                         if (search.SearchHire.Appointment != null && search.SearchHire.Appointment.Status != null)
                         {
                             var pendingStatuses = new[] { 
@@ -640,10 +599,8 @@ namespace newApi.Controllers
                     }
                 }
 
-                // ✅ NUEVO: Calcular estadísticas del usuario
                 var userStats = await CalculateUserSearchStats(userId);
 
-                // Crear respuesta paginada
                 var response = new UserSearchListResponseDto
                 {
                     Searches = searchDtos,
@@ -668,9 +625,6 @@ namespace newApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Calcula estadísticas de búsquedas del usuario
-        /// </summary>
         private async Task<UserSearchStats> CalculateUserSearchStats(int userId)
         {
             var userSearches = _context.Searches
@@ -687,14 +641,12 @@ namespace newApi.Controllers
             var searchesWithHire = await userSearches.CountAsync(s => s.SearchHire != null);
             var searchesWithoutHire = await userSearches.CountAsync(s => s.SearchHire == null);
 
-            // Calcular mensajes sin leer
             var unreadMessages = await userSearches
                 .Where(s => s.SearchHire != null)
                 .SelectMany(s => s.SearchHire.Conversations)
                 .SelectMany(c => c.Messages)
                 .CountAsync(m => m.SenderId != userId && !m.IsRead);
 
-            // Calcular citas pendientes
             var pendingAppointments = await userSearches
                 .Where(s => s.SearchHire != null && s.SearchHire.Appointment != null && s.SearchHire.Appointment.Status != null)
                 .CountAsync(s => new[] { 
@@ -734,7 +686,6 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Search not found" });
                 }
 
-                // Verificar si SearchHire existe y su estado permite el cambio
                 if (search.SearchHire != null && !new[] { "pending", "awaiting_client_decision" }.Contains(search.SearchHire.Status))
                 {
                     return BadRequest(new { message = "No se puede modificar el estado de una búsqueda finalizada" });
@@ -751,7 +702,6 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = ex.Message });
             }
         }
-
 
         [HttpPut("{searchId}")]
         public async Task<IActionResult> UpdateSearch(int searchId, [FromBody] UpdateSearchDto updateDto)
@@ -793,6 +743,7 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = ex.Message });
             }
         }
+
         [HttpGet("{searchId}")]
         public async Task<IActionResult> GetSearch(int searchId)
         {
@@ -805,7 +756,7 @@ namespace newApi.Controllers
                 }
 
                 var search = await _context.Searches
-                    .Include(s => s.User) // Include User to prevent null reference
+                    .Include(s => s.User)
                     .Include(s => s.SearchParameters)
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
@@ -813,16 +764,16 @@ namespace newApi.Controllers
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.SearchService)
                         .ThenInclude(ss => ss.ServiceType)
-                        .ThenInclude(st => st.ServiceTypeCategory) // ✅ NUEVO: Incluir ServiceType y ServiceTypeCategory
+                        .ThenInclude(st => st.ServiceTypeCategory)
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Conversations)
-                        .ThenInclude(c => c.Messages) // ✅ NUEVO: Incluir mensajes para contar no leídos
+                        .ThenInclude(c => c.Messages)
                     .Include(s => s.SearchHire)
-                        .ThenInclude(sh => sh.Appointment) // ✅ NUEVO: Incluir citas
+                        .ThenInclude(sh => sh.Appointment)
                     .FirstOrDefaultAsync(s => s.Id == searchId &&
-                        (s.UserId == userId || // User is the search owner
-                         _authService.IsAdmin(User) || // User is an admin
-                         (s.SearchHire != null && s.SearchHire.ExpertId == userId))); // User is the assigned expert
+                        (s.UserId == userId ||
+                         _authService.IsAdmin(User) ||
+                         (s.SearchHire != null && s.SearchHire.ExpertId == userId)));
 
                 if (search == null)
                 {
@@ -847,7 +798,7 @@ namespace newApi.Controllers
                     LastExecution = search.LastExecution,
                     CreatedAt = search.CreatedAt,
                     StartDate = search.StartDate,
-                    LocationName = search.SearchParameters.FirstOrDefault()?.LocationName, // ✅ NUEVO: Nombre de la ubicación desde SearchParameters
+                    LocationName = search.SearchParameters.FirstOrDefault()?.LocationName,
                     Category = search.SearchParameters.FirstOrDefault()?.Category ?? 0,
                     User = new UserDto
                     {
@@ -859,8 +810,8 @@ namespace newApi.Controllers
                         Id = search.SearchHire.Id,
                         ExpertId = search.SearchHire.ExpertId ?? 0,
                         Status = search.SearchHire.Status,
-                        StatusTranslated = search.SearchHire.Status.ToSpanishTranslation(), // ✅ NUEVO: Estado traducido al español
-                        CreatedAt = search.SearchHire.CreatedAt, // ✅ NUEVO: Fecha de contratación del servicio
+                        StatusTranslated = search.SearchHire.Status.ToSpanishTranslation(),
+                        CreatedAt = search.SearchHire.CreatedAt,
                         Expert = search.SearchHire.Expert != null ? new UserDto
                         {
                             Name = search.SearchHire.Expert.Name,
@@ -879,10 +830,8 @@ namespace newApi.Controllers
                     } : null
                 };
 
-                // ✅ NUEVO: Calcular indicadores de notificaciones
                 if (search.SearchHire != null)
                 {
-                    // Contar mensajes sin leer
                     if (search.SearchHire.Conversations != null && search.SearchHire.Conversations.Any())
                     {
                         searchDto.UnreadMessagesCount = search.SearchHire.Conversations
@@ -890,7 +839,6 @@ namespace newApi.Controllers
                             .Count(m => m.SenderId != userId && !m.IsRead);
                     }
 
-                    // Verificar si hay cita pendiente
                     if (search.SearchHire.Appointment != null && search.SearchHire.Appointment.Status != null)
                     {
                         var pendingStatuses = new[] { 
@@ -915,7 +863,211 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = ex.Message });
             }
         }
+
+        /// <summary>
+        /// Obtener detalles completos de una búsqueda (optimizado para SearchDetails)
+        /// </summary>
+        [HttpGet("{searchId}/details-complete")]
+        public async Task<IActionResult> GetSearchDetailsComplete(int searchId)
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                // Cargar búsqueda con relaciones básicas
+                var search = await _context.Searches
+                    .Include(s => s.User)
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Expert)
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.SearchService)
+                        .ThenInclude(ss => ss.ServiceType)
+                        .ThenInclude(st => st.ServiceTypeCategory)
+                    .FirstOrDefaultAsync(s => s.Id == searchId &&
+                        (s.UserId == userId || 
+                         _authService.IsAdmin(User) || 
+                         (s.SearchHire != null && (s.SearchHire.ExpertId == userId || 
+                          (s.SearchHire.Expert != null && s.SearchHire.Expert.Id == userId)))));
+
+                if (search == null)
+                {
+                    return NotFound(new { message = "Search not found" });
+                }
+
+                // Obtener configuración de distribución de dinero a través del servicio
+                var systemStatusService = HttpContext.RequestServices.GetRequiredService<SystemStatusService>();
+                var moneyDistribution = await systemStatusService.GetMoneyDistributionAsync(
+                    search.SearchHire.Status, 
+                    search.SearchHire.SearchService?.CategoryId, 
+                    search.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
+
+                // Crear respuesta simple con datos básicos
+                var searchDetailsComplete = new
+                {
+                    Search = new SearchListDto
+                    {
+                        Id = search.Id,
+                        UserId = search.UserId,
+                        Title = search.Title,
+                        Description = search.Description,
+                        Frequency = search.Frequency,
+                        IsActive = search.IsActive,
+                        IsRevised = search.IsRevised,
+                        CreatedAt = search.CreatedAt,
+                        User = new UserDto
+                        {
+                            Id = search.User.Id,
+                            Name = search.User.Name,
+                            Email = search.User.Email
+                        },
+                        SearchHire = search.SearchHire != null ? new SearchHireDto
+                        {
+                            Id = search.SearchHire.Id,
+                            Status = search.SearchHire.Status,
+                            CreatedAt = search.SearchHire.CreatedAt,
+                            Expert = search.SearchHire.Expert != null ? new UserDto
+                            {
+                                Id = search.SearchHire.Expert.Id,
+                                Name = search.SearchHire.Expert.Name,
+                                Email = search.SearchHire.Expert.Email
+                            } : null,
+                            Service = search.SearchHire.SearchService != null ? new ServiceInfo
+                            {
+                                Id = search.SearchHire.SearchService.Id,
+                                ServiceTypeId = search.SearchHire.SearchService.ServiceTypeId,
+                                ServiceTypeName = search.SearchHire.SearchService.ServiceType?.Name ?? string.Empty,
+                                ServiceTypeCategoryId = search.SearchHire.SearchService.ServiceType?.ServiceTypeCategoryId,
+                                ServiceTypeCategoryName = search.SearchHire.SearchService.ServiceType?.ServiceTypeCategory?.Name,
+                                RequiresAppointment = false,
+                                Price = search.SearchHire.SearchService.Price
+                            } : null
+                        } : null
+                    },
+                    MoneyDistribution = moneyDistribution != null ? new MoneyDistributionConfigDto
+                    {
+                        ClientPercentage = moneyDistribution.ClientPercentage,
+                        ExpertPercentage = moneyDistribution.ExpertPercentage,
+                        PlatformPercentage = moneyDistribution.PlatformPercentage,
+                        Source = "SearchHire",
+                        Status = "Active"
+                    } : null
+                };
+
+                return Ok(searchDetailsComplete);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving complete search details for SearchId: {SearchId}", searchId);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
+        }
+
+        /// <summary>
+        /// Obtener datos adicionales para SearchDetails (conversaciones, archivos, disputas, citas)
+        /// </summary>
+        [HttpGet("{searchId}/details-additional")]
+        public async Task<IActionResult> GetSearchDetailsAdditional(int searchId)
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                // Obtener SearchHire
+                var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Search)
+                    .Include(sh => sh.Expert)
+                    .Include(sh => sh.Conversations)
+                        .ThenInclude(c => c.Messages)
+                    .Include(sh => sh.Appointment)
+                        .ThenInclude(a => a.Status)
+                    .Include(sh => sh.Appointment)
+                        .ThenInclude(a => a.Timers)
+                    .Include(sh => sh.Deliverables)
+                    .Include(sh => sh.Disputes)
+                    .FirstOrDefaultAsync(sh => sh.SearchId == searchId &&
+                        (sh.Search.UserId == userId || 
+                         _authService.IsAdmin(User) || 
+                         sh.ExpertId == userId ||
+                         (sh.Expert != null && sh.Expert.Id == userId)));
+
+                if (searchHire == null)
+                {
+                    return NotFound(new { message = "SearchHire not found" });
+                }
+
+                // Crear respuesta simple con datos adicionales
+                var additionalData = new
+                {
+                    Conversations = searchHire.Conversations?.Select(c => new
+                    {
+                        Id = c.Id,
+                        UnreadCount = c.Messages?.Count(m => !m.IsRead && m.SenderId != userId) ?? 0,
+                        LastMessage = c.Messages?.OrderByDescending(m => m.SentAt).FirstOrDefault() != null ? new
+                        {
+                            Id = c.Messages.OrderByDescending(m => m.SentAt).First().Id,
+                            Content = c.Messages.OrderByDescending(m => m.SentAt).First().Content ?? string.Empty,
+                            CreatedAt = c.Messages.OrderByDescending(m => m.SentAt).First().SentAt
+                        } : null
+                    }).ToList(),
+                    
+                    Appointment = searchHire.Appointment != null ? new AppointmentDto
+                    {
+                        Id = searchHire.Appointment.Id,
+                        SearchHireId = searchHire.Appointment.SearchHireId,
+                        Status = searchHire.Appointment.Status?.StatusValue ?? string.Empty,
+                        ProposedDate = searchHire.Appointment.ProposedDate,
+                        ProposedTime = searchHire.Appointment.ProposedTime,
+                        Location = searchHire.Appointment.Location,
+                        Timers = searchHire.Appointment.Timers?.Select(t => new AppointmentTimerDto
+                        {
+                            Id = t.Id,
+                            AppointmentId = t.AppointmentId,
+                            TimerType = t.TimerType,
+                            StartTime = t.StartTime,
+                            EndTime = t.EndTime,
+                            IsExpired = t.IsExpired,
+                            ExpiredAt = t.ExpiredAt
+                        }).ToList() ?? new List<AppointmentTimerDto>()
+                    } : null,
+                    
+                    Deliverables = searchHire.Deliverables?.Select(d => new DeliverableDto
+                    {
+                        Id = d.Id,
+                        Type = d.Type,
+                        Url = d.Url,
+                        CreatedAt = d.CreatedAt
+                    }).ToList() ?? new List<DeliverableDto>(),
+                    
+                    Disputes = searchHire.Disputes?.Select(d => new DisputeDto
+                    {
+                        Id = d.Id,
+                        SearchHireId = d.SearchHireId,
+                        ReporterId = d.ReporterId,
+                        Status = d.Status,
+                        Reason = d.Reason,
+                        ExpertResponse = d.ExpertResponse,
+                        CreatedAt = d.CreatedAt
+                    }).ToList() ?? new List<DisputeDto>()
+                };
+
+                return Ok(additionalData);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving additional search details for SearchId: {SearchId}", searchId);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
+        }
     }
+
     public class CreateSearchWithHireDto
     {
         public CreateSearchDto SearchDto { get; set; }

@@ -214,7 +214,9 @@ builder.Services.AddHangfire(config => config
         InvisibilityTimeout = TimeSpan.FromMinutes(30),
         DistributedLockTimeout = TimeSpan.FromMinutes(10),
         PrepareSchemaIfNecessary = true
-    }));
+    })
+    .UseDefaultTypeResolver()
+    .UseDefaultTypeSerializer());
 
 builder.Services.AddHangfireServer();
 
@@ -236,8 +238,7 @@ builder.Services.AddScoped<IAppointmentService, AppointmentService>();
 builder.Services.AddScoped<IUserActionLoggingService, UserActionLoggingService>();
 builder.Services.AddScoped<SystemStatusService>();
 
-// Background services
-builder.Services.AddHostedService<AppointmentTimerBackgroundService>();
+// Background services - AppointmentTimerBackgroundService migrated to Hangfire
 
 builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<SearchServiceService>();
@@ -270,6 +271,11 @@ RecurringJob.AddOrUpdate<ISubscriptionService>(
 RecurringJob.AddOrUpdate<ISubscriptionService>(
     "process-awaiting-client-decision",
     service => service.ProcessAwaitingClientDecisionAsync(),
+    "*/5 * * * *"); // Cada 5 minutos
+
+RecurringJob.AddOrUpdate<IAppointmentService>(
+    "check-appointment-timers",
+    service => service.CheckAppointmentTimersAsync(),
     "*/5 * * * *"); // Cada 5 minutos
 
 

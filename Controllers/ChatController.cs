@@ -76,6 +76,7 @@ namespace newApi.Controllers
                 {
                     var searchHire = await _context.SearchHires
                         .Include(sh => sh.Search)
+                        .Include(sh => sh.Expert)
                         .FirstOrDefaultAsync(sh => sh.SearchId == searchId);
                     Console.WriteLine($"[13:42 CEST] SearchHire found for searchId {searchId}: {searchHire != null}");
 
@@ -84,14 +85,16 @@ namespace newApi.Controllers
                         return NotFound(new { message = "Search hire not found" });
                     }
 
-                    if (!searchHire.ExpertId.HasValue)
+                    // Verificar si hay experto asignado (tanto por ExpertId como por Expert)
+                    var hasExpert = searchHire.ExpertId.HasValue || searchHire.Expert != null;
+                    if (!hasExpert)
                     {
                         return BadRequest(new { message = "Cannot create conversation: No expert assigned to this search hire" });
                     }
 
                     // Verificar autorización: debe ser cliente, experto o admin
                     var isClient = searchHire.ClientId == userId;
-                    var isExpert = searchHire.ExpertId == userId;
+                    var isExpert = searchHire.ExpertId == userId || (searchHire.Expert != null && searchHire.Expert.Id == userId);
                     var isAdmin = User.IsInRole("Admin");
                     
                     if (!isClient && !isExpert && !isAdmin)
@@ -104,7 +107,7 @@ namespace newApi.Controllers
                     {
                         SearchHireId = searchHire.Id,
                         ClientId = searchHire.ClientId,
-                        ExpertId = searchHire.ExpertId.Value,
+                        ExpertId = searchHire.ExpertId ?? searchHire.Expert?.Id ?? 0,
                         IsActive = true,
                         CreatedAt = DateTime.UtcNow,
                         UpdatedAt = DateTime.UtcNow,

@@ -119,6 +119,8 @@ namespace newApi.DataLayer.Models.DTOs
         public int Score { get; set; }
         public string Description { get; set; } // Changed from Comment to Description
         public DateTime CreatedAt { get; set; }
+        public UserDto Reviewer { get; set; } // ✅ NUEVO: Información del revisor
+        public List<string> ImageUrls { get; set; } = new List<string>(); // ✅ NUEVO: URLs de las imágenes
     }
 
     public class CreateSearchServiceRequestDto

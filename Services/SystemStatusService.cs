@@ -201,7 +201,7 @@ namespace newApi.Services
             return appointmentStatus switch
             {
                 AppointmentStatus.AppointmentAwaitingReport => SearchHireStatus.AwaitingClientDecision,
-                AppointmentStatus.AppointmentCancelledByClient => SearchHireStatus.Cancelled,
+                // AppointmentStatus.AppointmentCancelledByClient => null, // No cambiar estado del SearchHire en primer rechazo
                 AppointmentStatus.AppointmentCancelledByClientSecond => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCancelledByExpert => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCancelledByNoResponse => SearchHireStatus.Cancelled,

@@ -2482,52 +2482,57 @@ namespace newApi.Controllers
                     return BadRequest(new { error = "ClientApproved is required" });
                 }
 
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
+                // 🔄 USAR EXECUTION STRATEGY para compatibilidad con NpgsqlRetryingExecutionStrategy
+                var strategy = _context.Database.CreateExecutionStrategy();
+                return await strategy.ExecuteAsync(async () =>
                 {
-                    searchHire.ClientApproved = request.ClientApproved.Value;
-                    if (!searchHire.ClientApproved.Value)
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
                     {
-                        // 🛡️ DISPUTA: Cliente rechaza servicio → Abrir disputa para revisión admin
-                        searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
-                        searchHire.UpdatedAt = DateTime.UtcNow;
-                        _logger.LogInformation("Client opened dispute for searchHireId={SearchHireId}", searchHire.Id);
-                        
-                        // 📝 LOGGING: Registrar acción de disputa
-                        await _userActionLogging.LogUserActionAsync(userId, "DISPUTE_SERVICE", 
-                            $"Abrió disputa para servicio {searchHire.Id}", 
-                            "SearchHire", searchHire.Id);
+                        searchHire.ClientApproved = request.ClientApproved.Value;
+                        if (!searchHire.ClientApproved.Value)
+                        {
+                            // 🛡️ DISPUTA: Cliente rechaza servicio → Abrir disputa para revisión admin
+                            searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
+                            searchHire.UpdatedAt = DateTime.UtcNow;
+                            _logger.LogInformation("Client opened dispute for searchHireId={SearchHireId}", searchHire.Id);
+                            
+                            // 📝 LOGGING: Registrar acción de disputa
+                            await _userActionLogging.LogUserActionAsync(userId, "DISPUTE_SERVICE", 
+                                $"Abrió disputa para servicio {searchHire.Id}", 
+                                "SearchHire", searchHire.Id);
+                        }
+                        else
+                        {
+                            await ProcessTransferToExpert(searchHire.Id);
+                            searchHire.Status = SearchHireStatus.Completed.ToStringValue();
+                            searchHire.UpdatedAt = DateTime.UtcNow;
+                            _logger.LogInformation("Client approved service, transfer completed for searchHireId={SearchHireId}", searchHire.Id);
+                            
+                            // 📝 LOGGING: Registrar acción de aprobación
+                            await _userActionLogging.LogUserActionAsync(userId, "APPROVE_SERVICE", 
+                                $"Aprobó servicio {searchHire.Id} y se completó transferencia", 
+                                "SearchHire", searchHire.Id);
+                        }
+
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+
+                        return Ok(new { message = searchHire.ClientApproved.Value ? "Service completed" : "Dispute opened" });
                     }
-                    else
+                    catch (StripeException ex)
                     {
-                        await ProcessTransferToExpert(searchHire.Id);
-                        searchHire.Status = SearchHireStatus.Completed.ToStringValue();
-                        searchHire.UpdatedAt = DateTime.UtcNow;
-                        _logger.LogInformation("Client approved service, transfer completed for searchHireId={SearchHireId}", searchHire.Id);
-                        
-                        // 📝 LOGGING: Registrar acción de aprobación
-                        await _userActionLogging.LogUserActionAsync(userId, "APPROVE_SERVICE", 
-                            $"Aprobó servicio {searchHire.Id} y se completó transferencia", 
-                            "SearchHire", searchHire.Id);
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", searchHire.Id, ex.Message);
+                        return StatusCode(500, new { message = "Failed to process payment to expert" });
                     }
-
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
-
-                    return Ok(new { message = searchHire.ClientApproved.Value ? "Service completed" : "Dispute opened" });
-                }
-                catch (StripeException ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", searchHire.Id, ex.Message);
-                    return StatusCode(500, new { message = "Failed to process payment to expert" });
-                }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Database error completing service for searchHireId={SearchHireId}", searchHire.Id);
-                    return StatusCode(500, new { message = "Failed to complete service" });
-                }
+                    catch (Exception ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Database error completing service for searchHireId={SearchHireId}", searchHire.Id);
+                        return StatusCode(500, new { message = "Failed to complete service" });
+                    }
+                });
             }
             catch (Exception ex)
             {

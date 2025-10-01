@@ -85,6 +85,11 @@ namespace newApi.Services
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.Reviewer) // ✅ NUEVO: Incluir información del revisor
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.ImagesCollection) // ✅ NUEVO: Incluir imágenes de las reviews
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                     .Include(ss => ss.SelectedDeliverableTypes)
@@ -207,6 +212,11 @@ namespace newApi.Services
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.Reviewer) // ✅ NUEVO: Incluir información del revisor
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.ImagesCollection) // ✅ NUEVO: Incluir imágenes de las reviews
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                         .ThenInclude(st => st.ServiceTypeCategory)
@@ -464,7 +474,15 @@ namespace newApi.Services
                     Id = r.Id,
                     Score = r.Score,
                     Description = r.Description ?? "",
-                    CreatedAt = r.CreatedAt
+                    CreatedAt = r.CreatedAt,
+                    Reviewer = r.Reviewer != null ? new UserDto
+                    {
+                        Id = r.Reviewer.Id,
+                        Name = r.Reviewer.Name,
+                        Email = r.Reviewer.Email,
+                        ProfilePictureUrl = null // User no tiene ProfilePictureUrl, está en ExpertProfile
+                    } : null,
+                    ImageUrls = r.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>()
                 }).ToList() ?? new List<ReviewDto>();
 
                 expertProfileDto = new ExpertProfileDto
@@ -549,7 +567,15 @@ namespace newApi.Services
                     Id = r.Id,
                     Score = r.Score,
                     Description = r.Description ?? "",
-                    CreatedAt = r.CreatedAt
+                    CreatedAt = r.CreatedAt,
+                    Reviewer = r.Reviewer != null ? new UserDto
+                    {
+                        Id = r.Reviewer.Id,
+                        Name = r.Reviewer.Name,
+                        Email = r.Reviewer.Email,
+                        ProfilePictureUrl = null // User no tiene ProfilePictureUrl, está en ExpertProfile
+                    } : null,
+                    ImageUrls = r.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>()
                 }).ToList() ?? new List<ReviewDto>();
 
                 expertProfileDto = new ExpertProfileDto

@@ -203,7 +203,8 @@ namespace newApi.Services
                 AppointmentStatus.AppointmentAwaitingReport => SearchHireStatus.AwaitingClientDecision,
                 // AppointmentStatus.AppointmentCancelledByClient => null, // No cambiar estado del SearchHire en primer rechazo
                 AppointmentStatus.AppointmentCancelledByClientSecond => SearchHireStatus.Cancelled,
-                AppointmentStatus.AppointmentCancelledByExpert => SearchHireStatus.Cancelled,
+                // AppointmentStatus.AppointmentCancelledByExpert => null, // No cambiar estado del SearchHire en primer rechazo del experto
+                AppointmentStatus.AppointmentCancelledByExpertSecond => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCancelledByNoResponse => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCancelledByExpertRejection => SearchHireStatus.Cancelled,
                 _ => null // Otros estados no tienen mapeo directo

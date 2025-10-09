@@ -41,6 +41,54 @@ namespace newApi.Controllers
             _subscriptionService = subscriptionService;
         }
 
+        [HttpGet("debug-auth")]
+        public async Task<IActionResult> DebugAuth()
+        {
+            var claims = User.Claims.Select(c => new { c.Type, c.Value }).ToList();
+            var roleClaim = User.FindFirst(ClaimTypes.Role)?.Value;
+            var isAdmin = _authService.IsAdmin(User);
+            
+            // Obtener información del usuario de la base de datos
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            object userFromDb = new { };
+            
+            if (!string.IsNullOrEmpty(userIdClaim) && int.TryParse(userIdClaim, out int userId))
+            {
+                var user = await _context.Users.FindAsync(userId);
+                if (user != null)
+                {
+                    // Simular la lógica del GenerateJwtToken
+                    var roleName = user.Role switch
+                    {
+                        DataLayer.Models.PostGresModels.UserRole.Client => "Client",
+                        DataLayer.Models.PostGresModels.UserRole.Expert => "Expert", 
+                        DataLayer.Models.PostGresModels.UserRole.Admin => "Admin",
+                        _ => "Client"
+                    };
+                    
+                    userFromDb = new
+                    {
+                        userId = user.Id,
+                        email = user.Email,
+                        roleNumeric = (int)user.Role,
+                        roleEnum = user.Role.ToString(),
+                        roleName = roleName
+                    };
+                }
+            }
+            
+            return Ok(new
+            {
+                claims = claims,
+                roleClaim = roleClaim,
+                isAdmin = isAdmin,
+                userIdentity = User.Identity?.Name,
+                isAuthenticated = User.Identity?.IsAuthenticated,
+                userFromDatabase = userFromDb
+            });
+        }
+
+
         [HttpGet("all")]
         public async Task<IActionResult> GetAllSearches([FromQuery] SearchListRequestDto request)
         {
@@ -878,15 +926,27 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                // Cargar búsqueda con relaciones básicas
+                // Cargar búsqueda con todas las relaciones necesarias
                 var search = await _context.Searches
                     .Include(s => s.User)
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Client)
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.SearchService)
                         .ThenInclude(ss => ss.ServiceType)
                         .ThenInclude(st => st.ServiceTypeCategory)
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Appointment)
+                        .ThenInclude(a => a.Status)
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Appointment)
+                        .ThenInclude(a => a.Timers)
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Deliverables)
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Disputes)
                     .FirstOrDefaultAsync(s => s.Id == searchId &&
                         (s.UserId == userId || 
                          _authService.IsAdmin(User) || 
@@ -905,8 +965,51 @@ namespace newApi.Controllers
                     search.SearchHire.SearchService?.CategoryId, 
                     search.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
 
-                // Crear respuesta simple con datos básicos
-                var searchDetailsComplete = new
+                // Obtener la categoría del servicio
+                CategoryDto category = null;
+                if (search.SearchHire?.SearchService?.ServiceType?.ServiceTypeCategory != null)
+                {
+                    category = new CategoryDto
+                    {
+                        Id = search.SearchHire.SearchService.ServiceType.ServiceTypeCategory.Id,
+                        Name = search.SearchHire.SearchService.ServiceType.ServiceTypeCategory.Name,
+                        IsActive = search.SearchHire.SearchService.ServiceType.ServiceTypeCategory.IsActive,
+                        CreatedAt = search.SearchHire.SearchService.ServiceType.ServiceTypeCategory.CreatedAt,
+                        UpdatedAt = search.SearchHire.SearchService.ServiceType.ServiceTypeCategory.UpdatedAt
+                    };
+                }
+
+                // Obtener la reseña para este SearchHire si existe
+                ReviewDto review = null;
+                if (search.SearchHire != null)
+                {
+                    var reviewEntity = await _context.Reviews
+                        .Include(r => r.Reviewer)
+                        .Include(r => r.ImagesCollection)
+                        .FirstOrDefaultAsync(r => r.SearchHireId == search.SearchHire.Id);
+
+                    if (reviewEntity != null)
+                    {
+                        review = new ReviewDto
+                        {
+                            Id = reviewEntity.Id,
+                            Score = reviewEntity.Score,
+                            Description = reviewEntity.Description,
+                            CreatedAt = reviewEntity.CreatedAt,
+                            Reviewer = new UserDto
+                            {
+                                Id = reviewEntity.Reviewer.Id,
+                                Name = reviewEntity.Reviewer.Name,
+                                Email = reviewEntity.Reviewer.Email,
+                                ProfilePictureUrl = null
+                            },
+                            ImageUrls = reviewEntity.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>()
+                        };
+                    }
+                }
+
+                // Crear respuesta completa con todos los datos usando DTO
+                var searchDetailsComplete = new SearchDetailsCompleteResponseDto
                 {
                     Search = new SearchListDto
                     {
@@ -954,7 +1057,67 @@ namespace newApi.Controllers
                         PlatformPercentage = moneyDistribution.PlatformPercentage,
                         Source = "SearchHire",
                         Status = "Active"
-                    } : null
+                    } : null,
+                    Category = category,
+                    Review = review,
+                    Appointment = search.SearchHire?.Appointment != null ? new AppointmentDto
+                    {
+                        Id = search.SearchHire.Appointment.Id,
+                        SearchHireId = search.SearchHire.Appointment.SearchHireId,
+                        Status = search.SearchHire.Appointment.Status?.StatusValue ?? string.Empty,
+                        ProposedDate = search.SearchHire.Appointment.ProposedDate,
+                        ProposedTime = search.SearchHire.Appointment.ProposedTime,
+                        Location = search.SearchHire.Appointment.Location,
+                        Latitude = search.SearchHire.Appointment.Latitude,
+                        Longitude = search.SearchHire.Appointment.Longitude,
+                        DoorNumber = search.SearchHire.Appointment.DoorNumber,
+                        OwnerPhone = search.SearchHire.Appointment.OwnerPhone,
+                        SiteDetails = search.SearchHire.Appointment.SiteDetails,
+                        DisputeReason = search.SearchHire.Appointment.DisputeReason,
+                        CompletedAt = search.SearchHire.Appointment.CompletedAt,
+                        CompletedBy = search.SearchHire.Appointment.CompletedBy,
+                        RejectionCount = search.SearchHire.Appointment.RejectionCount,
+                        CancellationCount = search.SearchHire.Appointment.CancellationCount,
+                        LastRejectionAt = search.SearchHire.Appointment.LastRejectionAt,
+                        LastProposalAt = search.SearchHire.Appointment.LastProposalAt,
+                        LastResponseAt = search.SearchHire.Appointment.LastResponseAt,
+                        IsLocked = search.SearchHire.Appointment.IsLocked,
+                        CreatedAt = search.SearchHire.Appointment.CreatedAt,
+                        UpdatedAt = search.SearchHire.Appointment.UpdatedAt,
+                        ClientName = search.SearchHire?.Client?.Name,
+                        ExpertName = search.SearchHire?.Expert?.Name,
+                        Amount = search.SearchHire?.Amount ?? 0,
+                        Timers = search.SearchHire.Appointment.Timers?.Select(t => new AppointmentTimerDto
+                        {
+                            Id = t.Id,
+                            AppointmentId = t.AppointmentId,
+                            TimerType = t.TimerType,
+                            StartTime = t.StartTime,
+                            EndTime = t.EndTime,
+                            IsExpired = t.IsExpired,
+                            ExpiredAt = t.ExpiredAt
+                        }).ToList() ?? new List<AppointmentTimerDto>()
+                    } : null,
+                    Deliverables = search.SearchHire?.Deliverables?.Select(d => new DeliverableDto
+                    {
+                        Id = d.Id,
+                        Type = d.Type,
+                        Url = d.Url,
+                        CreatedAt = d.CreatedAt
+                    }).ToList() ?? new List<DeliverableDto>(),
+                    Disputes = search.SearchHire?.Disputes?.Select(d => new DisputeDto
+                    {
+                        Id = d.Id,
+                        SearchHireId = d.SearchHireId,
+                        ReporterId = d.ReporterId,
+                        Status = d.Status,
+                        Reason = d.Reason,
+                        ExpertResponse = d.ExpertResponse,
+                        ExpertResponseDeadline = d.ExpertResponseDeadline,
+                        ExpertResponseAt = d.ExpertResponseAt,
+                        CanExpertRespond = d.CanExpertRespond,
+                        CreatedAt = d.CreatedAt
+                    }).ToList() ?? new List<DisputeDto>()
                 };
 
                 return Ok(searchDetailsComplete);
@@ -966,106 +1129,6 @@ namespace newApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Obtener datos adicionales para SearchDetails (conversaciones, archivos, disputas, citas)
-        /// </summary>
-        [HttpGet("{searchId}/details-additional")]
-        public async Task<IActionResult> GetSearchDetailsAdditional(int searchId)
-        {
-            try
-            {
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                {
-                    return Unauthorized(new { message = "Invalid user identification" });
-                }
-
-                // Obtener SearchHire
-                var searchHire = await _context.SearchHires
-                    .Include(sh => sh.Search)
-                    .Include(sh => sh.Expert)
-                    .Include(sh => sh.Conversations)
-                        .ThenInclude(c => c.Messages)
-                    .Include(sh => sh.Appointment)
-                        .ThenInclude(a => a.Status)
-                    .Include(sh => sh.Appointment)
-                        .ThenInclude(a => a.Timers)
-                    .Include(sh => sh.Deliverables)
-                    .Include(sh => sh.Disputes)
-                    .FirstOrDefaultAsync(sh => sh.SearchId == searchId &&
-                        (sh.Search.UserId == userId || 
-                         _authService.IsAdmin(User) || 
-                         sh.ExpertId == userId ||
-                         (sh.Expert != null && sh.Expert.Id == userId)));
-
-                if (searchHire == null)
-                {
-                    return NotFound(new { message = "SearchHire not found" });
-                }
-
-                // Crear respuesta simple con datos adicionales
-                var additionalData = new
-                {
-                    Conversations = searchHire.Conversations?.Select(c => new
-                    {
-                        Id = c.Id,
-                        UnreadCount = c.Messages?.Count(m => !m.IsRead && m.SenderId != userId) ?? 0,
-                        LastMessage = c.Messages?.OrderByDescending(m => m.SentAt).FirstOrDefault() != null ? new
-                        {
-                            Id = c.Messages.OrderByDescending(m => m.SentAt).First().Id,
-                            Content = c.Messages.OrderByDescending(m => m.SentAt).First().Content ?? string.Empty,
-                            CreatedAt = c.Messages.OrderByDescending(m => m.SentAt).First().SentAt
-                        } : null
-                    }).ToList(),
-                    
-                    Appointment = searchHire.Appointment != null ? new AppointmentDto
-                    {
-                        Id = searchHire.Appointment.Id,
-                        SearchHireId = searchHire.Appointment.SearchHireId,
-                        Status = searchHire.Appointment.Status?.StatusValue ?? string.Empty,
-                        ProposedDate = searchHire.Appointment.ProposedDate,
-                        ProposedTime = searchHire.Appointment.ProposedTime,
-                        Location = searchHire.Appointment.Location,
-                        Timers = searchHire.Appointment.Timers?.Select(t => new AppointmentTimerDto
-                        {
-                            Id = t.Id,
-                            AppointmentId = t.AppointmentId,
-                            TimerType = t.TimerType,
-                            StartTime = t.StartTime,
-                            EndTime = t.EndTime,
-                            IsExpired = t.IsExpired,
-                            ExpiredAt = t.ExpiredAt
-                        }).ToList() ?? new List<AppointmentTimerDto>()
-                    } : null,
-                    
-                    Deliverables = searchHire.Deliverables?.Select(d => new DeliverableDto
-                    {
-                        Id = d.Id,
-                        Type = d.Type,
-                        Url = d.Url,
-                        CreatedAt = d.CreatedAt
-                    }).ToList() ?? new List<DeliverableDto>(),
-                    
-                    Disputes = searchHire.Disputes?.Select(d => new DisputeDto
-                    {
-                        Id = d.Id,
-                        SearchHireId = d.SearchHireId,
-                        ReporterId = d.ReporterId,
-                        Status = d.Status,
-                        Reason = d.Reason,
-                        ExpertResponse = d.ExpertResponse,
-                        CreatedAt = d.CreatedAt
-                    }).ToList() ?? new List<DisputeDto>()
-                };
-
-                return Ok(additionalData);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error retrieving additional search details for SearchId: {SearchId}", searchId);
-                return StatusCode(500, new { message = "Internal server error" });
-            }
-        }
     }
 
     public class CreateSearchWithHireDto

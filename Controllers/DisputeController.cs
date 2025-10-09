@@ -630,12 +630,17 @@ namespace newApi.Controllers
         {
             try
             {
+                _logger.LogInformation("Starting dispute creation process. SearchHireId={SearchHireId}, Reason length={ReasonLength}, Files count={FilesCount}", 
+                    request?.SearchHireId, request?.Reason?.Length, request?.Files?.Count);
+
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
                     _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
+
+                _logger.LogInformation("User authenticated successfully. UserId={UserId}", userId);
 
                 if (string.IsNullOrWhiteSpace(request.Reason))
                 {
@@ -648,14 +653,19 @@ namespace newApi.Controllers
                 }
 
                 // Verificar que el SearchHire existe y pertenece al usuario
+                _logger.LogInformation("Looking for SearchHire with Id={SearchHireId}", request.SearchHireId);
                 var searchHire = await _context.SearchHires
                     .Include(sh => sh.Search)
                     .FirstOrDefaultAsync(sh => sh.Id == request.SearchHireId);
 
                 if (searchHire == null)
                 {
+                    _logger.LogWarning("SearchHire not found for Id={SearchHireId}", request.SearchHireId);
                     return NotFound(new { message = "Service not found" });
                 }
+
+                _logger.LogInformation("SearchHire found. ClientId={ClientId}, ExpertId={ExpertId}, Status={Status}", 
+                    searchHire.ClientId, searchHire.ExpertId, searchHire.Status);
 
                 // Verificar que el usuario es el cliente o el experto del servicio
                 if (searchHire.ClientId != userId && searchHire.ExpertId != userId)
@@ -678,30 +688,58 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Cannot dispute this service in its current status" });
                 }
 
-                using var transaction = await _context.Database.BeginTransactionAsync();
-
-                // Crear la disputa
-                var dispute = new DataLayer.Models.PostGresModels.Dispute
+                _logger.LogInformation("Starting database transaction for dispute creation using execution strategy");
+                
+                // Variable para almacenar el ID de la disputa creada
+                int disputeId = 0;
+                
+                // Usar la estrategia de ejecución de Entity Framework para manejar transacciones
+                var strategy = _context.Database.CreateExecutionStrategy();
+                await strategy.ExecuteAsync(async () =>
                 {
-                    SearchHireId = request.SearchHireId,
-                    ReporterId = userId,
-                    Reason = request.Reason,
-                    Status = "Pending",
-                    CreatedAt = DateTime.UtcNow,
-                    // Establecer ventana de 48h para que el experto responda
-                    ExpertResponseDeadline = DateTime.UtcNow.AddHours(48)
-                };
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    
+                    try
+                    {
+                        // Crear la disputa
+                        var dispute = new DataLayer.Models.PostGresModels.Dispute
+                        {
+                            SearchHireId = request.SearchHireId,
+                            ReporterId = userId,
+                            Reason = request.Reason,
+                            Status = "Pending",
+                            CreatedAt = DateTime.UtcNow,
+                            // Establecer ventana de 48h para que el experto responda
+                            ExpertResponseDeadline = DateTime.UtcNow.AddHours(48)
+                        };
 
-                _context.Disputes.Add(dispute);
-                await _context.SaveChangesAsync();
+                        _logger.LogInformation("Adding dispute to context. SearchHireId={SearchHireId}, ReporterId={ReporterId}", 
+                            dispute.SearchHireId, dispute.ReporterId);
+                        _context.Disputes.Add(dispute);
+                        await _context.SaveChangesAsync();
+                        _logger.LogInformation("Dispute saved successfully. DisputeId={DisputeId}", dispute.Id);
 
-                // Actualizar el estado del SearchHire a Disputed
-                searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
-                await _context.SaveChangesAsync();
+                        // Actualizar el estado del SearchHire a Disputed
+                        searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
+                        await _context.SaveChangesAsync();
+                        
+                        await transaction.CommitAsync();
+                        _logger.LogInformation("Transaction committed successfully");
+                        
+                        // Guardar el ID para uso posterior
+                        disputeId = dispute.Id;
+                    }
+                    catch
+                    {
+                        await transaction.RollbackAsync();
+                        throw;
+                    }
+                });
 
-                // Handle file uploads if any
+                // Handle file uploads if any (outside transaction for better performance)
                 if (request.Files != null && request.Files.Count > 0)
                 {
+                    _logger.LogInformation("Processing file uploads for dispute");
                     var bucketName = _configuration["GoogleCloud:BucketName"];
                     var disputeFiles = new List<DisputeFile>();
                     
@@ -715,18 +753,16 @@ namespace newApi.Controllers
                             
                             if (!allowedExtensions.Any(ext => ext == fileExtension))
                             {
-                                await transaction.RollbackAsync();
                                 return BadRequest(new { message = $"File type {fileExtension} is not allowed. Allowed types: {string.Join(", ", allowedExtensions)}" });
                             }
 
                             if (file.Length > 10 * 1024 * 1024) // 10MB limit
                             {
-                                await transaction.RollbackAsync();
                                 return BadRequest(new { message = "File size cannot exceed 10MB" });
                             }
 
                             var uniqueFileName = $"{Guid.NewGuid()}{fileExtension}";
-                            var objectName = $"disputes/dispute-{dispute.Id}/client-files/{uniqueFileName}";
+                            var objectName = $"disputes/dispute-{disputeId}/client-files/{uniqueFileName}";
 
                             try
                             {
@@ -744,7 +780,7 @@ namespace newApi.Controllers
 
                                 disputeFiles.Add(new DisputeFile
                                 {
-                                    DisputeId = dispute.Id,
+                                    DisputeId = disputeId,
                                     FileName = file.FileName,
                                     FilePath = fileUrl,
                                     FileType = fileExtension,
@@ -757,7 +793,6 @@ namespace newApi.Controllers
                             catch (Exception ex)
                             {
                                 _logger.LogError(ex, "Error uploading dispute file: {FileName}", file.FileName);
-                                await transaction.RollbackAsync();
                                 return StatusCode(500, new { message = "Failed to upload file" });
                             }
                         }
@@ -767,13 +802,12 @@ namespace newApi.Controllers
                     {
                         _context.DisputeFiles.AddRange(disputeFiles);
                         await _context.SaveChangesAsync();
+                        _logger.LogInformation("Files uploaded successfully for dispute");
                     }
                 }
 
-                await transaction.CommitAsync();
-
-                _logger.LogInformation("Dispute opened for searchHireId={SearchHireId}, disputeId={DisputeId}", searchHire.Id, dispute.Id);
-                return Ok(new { message = "Dispute opened successfully", disputeId = dispute.Id });
+                _logger.LogInformation("Dispute opened for searchHireId={SearchHireId}, disputeId={DisputeId}", searchHire.Id, disputeId);
+                return Ok(new { message = "Dispute opened successfully", disputeId = disputeId });
             }
             catch (Exception ex)
             {
@@ -1068,46 +1102,66 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Expert has already responded to this dispute" });
                 }
 
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
+                _logger.LogInformation("Starting database transaction for expert response using execution strategy");
+                
+                // Usar la estrategia de ejecución de Entity Framework para manejar transacciones
+                var strategy = _context.Database.CreateExecutionStrategy();
+                await strategy.ExecuteAsync(async () =>
                 {
-                    // Actualizar la respuesta del experto
-                    dispute.ExpertResponse = request.Response;
-                    dispute.ExpertResponseAt = DateTime.UtcNow;
-
-                    // Handle file uploads if any
-                    if (request.Files != null && request.Files.Count > 0)
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    
+                    try
                     {
-                        var bucketName = _configuration["GoogleCloud:BucketName"];
-                        if (string.IsNullOrEmpty(bucketName))
+                        // Actualizar la respuesta del experto
+                        dispute.ExpertResponse = request.Response;
+                        dispute.ExpertResponseAt = DateTime.UtcNow;
+
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+                        
+                        _logger.LogInformation("Expert response saved successfully. DisputeId={DisputeId}", disputeId);
+                    }
+                    catch
+                    {
+                        await transaction.RollbackAsync();
+                        throw;
+                    }
+                });
+
+                // Handle file uploads if any (outside transaction for better performance)
+                if (request.Files != null && request.Files.Count > 0)
+                {
+                    _logger.LogInformation("Processing file uploads for expert response");
+                    var bucketName = _configuration["GoogleCloud:BucketName"];
+                    if (string.IsNullOrEmpty(bucketName))
+                    {
+                        return StatusCode(500, new { message = "Google Cloud Storage configuration missing" });
+                    }
+
+                    var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".gif", ".pdf", ".doc", ".docx", ".mp4", ".avi", ".mov" };
+                    var maxFileSize = 10 * 1024 * 1024; // 10MB
+                    var disputeFiles = new List<DisputeFile>();
+
+                    foreach (var file in request.Files)
+                    {
+                        // Validar tipo de archivo
+                        var fileExtension = Path.GetExtension(file.FileName).ToLowerInvariant();
+                        if (!allowedExtensions.Any(ext => ext == fileExtension))
                         {
-                            await transaction.RollbackAsync();
-                            return StatusCode(500, new { message = "Google Cloud Storage configuration missing" });
+                            return BadRequest(new { message = $"File type {fileExtension} is not allowed" });
                         }
 
-                        var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".gif", ".pdf", ".doc", ".docx", ".mp4", ".avi", ".mov" };
-                        var maxFileSize = 10 * 1024 * 1024; // 10MB
-
-                        foreach (var file in request.Files)
+                        // Validar tamaño
+                        if (file.Length > maxFileSize)
                         {
-                            // Validar tipo de archivo
-                            var fileExtension = Path.GetExtension(file.FileName).ToLowerInvariant();
-                            if (!allowedExtensions.Any(ext => ext == fileExtension))
-                            {
-                                await transaction.RollbackAsync();
-                                return BadRequest(new { message = $"File type {fileExtension} is not allowed" });
-                            }
+                            return BadRequest(new { message = $"File {file.FileName} exceeds maximum size of 10MB" });
+                        }
 
-                            // Validar tamaño
-                            if (file.Length > maxFileSize)
-                            {
-                                await transaction.RollbackAsync();
-                                return BadRequest(new { message = $"File {file.FileName} exceeds maximum size of 10MB" });
-                            }
+                        // Generar nombre único para el archivo
+                        var fileName = $"disputes/dispute-{disputeId}/expert-files/{Guid.NewGuid()}{fileExtension}";
 
-                            // Generar nombre único para el archivo
-                            var fileName = $"disputes/dispute-{disputeId}/expert-files/{Guid.NewGuid()}{fileExtension}";
-
+                        try
+                        {
                             // Subir archivo a Google Cloud Storage
                             using var memoryStream = new MemoryStream();
                             await file.CopyToAsync(memoryStream);
@@ -1119,9 +1173,9 @@ namespace newApi.Controllers
                             var fileUrl = $"https://storage.googleapis.com/{bucketName}/{fileName}";
 
                             // Crear registro del archivo
-                            var disputeFile = new DisputeFile
+                            disputeFiles.Add(new DisputeFile
                             {
-                                DisputeId = dispute.Id,
+                                DisputeId = disputeId,
                                 FileName = file.FileName,
                                 FilePath = fileUrl,
                                 FileType = fileExtension,
@@ -1129,25 +1183,25 @@ namespace newApi.Controllers
                                 CreatedAt = DateTime.UtcNow,
                                 UploadedByUserId = userId,
                                 FileCategory = "expert" // Archivos subidos en la respuesta del experto son del experto
-                            };
-
-                            _context.DisputeFiles.Add(disputeFile);
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Error uploading expert response file: {FileName}", file.FileName);
+                            return StatusCode(500, new { message = "Failed to upload file" });
                         }
                     }
 
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
-
-                    _logger.LogInformation("Expert {ExpertId} responded to dispute {DisputeId}", userId, disputeId);
-
-                    return Ok(new { message = "Expert response submitted successfully" });
+                    if (disputeFiles.Any())
+                    {
+                        _context.DisputeFiles.AddRange(disputeFiles);
+                        await _context.SaveChangesAsync();
+                        _logger.LogInformation("Files uploaded successfully for expert response");
+                    }
                 }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Error submitting expert response for dispute {DisputeId}", disputeId);
-                    return StatusCode(500, new { message = "Error submitting expert response" });
-                }
+
+                _logger.LogInformation("Expert {ExpertId} responded to dispute {DisputeId}", userId, disputeId);
+                return Ok(new { message = "Expert response submitted successfully" });
             }
             catch (Exception ex)
             {

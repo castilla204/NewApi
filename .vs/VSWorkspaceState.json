@@ -1,6 +1,12 @@
 {
   "ExpandedNodes": [
-    ""
+    "",
+    "\\Controllers",
+    "\\DataLayer",
+    "\\DataLayer\\Models",
+    "\\DataLayer\\Models\\DTOs",
+    "\\Migrations"
   ],
+  "SelectedNode": "\\Migrations\\20250913105710_stripedetailstatus.cs",
   "PreviewInSolutionExplorer": false
 }

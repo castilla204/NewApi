@@ -1,7 +1,5 @@
 C:\Users\Diego\OneDrive - Educacyl\Escritorio\App\newApi\obj\Debug\net8.0\newApi.csproj.AssemblyReference.cache
 C:\Users\Diego\OneDrive - Educacyl\Escritorio\App\newApi\obj\Debug\net8.0\newApi.GeneratedMSBuildEditorConfig.editorconfig
-C:\Users\Diego\OneDrive - Educacyl\Escritorio\App\newApi\obj\Debug\net8.0\newApi.AssemblyInfoInputs.cache
-C:\Users\Diego\OneDrive - Educacyl\Escritorio\App\newApi\obj\Debug\net8.0\newApi.AssemblyInfo.cs
 C:\Users\Diego\OneDrive - Educacyl\Escritorio\App\newApi\obj\Debug\net8.0\newApi.csproj.CoreCompileInputs.cache
 C:\Users\Diego\OneDrive - Educacyl\Escritorio\App\newApi\obj\Debug\net8.0\newApi.MvcApplicationPartsAssemblyInfo.cs
 C:\Users\Diego\OneDrive - Educacyl\Escritorio\App\newApi\obj\Debug\net8.0\newApi.MvcApplicationPartsAssemblyInfo.cache

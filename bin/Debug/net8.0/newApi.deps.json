@@ -24,7 +24,7 @@
           "Npgsql.EntityFrameworkCore.PostgreSQL": "8.0.0",
           "OpenAI": "2.1.0",
           "RabbitMQ.Client": "6.8.1",
-          "SixLabors.ImageSharp": "3.1.8",
+          "SixLabors.ImageSharp": "3.1.10",
           "Stripe.net": "47.3.0",
           "Swashbuckle.AspNetCore": "6.4.0",
           "Twilio": "7.8.3"
@@ -924,11 +924,11 @@
           }
         }
       },
-      "SixLabors.ImageSharp/3.1.8": {
+      "SixLabors.ImageSharp/3.1.10": {
         "runtime": {
           "lib/net6.0/SixLabors.ImageSharp.dll": {
             "assemblyVersion": "3.0.0.0",
-            "fileVersion": "3.1.8.0"
+            "fileVersion": "3.1.10.0"
           }
         }
       },
@@ -1812,12 +1812,12 @@
       "path": "rabbitmq.client/6.8.1",
       "hashPath": "rabbitmq.client.6.8.1.nupkg.sha512"
     },
-    "SixLabors.ImageSharp/3.1.8": {
+    "SixLabors.ImageSharp/3.1.10": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-8eJkROLGh6DBQLR666q2aOpAaean2puZaZ6Ur9YxoyGzjaZhv8OJSxtnDou54+OXMkXtLUdyQC0so47sOsqZjg==",
-      "path": "sixlabors.imagesharp/3.1.8",
-      "hashPath": "sixlabors.imagesharp.3.1.8.nupkg.sha512"
+      "sha512": "sha512-R1HEPcqx3v+kvlOTPouP0g/Nzzud9pHtjlgGbFax3Ivaz8kkaGfS2EPfyDGpmfoTUQ3nQ5wxdhYyYa9fwYA9cw==",
+      "path": "sixlabors.imagesharp/3.1.10",
+      "hashPath": "sixlabors.imagesharp.3.1.10.nupkg.sha512"
     },
     "Stripe.net/47.3.0": {
       "type": "package",

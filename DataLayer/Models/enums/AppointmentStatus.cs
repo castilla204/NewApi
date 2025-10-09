@@ -11,7 +11,8 @@ namespace newApi.DataLayer.Models.enums
         AppointmentRejected,                    // Experto rechazó
         AppointmentCancelledByClient,           // Primera cancelación del cliente
         AppointmentCancelledByClientSecond,     // Segunda cancelación del cliente
-        AppointmentCancelledByExpert,           // Experto cancela voluntariamente
+        AppointmentCancelledByExpert,           // Primera cancelación del experto
+        AppointmentCancelledByExpertSecond,     // Segunda cancelación del experto
         AppointmentCancelledByNoResponse,       // Cliente no propuso en tiempo
         AppointmentCancelledByExpertRejection,  // Experto rechazó 2 veces (cancelación por rechazos)
         AppointmentAwaitingReport               // Esperando reporte/archivos del experto (3h después de la cita)
@@ -30,6 +31,7 @@ namespace newApi.DataLayer.Models.enums
                 AppointmentStatus.AppointmentCancelledByClient => "appointment_cancelled_by_client",
                 AppointmentStatus.AppointmentCancelledByClientSecond => "appointment_cancelled_by_client_second",
                 AppointmentStatus.AppointmentCancelledByExpert => "appointment_cancelled_by_expert",
+                AppointmentStatus.AppointmentCancelledByExpertSecond => "appointment_cancelled_by_expert_second",
                 AppointmentStatus.AppointmentCancelledByNoResponse => "appointment_cancelled_by_no_response",
                 AppointmentStatus.AppointmentCancelledByExpertRejection => "appointment_cancelled_by_expert_rejection",
                 AppointmentStatus.AppointmentAwaitingReport => "appointment_awaiting_report",
@@ -48,6 +50,7 @@ namespace newApi.DataLayer.Models.enums
                 "appointment_cancelled_by_client" => AppointmentStatus.AppointmentCancelledByClient,
                 "appointment_cancelled_by_client_second" => AppointmentStatus.AppointmentCancelledByClientSecond,
                 "appointment_cancelled_by_expert" => AppointmentStatus.AppointmentCancelledByExpert,
+                "appointment_cancelled_by_expert_second" => AppointmentStatus.AppointmentCancelledByExpertSecond,
                 "appointment_cancelled_by_no_response" => AppointmentStatus.AppointmentCancelledByNoResponse,
                 "appointment_cancelled_by_expert_rejection" => AppointmentStatus.AppointmentCancelledByExpertRejection,
                 "appointment_awaiting_report" => AppointmentStatus.AppointmentAwaitingReport,

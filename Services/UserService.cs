@@ -527,12 +527,25 @@ namespace newApi.Services
 
         private string GenerateJwtToken(User user)
         {
+            // Convertir el valor numérico del enum al nombre del enum
+            var roleName = user.Role switch
+            {
+                UserRole.Client => "Client",
+                UserRole.Expert => "Expert", 
+                UserRole.Admin => "Admin",
+                _ => "Client"
+            };
+
+            // 🔍 DEBUG: Log para ver qué rol se está generando
+            _logger.LogInformation("Generating JWT for user {UserId} ({Email}) with Role: {UserRole} -> {RoleName}", 
+                user.Id, user.Email, user.Role, roleName);
+
             var claims = new[]
             {
             new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new Claim(ClaimTypes.Email, user.Email),
             new Claim(ClaimTypes.Name, user.Name),
-            new Claim(ClaimTypes.Role, user.Role.ToString())
+            new Claim(ClaimTypes.Role, roleName) // Ahora siempre devuelve el nombre del enum
         };
 
             var key = new SymmetricSecurityKey(

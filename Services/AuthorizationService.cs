@@ -19,7 +19,14 @@ namespace newApi.Services
         {
             // 🔐 SEGURIDAD: Verificar rol en lugar de email
             var roleClaim = user.FindFirst(ClaimTypes.Role)?.Value;
-            return roleClaim == "Admin";
+            
+            // 🔍 DEBUG: Log para ver qué claim está recibiendo
+            _logger.LogInformation("IsAdmin check - Role claim value: '{RoleClaim}', Expected: 'Admin'", roleClaim);
+            
+            var isAdmin = roleClaim == "Admin";
+            _logger.LogInformation("IsAdmin result: {IsAdmin}", isAdmin);
+            
+            return isAdmin;
         }
 
         public bool CanAccessSearch(ClaimsPrincipal user, int searchId)

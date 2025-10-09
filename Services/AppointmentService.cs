@@ -116,6 +116,19 @@ namespace newApi.Services
                 if (awaitingStatus == null)
                     throw new InvalidOperationException("Awaiting appointment status not found");
 
+                // ✅ VALIDACIÓN: Verificar que la cita tenga al menos 24 horas de anticipación
+                var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
+                var timeUntilAppointment = proposedDateTime - DateTime.UtcNow;
+                
+                if (timeUntilAppointment.TotalHours < 24)
+                {
+                    throw new InvalidOperationException(
+                        $"Las citas deben crearse con al menos 24 horas de anticipación. " +
+                        $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
+                        $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} UTC"
+                    );
+                }
+
                 var appointment = new Appointment
                 {
                     SearchHireId = dto.SearchHireId,
@@ -215,6 +228,19 @@ namespace newApi.Services
 
                 if (proposedStatus == null)
                     throw new InvalidOperationException("Appointment proposed status not found");
+
+                // ✅ VALIDACIÓN: Verificar que la cita tenga al menos 24 horas de anticipación
+                var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
+                var timeUntilAppointment = proposedDateTime - DateTime.UtcNow;
+                
+                if (timeUntilAppointment.TotalHours < 24)
+                {
+                    throw new InvalidOperationException(
+                        $"Las citas deben proponerse con al menos 24 horas de anticipación. " +
+                        $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
+                        $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} UTC"
+                    );
+                }
 
                 // Actualizar la cita - asegurar que los DateTime tengan Kind=UTC
                 appointment.ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc);
@@ -449,8 +475,15 @@ namespace newApi.Services
                 }
                 else
                 {
-                    // Experto cancela
-                    statusValue = "appointment_cancelled_by_expert";
+                    // Experto cancela - verificar si es primera o segunda cancelación
+                    if (appointment.CancellationCount >= 1)
+                    {
+                        statusValue = "appointment_cancelled_by_expert_second";
+                    }
+                    else
+                    {
+                        statusValue = "appointment_cancelled_by_expert";
+                    }
                 }
 
                 var cancelledStatus = await _context.SystemStatuses
@@ -471,6 +504,7 @@ namespace newApi.Services
                     "appointment_cancelled_by_client" => AppointmentStatus.AppointmentCancelledByClient,
                     "appointment_cancelled_by_client_second" => AppointmentStatus.AppointmentCancelledByClientSecond,
                     "appointment_cancelled_by_expert" => AppointmentStatus.AppointmentCancelledByExpert,
+                    "appointment_cancelled_by_expert_second" => AppointmentStatus.AppointmentCancelledByExpertSecond,
                     _ => throw new InvalidOperationException($"Unknown appointment status: {statusValue}")
                 };
 

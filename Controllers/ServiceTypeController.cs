@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models;
+using newApi.Services;
 
 namespace newApi.Controllers
 {
@@ -14,11 +15,13 @@ namespace newApi.Controllers
     {
         private readonly AppDbContext _context;
         private readonly ILogger<ServiceTypeController> _logger;
+        private readonly IAuthorizationServices _authService;
 
-        public ServiceTypeController(AppDbContext context, ILogger<ServiceTypeController> logger)
+        public ServiceTypeController(AppDbContext context, ILogger<ServiceTypeController> logger, IAuthorizationServices authService)
         {
             _context = context;
             _logger = logger;
+            _authService = authService;
         }
 
         /// <summary>
@@ -181,11 +184,15 @@ namespace newApi.Controllers
         }
 
         [HttpPost]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> CreateServiceType([FromBody] ServiceTypeDto createDto)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 if (string.IsNullOrWhiteSpace(createDto.Name))
                 {
                     return BadRequest(new { message = "Name is required" });
@@ -225,11 +232,15 @@ namespace newApi.Controllers
         }
 
         [HttpPut("{id}")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> UpdateServiceType(int id, [FromBody] ServiceTypeDto updateDto)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 if (id != updateDto.Id)
                 {
                     return BadRequest(new { message = "ID mismatch" });
@@ -275,11 +286,15 @@ namespace newApi.Controllers
         }
 
         [HttpDelete("{id}")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> DeleteServiceType(int id)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 var serviceType = await _context.ServiceTypes.FindAsync(id);
                 if (serviceType == null)
                 {

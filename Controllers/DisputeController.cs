@@ -9,6 +9,7 @@ using newApi.Common;
 using Google.Cloud.Storage.V1;
 using Microsoft.Extensions.Configuration;
 using System.IO;
+using newApi.Services;
 
 namespace newApi.Controllers
 {
@@ -24,6 +25,7 @@ namespace newApi.Controllers
         private readonly ILogger<DisputeController> _logger;
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
+        private readonly IAuthorizationServices _authService;
 
         /// <summary>
         /// Constructor del controlador de disputas
@@ -32,12 +34,13 @@ namespace newApi.Controllers
         /// <param name="logger">Logger para registro de eventos</param>
         /// <param name="configuration">Configuración de la aplicación</param>
         /// <param name="storageClient">Cliente de Google Cloud Storage</param>
-        public DisputeController(AppDbContext context, ILogger<DisputeController> logger, IConfiguration configuration, StorageClient storageClient)
+        public DisputeController(AppDbContext context, ILogger<DisputeController> logger, IConfiguration configuration, StorageClient storageClient, IAuthorizationServices authService)
         {
             _context = context;
             _logger = logger;
             _configuration = configuration;
             _storageClient = storageClient;
+            _authService = authService;
         }
 
         /// <summary>
@@ -76,35 +79,40 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Service is not awaiting client decision" });
                 }
 
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
+                // Usar la estrategia de ejecución de Entity Framework para manejar transacciones
+                var strategy = _context.Database.CreateExecutionStrategy();
+                return await strategy.ExecuteAsync(async () =>
                 {
-                    searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
-                    searchHire.ClientApproved = false;
-                    searchHire.UpdatedAt = DateTime.UtcNow;
-
-                    var dispute = new Dispute
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
                     {
-                        SearchHireId = searchHire.Id,
-                        ReporterId = userId,
-                        Reason = request.Reason,
-                        Status = "Pending",
-                        CreatedAt = DateTime.UtcNow
-                    };
+                        searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
+                        searchHire.ClientApproved = false;
+                        searchHire.UpdatedAt = DateTime.UtcNow;
 
-                    _context.Disputes.Add(dispute);
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
+                        var dispute = new Dispute
+                        {
+                            SearchHireId = searchHire.Id,
+                            ReporterId = userId,
+                            Reason = request.Reason,
+                            Status = "Pending",
+                            CreatedAt = DateTime.UtcNow
+                        };
 
-                    _logger.LogInformation("Dispute opened for searchHireId={SearchHireId}, disputeId={DisputeId}", searchHire.Id, dispute.Id);
-                    return Ok(new { message = "Dispute opened", disputeId = dispute.Id });
-                }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Database error disputing service for searchHireId={SearchHireId}", searchHire.Id);
-                    return StatusCode(500, new { message = "Failed to open dispute" });
-                }
+                        _context.Disputes.Add(dispute);
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+
+                        _logger.LogInformation("Dispute opened for searchHireId={SearchHireId}, disputeId={DisputeId}", searchHire.Id, dispute.Id);
+                        return Ok(new { message = "Dispute opened", disputeId = dispute.Id });
+                    }
+                    catch (Exception ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Database error disputing service for searchHireId={SearchHireId}", searchHire.Id);
+                        return StatusCode(500, new { message = "Failed to open dispute" });
+                    }
+                });
             }
             catch (Exception ex)
             {
@@ -122,7 +130,7 @@ namespace newApi.Controllers
             try
             {
                 // 🔐 SEGURIDAD: Verificar rol en lugar de email
-                if (!User.IsInRole("Admin"))
+                if (!_authService.IsAdmin(User))
                 {
                     _logger.LogError("Unauthorized access attempt to dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });
@@ -305,7 +313,7 @@ namespace newApi.Controllers
             try
             {
                 // 🔐 SEGURIDAD: Verificar rol en lugar de email
-                if (!User.IsInRole("Admin"))
+                if (!_authService.IsAdmin(User))
                 {
                     _logger.LogError("Unauthorized access attempt to dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });
@@ -328,76 +336,81 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Dispute is already resolved" });
                 }
 
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
+                // Usar la estrategia de ejecución de Entity Framework para manejar transacciones
+                var strategy = _context.Database.CreateExecutionStrategy();
+                return await strategy.ExecuteAsync(async () =>
                 {
-                    // Actualizar la disputa
-                    dispute.Status = "Resolved";
-                    dispute.ResolutionComments = request.ResolutionComments;
-
-                    // Procesar la acción según el tipo
-                    switch (request.Action.ToLower())
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
                     {
-                        case "refund_client":
-                            // Reembolsar al cliente
-                            dispute.SearchHire.Client.Balance += dispute.SearchHire.Amount;
-                            
-                            // Crear transacción financiera
-                            _context.FinancialTransactions.Add(new FinancialTransaction
-                            {
-                                UserId = dispute.SearchHire.ClientId,
-                                Amount = dispute.SearchHire.Amount,
-                                TransactionType = "DisputeRefund",
-                                RelatedEntityType = "Dispute",
-                                RelatedEntityId = dispute.Id,
-                                CreatedAt = DateTime.UtcNow
-                            });
+                        // Actualizar la disputa
+                        dispute.Status = "Resolved";
+                        dispute.ResolutionComments = request.ResolutionComments;
 
-                            // Actualizar estado del SearchHire a disputa resuelta a favor del cliente
-                            dispute.SearchHire.Status = "dispute-resolved-client";
-                            dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
-                            break;
-
-                        case "pay_expert":
-                            // Pagar al experto (si existe)
-                            if (dispute.SearchHire.Expert != null)
-                            {
-                                dispute.SearchHire.Expert.Balance += dispute.SearchHire.Amount;
+                        // Procesar la acción según el tipo
+                        switch (request.Action.ToLower())
+                        {
+                            case "refund_client":
+                                // Reembolsar al cliente
+                                dispute.SearchHire.Client.Balance += dispute.SearchHire.Amount;
                                 
                                 // Crear transacción financiera
                                 _context.FinancialTransactions.Add(new FinancialTransaction
                                 {
-                                    UserId = dispute.SearchHire.ExpertId.Value,
+                                    UserId = dispute.SearchHire.ClientId,
                                     Amount = dispute.SearchHire.Amount,
-                                    TransactionType = "DisputePayout",
+                                    TransactionType = "DisputeRefund",
                                     RelatedEntityType = "Dispute",
                                     RelatedEntityId = dispute.Id,
                                     CreatedAt = DateTime.UtcNow
                                 });
-                            }
 
-                            // Actualizar estado del SearchHire a disputa resuelta a favor del experto
-                            dispute.SearchHire.Status = "dispute-resolved-expert";
-                            dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
-                            break;
+                                // Actualizar estado del SearchHire a disputa resuelta a favor del cliente
+                                dispute.SearchHire.Status = "dispute-resolved-client";
+                                dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
+                                break;
 
-                        default:
-                            return BadRequest(new { message = "Invalid action. Valid actions: refund_client, pay_expert" });
+                            case "pay_expert":
+                                // Pagar al experto (si existe)
+                                if (dispute.SearchHire.Expert != null)
+                                {
+                                    dispute.SearchHire.Expert.Balance += dispute.SearchHire.Amount;
+                                    
+                                    // Crear transacción financiera
+                                    _context.FinancialTransactions.Add(new FinancialTransaction
+                                    {
+                                        UserId = dispute.SearchHire.ExpertId.Value,
+                                        Amount = dispute.SearchHire.Amount,
+                                        TransactionType = "DisputePayout",
+                                        RelatedEntityType = "Dispute",
+                                        RelatedEntityId = dispute.Id,
+                                        CreatedAt = DateTime.UtcNow
+                                    });
+                                }
+
+                                // Actualizar estado del SearchHire a disputa resuelta a favor del experto
+                                dispute.SearchHire.Status = "dispute-resolved-expert";
+                                dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
+                                break;
+
+                            default:
+                                return BadRequest(new { message = "Invalid action. Valid actions: refund_client, pay_expert" });
+                        }
+
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+
+                        _logger.LogInformation("Dispute {DisputeId} resolved by admin with action {Action}", disputeId, request.Action);
+
+                        return Ok(new { message = "Dispute resolved successfully" });
                     }
-
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
-
-                    _logger.LogInformation("Dispute {DisputeId} resolved by admin with action {Action}", disputeId, request.Action);
-
-                    return Ok(new { message = "Dispute resolved successfully" });
-                }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Error resolving dispute {DisputeId}", disputeId);
-                    return StatusCode(500, new { message = "Error resolving dispute" });
-                }
+                    catch (Exception ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Error resolving dispute {DisputeId}", disputeId);
+                        return StatusCode(500, new { message = "Error resolving dispute" });
+                    }
+                });
             }
             catch (Exception ex)
             {
@@ -415,7 +428,7 @@ namespace newApi.Controllers
             try
             {
                 // 🔐 SEGURIDAD: Verificar rol en lugar de email
-                if (!User.IsInRole("Admin"))
+                if (!_authService.IsAdmin(User))
                 {
                     _logger.LogError("Unauthorized access attempt to dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });
@@ -516,7 +529,7 @@ namespace newApi.Controllers
             try
             {
                 // 🔐 SEGURIDAD: Verificar rol en lugar de email
-                if (!User.IsInRole("Admin"))
+                if (!_authService.IsAdmin(User))
                 {
                     _logger.LogError("Unauthorized access attempt to dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });
@@ -826,7 +839,7 @@ namespace newApi.Controllers
             {
                 var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
                 // 🔐 SEGURIDAD: Verificar rol en lugar de email
-                var isAdmin = User.IsInRole("Admin");
+                var isAdmin = _authService.IsAdmin(User);
 
                 // Validar parámetros
                 if (request.Page < 1) request.Page = 1;

@@ -16,15 +16,18 @@ namespace newApi.Controllers
         private readonly AppDbContext _context;
         private readonly SystemStatusService _systemStatusService;
         private readonly ILogger<SystemStatusController> _logger;
+        private readonly IAuthorizationServices _authService;
 
         public SystemStatusController(
             AppDbContext context, 
             SystemStatusService systemStatusService, 
-            ILogger<SystemStatusController> logger)
+            ILogger<SystemStatusController> logger,
+            IAuthorizationServices authService)
         {
             _context = context;
             _systemStatusService = systemStatusService;
             _logger = logger;
+            _authService = authService;
         }
 
         /// <summary>
@@ -179,11 +182,15 @@ namespace newApi.Controllers
         /// Crea un nuevo estado del sistema (Solo Admin)
         /// </summary>
         [HttpPost("statuses")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> CreateStatus([FromBody] CreateSystemStatusRequest request)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 // Validar que no exista un estado con el mismo StatusValue en el mismo StatusType
                 var existingStatus = await _context.SystemStatuses
                     .FirstOrDefaultAsync(s => s.StatusType == request.StatusType && 
@@ -236,11 +243,16 @@ namespace newApi.Controllers
         /// Crea un nuevo mapeo de estados (Solo Admin)
         /// </summary>
         [HttpPost("mappings")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> CreateStatusMapping([FromBody] CreateStatusMappingRequest request)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
+
                 // Validar que los estados existan
                 var sourceStatus = await _context.SystemStatuses.FindAsync(request.SourceStatusId);
                 var targetStatus = await _context.SystemStatuses.FindAsync(request.TargetStatusId);
@@ -294,11 +306,15 @@ namespace newApi.Controllers
         /// Crea una nueva configuración de distribución de dinero (Solo Admin)
         /// </summary>
         [HttpPost("configurations")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> CreateStatusConfiguration([FromBody] CreateStatusConfigurationRequest request)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 // Validar que el estado exista
                 var status = await _context.SystemStatuses.FindAsync(request.StatusId);
                 if (status == null)
@@ -365,11 +381,15 @@ namespace newApi.Controllers
         /// Actualiza un estado del sistema (Solo Admin)
         /// </summary>
         [HttpPut("statuses/{statusId}")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> UpdateStatus(int statusId, [FromBody] UpdateSystemStatusRequest request)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 var status = await _context.SystemStatuses.FindAsync(statusId);
                 if (status == null)
                 {
@@ -426,11 +446,15 @@ namespace newApi.Controllers
         /// Elimina un estado del sistema (Solo Admin)
         /// </summary>
         [HttpDelete("statuses/{statusId}")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> DeleteStatus(int statusId)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 var status = await _context.SystemStatuses.FindAsync(statusId);
                 if (status == null)
                 {
@@ -474,11 +498,15 @@ namespace newApi.Controllers
         /// Actualiza un mapeo de estados (Solo Admin)
         /// </summary>
         [HttpPut("mappings/{mappingId}")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> UpdateStatusMapping(int mappingId, [FromBody] UpdateStatusMappingRequest request)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 var mapping = await _context.StatusMappings
                     .Include(sm => sm.SourceStatus)
                     .Include(sm => sm.TargetStatus)
@@ -549,11 +577,15 @@ namespace newApi.Controllers
         /// Elimina un mapeo de estados (Solo Admin)
         /// </summary>
         [HttpDelete("mappings/{mappingId}")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> DeleteStatusMapping(int mappingId)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 var mapping = await _context.StatusMappings
                     .Include(sm => sm.SourceStatus)
                     .Include(sm => sm.TargetStatus)

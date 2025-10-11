@@ -13,11 +13,13 @@ namespace newApi.Controllers
     {
         private readonly IAppointmentService _appointmentService;
         private readonly ILogger<AppointmentController> _logger;
+        private readonly IAuthorizationServices _authService;
 
-        public AppointmentController(IAppointmentService appointmentService, ILogger<AppointmentController> logger)
+        public AppointmentController(IAppointmentService appointmentService, ILogger<AppointmentController> logger, IAuthorizationServices authService)
         {
             _appointmentService = appointmentService;
             _logger = logger;
+            _authService = authService;
         }
 
         /// <summary>
@@ -242,11 +244,15 @@ namespace newApi.Controllers
         /// Obtener métricas de citas (Admin)
         /// </summary>
         [HttpGet("admin/metrics")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> GetAppointmentMetrics()
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 var metrics = await _appointmentService.GetAppointmentMetricsAsync();
                 return Ok(metrics);
             }
@@ -262,11 +268,15 @@ namespace newApi.Controllers
         /// Verificar timers de citas (Admin)
         /// </summary>
         [HttpPost("admin/check-timers")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> CheckAppointmentTimers()
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 await _appointmentService.CheckAppointmentTimersAsync();
                 return Ok(new { message = "Appointment timers checked successfully" });
             }

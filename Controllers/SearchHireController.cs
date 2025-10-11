@@ -23,17 +23,20 @@ namespace newApi.Controllers
         private readonly AppDbContext _context;
         private readonly ILogger<SearchHireController> _logger;
         private readonly IConfiguration _configuration;
+        private readonly IAuthorizationServices _authService;
 
         public SearchHireController(
             SearchHireService searchHireService,
             AppDbContext context,
             ILogger<SearchHireController> logger,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            IAuthorizationServices authService)
         {
             _searchHireService = searchHireService;
             _context = context;
             _logger = logger;
             _configuration = configuration;
+            _authService = authService;
             StripeConfiguration.ApiKey = configuration["Stripe:SecretKey"];
         }
 
@@ -54,7 +57,7 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Search not found" });
                 }
 
-                if (search.UserId != userId && !User.IsInRole("Admin"))
+                if (search.UserId != userId && !_authService.IsAdmin(User))
                 {
                     return Unauthorized(new { message = "You are not authorized to create a search hire for this search" });
                 }

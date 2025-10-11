@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models;
+using newApi.Services;
 
 namespace newApi.Controllers
 {
@@ -17,11 +18,13 @@ namespace newApi.Controllers
     {
         private readonly AppDbContext _context;
         private readonly ILogger<ServiceTypeCategoryController> _logger;
+        private readonly IAuthorizationServices _authService;
 
-        public ServiceTypeCategoryController(AppDbContext context, ILogger<ServiceTypeCategoryController> logger)
+        public ServiceTypeCategoryController(AppDbContext context, ILogger<ServiceTypeCategoryController> logger, IAuthorizationServices authService)
         {
             _context = context;
             _logger = logger;
+            _authService = authService;
         }
 
         /// <summary>
@@ -177,11 +180,15 @@ namespace newApi.Controllers
         /// <param name="createDto">Datos de la nueva categoría</param>
         /// <returns>Categoría creada</returns>
         [HttpPost]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> CreateServiceTypeCategory([FromBody] CreateServiceTypeCategoryDto createDto)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 if (string.IsNullOrWhiteSpace(createDto.Name))
                 {
                     return BadRequest(new { message = "Name is required" });
@@ -227,11 +234,15 @@ namespace newApi.Controllers
         /// <param name="updateDto">Datos actualizados</param>
         /// <returns>Categoría actualizada</returns>
         [HttpPut("{id}")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> UpdateServiceTypeCategory(int id, [FromBody] UpdateServiceTypeCategoryDto updateDto)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 if (id != updateDto.Id)
                 {
                     return BadRequest(new { message = "ID mismatch" });
@@ -282,11 +293,15 @@ namespace newApi.Controllers
         /// <param name="id">ID de la categoría</param>
         /// <returns>Resultado de la operación</returns>
         [HttpDelete("{id}")]
-        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> DeleteServiceTypeCategory(int id)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 var category = await _context.ServiceTypeCategories.FindAsync(id);
                 if (category == null)
                 {

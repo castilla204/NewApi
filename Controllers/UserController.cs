@@ -11,13 +11,16 @@ public class UserController : ControllerBase
 {
     private readonly UserService _userService;
     private readonly ILogger<UserController> _logger;
+    private readonly IAuthorizationServices _authService;
 
     public UserController(
         UserService userService,
-        ILogger<UserController> logger)
+        ILogger<UserController> logger,
+        IAuthorizationServices authService)
     {
         _userService = userService;
         _logger = logger;
+        _authService = authService;
     }
 
     [Authorize]
@@ -26,8 +29,8 @@ public class UserController : ControllerBase
     {
         try
         {
-            // 🔐 SEGURIDAD: Verificar rol en lugar de email
-            if (!User.IsInRole("Admin"))
+            // 🔐 SEGURIDAD: Verificar rol usando AuthorizationService
+            if (!_authService.IsAdmin(User))
             {
                 return Unauthorized(new { message = "Admin access required" });
             }
@@ -78,8 +81,8 @@ public class UserController : ControllerBase
     {
         try
         {
-            // 🔐 SEGURIDAD: Verificar rol en lugar de email
-            if (!User.IsInRole("Admin"))
+            // 🔐 SEGURIDAD: Verificar rol usando AuthorizationService
+            if (!_authService.IsAdmin(User))
             {
                 return Unauthorized(new { message = "Admin access required" });
             }
@@ -105,8 +108,8 @@ public class UserController : ControllerBase
     {
         try
         {
-            // 🔐 SEGURIDAD: Verificar rol en lugar de email
-            if (!User.IsInRole("Admin"))
+            // 🔐 SEGURIDAD: Verificar rol usando AuthorizationService
+            if (!_authService.IsAdmin(User))
             {
                 return Unauthorized(new { message = "Admin access required" });
             }

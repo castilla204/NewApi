@@ -1,6 +1,7 @@
 ﻿using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using newApi.DataLayer.Models;
+using newApi.DataLayer.Models.PostGresModels;
 
 namespace newApi.Services
 {
@@ -17,13 +18,30 @@ namespace newApi.Services
 
         public bool IsAdmin(ClaimsPrincipal user)
         {
-            // 🔐 SEGURIDAD: Verificar rol en lugar de email
+            // 🔐 SEGURIDAD: Solo verificar por rol en JWT firmado (más seguro)
             var roleClaim = user.FindFirst(ClaimTypes.Role)?.Value;
+            var userIdClaim = user.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var emailClaim = user.FindFirst(ClaimTypes.Email)?.Value;
             
-            // 🔍 DEBUG: Log para ver qué claim está recibiendo
-            _logger.LogInformation("IsAdmin check - Role claim value: '{RoleClaim}', Expected: 'Admin'", roleClaim);
+            // 🔍 DEBUG: Log para ver qué claims está recibiendo
+            _logger.LogInformation("IsAdmin check - Email: '{Email}', Role: '{Role}', UserId: '{UserId}'", 
+                emailClaim, roleClaim, userIdClaim);
             
-            var isAdmin = roleClaim == "Admin";
+            // Verificar por rol (método principal - JWT firmado es confiable)
+            var isAdmin = roleClaim == "Admin" || roleClaim == "2";
+            
+            // 🔐 SEGURIDAD ADICIONAL: Solo para tokens antiguos con valor numérico
+            if (isAdmin && roleClaim == "2" && !string.IsNullOrEmpty(userIdClaim) && int.TryParse(userIdClaim, out int userId))
+            {
+                // Verificar que el usuario realmente tenga rol Admin en BD
+                var userFromDb = _context.Users.Find(userId);
+                if ((int)(userFromDb?.Role ?? 0) != 2)
+                {
+                    _logger.LogWarning("User {UserId} has admin claim but is not admin in database", userId);
+                    isAdmin = false;
+                }
+            }
+            
             _logger.LogInformation("IsAdmin result: {IsAdmin}", isAdmin);
             
             return isAdmin;

@@ -38,8 +38,9 @@ namespace newApi.Controllers
         private readonly string? _generalWebhookSecret;
         private readonly IUserActionLoggingService _userActionLogging;
         private readonly SystemStatusService _systemStatusService;
+        private readonly IAuthorizationServices _authService;
 
-        public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, IUserActionLoggingService userActionLogging, SystemStatusService systemStatusService)
+        public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, IUserActionLoggingService userActionLogging, SystemStatusService systemStatusService, IAuthorizationServices authService)
         {
             _logger = logger;
             _logger.LogInformation("Initializing SubscriptionController");
@@ -48,6 +49,7 @@ namespace newApi.Controllers
             _systemStatusService = systemStatusService;
             _subscriptionService = subscriptionService;
             _configuration = configuration;
+            _authService = authService;
             _storageClient = storageClient;
             _webhookSecret = _configuration["Stripe:WebhookSecret"];
             _generalWebhookSecret = _configuration["Stripe:GeneralWebhookSecret"];
@@ -2622,7 +2624,7 @@ namespace newApi.Controllers
         public async Task<IActionResult> ForceFinalize([FromBody] ForceFinalizeDto request)
         {
             // 🔐 SEGURIDAD: Verificar rol en lugar de email
-            if (!User.IsInRole("Admin"))
+            if (!_authService.IsAdmin(User))
             {
                 _logger.LogError("Unauthorized access attempt to force-finalize endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                 return Unauthorized(new { message = "Admin access required" });
@@ -2740,7 +2742,7 @@ searchHire.Id, searchHire.Amount);
         public async Task<IActionResult> ResolveDispute([FromBody] ResolveDisputeDto request)
         {
             // 🔐 SEGURIDAD: Verificar rol en lugar de email
-            if (!User.IsInRole("Admin"))
+            if (!_authService.IsAdmin(User))
             {
                 _logger.LogError("Unauthorized access attempt to resolve-dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                 return Unauthorized(new { message = "Admin access required" });
@@ -2865,7 +2867,7 @@ searchHire.Id, searchHire.Amount);
         public async Task<IActionResult> ProcessExpiredServices()
         {
             // 🔐 SEGURIDAD: Verificar rol en lugar de email
-            if (!User.IsInRole("Admin"))
+            if (!_authService.IsAdmin(User))
             {
                 _logger.LogError("Unauthorized access attempt by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                 return Unauthorized(new { message = "Admin access required" });
@@ -3978,7 +3980,7 @@ searchHire.Id, searchHire.Amount);
             try
             {
                 // 🔐 SEGURIDAD: Verificar rol en lugar de email
-                if (!User.IsInRole("Admin"))
+                if (!_authService.IsAdmin(User))
                 {
                     _logger.LogError("Unauthorized access attempt to money distribution configs by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });

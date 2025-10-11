@@ -144,9 +144,13 @@ namespace newApi.Services
             if (user == null)
             {
                 // 🔐 SEGURIDAD: Asignar rol de Admin solo si el email es el autorizado
-                var userRole = payload.Email?.Trim().ToLowerInvariant() == "dcastillaa@gmail.com" 
-                    ? UserRole.Admin 
-                    : UserRole.Client;
+                var emailToCheck = payload.Email?.Trim().ToLowerInvariant();
+                var isAdminEmail = emailToCheck == "dcastillaa@gmail.com";
+                var userRole = isAdminEmail ? UserRole.Admin : UserRole.Client;
+                
+                // 🔍 DEBUG: Log para ver qué está pasando
+                _logger.LogInformation("Creating new user - Email: '{Email}', IsAdminEmail: {IsAdminEmail}, AssignedRole: {UserRole}", 
+                    emailToCheck, isAdminEmail, userRole);
 
                 user = new User
                 {
@@ -171,6 +175,12 @@ namespace newApi.Services
                 };
                 _context.UserSettings.Add(userSettings);
                 await _context.SaveChangesAsync();
+            }
+            else
+            {
+                // 🔍 DEBUG: Log para usuarios existentes
+                _logger.LogInformation("Existing user login - Email: '{Email}', CurrentRole: {Role}", 
+                    user.Email, user.Role);
             }
 
             var token = GenerateJwtToken(user);

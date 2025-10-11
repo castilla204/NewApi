@@ -6,6 +6,7 @@ using System.Security.Claims;
 using AdModel = newApi.DataLayer.Models.AdModel;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models;
+using newApi.Services;
 
 
 namespace newApi.Controllers
@@ -18,12 +19,14 @@ namespace newApi.Controllers
         private readonly AppDbContext _context;
         private readonly ILogger<SearchResultController> _logger;
         private readonly IMapper _mapper;
+        private readonly IAuthorizationServices _authService;
 
-        public SearchResultController(AppDbContext context, ILogger<SearchResultController> logger, IMapper mapper)
+        public SearchResultController(AppDbContext context, ILogger<SearchResultController> logger, IMapper mapper, IAuthorizationServices authService)
         {
             _context = context;
             _logger = logger;
             _mapper = mapper;
+            _authService = authService;
         }
 
         [HttpGet("{searchId}/results")]
@@ -71,7 +74,7 @@ namespace newApi.Controllers
                 }
 
                 // 🔐 SEGURIDAD: Verificar rol en lugar de email
-                var isAdmin = User.IsInRole("Admin");
+                var isAdmin = _authService.IsAdmin(User);
                 var searchHire = await _context.SearchHires
                     .FirstOrDefaultAsync(z => z.SearchId == searchId && z.ExpertId == userId);
 

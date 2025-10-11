@@ -16,6 +16,7 @@ using SixLabors.ImageSharp.Processing;
 using System.IO;
 using System.Collections.Generic;
 using System.Globalization;
+using newApi.Services;
 
 namespace newApi.Controllers
 {
@@ -37,13 +38,15 @@ namespace newApi.Controllers
         private readonly IHubContext<ChatHub> _hubContext;
         private readonly StorageClient _storageClient;
         private readonly IConfiguration _configuration;
+        private readonly IAuthorizationServices _authService;
 
-        public ChatController(AppDbContext context, IHubContext<ChatHub> hubContext, StorageClient storageClient, IConfiguration configuration)
+        public ChatController(AppDbContext context, IHubContext<ChatHub> hubContext, StorageClient storageClient, IConfiguration configuration, IAuthorizationServices authService)
         {
             _context = context;
             _hubContext = hubContext;
             _storageClient = storageClient;
             _configuration = configuration;
+            _authService = authService;
         }
 
         [HttpGet("conversation")]
@@ -69,7 +72,7 @@ namespace newApi.Controllers
                     .Include(c => c.Client)
                     .Include(c => c.Expert)
                     .FirstOrDefaultAsync(c => c.SearchHire.SearchId == searchId &&
-                                             (c.ClientId == userId || c.ExpertId == userId || User.IsInRole("Admin")));
+                                             (c.ClientId == userId || c.ExpertId == userId || _authService.IsAdmin(User)));
                 Console.WriteLine($"[13:42 CEST] Existing conversation found: {conversation != null}");
 
                 if (conversation == null)
@@ -92,7 +95,7 @@ namespace newApi.Controllers
                     // Verificar autorización: debe ser cliente, experto o admin
                     var isClient = searchHire.ClientId == userId;
                     var isExpert = searchHire.ExpertId == userId;
-                    var isAdmin = User.IsInRole("Admin");
+                    var isAdmin = _authService.IsAdmin(User);
                     
                     if (!isClient && !isExpert && !isAdmin)
                     {
@@ -130,11 +133,15 @@ namespace newApi.Controllers
         /// Obtener todas las conversaciones (solo para Admin)
         /// </summary>
         [HttpGet("conversations")]
-        [Authorize(Roles = "Admin")]
         public async Task<ActionResult<List<ConversationDto>>> GetAllConversations()
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 var conversations = await _context.Conversations
                     .Include(c => c.Messages)
                         .ThenInclude(m => m.Sender)
@@ -161,11 +168,15 @@ namespace newApi.Controllers
         /// Obtener conversación específica por ID (solo para Admin)
         /// </summary>
         [HttpGet("conversation/{conversationId}")]
-        [Authorize(Roles = "Admin")]
         public async Task<ActionResult<ConversationDto>> GetConversationById(int conversationId)
         {
             try
             {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
                 var conversation = await _context.Conversations
                     .Include(c => c.Messages)
                         .ThenInclude(m => m.Sender)
@@ -525,7 +536,7 @@ namespace newApi.Controllers
                 }
 
                 var searchHire = await _context.SearchHires
-                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId && (sh.ClientId == userId || sh.ExpertId == userId || User.IsInRole("Admin")));
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId && (sh.ClientId == userId || sh.ExpertId == userId || _authService.IsAdmin(User)));
                 if (searchHire == null)
                 {
                     return NotFound(new { message = "SearchHire not found or you are not authorized" });

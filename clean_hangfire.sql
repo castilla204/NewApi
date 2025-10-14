@@ -42,3 +42,5 @@ ORDER BY key;
 -- SELECT COUNT(*) as total_recurring_jobs FROM hangfire.set WHERE key LIKE '%recurring%';
 
 
+
+

@@ -223,6 +223,25 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Failed to create service, possibly due to invalid ServiceTypeId, ExpertProfileId, or CategoryId" });
                 }
 
+                // Cargar los SelectedDeliverableTypes para la respuesta
+                var selectedDeliverableTypes = await _context.SearchServiceDeliverableTypes
+                    .Where(ssdt => ssdt.SearchServiceId == service.Id)
+                    .Include(ssdt => ssdt.DeliverableType)
+                    .Select(ssdt => new
+                    {
+                        ssdt.Id,
+                        ssdt.DeliverableTypeId,
+                        ssdt.IsSelected,
+                        DeliverableType = new
+                        {
+                            ssdt.DeliverableType.Id,
+                            ssdt.DeliverableType.Name,
+                            ssdt.DeliverableType.DisplayName,
+                            ssdt.DeliverableType.Description
+                        }
+                    })
+                    .ToListAsync();
+
                 return Ok(new
                 {
                     message = "Search service created successfully",
@@ -238,7 +257,8 @@ namespace newApi.Controllers
                         service.DurationInHours,
                         service.CreatedAt,
                         service.IsActive,
-                        ImageUrls = imageUrls
+                        ImageUrls = imageUrls,
+                        SelectedDeliverableTypes = selectedDeliverableTypes
                     }
                 });
             }
@@ -285,6 +305,7 @@ namespace newApi.Controllers
                         ImageCount = request.Images?.Count ?? 0,
                         SelectedDeliverableTypes = request.SelectedDeliverableTypes
                     });
+
 
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
@@ -343,6 +364,25 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Failed to update service. The service may not exist, may not belong to you, or may be inactive." });
                 }
 
+                // Cargar los SelectedDeliverableTypes para la respuesta
+                var selectedDeliverableTypes = await _context.SearchServiceDeliverableTypes
+                    .Where(ssdt => ssdt.SearchServiceId == newService.Id)
+                    .Include(ssdt => ssdt.DeliverableType)
+                    .Select(ssdt => new
+                    {
+                        ssdt.Id,
+                        ssdt.DeliverableTypeId,
+                        ssdt.IsSelected,
+                        DeliverableType = new
+                        {
+                            ssdt.DeliverableType.Id,
+                            ssdt.DeliverableType.Name,
+                            ssdt.DeliverableType.DisplayName,
+                            ssdt.DeliverableType.Description
+                        }
+                    })
+                    .ToListAsync();
+
                 return Ok(new
                 {
                     message = "Search service updated successfully",
@@ -358,7 +398,8 @@ namespace newApi.Controllers
                         newService.DurationInHours,
                         newService.CreatedAt,
                         newService.IsActive,
-                        ImageUrls = imageUrls
+                        ImageUrls = imageUrls,
+                        SelectedDeliverableTypes = selectedDeliverableTypes
                     },
                     originalServiceId = request.ServiceId
                 });

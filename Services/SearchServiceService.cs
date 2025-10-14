@@ -187,12 +187,14 @@ namespace newApi.Services
                     .Include(ss => ss.SelectedDeliverableTypes)
                         .ThenInclude(ssdt => ssdt.DeliverableType);
 
-                var services = await query
-                    .Select(ss => MapToResponseDto(ss))
-                    .ToListAsync();
+                var services = await query.ToListAsync();
+                
+                
+                var mappedServices = services.Select(ss => MapToResponseDto(ss)).ToList();
 
-                _logger.LogInformation("Retrieved {ServiceCount} expert services for ExpertId: {ExpertId}, ServiceTypeId: {ServiceTypeId}", services.Count, expertId, serviceTypeId);
-                return services;
+                _logger.LogInformation("Retrieved {ServiceCount} expert services for ExpertId: {ExpertId}, ServiceTypeId: {ServiceTypeId}", mappedServices.Count, expertId, serviceTypeId);
+                
+                return mappedServices;
             }
             catch (Exception ex)
             {
@@ -327,12 +329,14 @@ namespace newApi.Services
                 _logger.LogInformation("Successfully saved SearchService with Id: {ServiceId}", searchService.Id);
 
                 // Procesar tipos de entregables seleccionados
+                _logger.LogInformation("SelectedDeliverableTypes received: '{SelectedDeliverableTypes}'", request.SelectedDeliverableTypes);
                 if (!string.IsNullOrEmpty(request.SelectedDeliverableTypes))
                 {
                     try
                     {
                         var deliverableTypeIds = System.Text.Json.JsonSerializer.Deserialize<int[]>(request.SelectedDeliverableTypes);
-                        _logger.LogInformation("Processing {Count} deliverable types for SearchService {ServiceId}", deliverableTypeIds.Length, searchService.Id);
+                        _logger.LogInformation("Processing {Count} deliverable types for SearchService {ServiceId}: {DeliverableTypeIds}", 
+                            deliverableTypeIds.Length, searchService.Id, string.Join(",", deliverableTypeIds));
                         
                         foreach (var deliverableTypeId in deliverableTypeIds)
                         {
@@ -359,6 +363,15 @@ namespace newApi.Services
                         
                         await _context.SaveChangesAsync();
                         _logger.LogInformation("Successfully saved deliverable types for SearchService {ServiceId}", searchService.Id);
+                        
+                        // Verificar que se guardaron correctamente
+                        var savedDeliverableTypes = await _context.SearchServiceDeliverableTypes
+                            .Where(ssdt => ssdt.SearchServiceId == searchService.Id)
+                            .Include(ssdt => ssdt.DeliverableType)
+                            .ToListAsync();
+                        _logger.LogInformation("Verification: Found {Count} saved deliverable types for SearchService {ServiceId}: {DeliverableTypes}", 
+                            savedDeliverableTypes.Count, searchService.Id, 
+                            string.Join(",", savedDeliverableTypes.Select(sdt => $"{sdt.DeliverableType.Name}({sdt.DeliverableTypeId})")));
                     }
                     catch (Exception ex)
                     {
@@ -446,7 +459,6 @@ namespace newApi.Services
                 IsActive = ss.IsActive,
                 ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>(),
                 SelectedDeliverableTypes = ss.SelectedDeliverableTypes?
-                    .Where(ssdt => ssdt.IsSelected)
                     .Select(ssdt => new DeliverableTypeDto
                     {
                         Id = ssdt.DeliverableType.Id,
@@ -493,6 +505,8 @@ namespace newApi.Services
                     CreatedAt = ss.ExpertProfile.CreatedAt,
                     User = userDto,
                     Reviews = reviews,
+                    Latitude = ss.ExpertProfile.Latitude,
+                    Longitude = ss.ExpertProfile.Longitude,
                     IsOnVacation = ss.ExpertProfile.IsOnVacation
                 };
             }
@@ -524,6 +538,7 @@ namespace newApi.Services
 
         private static SearchServiceResponseDto MapToResponseDto(SearchService ss)
         {
+            
             var searchService = new SearchServiceResponseDto
             {
                 Id = ss.Id,
@@ -539,7 +554,6 @@ namespace newApi.Services
                 IsActive = ss.IsActive,
                 ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>(),
                 SelectedDeliverableTypes = ss.SelectedDeliverableTypes?
-                    .Where(ssdt => ssdt.IsSelected)
                     .Select(ssdt => new DeliverableTypeDto
                     {
                         Id = ssdt.DeliverableType.Id,
@@ -586,6 +600,8 @@ namespace newApi.Services
                     CreatedAt = ss.ExpertProfile.CreatedAt,
                     User = userDto,
                     Reviews = reviews,
+                    Latitude = ss.ExpertProfile.Latitude,
+                    Longitude = ss.ExpertProfile.Longitude,
                     IsOnVacation = ss.ExpertProfile.IsOnVacation
                 };
             }
@@ -661,12 +677,14 @@ namespace newApi.Services
                     newSearchService.Id, existingService.Id);
 
                 // Paso 3: Procesar tipos de entregables seleccionados
+                _logger.LogInformation("SelectedDeliverableTypes received: '{SelectedDeliverableTypes}'", request.SelectedDeliverableTypes);
                 if (!string.IsNullOrEmpty(request.SelectedDeliverableTypes))
                 {
                     try
                     {
                         var deliverableTypeIds = System.Text.Json.JsonSerializer.Deserialize<int[]>(request.SelectedDeliverableTypes);
-                        _logger.LogInformation("Processing {Count} deliverable types for updated SearchService {ServiceId}", deliverableTypeIds.Length, newSearchService.Id);
+                        _logger.LogInformation("Processing {Count} deliverable types for updated SearchService {ServiceId}: {DeliverableTypeIds}", 
+                            deliverableTypeIds.Length, newSearchService.Id, string.Join(",", deliverableTypeIds));
                         
                         foreach (var deliverableTypeId in deliverableTypeIds)
                         {
@@ -693,6 +711,15 @@ namespace newApi.Services
                         
                         await _context.SaveChangesAsync();
                         _logger.LogInformation("Successfully saved deliverable types for updated SearchService {ServiceId}", newSearchService.Id);
+                        
+                        // Verificar que se guardaron correctamente
+                        var savedDeliverableTypes = await _context.SearchServiceDeliverableTypes
+                            .Where(ssdt => ssdt.SearchServiceId == newSearchService.Id)
+                            .Include(ssdt => ssdt.DeliverableType)
+                            .ToListAsync();
+                        _logger.LogInformation("Verification: Found {Count} saved deliverable types for SearchService {ServiceId}: {DeliverableTypes}", 
+                            savedDeliverableTypes.Count, newSearchService.Id, 
+                            string.Join(",", savedDeliverableTypes.Select(sdt => $"{sdt.DeliverableType.Name}({sdt.DeliverableTypeId})")));
                     }
                     catch (Exception ex)
                     {

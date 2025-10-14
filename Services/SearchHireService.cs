@@ -31,6 +31,9 @@ namespace newApi.Services
                     .ThenInclude(s => s.Images)
                 .Include(h => h.SearchService)
                     .ThenInclude(s => s.ServiceType)
+                .Include(h => h.SearchService)
+                    .ThenInclude(s => s.SelectedDeliverableTypes)
+                        .ThenInclude(sdt => sdt.DeliverableType)
                 .Where(h => h.ClientId == userId)
                 .OrderByDescending(h => h.CreatedAt)
                 .ToListAsync();
@@ -47,6 +50,9 @@ namespace newApi.Services
                     .ThenInclude(s => s.Images)
                 .Include(h => h.SearchService)
                     .ThenInclude(s => s.ServiceType)
+                .Include(h => h.SearchService)
+                    .ThenInclude(s => s.SelectedDeliverableTypes)
+                        .ThenInclude(sdt => sdt.DeliverableType)
                 .Include(h => h.Search) // Incluir datos de Search para título y descripción
                 .Include(h => h.Conversations)
                     .ThenInclude(c => c.Messages) // Incluir mensajes para contar pendientes
@@ -173,11 +179,24 @@ namespace newApi.Services
                     CategoryId = hire.SearchService.CategoryId,
                     ServiceTypeId = hire.SearchService.ServiceTypeId,
                     ServiceTypeName = hire.SearchService.ServiceType?.Name,
+                    ServiceTypeCategoryId = hire.SearchService.ServiceType?.ServiceTypeCategoryId,
+                    RequiresAppointment = hire.SearchService.ServiceType?.RequiresAppointment ?? false,
                     Price = hire.SearchService.Price,
                     Conditions = hire.SearchService.Conditions,
                     DurationInHours = hire.SearchService.DurationInHours ?? 0,
                     CreatedAt = hire.SearchService.CreatedAt,
-                    ImageUrls = hire.SearchService.Images.Select(i => i.ImageUrl).ToList()
+                    IsActive = hire.SearchService.IsActive,
+                    ImageUrls = hire.SearchService.Images.Select(i => i.ImageUrl).ToList(),
+                    SelectedDeliverableTypes = hire.SearchService.SelectedDeliverableTypes?.Select(sdt => new DeliverableTypeDto
+                    {
+                        Id = sdt.DeliverableType.Id,
+                        Name = sdt.DeliverableType.Name,
+                        DisplayName = sdt.DeliverableType.DisplayName,
+                        Description = sdt.DeliverableType.Description,
+                        IsRequired = sdt.DeliverableType.IsRequired,
+                        IsActive = sdt.DeliverableType.IsActive,
+                        SortOrder = sdt.DeliverableType.SortOrder
+                    }).ToList() ?? new List<DeliverableTypeDto>()
                 },
                 ServiceType = hire.SearchService.ServiceType != null ? new ServiceTypeDto
                 {

@@ -173,7 +173,7 @@
             Controlador para la gestión de disputas por parte de administradores
             </summary>
         </member>
-        <member name="M:newApi.Controllers.DisputeController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Logging.ILogger{newApi.Controllers.DisputeController},Microsoft.Extensions.Configuration.IConfiguration,Google.Cloud.Storage.V1.StorageClient)">
+        <member name="M:newApi.Controllers.DisputeController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Logging.ILogger{newApi.Controllers.DisputeController},Microsoft.Extensions.Configuration.IConfiguration,Google.Cloud.Storage.V1.StorageClient,newApi.Services.IAuthorizationServices)">
             <summary>
             Constructor del controlador de disputas
             </summary>
@@ -252,6 +252,11 @@
             Verifica si el experto ha respondido en las primeras 24 horas (método para Hangfire)
             </summary>
             <param name="searchHireId">ID del servicio contratado</param>
+        </member>
+        <member name="M:newApi.Controllers.SearchServiceController.GetMapExperts(System.Int32,System.Int32)">
+            <summary>
+            Obtiene expertos para mostrar en el mapa con información básica (sin filtros de ubicación)
+            </summary>
         </member>
         <member name="T:newApi.Controllers.ServiceTypeCategoryController">
             <summary>
@@ -2006,6 +2011,18 @@
         </member>
         <member name="M:newApi.Migrations.AddExpertReportTimeoutStatus.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
+        </member>
+        <member name="M:newApi.Services.AppointmentService.ValidateAppointmentLocationAsync(newApi.DataLayer.Models.PostGresModels.SearchHire,System.Nullable{System.Decimal},System.Nullable{System.Decimal})">
+            <summary>
+            Valida que la ubicación propuesta para la cita esté dentro del rango del experto
+            definido cuando se contrató el servicio. Esto asegura que el experto no pueda
+            cambiar su ubicación después de ser contratado para afectar las citas.
+            </summary>
+        </member>
+        <member name="M:newApi.Services.AppointmentService.CalculateDistance(System.Decimal,System.Decimal,System.Decimal,System.Decimal)">
+            <summary>
+            Calcula la distancia entre dos puntos geográficos usando la fórmula de Haversine
+            </summary>
         </member>
         <member name="T:newApi.Services.SystemStatusService">
             <summary>

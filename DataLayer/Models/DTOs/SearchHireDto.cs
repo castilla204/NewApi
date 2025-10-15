@@ -24,6 +24,11 @@ namespace newApi.DataLayer.Models.DTOs
         public string? ServiceTypeCategoryName { get; set; }
         public bool RequiresAppointment { get; set; }
         public decimal Price { get; set; }
+        
+        // ✅ NUEVOS CAMPOS: Información de ubicación del experto para validación de citas
+        public string? ExpertLatitude { get; set; } // Coordenadas del experto al momento de la contratación
+        public string? ExpertLongitude { get; set; } // Coordenadas del experto al momento de la contratación
+        public int? LocationRange { get; set; } // Rango máximo permitido en km
     }
     public class CreateSearchHireDto
     {

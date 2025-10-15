@@ -306,3 +306,7 @@ const SearchInfo = ({ search }) => {
 ¿Necesitas ayuda con alguna parte específica de la implementación? 🚀
 
 
+
+
+
+

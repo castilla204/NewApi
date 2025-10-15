@@ -111,3 +111,7 @@ AND "IsExpired" = true;
 -- DELETE FROM "Appointments" WHERE "Location" = 'Ubicación de prueba';
 
 
+
+
+
+

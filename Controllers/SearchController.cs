@@ -873,7 +873,11 @@ namespace newApi.Controllers
                             ServiceTypeCategoryId = search.SearchHire.SearchService.ServiceType?.ServiceTypeCategoryId,
                             ServiceTypeCategoryName = search.SearchHire.SearchService.ServiceType?.ServiceTypeCategory?.Name,
                             RequiresAppointment = search.SearchHire.SearchService.ServiceType?.RequiresAppointment ?? false,
-                            Price = search.SearchHire.SearchService.Price
+                            Price = search.SearchHire.SearchService.Price,
+                            // ✅ NUEVOS CAMPOS: Información de ubicación del experto
+                            ExpertLatitude = search.SearchHire.SearchService.ExpertProfile?.Latitude,
+                            ExpertLongitude = search.SearchHire.SearchService.ExpertProfile?.Longitude,
+                            LocationRange = search.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50 // Rango por defecto de 50km
                         } : null
                     } : null
                 };
@@ -929,10 +933,14 @@ namespace newApi.Controllers
                 // Cargar búsqueda con todas las relaciones necesarias
                 var search = await _context.Searches
                     .Include(s => s.User)
+                    .Include(s => s.SearchParameters) // ✅ NUEVO: Para obtener el rango de ubicación
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Client)
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.SearchService)
+                        .ThenInclude(ss => ss.ExpertProfile) // ✅ NUEVO: Para obtener coordenadas del experto
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.SearchService)
                         .ThenInclude(ss => ss.ServiceType)
@@ -1008,6 +1016,14 @@ namespace newApi.Controllers
                     }
                 }
 
+                // ✅ DEBUG: Log para verificar datos del experto
+                var locationRange = search.SearchParameters?.FirstOrDefault()?.LocationRange;
+                _logger.LogInformation("DEBUG - ExpertProfile: {ExpertProfile}, Latitude: {Latitude}, Longitude: {Longitude}, LocationRange: {LocationRange}",
+                    search.SearchHire?.SearchService?.ExpertProfile != null ? "EXISTS" : "NULL",
+                    search.SearchHire?.SearchService?.ExpertProfile?.Latitude ?? "NULL",
+                    search.SearchHire?.SearchService?.ExpertProfile?.Longitude ?? "NULL",
+                    locationRange?.ToString() ?? "NULL");
+
                 // Crear respuesta completa con todos los datos usando DTO
                 var searchDetailsComplete = new SearchDetailsCompleteResponseDto
                 {
@@ -1046,7 +1062,11 @@ namespace newApi.Controllers
                                 ServiceTypeCategoryId = search.SearchHire.SearchService.ServiceType?.ServiceTypeCategoryId,
                                 ServiceTypeCategoryName = search.SearchHire.SearchService.ServiceType?.ServiceTypeCategory?.Name,
                                 RequiresAppointment = false,
-                                Price = search.SearchHire.SearchService.Price
+                                Price = search.SearchHire.SearchService.Price,
+                                // ✅ NUEVOS CAMPOS: Información de ubicación del experto
+                                ExpertLatitude = search.SearchHire.SearchService.ExpertProfile?.Latitude,
+                                ExpertLongitude = search.SearchHire.SearchService.ExpertProfile?.Longitude,
+                                LocationRange = search.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50 // Rango por defecto de 50km
                             } : null
                         } : null
                     },
@@ -1087,6 +1107,10 @@ namespace newApi.Controllers
                         ClientName = search.SearchHire?.Client?.Name,
                         ExpertName = search.SearchHire?.Expert?.Name,
                         Amount = search.SearchHire?.Amount ?? 0,
+                        // ✅ NUEVOS CAMPOS: Información de ubicación del experto
+                        ExpertLatitude = search.SearchHire?.SearchService?.ExpertProfile?.Latitude,
+                        ExpertLongitude = search.SearchHire?.SearchService?.ExpertProfile?.Longitude,
+                        LocationRange = search.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50, // Rango por defecto de 50km
                         Timers = search.SearchHire.Appointment.Timers?.Select(t => new AppointmentTimerDto
                         {
                             Id = t.Id,

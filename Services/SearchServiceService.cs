@@ -151,6 +151,79 @@ namespace newApi.Services
             }
         }
 
+        public async Task<ExpertMapResponseDto> GetMapExperts(int categoryId, int serviceTypeId)
+        {
+            try
+            {
+                _logger.LogInformation("Fetching map experts for CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}",
+                    categoryId, serviceTypeId);
+
+                if (categoryId <= 0 || serviceTypeId <= 0)
+                {
+                    _logger.LogWarning("Invalid CategoryId: {CategoryId} or ServiceTypeId: {ServiceTypeId}", categoryId, serviceTypeId);
+                    throw new ArgumentException("CategoryId and ServiceTypeId must be greater than 0");
+                }
+
+                var query = _context.SearchServices
+                    .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId && ss.IsActive && !ss.ExpertProfile.IsOnVacation)
+                    .Include(ss => ss.Images)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                    .Include(ss => ss.Category)
+                    .Include(ss => ss.ServiceType);
+
+                var services = await query.ToListAsync();
+
+                _logger.LogInformation("Services before null coordinate filter: {ServiceCount}", services.Count);
+                services = services
+                    .Where(ss => !string.IsNullOrEmpty(ss.ExpertProfile?.Latitude) && !string.IsNullOrEmpty(ss.ExpertProfile?.Longitude))
+                    .ToList();
+                _logger.LogInformation("Services after null coordinate filter: {ServiceCount}", services.Count);
+
+                // Agrupar servicios por experto para evitar duplicados
+                var expertGroups = services.GroupBy(ss => ss.ExpertProfile.User.Id);
+
+                var expertMapDtos = expertGroups.Select(expertGroup =>
+                {
+                    var firstService = expertGroup.First();
+                    var expert = firstService.ExpertProfile.User;
+                    
+                    return new ExpertMapDto
+                    {
+                        Id = expert.Id,
+                        Name = expert.Name,
+                        ProfilePictureUrl = firstService.ExpertProfile.ProfilePictureUrl ?? "/default-avatar.png",
+                        AverageRating = expert.ReviewsReceived != null && expert.ReviewsReceived.Any()
+                            ? expert.ReviewsReceived.Average(r => r.Score)
+                            : 0,
+                        TotalReviews = expert.ReviewsReceived?.Count ?? 0,
+                        CompletedSearches = expert.SearchHiresAsExpert?.Count(sh => sh.Status == "Completed") ?? 0,
+                        RegisteredSince = firstService.ExpertProfile.CreatedAt,
+                        Latitude = firstService.ExpertProfile.Latitude,
+                        Longitude = firstService.ExpertProfile.Longitude
+                    };
+                }).ToList();
+
+                var response = new ExpertMapResponseDto
+                {
+                    Experts = expertMapDtos,
+                    TotalCount = expertMapDtos.Count
+                };
+
+                _logger.LogInformation("Retrieved {ExpertCount} map experts for CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}",
+                    expertMapDtos.Count, categoryId, serviceTypeId);
+
+                return response;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving map experts with CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}",
+                    categoryId, serviceTypeId);
+                throw;
+            }
+        }
+
         // Haversine formula for distance calculation
         public static decimal CalculateDistance(decimal lat1, decimal lon1, decimal lat2, decimal lon2)
         {

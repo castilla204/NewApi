@@ -3,6 +3,7 @@ using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.enums;
+using System.Globalization;
 
 namespace newApi.Services
 {
@@ -129,6 +130,9 @@ namespace newApi.Services
                     );
                 }
 
+                // ✅ VALIDACIÓN: Verificar que la ubicación propuesta esté dentro del rango del experto
+                await ValidateAppointmentLocationAsync(searchHire, dto.Latitude, dto.Longitude);
+
                 var appointment = new Appointment
                 {
                     SearchHireId = dto.SearchHireId,
@@ -241,6 +245,9 @@ namespace newApi.Services
                         $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} UTC"
                     );
                 }
+
+                // ✅ VALIDACIÓN: Verificar que la ubicación propuesta esté dentro del rango del experto
+                await ValidateAppointmentLocationAsync(appointment.SearchHire, dto.Latitude, dto.Longitude);
 
                 // Actualizar la cita - asegurar que los DateTime tengan Kind=UTC
                 appointment.ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc);
@@ -882,6 +889,100 @@ namespace newApi.Services
             }
         }
 
+        /// <summary>
+        /// Valida que la ubicación propuesta para la cita esté dentro del rango del experto
+        /// definido cuando se contrató el servicio. Esto asegura que el experto no pueda
+        /// cambiar su ubicación después de ser contratado para afectar las citas.
+        /// </summary>
+        private async Task ValidateAppointmentLocationAsync(SearchHire searchHire, decimal? appointmentLatitude, decimal? appointmentLongitude)
+        {
+            try
+            {
+                // Cargar el SearchHire con todas las relaciones necesarias
+                var hire = await _context.SearchHires
+                    .Include(sh => sh.SearchService)
+                        .ThenInclude(ss => ss.ExpertProfile)
+                    .Include(sh => sh.Search)
+                        .ThenInclude(s => s.SearchParameters)
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHire.Id);
+
+                if (hire == null)
+                {
+                    throw new ArgumentException("SearchHire not found");
+                }
+
+                // Si no se proporcionan coordenadas para la cita, no validar
+                if (!appointmentLatitude.HasValue || !appointmentLongitude.HasValue)
+                {
+                    _logger.LogWarning("No appointment coordinates provided for SearchHire {SearchHireId}, skipping location validation", hire.Id);
+                    return;
+                }
+
+                // Obtener las coordenadas del experto al momento de la contratación
+                if (hire.SearchService?.ExpertProfile == null)
+                {
+                    throw new InvalidOperationException("Expert profile not found for the service");
+                }
+
+                // Parsear coordenadas del experto
+                if (!decimal.TryParse(hire.SearchService.ExpertProfile.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLatitude))
+                {
+                    throw new InvalidOperationException("Invalid expert latitude in service");
+                }
+
+                if (!decimal.TryParse(hire.SearchService.ExpertProfile.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLongitude))
+                {
+                    throw new InvalidOperationException("Invalid expert longitude in service");
+                }
+
+                // Obtener el rango de ubicación del Search original desde SearchParameters
+                var searchLocationRange = hire.Search.SearchParameters?.FirstOrDefault()?.LocationRange;
+                if (searchLocationRange == null || searchLocationRange <= 0)
+                {
+                    _logger.LogWarning("No location range defined for Search {SearchId}, using default range of 50km", hire.SearchId);
+                    searchLocationRange = 50; // Rango por defecto
+                }
+
+                // Calcular la distancia entre la ubicación del experto y la ubicación propuesta para la cita
+                var distance = CalculateDistance(expertLatitude, expertLongitude, appointmentLatitude.Value, appointmentLongitude.Value);
+
+                _logger.LogInformation("Validating appointment location for SearchHire {SearchHireId}: Expert at ({ExpertLat}, {ExpertLon}), Appointment at ({AppointmentLat}, {AppointmentLon}), Distance: {Distance}km, MaxRange: {MaxRange}km",
+                    hire.Id, expertLatitude, expertLongitude, appointmentLatitude.Value, appointmentLongitude.Value, distance, searchLocationRange);
+
+                // Verificar que la distancia esté dentro del rango permitido
+                if (distance > searchLocationRange)
+                {
+                    throw new InvalidOperationException(
+                        $"La ubicación propuesta para la cita está fuera del rango del experto. " +
+                        $"Distancia: {distance:F1} km, Rango máximo: {searchLocationRange} km. " +
+                        $"El experto solo puede realizar citas dentro de su rango de servicio original."
+                    );
+                }
+
+                _logger.LogInformation("Appointment location validation passed for SearchHire {SearchHireId}", hire.Id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error validating appointment location for SearchHire {SearchHireId}", searchHire.Id);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Calcula la distancia entre dos puntos geográficos usando la fórmula de Haversine
+        /// </summary>
+        private static decimal CalculateDistance(decimal lat1, decimal lon1, decimal lat2, decimal lon2)
+        {
+            const double R = 6371; // Radio de la Tierra en km
+            var dLat = (double)(lat2 - lat1) * Math.PI / 180;
+            var dLon = (double)(lon2 - lon1) * Math.PI / 180;
+            var a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                    Math.Cos((double)lat1 * Math.PI / 180) * Math.Cos((double)lat2 * Math.PI / 180) *
+                    Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+            var c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+            return (decimal)(R * c);
+        }
+
         private AppointmentDto MapToDto(Appointment appointment)
         {
             return new AppointmentDto
@@ -911,6 +1012,10 @@ namespace newApi.Services
                 ClientName = appointment.SearchHire?.Client?.Name ?? string.Empty,
                 ExpertName = appointment.SearchHire?.Expert?.Name ?? string.Empty,
                 Amount = appointment.SearchHire?.Amount ?? 0,
+                // ✅ NUEVOS CAMPOS: Información de ubicación del experto
+                ExpertLatitude = appointment.SearchHire?.SearchService?.ExpertProfile?.Latitude,
+                ExpertLongitude = appointment.SearchHire?.SearchService?.ExpertProfile?.Longitude,
+                LocationRange = appointment.SearchHire?.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50, // Rango por defecto de 50km
                 Timers = appointment.Timers?.Select(t => new AppointmentTimerDto
                 {
                     Id = t.Id,

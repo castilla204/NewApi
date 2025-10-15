@@ -36,6 +36,11 @@ namespace newApi.DataLayer.Models.DTOs
         public string? ExpertName { get; set; }
         public decimal Amount { get; set; }
         public List<AppointmentTimerDto> Timers { get; set; } = new List<AppointmentTimerDto>();
+        
+        // ✅ NUEVOS CAMPOS: Información de ubicación del experto para validación
+        public string? ExpertLatitude { get; set; } // Coordenadas del experto al momento de la contratación
+        public string? ExpertLongitude { get; set; } // Coordenadas del experto al momento de la contratación
+        public int? LocationRange { get; set; } // Rango máximo permitido en km
     }
 
     /// <summary>

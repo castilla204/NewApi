@@ -76,6 +76,37 @@ namespace newApi.Controllers
             }
         }
 
+        /// <summary>
+        /// Obtiene expertos para mostrar en el mapa con información básica (sin filtros de ubicación)
+        /// </summary>
+        [HttpGet("map-experts")]
+        public async Task<IActionResult> GetMapExperts(
+            [FromQuery] int categoryId,
+            [FromQuery] int serviceTypeId)
+        {
+            try
+            {
+                if (categoryId <= 0)
+                {
+                    return BadRequest(new { message = "El ID de categoría es requerido y debe ser mayor que 0" });
+                }
+
+                if (serviceTypeId <= 0)
+                {
+                    return BadRequest(new { message = "El tipo de servicio es requerido y debe ser mayor que 0" });
+                }
+
+                var experts = await _searchServiceService.GetMapExperts(categoryId, serviceTypeId);
+                return Ok(experts);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving map experts with CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}",
+                    categoryId, serviceTypeId);
+                return StatusCode(500, new { message = "Failed to retrieve map experts", detail = ex.Message });
+            }
+        }
+
         [HttpGet("expert/{expertId}")]
         public async Task<IActionResult> GetExpertServices(int expertId, [FromQuery] int? serviceTypeId)
         {

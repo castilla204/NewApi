@@ -322,3 +322,5 @@ const proposeAppointment = async (appointmentData: ProposeAppointmentDto) => {
 - **Experiencia de usuario mejorada**
 - **Prevención de errores** antes de enviar al servidor
 
+
+

@@ -163,3 +163,4 @@ C:\Users\Diego\OneDrive - Educacyl\Escritorio\App\newApi\obj\Debug\net8.0\newApi
 C:\Users\Diego\OneDrive - Educacyl\Escritorio\App\newApi\obj\Debug\net8.0\newApi.pdb
 C:\Users\Diego\OneDrive - Educacyl\Escritorio\App\newApi\obj\Debug\net8.0\newApi.genruntimeconfig.cache
 C:\Users\Diego\OneDrive - Educacyl\Escritorio\App\newApi\obj\Debug\net8.0\ref\newApi.dll
+C:\Users\Diego\OneDrive - Educacyl\Escritorio\App\newApi\bin\Debug\net8.0\BCrypt.Net-Next.dll

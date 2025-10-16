@@ -244,3 +244,5 @@ graph TD
 
 ¡Ahora el sistema está completo y el frontend tiene toda la información necesaria para una excelente experiencia de usuario!
 
+
+

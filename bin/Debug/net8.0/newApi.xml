@@ -4,6 +4,26 @@
         <name>newApi</name>
     </assembly>
     <members>
+        <member name="M:newApi.Controllers.AccountDeletionController.GetDeletionStatus">
+            <summary>
+            Verifica el estado de borrado de la cuenta del usuario autenticado
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AccountDeletionController.DeleteAccount(newApi.DataLayer.Models.DTOs.AccountDeletionRequestDto)">
+            <summary>
+            Elimina la cuenta del usuario autenticado
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AccountDeletionController.AdminDeleteAccount(System.Int32,newApi.DataLayer.Models.DTOs.AccountDeletionRequestDto)">
+            <summary>
+            Endpoint para administradores - eliminar cuenta de cualquier usuario
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AccountDeletionController.AdminGetDeletionStatus(System.Int32)">
+            <summary>
+            Endpoint para administradores - verificar estado de borrado de cualquier usuario
+            </summary>
+        </member>
         <member name="T:newApi.Controllers.AppointmentConfigController">
             <summary>
             Controlador de compatibilidad para mantener las rutas del frontend
@@ -450,6 +470,31 @@
         <member name="M:newApi.Controllers.SystemStatusController.TestMoneyDistribution(System.String,System.Nullable{System.Int32},System.Nullable{System.Int32})">
             <summary>
             Prueba la obtención de configuración de distribución de dinero
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.AccountDeletionRequestDto">
+            <summary>
+            DTO para solicitar el borrado de una cuenta
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.AccountDeletionResponseDto">
+            <summary>
+            DTO para la respuesta del borrado de cuenta
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.ActiveContractInfo">
+            <summary>
+            Información sobre contrataciones activas
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.DisputeCreatedInfo">
+            <summary>
+            Información sobre disputas creadas automáticamente
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.AccountDeletionStatusDto">
+            <summary>
+            DTO para verificar el estado de borrado de cuenta
             </summary>
         </member>
         <member name="T:newApi.DataLayer.Models.DTOs.AppointmentDto">

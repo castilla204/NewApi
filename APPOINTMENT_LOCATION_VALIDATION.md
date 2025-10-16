@@ -89,3 +89,5 @@ El experto solo puede realizar citas dentro de su rango de servicio original.
 2. **Flexibilidad**: Podría permitirse modificar el rango con consentimiento mutuo
 3. **Historial**: Mantener un historial de cambios de ubicación del experto
 
+
+

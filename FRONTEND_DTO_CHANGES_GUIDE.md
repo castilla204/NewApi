@@ -268,3 +268,5 @@ const AppointmentProposal = ({ appointmentData }) => {
 
 Si tienes dudas sobre la implementación o necesitas ayuda con algún aspecto específico, no dudes en consultar. Los cambios están completamente documentados y probados en el backend.
 
+
+

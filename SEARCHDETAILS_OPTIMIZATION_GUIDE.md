@@ -310,3 +310,5 @@ const SearchInfo = ({ search }) => {
 
 
 
+
+

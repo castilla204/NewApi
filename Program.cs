@@ -237,6 +237,8 @@ builder.Services.AddScoped<IAppointmentService, AppointmentService>();
 // builder.Services.AddScoped<ICategoryServiceTypeConfigService, CategoryServiceTypeConfigService>();
 builder.Services.AddScoped<IUserActionLoggingService, UserActionLoggingService>();
 builder.Services.AddScoped<SystemStatusService>();
+builder.Services.AddScoped<IAccountDeletionService, AccountDeletionService>();
+builder.Services.AddScoped<IAccountDeletionNotificationService, AccountDeletionNotificationService>();
 
 // Background services - AppointmentTimerBackgroundService migrated to Hangfire
 

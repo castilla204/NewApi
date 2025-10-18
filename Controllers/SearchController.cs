@@ -1153,6 +1153,7 @@ namespace newApi.Controllers
             }
         }
 
+
     }
 
     public class CreateSearchWithHireDto

@@ -46,6 +46,22 @@
             };
         }
 
+        public static SearchHireStatus FromStringValue(string value)
+        {
+            return value switch
+            {
+                "pending" => SearchHireStatus.Pending,
+                "awaiting_client_decision" => SearchHireStatus.AwaitingClientDecision,
+                "disputed" => SearchHireStatus.Disputed,
+                "completed" => SearchHireStatus.Completed,
+                "cancelled" => SearchHireStatus.Cancelled,
+                "transfer_failed" => SearchHireStatus.TransferFailed,
+                "dispute-resolved-client" => SearchHireStatus.DisputeResolvedClient,
+                "dispute-resolved-expert" => SearchHireStatus.DisputeResolvedExpert,
+                _ => throw new ArgumentException($"Invalid SearchHireStatus: {value}")
+            };
+        }
+
         public static string ToSpanishTranslation(this string statusString)
         {
             return statusString switch

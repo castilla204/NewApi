@@ -1086,215 +1086,7 @@ namespace newApi.Controllers
             }
         }
 
-        [HttpPost("withdraw-money")]
-        [Authorize]
-        public async Task<IActionResult> WithdrawMoneyService([FromBody] WithdrawMoneyRequestDto request)
-        {
-            try
-            {
-                // 🔐 SEGURIDAD: Validar entrada
-                if (request == null)
-                {
-                    return BadRequest(new { message = "Request cannot be null" });
-                }
 
-                if (request.Amount <= 0)
-                {
-                    return BadRequest(new { message = "Amount must be greater than 0" });
-                }
-
-                // 🔐 SEGURIDAD: Extraer userId del token
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                {
-                    return Unauthorized(new { message = "Invalid user identification" });
-                }
-
-                _logger.LogInformation("WithdrawMoneyService endpoint invoked for userId={UserId}, amount={Amount}", userId, request.Amount);
-
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var user = await _context.Users
-                    .FromSqlRaw("SELECT * FROM \"Users\" WHERE \"Id\" = {0} FOR UPDATE", userId)
-                    .FirstOrDefaultAsync();
-
-                if (user == null)
-                {
-                    return NotFound(new { message = "User not found" });
-                }
-
-                // Validar que el usuario tenga balance suficiente
-                if (user.Balance < request.Amount)
-                {
-                    return BadRequest(new { message = "Insufficient balance" });
-                }
-
-                // Buscar pagos que se puedan refundear
-                var refundablePayments = await _context.FinancialTransactions
-                    .Where(ft => ft.UserId == userId 
-                              && ft.TransactionType == "Deposit"
-                              && !ft.IsRefunded
-                              && !string.IsNullOrEmpty(ft.StripePaymentIntentId)
-                              && ft.CreatedAt >= DateTime.UtcNow.AddDays(-120)) // Solo últimos 120 días
-                    .OrderBy(ft => ft.CreatedAt) // Más antiguos primero
-                    .ToListAsync();
-
-                if (!refundablePayments.Any())
-                {
-                    return BadRequest(new { message = "No refundable payments found" });
-                }
-
-                var totalRefundable = refundablePayments.Sum(p => p.Amount);
-                if (totalRefundable < request.Amount)
-                {
-                    return BadRequest(new { message = $"Insufficient refundable amount. Available: €{totalRefundable:F2}" });
-                }
-
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
-                {
-                    var refundedAmount = 0m;
-                    var refundIds = new List<string>();
-                    var remainingAmount = request.Amount;
-
-                    // Procesar refunds
-                    foreach (var payment in refundablePayments)
-                    {
-                        if (remainingAmount <= 0) break;
-
-                        var refundAmount = Math.Min(payment.Amount, remainingAmount);
-                        
-                        try
-                        {
-                            // Crear refund en Stripe
-                            var refundOptions = new RefundCreateOptions
-                            {
-                                PaymentIntent = payment.StripePaymentIntentId,
-                                Amount = (long)(refundAmount * 100), // Convertir a céntimos
-                                Reason = RefundReasons.RequestedByCustomer,
-                                Metadata = new Dictionary<string, string>
-                                {
-                                    { "userId", userId.ToString() },
-                                    { "withdrawal", "true" },
-                                    { "originalTransactionId", payment.Id.ToString() }
-                                }
-                            };
-
-                            var refundService = new RefundService();
-                            var refund = await refundService.CreateAsync(refundOptions);
-
-                            // Actualizar transacción original
-                            payment.IsRefunded = true;
-                            payment.StripeRefundId = refund.Id;
-
-                            // Crear nueva transacción de retiro
-                            var withdrawalTransaction = new FinancialTransaction
-                            {
-                                UserId = userId,
-                                Amount = -refundAmount, // Negativo para retiro
-                                TransactionType = "Withdrawal",
-                                StripePaymentIntentId = payment.StripePaymentIntentId,
-                                StripeRefundId = refund.Id,
-                                CreatedAt = DateTime.UtcNow
-                            };
-                            _context.FinancialTransactions.Add(withdrawalTransaction);
-
-                            refundedAmount += refundAmount;
-                            remainingAmount -= refundAmount;
-                            refundIds.Add(refund.Id);
-
-                            _logger.LogInformation("Refund created: refundId={RefundId}, amount={Amount}, paymentIntentId={PaymentIntentId}", 
-                                refund.Id, refundAmount, payment.StripePaymentIntentId);
-                        }
-                        catch (StripeException ex)
-                        {
-                            _logger.LogError(ex, "Stripe error creating refund for paymentIntentId={PaymentIntentId}: {ErrorMessage}", 
-                                payment.StripePaymentIntentId, ex.Message);
-                            throw new Exception($"Failed to create refund: {ex.Message}");
-                        }
-                    }
-
-                    // Reducir balance del usuario
-                    user.Balance -= refundedAmount;
-
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
-
-                    // 📝 LOGGING: Registrar acción de retiro
-                    await _userActionLogging.LogUserActionAsync(userId, "WITHDRAW_MONEY", 
-                        $"Retiró €{refundedAmount} mediante {refundIds.Count} refunds", 
-                        "FinancialTransaction", null);
-
-                    _logger.LogInformation("Withdrawal processed successfully for userId={UserId}, refundedAmount={RefundedAmount}, refundIds={RefundIds}", 
-                        userId, refundedAmount, string.Join(",", refundIds));
-
-                    return Ok(new WithdrawMoneyResponseDto
-                    {
-                        Message = "Withdrawal processed successfully",
-                        RefundedAmount = refundedAmount,
-                        RefundIds = refundIds,
-                        RemainingBalance = user.Balance
-                    });
-                }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Error processing withdrawal for userId={UserId}: {ErrorMessage}", userId, ex.Message);
-                    return StatusCode(500, new { message = "Failed to process withdrawal" });
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error in WithdrawMoneyService: {ErrorMessage}", ex.Message);
-                return StatusCode(500, new { message = "Failed to process withdrawal request" });
-            }
-        }
-
-        [HttpGet("refundable-payments")]
-        [Authorize]
-        public async Task<IActionResult> GetRefundablePayments()
-        {
-            try
-            {
-                // 🔐 SEGURIDAD: Extraer userId del token
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                {
-                    return Unauthorized(new { message = "Invalid user identification" });
-                }
-
-                // Buscar pagos refundables
-                var refundablePayments = await _context.FinancialTransactions
-                    .Where(ft => ft.UserId == userId 
-                              && ft.TransactionType == "Deposit"
-                              && !ft.IsRefunded
-                              && !string.IsNullOrEmpty(ft.StripePaymentIntentId)
-                              && ft.CreatedAt >= DateTime.UtcNow.AddDays(-120)) // Solo últimos 120 días
-                    .OrderBy(ft => ft.CreatedAt) // Más antiguos primero
-                    .Select(ft => new RefundablePaymentDto
-                    {
-                        TransactionId = ft.Id,
-                        PaymentIntentId = ft.StripePaymentIntentId!,
-                        Amount = ft.Amount,
-                        CreatedAt = ft.CreatedAt,
-                        DaysRemaining = 120 - (int)(DateTime.UtcNow - ft.CreatedAt).TotalDays
-                    })
-                    .ToListAsync();
-
-                var totalRefundable = refundablePayments.Sum(p => p.Amount);
-
-                return Ok(new
-                {
-                    RefundablePayments = refundablePayments,
-                    TotalRefundable = totalRefundable,
-                    Count = refundablePayments.Count
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error getting refundable payments: {ErrorMessage}", ex.Message);
-                return StatusCode(500, new { message = "Failed to get refundable payments" });
-            }
-        }
 
         [HttpPost("load-money-service")]
         public async Task<IActionResult> LoadMoneyService([FromBody] LoadMoneyServiceDto request)
@@ -3082,14 +2874,26 @@ searchHire.Id, searchHire.Amount);
                 using var transaction = await _context.Database.BeginTransactionAsync();
                 try
                 {
+                    // 🎯 USAR CONFIGURACIÓN DE DISTRIBUCIÓN DE DINERO
+                    var config = await GetMoneyDistributionConfigAsync("cancelled", 
+                        searchHire.SearchService?.CategoryId, 
+                        searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
+                    
+                    var refundAmount = config != null 
+                        ? searchHire.Amount * (config.ClientPercentage / 100)
+                        : searchHire.Amount; // Si no hay configuración, reembolsar el 100%
+                    
+                    _logger.LogInformation("Using money distribution config for refund: Client={ClientPercentage}%, Expert={ExpertPercentage}%, Platform={PlatformPercentage}%, Source={Source} for searchHireId={SearchHireId}", 
+                        config?.ClientPercentage ?? 100, config?.ExpertPercentage ?? 0, config?.PlatformPercentage ?? 0, config?.Source ?? "default", searchHireId);
+                    
                     // Reembolsar al cliente
-                    searchHire.Client.Balance += searchHire.Amount;
+                    searchHire.Client.Balance += refundAmount;
                     
                     // Crear transacción financiera
                     var financialTransaction = new FinancialTransaction
                     {
                         UserId = searchHire.ClientId,
-                        Amount = searchHire.Amount,
+                        Amount = refundAmount,
                         TransactionType = "Refund",
                         RelatedEntityType = "SearchHire",
                         RelatedEntityId = searchHire.Id,
@@ -3104,8 +2908,8 @@ searchHire.Id, searchHire.Amount);
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
 
-                    _logger.LogInformation("Successfully processed client refund for searchHireId={SearchHireId}, refunded amount={Amount}, reason={Reason}",
-                        searchHire.Id, searchHire.Amount, reason);
+                    _logger.LogInformation("Successfully processed client refund for searchHireId={SearchHireId}, refunded amount={Amount}, original amount={OriginalAmount}, reason={Reason}",
+                        searchHire.Id, refundAmount, searchHire.Amount, reason);
 
                     return true;
                 }

@@ -26,6 +26,7 @@ namespace newApi.Controllers
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
         private readonly IAuthorizationServices _authService;
+        private readonly SystemStatusService _systemStatusService;
 
         /// <summary>
         /// Constructor del controlador de disputas
@@ -34,13 +35,14 @@ namespace newApi.Controllers
         /// <param name="logger">Logger para registro de eventos</param>
         /// <param name="configuration">Configuración de la aplicación</param>
         /// <param name="storageClient">Cliente de Google Cloud Storage</param>
-        public DisputeController(AppDbContext context, ILogger<DisputeController> logger, IConfiguration configuration, StorageClient storageClient, IAuthorizationServices authService)
+        public DisputeController(AppDbContext context, ILogger<DisputeController> logger, IConfiguration configuration, StorageClient storageClient, IAuthorizationServices authService, SystemStatusService systemStatusService)
         {
             _context = context;
             _logger = logger;
             _configuration = configuration;
             _storageClient = storageClient;
             _authService = authService;
+            _systemStatusService = systemStatusService;
         }
 
         /// <summary>
@@ -351,14 +353,26 @@ namespace newApi.Controllers
                         switch (request.Action.ToLower())
                         {
                             case "refund_client":
+                                // 🎯 USAR CONFIGURACIÓN DE DISTRIBUCIÓN DE DINERO
+                                var clientConfig = await _systemStatusService.GetMoneyDistributionConfigAsync("dispute-resolved-client", 
+                                    dispute.SearchHire.SearchService?.CategoryId, 
+                                    dispute.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
+                                
+                                var clientRefundAmount = clientConfig != null 
+                                    ? dispute.SearchHire.Amount * (clientConfig.ClientPercentage / 100)
+                                    : dispute.SearchHire.Amount; // Si no hay configuración, reembolsar el 100%
+                                
+                                _logger.LogInformation("Using money distribution config for dispute client refund: Client={ClientPercentage}%, Expert={ExpertPercentage}%, Platform={PlatformPercentage}%, Source={Source} for disputeId={DisputeId}", 
+                                    clientConfig?.ClientPercentage ?? 100, clientConfig?.ExpertPercentage ?? 0, clientConfig?.PlatformPercentage ?? 0, clientConfig?.Source ?? "default", disputeId);
+                                
                                 // Reembolsar al cliente
-                                dispute.SearchHire.Client.Balance += dispute.SearchHire.Amount;
+                                dispute.SearchHire.Client.Balance += clientRefundAmount;
                                 
                                 // Crear transacción financiera
                                 _context.FinancialTransactions.Add(new FinancialTransaction
                                 {
                                     UserId = dispute.SearchHire.ClientId,
-                                    Amount = dispute.SearchHire.Amount,
+                                    Amount = clientRefundAmount,
                                     TransactionType = "DisputeRefund",
                                     RelatedEntityType = "Dispute",
                                     RelatedEntityId = dispute.Id,
@@ -371,16 +385,28 @@ namespace newApi.Controllers
                                 break;
 
                             case "pay_expert":
+                                // 🎯 USAR CONFIGURACIÓN DE DISTRIBUCIÓN DE DINERO
+                                var expertConfig = await _systemStatusService.GetMoneyDistributionConfigAsync("dispute-resolved-expert", 
+                                    dispute.SearchHire.SearchService?.CategoryId, 
+                                    dispute.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
+                                
+                                var expertPayoutAmount = expertConfig != null 
+                                    ? dispute.SearchHire.Amount * (expertConfig.ExpertPercentage / 100)
+                                    : dispute.SearchHire.Amount; // Si no hay configuración, pagar el 100%
+                                
+                                _logger.LogInformation("Using money distribution config for dispute expert payout: Client={ClientPercentage}%, Expert={ExpertPercentage}%, Platform={PlatformPercentage}%, Source={Source} for disputeId={DisputeId}", 
+                                    expertConfig?.ClientPercentage ?? 0, expertConfig?.ExpertPercentage ?? 100, expertConfig?.PlatformPercentage ?? 0, expertConfig?.Source ?? "default", disputeId);
+                                
                                 // Pagar al experto (si existe)
                                 if (dispute.SearchHire.Expert != null)
                                 {
-                                    dispute.SearchHire.Expert.Balance += dispute.SearchHire.Amount;
+                                    dispute.SearchHire.Expert.Balance += expertPayoutAmount;
                                     
                                     // Crear transacción financiera
                                     _context.FinancialTransactions.Add(new FinancialTransaction
                                     {
                                         UserId = dispute.SearchHire.ExpertId.Value,
-                                        Amount = dispute.SearchHire.Amount,
+                                        Amount = expertPayoutAmount,
                                         TransactionType = "DisputePayout",
                                         RelatedEntityType = "Dispute",
                                         RelatedEntityId = dispute.Id,
@@ -1222,5 +1248,6 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = ex.Message });
             }
         }
+
     }
 }

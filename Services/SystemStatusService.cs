@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.enums;
 using newApi.Common;
 
@@ -90,6 +91,41 @@ namespace newApi.Services
         }
 
         /// <summary>
+        /// Obtiene la configuración de distribución de dinero como DTO (wrapper para compatibilidad)
+        /// </summary>
+        public async Task<MoneyDistributionConfigDto?> GetMoneyDistributionConfigAsync(
+            string statusValue, 
+            int? categoryId, 
+            int? serviceTypeCategoryId)
+        {
+            try
+            {
+                var config = await GetMoneyDistributionAsync(statusValue, categoryId, serviceTypeCategoryId);
+                
+                if (config != null)
+                {
+                    return new MoneyDistributionConfigDto
+                    {
+                        ClientPercentage = config.ClientPercentage,
+                        ExpertPercentage = config.ExpertPercentage,
+                        PlatformPercentage = config.PlatformPercentage,
+                        Source = "centralized_system"
+                    };
+                }
+
+                _logger.LogWarning("No money distribution configuration found for status={Status}, categoryId={CategoryId}, serviceTypeCategoryId={ServiceTypeCategoryId}", 
+                    statusValue, categoryId, serviceTypeCategoryId);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting money distribution config for status={Status}, categoryId={CategoryId}, serviceTypeCategoryId={ServiceTypeCategoryId}", 
+                    statusValue, categoryId, serviceTypeCategoryId);
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Obtiene el estado principal de SearchHire basado en un AppointmentStatus
         /// </summary>
         public async Task<SearchHireStatus?> GetTargetSearchHireStatusAsync(AppointmentStatus appointmentStatus)
@@ -97,6 +133,7 @@ namespace newApi.Services
             try
             {
                 var appointmentStatusValue = appointmentStatus.ToStringValue();
+                _logger.LogInformation("🔍 Looking for mapping: {SourceStatus} (AppointmentStatus) → SearchHireStatus", appointmentStatusValue);
                 
                 var mapping = await _context.StatusMappings
                     .Include(sm => sm.SourceStatus)
@@ -107,27 +144,41 @@ namespace newApi.Services
                                 sm.IsActive)
                     .FirstOrDefaultAsync();
 
+                _logger.LogInformation("🔍 Database query result: {MappingFound}", mapping != null ? "Found" : "Not found");
+
                 if (mapping?.TargetStatus?.StatusValue != null)
                 {
-                    _logger.LogInformation("Found mapping: {SourceStatus} → {TargetStatus}", 
+                    _logger.LogInformation("✅ Found database mapping: {SourceStatus} → {TargetStatus}", 
                         appointmentStatusValue, mapping.TargetStatus.StatusValue);
                     
-                    // Convertir string a enum
-                    return Enum.TryParse<SearchHireStatus>(mapping.TargetStatus.StatusValue, true, out var result) 
-                        ? result 
-                        : null;
+                    // Convertir string a enum usando el método personalizado
+                    _logger.LogInformation("🔄 Attempting enum conversion: '{StatusValue}'", mapping.TargetStatus.StatusValue);
+                    
+                    try
+                    {
+                        var result = SearchHireStatusExtensions.FromStringValue(mapping.TargetStatus.StatusValue);
+                        _logger.LogInformation("🔄 Enum conversion result: {StatusValue} → Success: True → Result: {Result}", 
+                            mapping.TargetStatus.StatusValue, result);
+                        return result;
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        _logger.LogError("❌ Failed to parse SearchHireStatus: '{StatusValue}'. Error: {Error}. Available values: {AvailableValues}", 
+                            mapping.TargetStatus.StatusValue, ex.Message, string.Join(", ", Enum.GetNames<SearchHireStatus>()));
+                        return null;
+                    }
                 }
 
                 // Fallback a mapeo por defecto si no existe en BD
                 var defaultMapping = GetDefaultMapping(appointmentStatus);
-                _logger.LogInformation("Using default mapping: {SourceStatus} → {TargetStatus}", 
+                _logger.LogInformation("⚠️ Using fallback mapping: {SourceStatus} → {TargetStatus}", 
                     appointmentStatusValue, defaultMapping?.ToString());
                 
                 return defaultMapping;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting target SearchHire status for appointment status={Status}", appointmentStatus);
+                _logger.LogError(ex, "❌ Error getting target SearchHire status for appointment status={Status}", appointmentStatus);
                 return GetDefaultMapping(appointmentStatus);
             }
         }
@@ -201,6 +252,7 @@ namespace newApi.Services
             return appointmentStatus switch
             {
                 AppointmentStatus.AppointmentAwaitingReport => SearchHireStatus.AwaitingClientDecision,
+                AppointmentStatus.AppointmentReportSent => SearchHireStatus.AwaitingClientDecision,
                 // AppointmentStatus.AppointmentCancelledByClient => null, // No cambiar estado del SearchHire en primer rechazo
                 AppointmentStatus.AppointmentCancelledByClientSecond => SearchHireStatus.Cancelled,
                 // AppointmentStatus.AppointmentCancelledByExpert => null, // No cambiar estado del SearchHire en primer rechazo del experto

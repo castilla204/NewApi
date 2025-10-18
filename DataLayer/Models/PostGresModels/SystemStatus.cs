@@ -31,6 +31,8 @@ namespace newApi.DataLayer.Models.PostGresModels
         
         public bool IsActive { get; set; } = true;
         
+        public bool IsFinalizationStatus { get; set; } = false; // Indica si es un estado de finalización donde se procesa dinero
+        
         public int SortOrder { get; set; } = 0; // Para ordenar en UI
         
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

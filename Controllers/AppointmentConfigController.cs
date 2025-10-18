@@ -34,8 +34,10 @@ namespace newApi.Controllers
             try
             {
                 var appointmentStatuses = await _context.SystemStatuses
-                    .Where(s => s.StatusType == "AppointmentStatus" && s.IsActive)
-                    .OrderBy(s => s.SortOrder)
+                    .Where(s => s.IsFinalizationStatus && 
+                                s.IsActive)
+                    .OrderBy(s => s.StatusType)
+                    .ThenBy(s => s.SortOrder)
                     .Select(s => new
                     {
                         s.Id,
@@ -101,10 +103,12 @@ namespace newApi.Controllers
                     .Include(sc => sc.Status)
                     .Include(sc => sc.Category)
                     .Include(sc => sc.ServiceTypeCategory)
-                    .Where(sc => sc.Status.StatusType == "AppointmentStatus" && sc.IsActive)
-                    .OrderBy(sc => sc.Status.SortOrder)
-                    .ThenBy(sc => sc.CategoryId)
-                    .ThenBy(sc => sc.ServiceTypeCategoryId)
+                    .Where(sc => sc.Status.IsFinalizationStatus && 
+                                sc.IsActive &&
+                                sc.CategoryId == null && 
+                                sc.ServiceTypeCategoryId == null)
+                    .OrderBy(sc => sc.Status.StatusType)
+                    .ThenBy(sc => sc.Status.SortOrder)
                     .Select(sc => new
                     {
                         Id = sc.Id,
@@ -437,14 +441,14 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "StatusId es requerido y debe ser válido" });
                 }
 
-                // Validar que el estado existe y es de tipo AppointmentStatus
+                // Validar que el estado existe y es de finalización
                 var status = await _context.SystemStatuses
-                    .FirstOrDefaultAsync(s => s.Id == request.StatusId && s.StatusType == "AppointmentStatus");
+                    .FirstOrDefaultAsync(s => s.Id == request.StatusId && s.IsFinalizationStatus);
 
                 if (status == null)
                 {
                     _logger.LogError("Status not found: StatusId={StatusId}", request.StatusId);
-                    return BadRequest(new { message = $"Estado con ID {request.StatusId} no encontrado o no es de tipo AppointmentStatus" });
+                    return BadRequest(new { message = $"Estado con ID {request.StatusId} no encontrado o no es un estado de finalización" });
                 }
 
                 // Validar que los porcentajes sumen 100%
@@ -528,14 +532,14 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "StatusId es requerido y debe ser válido" });
                 }
 
-                // Validar que el estado existe y es de tipo AppointmentStatus
+                // Validar que el estado existe y es de finalización
                 var status = await _context.SystemStatuses
-                    .FirstOrDefaultAsync(s => s.Id == request.StatusId && s.StatusType == "AppointmentStatus");
+                    .FirstOrDefaultAsync(s => s.Id == request.StatusId && s.IsFinalizationStatus);
 
                 if (status == null)
                 {
                     _logger.LogError("Status not found: StatusId={StatusId}", request.StatusId);
-                    return BadRequest(new { message = $"Estado con ID {request.StatusId} no encontrado o no es de tipo AppointmentStatus" });
+                    return BadRequest(new { message = $"Estado con ID {request.StatusId} no encontrado o no es un estado de finalización" });
                 }
 
                 _logger.LogInformation("Status found: {StatusName} ({StatusValue})", status.StatusName, status.StatusValue);
@@ -691,14 +695,14 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "StatusId es requerido y debe ser válido" });
                 }
 
-                // Validar que el estado existe y es de tipo AppointmentStatus
+                // Validar que el estado existe y es de finalización
                 var status = await _context.SystemStatuses
-                    .FirstOrDefaultAsync(s => s.Id == request.StatusId && s.StatusType == "AppointmentStatus");
+                    .FirstOrDefaultAsync(s => s.Id == request.StatusId && s.IsFinalizationStatus);
 
                 if (status == null)
                 {
                     _logger.LogError("Status not found: StatusId={StatusId}", request.StatusId);
-                    return BadRequest(new { message = $"Estado con ID {request.StatusId} no encontrado o no es de tipo AppointmentStatus" });
+                    return BadRequest(new { message = $"Estado con ID {request.StatusId} no encontrado o no es un estado de finalización" });
                 }
 
                 _logger.LogInformation("Status found: {StatusName} ({StatusValue})", status.StatusName, status.StatusValue);
@@ -823,7 +827,7 @@ namespace newApi.Controllers
                     .Include(sc => sc.Status)
                     .Include(sc => sc.Category)
                     .Include(sc => sc.ServiceTypeCategory)
-                    .Where(sc => sc.Status.StatusType == "AppointmentStatus" && 
+                    .Where(sc => sc.Status.IsFinalizationStatus &&
                                 sc.IsActive && 
                                 sc.CategoryId != null && 
                                 sc.ServiceTypeCategoryId != null)
@@ -871,7 +875,7 @@ namespace newApi.Controllers
                     .Include(sc => sc.Status)
                     .Include(sc => sc.Category)
                     .Include(sc => sc.ServiceTypeCategory)
-                    .Where(sc => sc.Status.StatusType == "AppointmentStatus" && 
+                    .Where(sc => sc.Status.IsFinalizationStatus &&
                                 sc.IsActive && 
                                 sc.CategoryId != null && 
                                 sc.ServiceTypeCategoryId != null)
@@ -975,7 +979,7 @@ namespace newApi.Controllers
                     .Include(sc => sc.Status)
                     .Include(sc => sc.Category)
                     .Include(sc => sc.ServiceTypeCategory)
-                    .Where(sc => sc.Status.StatusType == "AppointmentStatus" && 
+                    .Where(sc => sc.Status.IsFinalizationStatus && 
                                 sc.IsActive && 
                                 sc.CategoryId != null && 
                                 sc.ServiceTypeCategoryId == null)
@@ -1023,7 +1027,7 @@ namespace newApi.Controllers
                     .Include(sc => sc.Status)
                     .Include(sc => sc.Category)
                     .Include(sc => sc.ServiceTypeCategory)
-                    .Where(sc => sc.Status.StatusType == "AppointmentStatus" && 
+                    .Where(sc => sc.Status.IsFinalizationStatus &&
                                 sc.IsActive && 
                                 sc.CategoryId == categoryId)
                     .OrderBy(sc => sc.Status.SortOrder)
@@ -1264,6 +1268,93 @@ namespace newApi.Controllers
                 _ => 60
             };
         }
+
+        /// <summary>
+        /// Obtiene TODOS los estados del sistema para gestión administrativa
+        /// </summary>
+        [HttpGet("all-statuses")]
+        public async Task<IActionResult> GetAllStatuses()
+        {
+            try
+            {
+                var allStatuses = await _context.SystemStatuses
+                    .Where(s => s.IsActive)
+                    .OrderBy(s => s.StatusType)
+                    .ThenBy(s => s.SortOrder)
+                    .Select(s => new
+                    {
+                        Id = s.Id,
+                        StatusType = s.StatusType,
+                        StatusName = s.StatusName,
+                        StatusValue = s.StatusValue,
+                        DisplayName = s.DisplayName,
+                        Description = s.Description,
+                        SortOrder = s.SortOrder,
+                        IsActive = s.IsActive,
+                        IsFinalizationStatus = s.IsFinalizationStatus,
+                        CreatedAt = s.CreatedAt,
+                        UpdatedAt = s.UpdatedAt
+                    })
+                    .ToListAsync();
+
+                _logger.LogInformation("Retrieved {Count} statuses for admin management", allStatuses.Count);
+
+                return Ok(allStatuses);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting all statuses for admin management");
+                return StatusCode(500, new { message = "Error interno del servidor" });
+            }
+        }
+
+        /// <summary>
+        /// Actualiza el estado de finalización de un estado específico
+        /// </summary>
+        [HttpPut("update-finalization-status/{statusId}")]
+        public async Task<IActionResult> UpdateFinalizationStatus(int statusId, [FromBody] UpdateFinalizationStatusRequest request)
+        {
+            try
+            {
+                _logger.LogInformation("=== UPDATING FINALIZATION STATUS ===");
+                _logger.LogInformation("Status ID: {StatusId}", statusId);
+                _logger.LogInformation("IsFinalizationStatus: {IsFinalizationStatus}", request.IsFinalizationStatus);
+
+                // Buscar el estado
+                var status = await _context.SystemStatuses
+                    .FirstOrDefaultAsync(s => s.Id == statusId);
+
+                if (status == null)
+                {
+                    _logger.LogError("Status not found: StatusId={StatusId}", statusId);
+                    return NotFound(new { message = $"Estado con ID {statusId} no encontrado" });
+                }
+
+                // Actualizar el estado de finalización
+                status.IsFinalizationStatus = request.IsFinalizationStatus;
+                status.UpdatedAt = DateTime.UtcNow;
+
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Finalization status updated successfully: StatusId={StatusId}, StatusValue={StatusValue}, IsFinalizationStatus={IsFinalizationStatus}", 
+                    statusId, status.StatusValue, request.IsFinalizationStatus);
+
+                return Ok(new { 
+                    message = "Estado de finalización actualizado correctamente",
+                    statusId = statusId,
+                    statusValue = status.StatusValue,
+                    statusName = status.StatusName,
+                    statusType = status.StatusType,
+                    isFinalizationStatus = status.IsFinalizationStatus,
+                    updatedAt = status.UpdatedAt
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating finalization status for StatusId={StatusId}", statusId);
+                return StatusCode(500, new { message = "Error interno del servidor" });
+            }
+        }
     }
 
     // DTO para crear configuraciones de estado de cita
@@ -1278,5 +1369,11 @@ namespace newApi.Controllers
         public bool IsActive { get; set; } = true;
         public string? Action { get; set; } // "create", "update", "delete"
         public int? ConfigId { get; set; } // ID de la configuración a actualizar/eliminar
+    }
+
+    // DTO para actualizar el estado de finalización
+    public class UpdateFinalizationStatusRequest
+    {
+        public bool IsFinalizationStatus { get; set; }
     }
 }

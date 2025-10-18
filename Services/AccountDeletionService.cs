@@ -5,6 +5,8 @@ using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
 using System.Security.Cryptography;
 using System.Text;
+using Stripe;
+using newApi.Common;
 
 namespace newApi.Services
 {
@@ -20,6 +22,7 @@ namespace newApi.Services
         private readonly ILogger<AccountDeletionService> _logger;
         private readonly IConfiguration _configuration;
         private readonly IAccountDeletionNotificationService _notificationService;
+        private readonly SystemStatusService _systemStatusService;
 
         // Estados de contratación que requieren atención especial
         private readonly string[] _activeStatuses = { "pending", "awaiting_client_decision", "disputed" };
@@ -28,12 +31,14 @@ namespace newApi.Services
             AppDbContext context,
             ILogger<AccountDeletionService> logger,
             IConfiguration configuration,
-            IAccountDeletionNotificationService notificationService)
+            IAccountDeletionNotificationService notificationService,
+            SystemStatusService systemStatusService)
         {
             _context = context;
             _logger = logger;
             _configuration = configuration;
             _notificationService = notificationService;
+            _systemStatusService = systemStatusService;
         }
 
         public async Task<AccountDeletionStatusDto> CheckDeletionStatusAsync(int userId)
@@ -139,11 +144,11 @@ namespace newApi.Services
                 {
                     Success = true,
                     Message = activeContracts.Any() 
-                        ? $"Cuenta eliminada. Se crearon {disputesCreated.Count} disputas para contrataciones activas."
+                        ? $"Cuenta eliminada. Se procesaron {disputesCreated.Count} transacciones automáticas para contrataciones activas."
                         : "Cuenta eliminada exitosamente",
                     ActiveContracts = activeContracts,
                     DisputesCreated = disputesCreated,
-                    RequiresManualReview = activeContracts.Any()
+                    RequiresManualReview = false // Ya no requiere revisión manual ya que se procesan automáticamente
                 };
             }
                 catch (Exception ex)
@@ -215,9 +220,9 @@ namespace newApi.Services
         private async Task<List<DisputeCreatedInfo>> ProcessActiveContractsAsync(
             int userId, 
             List<ActiveContractInfo> activeContracts, 
-            string deletionReason)
+            string? deletionReason)
         {
-            var disputesCreated = new List<DisputeCreatedInfo>();
+            var transactionsProcessed = new List<DisputeCreatedInfo>();
 
             foreach (var contract in activeContracts)
             {
@@ -232,7 +237,6 @@ namespace newApi.Services
                 var affectedParty = searchHire.ClientId == userId ? searchHire.Expert : searchHire.Client;
                 var isClientDeleting = searchHire.ClientId == userId;
 
-                // Crear disputa automática
                 var reasonText = !string.IsNullOrEmpty(deletionReason) 
                     ? (isClientDeleting 
                         ? $"Cliente eliminó su cuenta. Razón: {deletionReason}"
@@ -240,41 +244,287 @@ namespace newApi.Services
                     : (isClientDeleting 
                         ? "Cliente eliminó su cuenta"
                         : "Experto eliminó su cuenta");
-                        
-                var dispute = new Dispute
+
+                 try
+                 {
+                     // Cancelar citas asociadas si existen
+                     var appointments = await _context.Appointments
+                         .Where(a => a.SearchHireId == searchHire.Id)
+                         .ToListAsync();
+                     
+                     foreach (var appointment in appointments)
+                     {
+                         // Usar el estado apropiado según quién elimina la cuenta
+                         appointment.StatusId = isClientDeleting ? 13 : 15; // appointment_cancelled_by_client : appointment_cancelled_by_expert
+                         appointment.UpdatedAt = DateTime.UtcNow;
+                         _logger.LogInformation("Cancelled appointment {AppointmentId} due to account deletion", appointment.Id);
+                     }
+
+                     // 🎯 LÓGICA INTELIGENTE: Determinar configuración según si hay subestado de appointment DE FINALIZACIÓN
+                     string configStatus;
+                     
+                     // Verificar si hay una cita asociada con subestado específico DE FINALIZACIÓN
+                     var existingAppointment = await _context.Appointments
+                         .Include(a => a.Status)
+                         .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
+                     
+                     if (existingAppointment?.Status != null && existingAppointment.Status.IsFinalizationStatus)
+                     {
+                         // CASO 1: Hay subestado de appointment DE FINALIZACIÓN - usar configuración específica del subestado
+                         configStatus = existingAppointment.Status.StatusValue;
+                         _logger.LogInformation("Using appointment sub-status configuration: {ConfigStatus} for SearchHire {SearchHireId}", 
+                             configStatus, searchHire.Id);
+                     }
+                     else
+                     {
+                         // CASO 2: No hay subestado de appointment o no es de finalización - usar configuración del estado final
+                         configStatus = "cancelled";
+                         _logger.LogInformation("No appointment sub-status found or not finalization, using final status configuration: {ConfigStatus} for SearchHire {SearchHireId}", 
+                             configStatus, searchHire.Id);
+                     }
+                     
+                     var moneyConfig = await _systemStatusService.GetMoneyDistributionConfigAsync(configStatus, 
+                         searchHire.SearchService?.CategoryId, 
+                         searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
+
+                     if (isClientDeleting)
+                     {
+                         // Si el cliente elimina su cuenta, dar el dinero al experto
+                         await ProcessTransferToExpertAsync(searchHire.Id, moneyConfig);
+                         searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
+                         searchHire.UpdatedAt = DateTime.UtcNow;
+                         
+                         _logger.LogInformation("Processed transfer to expert for SearchHire {SearchHireId} due to client account deletion with config: {Config}", 
+                             searchHire.Id, moneyConfig?.Source ?? "default");
+                     }
+                     else
+                     {
+                         // Si el experto elimina su cuenta, reembolsar al cliente
+                         await ProcessClientRefundAsync(searchHire.Id, reasonText, moneyConfig);
+                         searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
+                         searchHire.UpdatedAt = DateTime.UtcNow;
+                         
+                         _logger.LogInformation("Processed client refund for SearchHire {SearchHireId} due to expert account deletion with config: {Config}", 
+                             searchHire.Id, moneyConfig?.Source ?? "default");
+                     }
+
+                    transactionsProcessed.Add(new DisputeCreatedInfo
+                    {
+                        DisputeId = 0, // No hay disputa, es una transacción directa
+                        SearchHireId = searchHire.Id,
+                        Reason = reasonText,
+                        AffectedPartyName = affectedParty?.Name ?? "Usuario",
+                        AffectedPartyEmail = affectedParty?.Email ?? ""
+                    });
+                }
+                catch (Exception ex)
                 {
-                    SearchHireId = searchHire.Id,
-                    ReporterId = userId,
-                    Reason = reasonText,
-                    Status = "pending",
-                    ResolutionComments = "Disputa creada automáticamente por eliminación de cuenta",
-                    CreatedAt = DateTime.UtcNow,
-                    ExpertResponseDeadline = DateTime.UtcNow.AddHours(48) // 48h para responder
-                };
+                    _logger.LogError(ex, "Error processing contract {SearchHireId} during account deletion: {ErrorMessage}", 
+                        searchHire.Id, ex.Message);
+                    
+                    // Si falla el procesamiento, crear una disputa como fallback
+                    var dispute = new newApi.DataLayer.Models.PostGresModels.Dispute
+                    {
+                        SearchHireId = searchHire.Id,
+                        ReporterId = userId,
+                        Reason = $"{reasonText} - Error en procesamiento automático: {ex.Message}",
+                        Status = "pending",
+                        ResolutionComments = "Disputa creada automáticamente por error en eliminación de cuenta",
+                        CreatedAt = DateTime.UtcNow,
+                        ExpertResponseDeadline = DateTime.UtcNow.AddHours(48)
+                    };
 
-                _context.Disputes.Add(dispute);
-                await _context.SaveChangesAsync();
+                    _context.Disputes.Add(dispute);
+                    searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
+                    searchHire.UpdatedAt = DateTime.UtcNow;
 
-                // Actualizar estado de la contratación
-                searchHire.Status = "disputed";
-                searchHire.UpdatedAt = DateTime.UtcNow;
-
-                disputesCreated.Add(new DisputeCreatedInfo
-                {
-                    DisputeId = dispute.Id,
-                    SearchHireId = searchHire.Id,
-                    Reason = dispute.Reason,
-                    AffectedPartyName = affectedParty?.Name ?? "Usuario",
-                    AffectedPartyEmail = affectedParty?.Email ?? ""
-                });
-
-                _logger.LogInformation("Created automatic dispute {DisputeId} for SearchHire {SearchHireId} due to account deletion", 
-                    dispute.Id, searchHire.Id);
+                    transactionsProcessed.Add(new DisputeCreatedInfo
+                    {
+                        DisputeId = dispute.Id,
+                        SearchHireId = searchHire.Id,
+                        Reason = dispute.Reason,
+                        AffectedPartyName = affectedParty?.Name ?? "Usuario",
+                        AffectedPartyEmail = affectedParty?.Email ?? ""
+                    });
+                }
             }
 
             await _context.SaveChangesAsync();
-            return disputesCreated;
+            return transactionsProcessed;
         }
+
+         private async Task ProcessClientRefundAsync(int searchHireId, string reason, MoneyDistributionConfigDto? moneyConfig = null)
+        {
+            _logger.LogInformation("Processing client refund for searchHireId={SearchHireId}, reason={Reason}", searchHireId, reason);
+
+            try
+            {
+                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
+                var searchHire = await _context.SearchHires
+                    .FromSqlRaw("SELECT * FROM \"SearchHires\" WHERE \"Id\" = {0} FOR UPDATE", searchHireId)
+                    .Include(sh => sh.Client)
+                    .Include(sh => sh.Expert)
+                    .FirstOrDefaultAsync();
+
+                if (searchHire == null)
+                {
+                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
+                    throw new Exception("SearchHire not found");
+                }
+
+                // Verificar que el servicio esté en estado activo
+                if (searchHire.Status != "pending" && searchHire.Status != "awaiting_client_decision")
+                {
+                    _logger.LogWarning("SearchHire is not in active status for searchHireId={SearchHireId}, current status={Status}", 
+                        searchHireId, searchHire.Status);
+                    throw new Exception($"SearchHire is not in active status: {searchHire.Status}");
+                }
+
+                 // Calcular reembolso basado en la configuración de dinero
+                 var refundAmount = moneyConfig != null 
+                     ? searchHire.Amount * (moneyConfig.ClientPercentage / 100)
+                     : searchHire.Amount; // Si no hay configuración, reembolsar el 100%
+                 
+                 searchHire.Client.Balance += refundAmount;
+                 
+                 // Crear transacción financiera
+                 var financialTransaction = new FinancialTransaction
+                 {
+                     UserId = searchHire.ClientId,
+                     Amount = refundAmount,
+                     TransactionType = "Refund",
+                     RelatedEntityType = "SearchHire",
+                     RelatedEntityId = searchHire.Id,
+                     CreatedAt = DateTime.UtcNow
+                 };
+                 _context.FinancialTransactions.Add(financialTransaction);
+                 
+                 // Actualizar estado del servicio
+                 searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
+                 searchHire.UpdatedAt = DateTime.UtcNow;
+                 
+                 await _context.SaveChangesAsync();
+
+                 _logger.LogInformation("Successfully processed client refund for searchHireId={SearchHireId}, refunded amount={Amount}, original amount={OriginalAmount}, reason={Reason}, config={Config}",
+                     searchHire.Id, refundAmount, searchHire.Amount, reason, moneyConfig?.Source ?? "default");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing client refund for searchHireId={SearchHireId}: {ErrorMessage}", 
+                    searchHireId, ex.Message);
+                throw;
+            }
+        }
+
+         private async Task ProcessTransferToExpertAsync(int searchHireId, MoneyDistributionConfigDto? moneyConfig = null)
+        {
+            _logger.LogInformation("Processing transfer to expert for searchHireId={SearchHireId}", searchHireId);
+
+            // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
+            var searchHire = await _context.SearchHires
+                .FromSqlRaw("SELECT * FROM \"SearchHires\" WHERE \"Id\" = {0} FOR UPDATE", searchHireId)
+                .Include(sh => sh.Expert)
+                .ThenInclude(e => e.ExpertProfile)
+                .Include(sh => sh.SearchService)
+                .ThenInclude(ss => ss.ServiceType)
+                .FirstOrDefaultAsync();
+
+            if (searchHire == null)
+            {
+                _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
+                throw new Exception("SearchHire not found");
+            }
+
+            // Verificar que el servicio esté en estado válido para transferencia
+            if (searchHire.Status != "pending" && searchHire.Status != "awaiting_client_decision")
+            {
+                _logger.LogWarning("SearchHire is not in valid status for transfer for searchHireId={SearchHireId}, current status={Status}", 
+                    searchHireId, searchHire.Status);
+                throw new Exception($"SearchHire is not in valid status for transfer: {searchHire.Status}");
+            }
+
+            // 🚨 PROTECCIÓN CONTRA TRANSFERENCIAS DUPLICADAS
+            if (!string.IsNullOrEmpty(searchHire.ExpertTransferId))
+            {
+                _logger.LogWarning("Transfer already exists for searchHireId={SearchHireId}, transferId={TransferId}", 
+                    searchHireId, searchHire.ExpertTransferId);
+                throw new Exception($"Transfer already exists for this SearchHire: {searchHire.ExpertTransferId}");
+            }
+
+             // Usar configuración de distribución de dinero pasada como parámetro o obtener una por defecto
+             var config = moneyConfig ?? await _systemStatusService.GetMoneyDistributionConfigAsync("completed", 
+                 searchHire.SearchService?.CategoryId, 
+                 searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
+             
+             if (config == null)
+             {
+                 _logger.LogError("No money distribution configuration found for searchHireId={SearchHireId}", searchHireId);
+                 throw new Exception("No money distribution configuration found");
+             }
+             
+             var amountToExpert = searchHire.Amount * (config.ExpertPercentage / 100);
+             var amountInCents = (long)(amountToExpert * 100);
+             
+             _logger.LogInformation("Using money distribution config: Expert={ExpertPercentage}%, Platform={PlatformPercentage}%, Source={Source} for searchHireId={SearchHireId}", 
+                 config.ExpertPercentage, config.PlatformPercentage, config.Source, searchHireId);
+
+            var expertStripeAccountId = searchHire.Expert.ExpertProfile?.StripeAccountId;
+            if (string.IsNullOrEmpty(expertStripeAccountId))
+            {
+                _logger.LogError("Expert has no Stripe account for searchHireId={SearchHireId}, expertId={ExpertId}", searchHireId, searchHire.ExpertId);
+                throw new Exception("Expert has no Stripe account configured");
+            }
+
+            try
+            {
+                var transferOptions = new TransferCreateOptions
+                {
+                    Amount = amountInCents,
+                    Currency = "eur",
+                    Destination = expertStripeAccountId,
+                    Metadata = new Dictionary<string, string>
+                    {
+                        { "searchHireId", searchHireId.ToString() }
+                    }
+                };
+
+                var transferService = new TransferService();
+                var transfer = await transferService.CreateAsync(transferOptions);
+                searchHire.ExpertTransferId = transfer.Id;
+                
+                _logger.LogInformation("Transfer created for searchHireId={SearchHireId}, transferId={TransferId}, amount={Amount}", searchHireId, transfer.Id, amountToExpert);
+
+                // Crear transacción financiera para el pago al experto
+                var expertTransaction = new FinancialTransaction
+                {
+                    UserId = searchHire.ExpertId.Value,
+                    Amount = amountToExpert,
+                    TransactionType = "Payout",
+                    RelatedEntityType = "SearchHire",
+                    RelatedEntityId = searchHireId,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _context.FinancialTransactions.Add(expertTransaction);
+
+                await _context.SaveChangesAsync();
+                
+                _logger.LogInformation("Successfully processed transfer to expert for searchHireId={SearchHireId}, amount={Amount}", 
+                    searchHireId, amountToExpert);
+            }
+            catch (StripeException ex)
+            {
+                _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", 
+                    searchHireId, ex.Message);
+                throw new Exception($"Stripe transfer failed: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", 
+                    searchHireId, ex.Message);
+                throw;
+            }
+        }
+
 
         private async Task DeleteUserDataAsync(int userId)
         {

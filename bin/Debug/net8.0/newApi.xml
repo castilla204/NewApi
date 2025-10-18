@@ -123,6 +123,16 @@
             Métodos auxiliares para obtener porcentajes por defecto
             </summary>
         </member>
+        <member name="M:newApi.Controllers.AppointmentConfigController.GetAllStatuses">
+            <summary>
+            Obtiene TODOS los estados del sistema para gestión administrativa
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AppointmentConfigController.UpdateFinalizationStatus(System.Int32,newApi.Controllers.UpdateFinalizationStatusRequest)">
+            <summary>
+            Actualiza el estado de finalización de un estado específico
+            </summary>
+        </member>
         <member name="M:newApi.Controllers.AppointmentController.GetAppointment(System.Int32)">
             <summary>
             Obtener una cita por ID
@@ -193,7 +203,7 @@
             Controlador para la gestión de disputas por parte de administradores
             </summary>
         </member>
-        <member name="M:newApi.Controllers.DisputeController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Logging.ILogger{newApi.Controllers.DisputeController},Microsoft.Extensions.Configuration.IConfiguration,Google.Cloud.Storage.V1.StorageClient,newApi.Services.IAuthorizationServices)">
+        <member name="M:newApi.Controllers.DisputeController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Logging.ILogger{newApi.Controllers.DisputeController},Microsoft.Extensions.Configuration.IConfiguration,Google.Cloud.Storage.V1.StorageClient,newApi.Services.IAuthorizationServices,newApi.Services.SystemStatusService)">
             <summary>
             Constructor del controlador de disputas
             </summary>
@@ -1217,76 +1227,6 @@
             Total de citas pendientes
             </summary>
         </member>
-        <member name="T:newApi.DataLayer.Models.DTOs.WithdrawMoneyRequestDto">
-            <summary>
-            DTO para solicitar retiro de dinero del balance interno
-            </summary>
-        </member>
-        <member name="P:newApi.DataLayer.Models.DTOs.WithdrawMoneyRequestDto.Amount">
-            <summary>
-            Cantidad a retirar en euros
-            </summary>
-        </member>
-        <member name="P:newApi.DataLayer.Models.DTOs.WithdrawMoneyRequestDto.PaymentIntentId">
-            <summary>
-            ID del pago original de Stripe (opcional, si no se especifica se usa el más antiguo disponible)
-            </summary>
-        </member>
-        <member name="T:newApi.DataLayer.Models.DTOs.WithdrawMoneyResponseDto">
-            <summary>
-            DTO para respuesta de retiro de dinero
-            </summary>
-        </member>
-        <member name="P:newApi.DataLayer.Models.DTOs.WithdrawMoneyResponseDto.Message">
-            <summary>
-            Mensaje de confirmación
-            </summary>
-        </member>
-        <member name="P:newApi.DataLayer.Models.DTOs.WithdrawMoneyResponseDto.RefundedAmount">
-            <summary>
-            Cantidad total refundada
-            </summary>
-        </member>
-        <member name="P:newApi.DataLayer.Models.DTOs.WithdrawMoneyResponseDto.RefundIds">
-            <summary>
-            IDs de los refunds procesados
-            </summary>
-        </member>
-        <member name="P:newApi.DataLayer.Models.DTOs.WithdrawMoneyResponseDto.RemainingBalance">
-            <summary>
-            Balance restante del usuario
-            </summary>
-        </member>
-        <member name="T:newApi.DataLayer.Models.DTOs.RefundablePaymentDto">
-            <summary>
-            DTO para información de pagos refundables
-            </summary>
-        </member>
-        <member name="P:newApi.DataLayer.Models.DTOs.RefundablePaymentDto.TransactionId">
-            <summary>
-            ID de la transacción financiera
-            </summary>
-        </member>
-        <member name="P:newApi.DataLayer.Models.DTOs.RefundablePaymentDto.PaymentIntentId">
-            <summary>
-            ID del PaymentIntent de Stripe
-            </summary>
-        </member>
-        <member name="P:newApi.DataLayer.Models.DTOs.RefundablePaymentDto.Amount">
-            <summary>
-            Cantidad que se puede refundear
-            </summary>
-        </member>
-        <member name="P:newApi.DataLayer.Models.DTOs.RefundablePaymentDto.CreatedAt">
-            <summary>
-            Fecha del pago original
-            </summary>
-        </member>
-        <member name="P:newApi.DataLayer.Models.DTOs.RefundablePaymentDto.DaysRemaining">
-            <summary>
-            Días restantes para poder hacer refund (máximo 120 días)
-            </summary>
-        </member>
         <member name="T:newApi.DataLayer.Models.enums.AppointmentStatus">
             <summary>
             Estados específicos para citas (subestados de SearchHire)
@@ -1470,6 +1410,15 @@
             <inheritdoc />
         </member>
         <member name="M:newApi.Migrations.AddServiceTypeCategoryTable.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.AddAppointmentReportSentStatus">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddAppointmentReportSentStatus.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddAppointmentReportSentStatus.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
         <member name="M:newApi.Migrations.fixingerror.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
@@ -2057,6 +2006,18 @@
         <member name="M:newApi.Migrations.AddExpertReportTimeoutStatus.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
+        <member name="T:newApi.Migrations.AddIsFinalizationStatusToSystemStatuses">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddIsFinalizationStatusToSystemStatuses.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddIsFinalizationStatusToSystemStatuses.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddIsFinalizationStatusToSystemStatuses.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
         <member name="M:newApi.Services.AppointmentService.ValidateAppointmentLocationAsync(newApi.DataLayer.Models.PostGresModels.SearchHire,System.Nullable{System.Decimal},System.Nullable{System.Decimal})">
             <summary>
             Valida que la ubicación propuesta para la cita esté dentro del rango del experto
@@ -2077,6 +2038,11 @@
         <member name="M:newApi.Services.SystemStatusService.GetMoneyDistributionAsync(System.String,System.Nullable{System.Int32},System.Nullable{System.Int32})">
             <summary>
             Obtiene la configuración de distribución de dinero para un estado específico
+            </summary>
+        </member>
+        <member name="M:newApi.Services.SystemStatusService.GetMoneyDistributionConfigAsync(System.String,System.Nullable{System.Int32},System.Nullable{System.Int32})">
+            <summary>
+            Obtiene la configuración de distribución de dinero como DTO (wrapper para compatibilidad)
             </summary>
         </member>
         <member name="M:newApi.Services.SystemStatusService.GetTargetSearchHireStatusAsync(newApi.DataLayer.Models.enums.AppointmentStatus)">

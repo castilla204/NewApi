@@ -116,17 +116,17 @@ namespace newApi.Services
                 var serviceName = searchHire.SearchService?.ServiceType?.Name ?? "Servicio";
                 var isClientAffected = searchHire.ClientId == affectedUser.Id;
 
-                var notification = new Notification
-                {
-                    UserId = affectedUser.Id,
-                    Title = "Contratación en Disputa - Cuenta Eliminada",
-                    Message = isClientAffected
-                        ? $"El experto del servicio '{serviceName}' ha eliminado su cuenta. Se ha creado una disputa automática para proteger tus intereses. Tienes 48 horas para responder."
-                        : $"El cliente del servicio '{serviceName}' ha eliminado su cuenta. Se ha creado una disputa automática. Tienes 48 horas para responder.",
-                    Type = "dispute_created",
-                    Read = false,
-                    CreatedAt = DateTime.UtcNow
-                };
+                        var notification = new Notification
+                        {
+                            UserId = affectedUser.Id,
+                            Title = "Contratación Procesada - Cuenta Eliminada",
+                            Message = isClientAffected
+                                ? $"El experto del servicio '{serviceName}' ha eliminado su cuenta. Se ha procesado automáticamente un reembolso a tu favor por el importe completo del servicio."
+                                : $"El cliente del servicio '{serviceName}' ha eliminado su cuenta. Se ha procesado automáticamente el pago del servicio a tu favor.",
+                            Type = "transaction_processed",
+                            Read = false,
+                            CreatedAt = DateTime.UtcNow
+                        };
 
                 _context.Notifications.Add(notification);
                 await _context.SaveChangesAsync();

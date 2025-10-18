@@ -3,6 +3,7 @@ using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.enums;
+using newApi.Common;
 using System.Globalization;
 
 namespace newApi.Services
@@ -412,7 +413,7 @@ namespace newApi.Services
                 var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatusEnum);
                 if (targetSearchHireStatus.HasValue)
                 {
-                    appointment.SearchHire.Status = targetSearchHireStatus.Value.ToString();
+                    appointment.SearchHire.Status = targetSearchHireStatus.Value.ToStringValue();
                     appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
                 }
 
@@ -518,7 +519,7 @@ namespace newApi.Services
                 var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatusEnum);
                 if (targetSearchHireStatus.HasValue)
                 {
-                    appointment.SearchHire.Status = targetSearchHireStatus.Value.ToString();
+                    appointment.SearchHire.Status = targetSearchHireStatus.Value.ToStringValue();
                     appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
                 }
 
@@ -638,24 +639,24 @@ namespace newApi.Services
                             if (validationResult.IsValid)
                             {
                                 // Si todos los archivos están listos, enviar el reporte automáticamente
-                                // La cita se marca como completada
-                                var appointmentCompletedStatus = await _context.SystemStatuses
+                                // La cita se marca como informe enviado
+                                var appointmentReportSentStatus = await _context.SystemStatuses
                                     .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-                                                            s.StatusValue == "appointment_completed");
+                                                            s.StatusValue == "appointment_report_sent");
                                 
                                 // El SearchHire pasa a esperar decisión del cliente
                                 var awaitingClientDecisionStatus = await _context.SystemStatuses
                                     .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
                                                             s.StatusValue == "awaiting_client_decision");
                                 
-                                if (appointmentCompletedStatus != null && awaitingClientDecisionStatus != null)
+                                if (appointmentReportSentStatus != null && awaitingClientDecisionStatus != null)
                                 {
-                                    // Marcar la cita como completada
-                                    timer.Appointment.StatusId = appointmentCompletedStatus.Id;
+                                    // Marcar la cita como informe enviado
+                                    timer.Appointment.StatusId = appointmentReportSentStatus.Id;
                                     timer.Appointment.UpdatedAt = DateTime.UtcNow;
                                     
                                     // Actualizar el SearchHire para que use el estado del sistema centralizado
-                                    timer.Appointment.SearchHire.Status = "awaiting_client_decision";
+                                    timer.Appointment.SearchHire.Status = SearchHireStatus.AwaitingClientDecision.ToStringValue();
                                     timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
                                     
                                     _logger.LogInformation("Appointment {AppointmentId} automatically completed and SearchHire moved to awaiting_client_decision - all required files were uploaded", timer.Appointment.Id);
@@ -674,7 +675,7 @@ namespace newApi.Services
                                     timer.Appointment.UpdatedAt = DateTime.UtcNow;
                                     
                                     // También actualizar el SearchHire para que use el estado del sistema centralizado
-                                    timer.Appointment.SearchHire.Status = "cancelled";
+                                    timer.Appointment.SearchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
                                     timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
                                     
                                     _logger.LogInformation("Appointment {AppointmentId} cancelled due to expert not submitting report within 24h - missing files: {MissingFiles}", 
@@ -766,29 +767,47 @@ namespace newApi.Services
                     throw new InvalidOperationException(validationResult.ErrorMessage);
                 }
 
-                // Obtener el estado appointment_completed para la cita
-                var appointmentCompletedStatus = await _context.SystemStatuses
+                // Obtener el estado appointment_report_sent para la cita
+                var appointmentReportSentStatus = await _context.SystemStatuses
                     .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-                                            s.StatusValue == "appointment_completed");
+                                            s.StatusValue == "appointment_report_sent");
 
                 // Obtener el estado awaiting_client_decision para el SearchHire
                 var awaitingClientDecisionStatus = await _context.SystemStatuses
                     .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
                                             s.StatusValue == "awaiting_client_decision");
 
-                if (appointmentCompletedStatus == null)
-                    throw new InvalidOperationException("Appointment completed status not found");
+                if (appointmentReportSentStatus == null)
+                    throw new InvalidOperationException("Appointment report sent status not found");
                 
                 if (awaitingClientDecisionStatus == null)
                     throw new InvalidOperationException("Awaiting client decision status not found");
 
-                // Actualizar la cita como completada
-                appointment.StatusId = appointmentCompletedStatus.Id;
+                // Actualizar la cita como informe enviado
+                appointment.StatusId = appointmentReportSentStatus.Id;
                 appointment.UpdatedAt = DateTime.UtcNow;
 
-                // Actualizar el SearchHire para que use el estado del sistema centralizado
-                appointment.SearchHire.Status = "awaiting_client_decision";
-                appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                // Actualizar el SearchHire según el mapeo de estados
+                _logger.LogInformation("=== STARTING STATUS MAPPING ===");
+                var appointmentStatusEnum = AppointmentStatus.AppointmentReportSent;
+                _logger.LogInformation("🔍 Getting target SearchHire status for appointment status: {AppointmentStatus}", appointmentStatusEnum);
+                
+                var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatusEnum);
+                _logger.LogInformation("🎯 Target SearchHire status result: {TargetStatus}", targetSearchHireStatus);
+                
+                if (targetSearchHireStatus.HasValue)
+                {
+                    var oldStatus = appointment.SearchHire.Status;
+                    appointment.SearchHire.Status = targetSearchHireStatus.Value.ToStringValue();
+                    appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                    _logger.LogInformation("✅ Updated SearchHire {SearchHireId} status: {OldStatus} → {NewStatus}", 
+                        appointment.SearchHire.Id, oldStatus, appointment.SearchHire.Status);
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ No target SearchHire status found for appointment status: {AppointmentStatus}", appointmentStatusEnum);
+                }
+                _logger.LogInformation("=== STATUS MAPPING COMPLETED ===");
 
                 // Marcar timers de expert_report como expirados
                 var expertReportTimers = await _context.AppointmentTimers
@@ -803,7 +822,9 @@ namespace newApi.Services
                     timer.ExpiredAt = DateTime.UtcNow;
                 }
 
+                _logger.LogInformation("=== SAVING CHANGES TO DATABASE ===");
                 await _context.SaveChangesAsync();
+                _logger.LogInformation("=== DATABASE CHANGES SAVED ===");
 
                 // Cargar la cita actualizada con todas las relaciones
                 var updatedAppointment = await _context.Appointments
@@ -825,6 +846,7 @@ namespace newApi.Services
                 throw;
             }
         }
+
 
         private async Task<(bool IsValid, string ErrorMessage)> ValidateRequiredDeliverablesAsync(SearchHire searchHire)
         {

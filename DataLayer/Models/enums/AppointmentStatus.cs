@@ -15,7 +15,8 @@ namespace newApi.DataLayer.Models.enums
         AppointmentCancelledByExpertSecond,     // Segunda cancelación del experto
         AppointmentCancelledByNoResponse,       // Cliente no propuso en tiempo
         AppointmentCancelledByExpertRejection,  // Experto rechazó 2 veces (cancelación por rechazos)
-        AppointmentAwaitingReport               // Esperando reporte/archivos del experto (3h después de la cita)
+        AppointmentAwaitingReport,              // Esperando reporte/archivos del experto (3h después de la cita)
+        AppointmentReportSent                   // Experto envió el reporte
     }
 
     public static class AppointmentStatusExtensions
@@ -35,6 +36,7 @@ namespace newApi.DataLayer.Models.enums
                 AppointmentStatus.AppointmentCancelledByNoResponse => "appointment_cancelled_by_no_response",
                 AppointmentStatus.AppointmentCancelledByExpertRejection => "appointment_cancelled_by_expert_rejection",
                 AppointmentStatus.AppointmentAwaitingReport => "appointment_awaiting_report",
+                AppointmentStatus.AppointmentReportSent => "appointment_report_sent",
                 _ => status.ToString().ToLower()
             };
         }
@@ -54,6 +56,7 @@ namespace newApi.DataLayer.Models.enums
                 "appointment_cancelled_by_no_response" => AppointmentStatus.AppointmentCancelledByNoResponse,
                 "appointment_cancelled_by_expert_rejection" => AppointmentStatus.AppointmentCancelledByExpertRejection,
                 "appointment_awaiting_report" => AppointmentStatus.AppointmentAwaitingReport,
+                "appointment_report_sent" => AppointmentStatus.AppointmentReportSent,
                 _ => throw new ArgumentException($"Invalid appointment status: {value}")
             };
         }

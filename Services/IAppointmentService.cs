@@ -1,4 +1,6 @@
 using newApi.DataLayer.Models.DTOs;
+using newApi.DataLayer.Models.enums;
+using newApi.Common;
 
 namespace newApi.Services
 {

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using newApi.DataLayer.Models;
@@ -11,9 +12,11 @@ using newApi.DataLayer.Models;
 namespace newApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251019224616_AddLogTypeTableOnly")]
+    partial class AddLogTypeTableOnly
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -667,6 +670,10 @@ namespace newApi.Migrations
                     b.Property<string>("Details")
                         .HasColumnType("text");
 
+                    b.Property<string>("LogLevel")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<int?>("LogTypeId")
                         .HasColumnType("integer");
 
@@ -705,20 +712,25 @@ namespace newApi.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Description")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
 
                     b.Property<bool>("RequiresAdminNotification")
                         .HasColumnType("boolean");
@@ -729,15 +741,15 @@ namespace newApi.Migrations
                     b.Property<bool>("RequiresSmsAlert")
                         .HasColumnType("boolean");
 
-                    b.Property<int?>("SeverityId")
-                        .HasColumnType("integer");
+                    b.Property<string>("Severity")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
 
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("SeverityId");
 
                     b.ToTable("LogTypes");
                 });
@@ -1556,40 +1568,6 @@ namespace newApi.Migrations
                     b.ToTable("ServiceTypeCategories");
                 });
 
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Severity", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)");
-
-                    b.Property<int>("SortOrder")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTime?>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("Severities");
-                });
-
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.StatusConfiguration", b =>
                 {
                     b.Property<int>("Id")
@@ -2126,8 +2104,7 @@ namespace newApi.Migrations
                 {
                     b.HasOne("newApi.DataLayer.Models.PostGresModels.LogType", "LogType")
                         .WithMany("Logs")
-                        .HasForeignKey("LogTypeId")
-                        .OnDelete(DeleteBehavior.SetNull);
+                        .HasForeignKey("LogTypeId");
 
                     b.HasOne("newApi.DataLayer.Models.PostGresModels.User", "User")
                         .WithMany()
@@ -2137,16 +2114,6 @@ namespace newApi.Migrations
                     b.Navigation("LogType");
 
                     b.Navigation("User");
-                });
-
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.LogType", b =>
-                {
-                    b.HasOne("newApi.DataLayer.Models.PostGresModels.Severity", "Severity")
-                        .WithMany("LogTypes")
-                        .HasForeignKey("SeverityId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("Severity");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Message", b =>
@@ -2659,11 +2626,6 @@ namespace newApi.Migrations
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.ServiceTypeCategory", b =>
                 {
                     b.Navigation("ServiceTypes");
-                });
-
-            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Severity", b =>
-                {
-                    b.Navigation("LogTypes");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SubscriptionPlan", b =>

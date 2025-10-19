@@ -378,6 +378,33 @@
             Crea un enlace de cuenta de Stripe Connect para que el experto pueda actualizar sus datos bancarios
             </summary>
         </member>
+        <member name="M:newApi.Controllers.SubscriptionController.ProcessAutomaticRefundOnError(System.String,System.Exception,System.Int32,System.Int32)">
+            <summary>
+            Procesa refund automático cuando falla la creación de búsqueda después del pago
+            Siempre devuelve 100% porque no se creó nada
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.SubscriptionController.LogCriticalRefundFailure(System.String,System.Int32,System.Int32,System.Exception)">
+            <summary>
+            Registra fallos críticos de refund para alertar a administradores
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.SubscriptionController.CreateLogTypeTable">
+            <summary>
+            Endpoint temporal para crear la tabla LogType
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.SubscriptionController.ProcessGenericRefundAsync(System.String,System.Int32,System.String,System.Decimal,System.String,System.Collections.Generic.Dictionary{System.String,System.String})">
+            <summary>
+            Método genérico para procesar refunds con diferentes porcentajes
+            </summary>
+            <param name="paymentIntentId">ID del PaymentIntent de Stripe</param>
+            <param name="userId">ID del usuario</param>
+            <param name="refundType">Tipo de refund (error_creation, expert_cancellation, etc.)</param>
+            <param name="refundPercentage">Porcentaje a devolver (0-100)</param>
+            <param name="reason">Razón del refund</param>
+            <param name="metadata">Metadata adicional</param>
+        </member>
         <member name="M:newApi.Controllers.SubscriptionController.ProcessAutomaticClientRefundAsync(System.Int32,System.String)">
             <summary>
             Procesa refund automático real a Stripe cuando el admin da la razón al cliente en una disputa
@@ -2054,6 +2081,54 @@
             <inheritdoc />
         </member>
         <member name="M:newApi.Migrations.AddIsFinalizationStatusToSystemStatuses.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.AddLogTypeTableOnly">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddLogTypeTableOnly.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddLogTypeTableOnly.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddLogTypeTableOnly.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.AddSeverityTableAndUpdateLogType">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddSeverityTableAndUpdateLogType.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddSeverityTableAndUpdateLogType.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddSeverityTableAndUpdateLogType.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.SimplifyLogTypes">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.SimplifyLogTypes.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.SimplifyLogTypes.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.SimplifyLogTypes.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.RemoveLogLevelColumn">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.RemoveLogLevelColumn.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.RemoveLogLevelColumn.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.RemoveLogLevelColumn.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
         <member name="M:newApi.Services.AccountDeletionService.GetStatusIdByValueAsync(System.String)">

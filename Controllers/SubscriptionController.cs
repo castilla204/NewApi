@@ -39,8 +39,9 @@ namespace newApi.Controllers
         private readonly IUserActionLoggingService _userActionLogging;
         private readonly SystemStatusService _systemStatusService;
         private readonly IAuthorizationServices _authService;
+        private readonly ILoggingService _loggingService;
 
-        public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, IUserActionLoggingService userActionLogging, SystemStatusService systemStatusService, IAuthorizationServices authService)
+        public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, IUserActionLoggingService userActionLogging, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService)
         {
             _logger = logger;
             _logger.LogInformation("Initializing SubscriptionController");
@@ -51,6 +52,7 @@ namespace newApi.Controllers
             _configuration = configuration;
             _authService = authService;
             _storageClient = storageClient;
+            _loggingService = loggingService;
             _webhookSecret = _configuration["Stripe:WebhookSecret"];
             _generalWebhookSecret = _configuration["Stripe:GeneralWebhookSecret"];
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
@@ -1625,44 +1627,53 @@ namespace newApi.Controllers
                                 using var transaction = await _context.Database.BeginTransactionAsync();
                                 try
                                 {
-                                    // 🚨 REVERTIR TRANSACCIÓN FINANCIERA
+                                    // 🚨 REGISTRAR FALLO DE TRANSFER - NO DEVOLVER AL CLIENTE
+                                    // El cliente ya aprobó el servicio, el experto ya hizo el trabajo
+                                    // Solo registrar el error y alertar a administradores
+                                    
                                     var failedTransaction = await _context.FinancialTransactions
                                         .FirstOrDefaultAsync(ft => ft.RelatedEntityId == searchHire.Id && 
                                                                    ft.TransactionType == "Payout");
                                     
                                     if (failedTransaction != null)
                                     {
-                                        // Revertir la transacción de pago al experto
-                                        var reversalTransaction = new FinancialTransaction
+                                        // ✅ SOLO REGISTRAR EL FALLO - NO REVERTIR NI REFUND
+                                        var failureRecord = new FinancialTransaction
                                         {
                                             UserId = failedTransaction.UserId,
-                                            Amount = -failedTransaction.Amount,
-                                            TransactionType = "TransferReversal",
+                                            Amount = 0, // No hay monto en caso de fallo
+                                            TransactionType = "TransferFailed",
                                             RelatedEntityType = "SearchHire",
                                             RelatedEntityId = searchHire.Id,
+                                            StripePaymentIntentId = transfer.Id, // ID del transfer fallido
                                             CreatedAt = DateTime.UtcNow
                                         };
-                                        _context.FinancialTransactions.Add(reversalTransaction);
+                                        _context.FinancialTransactions.Add(failureRecord);
                                         
-                                        // 💳 PROCESAR REFUND REAL EN STRIPE para transferencia fallida
-                                        var refundReason = "Transfer to expert failed - automatic refund";
-                                        var refundSuccess = await ProcessAutomaticClientRefundAsync(searchHire.Id, refundReason);
+                                        _logger.LogCritical("🚨 CRITICAL TRANSFER FAILURE - SearchHireId: {SearchHireId}, TransferId: {TransferId}, ExpertId: {ExpertId}, Amount: {Amount}€", 
+                                            searchHire.Id, transfer.Id, failedTransaction.UserId, failedTransaction.Amount);
                                         
-                                        if (!refundSuccess)
-                                        {
-                                            _logger.LogError("Failed to process Stripe refund for failed transfer searchHireId={SearchHireId}", searchHire.Id);
-                                        }
+                                        // 🚨 Registrar en sistema de logs con tipo específico
+                                        await _loggingService.LogCriticalAsync(
+                                            $"Transfer to expert failed - SearchHireId: {searchHire.Id}",
+                                            $"TransferId: {transfer.Id}, ExpertId: {failedTransaction.UserId}, Amount: {failedTransaction.Amount}€",
+                                            failedTransaction.UserId,
+                                            "SubscriptionController.transfer.failed",
+                                            "SearchHire",
+                                            searchHire.Id,
+                                            new { TransferId = transfer.Id, ExpertId = failedTransaction.UserId, Amount = failedTransaction.Amount }
+                                        );
                                     }
                                     
-                                    // Actualizar estado
-                                searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.TransferFailed.ToStringValue());
+                                    // ✅ ACTUALIZAR ESTADO A COMPLETED - El servicio está completado, solo falló el transfer
+                                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Completed.ToStringValue());
                                 searchHire.UpdatedAt = DateTime.UtcNow;
                                     
                                 await _context.SaveChangesAsync();
                                     await transaction.CommitAsync();
                                     
-                                    _logger.LogError("Transfer failed and reverted for searchHireId={SearchHireId}, transferId={TransferId}",
-                                    searchHire.Id, transfer.Id);
+                                    _logger.LogCritical("🚨 TRANSFER FAILED BUT SERVICE COMPLETED - SearchHireId: {SearchHireId}, TransferId: {TransferId}, Status: {Status}, ExpertId: {ExpertId}, Amount: {Amount}€ - REQUIRES ADMIN INTERVENTION", 
+                                        searchHire.Id, transfer.Id, searchHire.Status?.StatusValue, failedTransaction?.UserId, failedTransaction?.Amount);
                                 }
                                 catch (Exception ex)
                                 {
@@ -1771,6 +1782,18 @@ namespace newApi.Controllers
                             session?.Id, session?.Mode, JsonSerializer.Serialize(session?.Metadata));
                         if (session != null && session.Mode == "payment")
                         {
+                            // 🔍 IDEMPOTENCIA: Verificar si ya se procesó este evento
+                            var existingTransaction = await _context.FinancialTransactions
+                                .FirstOrDefaultAsync(ft => ft.StripePaymentIntentId == session.PaymentIntentId && 
+                                                          ft.TransactionType == "ServicePayment");
+
+                            if (existingTransaction != null)
+                            {
+                                _logger.LogWarning("⚠️ WEBHOOK ALREADY PROCESSED - PaymentIntentId: {PaymentIntentId}, ExistingTransactionId: {TransactionId}", 
+                                    session.PaymentIntentId, existingTransaction.Id);
+                                return Ok(new { message = "Event already processed" }); // ✅ Idempotencia
+                            }
+
                             _logger.LogInformation("Processing payment session: sessionId={SessionId}, metadata={Metadata}", session.Id, JsonSerializer.Serialize(session.Metadata));
                             if (int.TryParse(session.Metadata.GetValueOrDefault("userId", "0"), out int userId) &&
                                 decimal.TryParse(session.Metadata.GetValueOrDefault("amount", "0"), out decimal amount) &&
@@ -1965,127 +1988,473 @@ namespace newApi.Controllers
             var strategy = _context.Database.CreateExecutionStrategy();
             await strategy.ExecuteAsync(async () =>
             {
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
-                {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
                     // ✅ REMOVED: Balance system eliminated - all payments are direct Stripe
-                    
-                    await _context.SaveChangesAsync();
+                
+                await _context.SaveChangesAsync();
 
-                    // Create search
-                    var search = new Search
-                    {
-                        UserId = userId,
-                        Frequency = searchDto.Frequency,
-                        Title = searchDto.Title,
-                        Description = searchDto.Description,
-                        IsActive = searchDto.IsActive,
-                        NextExecution = DateTime.UtcNow,
-                        StartDate = searchDto.StartDate,
-                        CreatedAt = DateTime.UtcNow
-                    };
-                    await _context.Searches.AddAsync(search);
-                    await _context.SaveChangesAsync();
+                // Create search
+                var search = new Search
+                {
+                    UserId = userId,
+                    Frequency = searchDto.Frequency,
+                    Title = searchDto.Title,
+                    Description = searchDto.Description,
+                    IsActive = searchDto.IsActive,
+                    NextExecution = DateTime.UtcNow,
+                    StartDate = searchDto.StartDate,
+                    CreatedAt = DateTime.UtcNow
+                };
+                await _context.Searches.AddAsync(search);
+                await _context.SaveChangesAsync();
 
-                    // Create search parameters
-                    var searchParameter = new SearchParameter
-                    {
-                        Keywords = parameterDto.Keywords,
-                        UserSearch = parameterDto.UserSearch,
-                        Latitude = parameterDto.Latitude,
-                        Longitude = parameterDto.Longitude,
-                        LocationName = parameterDto.LocationName, // ✅ NUEVO: Incluir LocationName
-                        ShippingAvailable = parameterDto.ShippingAvailable,
-                        StrictMatchOnly = parameterDto.StrictMatchOnly,
-                        Category = parameterDto.Category,
-                        LocationRange = parameterDto.LocationRange,
-                        MinPrice = parameterDto.MinPrice,
-                        MaxPrice = parameterDto.MaxPrice,
-                        BrandId = parameterDto.BrandId,
-                        ModelId = parameterDto.ModelId,
-                        ServiceTypeId = parameterDto.ServiceTypeId,
-                        SearchId = search.Id
-                    };
-                    await _context.SearchParameters.AddAsync(searchParameter);
-                    await _context.SaveChangesAsync();
+                // Create search parameters
+                var searchParameter = new SearchParameter
+                {
+                    Keywords = parameterDto.Keywords,
+                    UserSearch = parameterDto.UserSearch,
+                    Latitude = parameterDto.Latitude,
+                    Longitude = parameterDto.Longitude,
+                    LocationName = parameterDto.LocationName, // ✅ NUEVO: Incluir LocationName
+                    ShippingAvailable = parameterDto.ShippingAvailable,
+                    StrictMatchOnly = parameterDto.StrictMatchOnly,
+                    Category = parameterDto.Category,
+                    LocationRange = parameterDto.LocationRange,
+                    MinPrice = parameterDto.MinPrice,
+                    MaxPrice = parameterDto.MaxPrice,
+                    BrandId = parameterDto.BrandId,
+                    ModelId = parameterDto.ModelId,
+                    ServiceTypeId = parameterDto.ServiceTypeId,
+                    SearchId = search.Id
+                };
+                await _context.SearchParameters.AddAsync(searchParameter);
+                await _context.SaveChangesAsync();
 
-                    // Create platform associations
-                    if (parameterDto.PlatformIds != null && parameterDto.PlatformIds.Any())
+                // Create platform associations
+                if (parameterDto.PlatformIds != null && parameterDto.PlatformIds.Any())
+                {
+                    var platforms = await _context.Platforms
+                        .Where(p => parameterDto.PlatformIds.Contains(p.Id))
+                        .ToListAsync();
+                    if (platforms.Count != parameterDto.PlatformIds.Count)
                     {
-                        var platforms = await _context.Platforms
-                            .Where(p => parameterDto.PlatformIds.Contains(p.Id))
-                            .ToListAsync();
-                        if (platforms.Count != parameterDto.PlatformIds.Count)
-                        {
-                            throw new Exception("Some platform IDs are invalid");
-                        }
-                        foreach (var platform in platforms)
-                        {
-                            _context.SearchParameterPlatforms.Add(new SearchParameterPlatform
-                            {
-                                SearchParameterId = searchParameter.SearchParameterId,
-                                PlatformId = platform.Id
-                            });
-                        }
+                        throw new Exception("Some platform IDs are invalid");
                     }
-
-                    var expertProfile = await _context.ExpertProfiles
-                           .FirstOrDefaultAsync(z => z.Id == service.ExpertProfileId);
-
-                    var expertuserid = expertProfile?.UserId ?? 0;
-
-                    // Validar que el experto no se contrate a sí mismo
-                    if (expertuserid == userId)
+                    foreach (var platform in platforms)
                     {
-                        _logger.LogError("Expert cannot hire themselves: expertUserId={ExpertUserId}, userId={UserId}", expertuserid, userId);
-                        throw new InvalidOperationException("No puedes contratarte a ti mismo como experto");
+                        _context.SearchParameterPlatforms.Add(new SearchParameterPlatform
+                        {
+                            SearchParameterId = searchParameter.SearchParameterId,
+                            PlatformId = platform.Id
+                        });
                     }
+                }
 
-                    // Create search hire
-                    var searchHire = new SearchHire
-                    {
-                        ClientId = userId,
-                        ExpertId = expertuserid,
-                        SearchServiceId = service.Id,
-                        SearchId = search.Id,
+                var expertProfile = await _context.ExpertProfiles
+                       .FirstOrDefaultAsync(z => z.Id == service.ExpertProfileId);
+
+                var expertuserid = expertProfile?.UserId ?? 0;
+
+                // Validar que el experto no se contrate a sí mismo
+                if (expertuserid == userId)
+                {
+                    _logger.LogError("Expert cannot hire themselves: expertUserId={ExpertUserId}, userId={UserId}", expertuserid, userId);
+                    throw new InvalidOperationException("No puedes contratarte a ti mismo como experto");
+                }
+
+                // Create search hire
+                var searchHire = new SearchHire
+                {
+                    ClientId = userId,
+                    ExpertId = expertuserid,
+                    SearchServiceId = service.Id,
+                    SearchId = search.Id,
                         StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Pending.ToStringValue()),
-                        Amount = service.Price,
-                        CreatedAt = DateTime.UtcNow,
-                        CompletionDeadline = DateTime.UtcNow.AddDays(7)
-                    };
+                    Amount = service.Price,
+                    CreatedAt = DateTime.UtcNow,
+                    CompletionDeadline = DateTime.UtcNow.AddDays(7)
+                };
                     // ✅ REMOVED: Balance verification eliminated - all payments are direct Stripe
 
                     // ✅ REMOVED: No restrictions on multiple service hires - users can contract the same service multiple times
 
                     // ✅ REMOVED: Balance deduction eliminated - all payments are direct Stripe
-                    
-                    _context.SearchHires.Add(searchHire);
+                
+                _context.SearchHires.Add(searchHire);
                     await _context.SaveChangesAsync(); // ✅ SAVE FIRST to get the real ID
 
-                    var paymentTransaction = new FinancialTransaction
-                    {
-                        UserId = userId,
-                        Amount = -service.Price,
-                        TransactionType = "ServicePayment",
-                        RelatedEntityType = "SearchHire",
+                var paymentTransaction = new FinancialTransaction
+                {
+                    UserId = userId,
+                    Amount = -service.Price,
+                    TransactionType = "ServicePayment",
+                    RelatedEntityType = "SearchHire",
                         RelatedEntityId = searchHire.Id, // ✅ NOW searchHire.Id has the real ID
                         StripePaymentIntentId = session.PaymentIntentId, // ✅ ADDED: Track Stripe payment intent
-                        CreatedAt = DateTime.UtcNow
-                    };
-                    _context.FinancialTransactions.Add(paymentTransaction);
+                    CreatedAt = DateTime.UtcNow
+                };
+                _context.FinancialTransactions.Add(paymentTransaction);
 
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
 
-                    _logger.LogInformation("Pending hire completed successfully for userId={UserId}, searchId={SearchId}, searchHireId={SearchHireId}", userId, search.Id, searchHire.Id);
-                }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Error processing pending hire for userId={UserId}, serviceId={ServiceId}", userId, serviceId);
-                    throw;
-                }
+                _logger.LogInformation("Pending hire completed successfully for userId={UserId}, searchId={SearchId}, searchHireId={SearchHireId}", userId, search.Id, searchHire.Id);
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                    _logger.LogError(ex, "❌ ERROR PROCESSING PENDING HIRE for userId={UserId}, serviceId={ServiceId}", userId, serviceId);
+                    
+                    // 🚨 CRÍTICO: Refund automático si falla la creación de búsqueda
+                    await ProcessAutomaticRefundOnError(session.PaymentIntentId, ex, userId, serviceId);
+                    
+                throw;
+            }
             });
+        }
+
+        /// <summary>
+        /// Procesa refund automático cuando falla la creación de búsqueda después del pago
+        /// Siempre devuelve 100% porque no se creó nada
+        /// </summary>
+        private async Task ProcessAutomaticRefundOnError(string paymentIntentId, Exception originalError, int userId, int serviceId)
+        {
+            _logger.LogInformation("🚨 PROCESSING AUTOMATIC REFUND ON ERROR - PaymentIntentId: {PaymentIntentId}, UserId: {UserId}, ServiceId: {ServiceId}", 
+                paymentIntentId, userId, serviceId);
+
+            try
+            {
+                // 🔍 Verificar si ya existe un refund para este PaymentIntent (idempotencia)
+                var existingRefund = await _context.FinancialTransactions
+                    .FirstOrDefaultAsync(ft => ft.StripePaymentIntentId == paymentIntentId && 
+                                              ft.TransactionType == "Refund" && 
+                                              ft.Amount > 0);
+
+                if (existingRefund != null)
+                {
+                    _logger.LogWarning("⚠️ REFUND ALREADY EXISTS - PaymentIntentId: {PaymentIntentId}, ExistingRefundId: {RefundId}", 
+                        paymentIntentId, existingRefund.Id);
+                    return; // ✅ Idempotencia: no procesar refund duplicado
+                }
+
+                // ✅ USAR MÉTODO GENÉRICO: 100% porque no se creó nada
+                var additionalMetadata = new Dictionary<string, string>
+                {
+                    { "serviceId", serviceId.ToString() },
+                    { "originalError", originalError.Message }
+                };
+
+                var refundSuccess = await ProcessGenericRefundAsync(
+                    paymentIntentId, 
+                    userId, 
+                    "automatic_error_refund", 
+                    100m, // ✅ 100% para errores de creación
+                    $"Error creating search after payment: {originalError.Message}",
+                    additionalMetadata);
+
+                if (!refundSuccess)
+                {
+                    _logger.LogError("❌ FAILED TO PROCESS ERROR REFUND - PaymentIntentId: {PaymentIntentId}, UserId: {UserId}", 
+                        paymentIntentId, userId);
+                    
+                    // 🚨 Registrar fallo crítico de refund
+                    await _loggingService.LogCriticalAsync(
+                        $"Failed to process automatic refund - PaymentIntentId: {paymentIntentId}",
+                        $"UserId: {userId}, ServiceId: {serviceId}, OriginalError: {originalError.Message}",
+                        userId,
+                        "SubscriptionController.ProcessAutomaticRefundOnError",
+                        "Payment",
+                        serviceId,
+                        new { PaymentIntentId = paymentIntentId, ServiceId = serviceId, OriginalError = originalError.Message }
+                    );
+                    
+                    await LogCriticalRefundFailure(paymentIntentId, userId, serviceId, originalError);
+                }
+
+                // 📧 TODO: Enviar notificación al usuario sobre el refund
+                // await _notificationService.SendRefundNotificationAsync(userId, refundAmount, "Error creating search after payment");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ ERROR IN PROCESS AUTOMATIC REFUND ON ERROR - PaymentIntentId: {PaymentIntentId}, Error: {Error}", 
+                    paymentIntentId, ex.Message);
+                
+                // 🚨 CRÍTICO: Si falla el refund, alertar a administradores
+                await LogCriticalRefundFailure(paymentIntentId, userId, serviceId, ex);
+            }
+        }
+
+        /// <summary>
+        /// Registra fallos críticos de refund para alertar a administradores
+        /// </summary>
+        private async Task LogCriticalRefundFailure(string paymentIntentId, int userId, int serviceId, Exception error)
+        {
+            _logger.LogCritical("🚨 CRITICAL REFUND FAILURE - PaymentIntentId: {PaymentIntentId}, UserId: {UserId}, ServiceId: {ServiceId}, Error: {Error}", 
+                paymentIntentId, userId, serviceId, error.Message);
+
+            // 💾 Registrar fallo crítico en base de datos para seguimiento
+            var criticalError = new FinancialTransaction
+            {
+                UserId = userId,
+                Amount = 0, // No hay monto en caso de error
+                TransactionType = "CriticalRefundFailure",
+                RelatedEntityType = "ErrorRecovery",
+                RelatedEntityId = 0,
+                StripePaymentIntentId = paymentIntentId,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.FinancialTransactions.Add(criticalError);
+            await _context.SaveChangesAsync();
+
+            // 🚨 Registrar en sistema de logs con tipo específico
+            await _loggingService.LogCriticalAsync(
+                $"Critical refund failure - PaymentIntentId: {paymentIntentId}",
+                error.Message,
+                userId,
+                "SubscriptionController.LogCriticalRefundFailure",
+                "Payment",
+                serviceId,
+                new { PaymentIntentId = paymentIntentId, ServiceId = serviceId, Error = error.Message }
+            );
+        }
+
+        /// <summary>
+        /// Endpoint temporal para crear la tabla LogType
+        /// </summary>
+        [HttpPost("create-log-type-table")]
+        public async Task<IActionResult> CreateLogTypeTable()
+        {
+            try
+            {
+                // 🔐 SEGURIDAD: Solo administradores
+                if (!_authService.IsAdmin(User))
+                {
+                    return Unauthorized(new { message = "Admin access required" });
+                }
+
+                _logger.LogInformation("🔄 Creating LogType table and inserting data...");
+
+                // Crear tabla LogTypes
+                await _context.Database.ExecuteSqlRawAsync(@"
+                    CREATE TABLE IF NOT EXISTS ""LogTypes"" (
+                        ""Id"" SERIAL PRIMARY KEY,
+                        ""Name"" VARCHAR(100) NOT NULL,
+                        ""Description"" VARCHAR(500),
+                        ""Category"" VARCHAR(50) NOT NULL,
+                        ""Severity"" VARCHAR(20) NOT NULL,
+                        ""RequiresAdminNotification"" BOOLEAN NOT NULL DEFAULT FALSE,
+                        ""RequiresEmailAlert"" BOOLEAN NOT NULL DEFAULT FALSE,
+                        ""RequiresSmsAlert"" BOOLEAN NOT NULL DEFAULT FALSE,
+                        ""IsActive"" BOOLEAN NOT NULL DEFAULT TRUE,
+                        ""CreatedAt"" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                        ""UpdatedAt"" TIMESTAMP WITH TIME ZONE
+                    );
+                ");
+
+                _logger.LogInformation("✅ LogTypes table created successfully");
+
+                // Agregar columnas a la tabla Logs si no existen
+                await _context.Database.ExecuteSqlRawAsync(@"
+                    DO $$ 
+                    BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'Logs' AND column_name = 'AdditionalData') THEN
+                            ALTER TABLE ""Logs"" ADD COLUMN ""AdditionalData"" TEXT;
+                        END IF;
+                        
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'Logs' AND column_name = 'LogTypeId') THEN
+                            ALTER TABLE ""Logs"" ADD COLUMN ""LogTypeId"" INTEGER;
+                        END IF;
+                        
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'Logs' AND column_name = 'RelatedEntityId') THEN
+                            ALTER TABLE ""Logs"" ADD COLUMN ""RelatedEntityId"" INTEGER;
+                        END IF;
+                        
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'Logs' AND column_name = 'RelatedEntityType') THEN
+                            ALTER TABLE ""Logs"" ADD COLUMN ""RelatedEntityType"" TEXT;
+                        END IF;
+                    END $$;
+                ");
+
+                _logger.LogInformation("✅ Logs table columns added successfully");
+
+                // Crear índice si no existe
+                await _context.Database.ExecuteSqlRawAsync(@"
+                    CREATE INDEX IF NOT EXISTS ""IX_Logs_LogTypeId"" ON ""Logs"" (""LogTypeId"");
+                ");
+
+                _logger.LogInformation("✅ Index created successfully");
+
+                // Agregar foreign key si no existe
+                await _context.Database.ExecuteSqlRawAsync(@"
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.table_constraints 
+                            WHERE constraint_name = 'FK_Logs_LogTypes_LogTypeId'
+                        ) THEN
+                            ALTER TABLE ""Logs"" 
+                            ADD CONSTRAINT ""FK_Logs_LogTypes_LogTypeId"" 
+                            FOREIGN KEY (""LogTypeId"") REFERENCES ""LogTypes""(""Id"");
+                        END IF;
+                    END $$;
+                ");
+
+                _logger.LogInformation("✅ Foreign key created successfully");
+
+                // Insertar tipos de logs por defecto
+                await _context.Database.ExecuteSqlRawAsync(@"
+                    INSERT INTO ""LogTypes"" (""Name"", ""Description"", ""Category"", ""Severity"", ""RequiresAdminNotification"", ""RequiresEmailAlert"", ""RequiresSmsAlert"", ""IsActive"", ""CreatedAt"")
+                    VALUES 
+                    -- Critical Log Types
+                    ('TRANSFER_FAILED', 'Transfer to expert failed but service completed', 'Critical', 'Critical', true, true, false, true, NOW()),
+                    ('REFUND_FAILED', 'Automatic refund failed after payment', 'Critical', 'Critical', true, true, false, true, NOW()),
+                    ('PAYMENT_PROCESSING_ERROR', 'Error processing payment in Stripe', 'Critical', 'Critical', true, true, false, true, NOW()),
+                    ('STRIPE_WEBHOOK_ERROR', 'Error processing Stripe webhook', 'Critical', 'Critical', true, false, false, true, NOW()),
+
+                    -- Error Log Types
+                    ('SEARCH_CREATION_ERROR', 'Error creating search after payment', 'Error', 'High', true, false, false, true, NOW()),
+                    ('EXPERT_ACCOUNT_VERIFICATION_FAILED', 'Expert account verification failed', 'Error', 'High', false, false, false, true, NOW()),
+                    ('DATABASE_CONNECTION_ERROR', 'Database connection error', 'Error', 'High', true, false, false, true, NOW()),
+                    ('EXTERNAL_API_ERROR', 'Error calling external API', 'Error', 'Medium', false, false, false, true, NOW()),
+
+                    -- Warning Log Types
+                    ('EXPERT_ACCOUNT_PENDING', 'Expert account pending verification', 'Warning', 'Medium', false, false, false, true, NOW()),
+                    ('PAYMENT_RETRY_ATTEMPT', 'Payment retry attempt', 'Warning', 'Medium', false, false, false, true, NOW()),
+                    ('USER_ACTION_LIMIT_EXCEEDED', 'User exceeded action limits', 'Warning', 'Low', false, false, false, true, NOW()),
+
+                    -- Info Log Types
+                    ('SERVICE_COMPLETED', 'Service completed successfully', 'Info', 'Low', false, false, false, true, NOW()),
+                    ('REFUND_PROCESSED', 'Refund processed successfully', 'Info', 'Low', false, false, false, true, NOW()),
+                    ('PAYMENT_SUCCESSFUL', 'Payment processed successfully', 'Info', 'Low', false, false, false, true, NOW()),
+                    ('USER_LOGIN', 'User logged in', 'Info', 'Low', false, false, false, true, NOW()),
+                    ('SEARCH_CREATED', 'Search created successfully', 'Info', 'Low', false, false, false, true, NOW()),
+                    ('EXPERT_ACCOUNT_VERIFIED', 'Expert account verified', 'Info', 'Low', false, false, false, true, NOW())
+                    ON CONFLICT (""Name"") DO NOTHING;
+                ");
+
+                _logger.LogInformation("✅ Default log types inserted successfully");
+
+                return Ok(new { 
+                    message = "LogType table and data created successfully!",
+                    details = new {
+                        tableCreated = "LogTypes",
+                        columnsAdded = new[] { "AdditionalData", "LogTypeId", "RelatedEntityId", "RelatedEntityType" },
+                        indexCreated = "IX_Logs_LogTypeId",
+                        foreignKeyCreated = "FK_Logs_LogTypes_LogTypeId",
+                        logTypesInserted = 16
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error creating LogType table");
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Método genérico para procesar refunds con diferentes porcentajes
+        /// </summary>
+        /// <param name="paymentIntentId">ID del PaymentIntent de Stripe</param>
+        /// <param name="userId">ID del usuario</param>
+        /// <param name="refundType">Tipo de refund (error_creation, expert_cancellation, etc.)</param>
+        /// <param name="refundPercentage">Porcentaje a devolver (0-100)</param>
+        /// <param name="reason">Razón del refund</param>
+        /// <param name="metadata">Metadata adicional</param>
+        private async Task<bool> ProcessGenericRefundAsync(
+            string paymentIntentId, 
+            int userId, 
+            string refundType, 
+            decimal refundPercentage, 
+            string reason,
+            Dictionary<string, string>? additionalMetadata = null)
+        {
+            _logger.LogInformation("🔄 PROCESSING GENERIC REFUND - PaymentIntentId: {PaymentIntentId}, UserId: {UserId}, Type: {Type}, Percentage: {Percentage}%", 
+                paymentIntentId, userId, refundType, refundPercentage);
+
+            try
+            {
+                // 🔍 Verificar si ya existe un refund para este PaymentIntent (idempotencia)
+                var existingRefund = await _context.FinancialTransactions
+                    .FirstOrDefaultAsync(ft => ft.StripePaymentIntentId == paymentIntentId && 
+                                              ft.TransactionType == "Refund" && 
+                                              ft.Amount > 0);
+
+                if (existingRefund != null)
+                {
+                    _logger.LogWarning("⚠️ REFUND ALREADY EXISTS - PaymentIntentId: {PaymentIntentId}, ExistingRefundId: {RefundId}", 
+                        paymentIntentId, existingRefund.Id);
+                    return true; // ✅ Idempotencia: refund ya procesado
+                }
+
+                // 💳 Crear refund en Stripe
+                var refundOptions = new RefundCreateOptions
+                {
+                    PaymentIntent = paymentIntentId,
+                    Amount = refundPercentage == 100 ? null : (long?)(refundPercentage * 100), // null = 100%, específico = porcentaje
+                    Reason = RefundReasons.RequestedByCustomer,
+                    Metadata = new Dictionary<string, string>
+                    {
+                        { "userId", userId.ToString() },
+                        { "refundType", refundType },
+                        { "refundPercentage", refundPercentage.ToString() },
+                        { "reason", reason },
+                        { "timestamp", DateTime.UtcNow.ToString("O") }
+                    }
+                };
+
+                // Agregar metadata adicional si se proporciona
+                if (additionalMetadata != null)
+                {
+                    foreach (var kvp in additionalMetadata)
+                    {
+                        refundOptions.Metadata[kvp.Key] = kvp.Value;
+                    }
+                }
+
+                var refundService = new RefundService();
+                var refund = await refundService.CreateAsync(refundOptions);
+
+                _logger.LogInformation("✅ STRIPE REFUND CREATED - RefundId: {RefundId}, PaymentIntentId: {PaymentIntentId}, Percentage: {Percentage}%", 
+                    refund.Id, paymentIntentId, refundPercentage);
+
+                // 💾 Registrar refund en base de datos
+                var refundAmount = (decimal)refund.Amount / 100; // Convertir de céntimos a euros
+                var refundTransaction = new FinancialTransaction
+                {
+                    UserId = userId,
+                    Amount = refundAmount,
+                    TransactionType = "Refund",
+                    RelatedEntityType = refundType == "automatic_error_refund" ? "ErrorRecovery" : "SearchHire",
+                    RelatedEntityId = 0, // Se puede especificar si es necesario
+                    StripePaymentIntentId = paymentIntentId,
+                    StripeRefundId = refund.Id,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.FinancialTransactions.Add(refundTransaction);
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("✅ GENERIC REFUND COMPLETED - RefundId: {RefundId}, UserId: {UserId}, Amount: {Amount}€, Percentage: {Percentage}%", 
+                    refund.Id, userId, refundAmount, refundPercentage);
+
+                return true;
+            }
+            catch (StripeException stripeEx)
+            {
+                _logger.LogError(stripeEx, "❌ STRIPE ERROR PROCESSING GENERIC REFUND - PaymentIntentId: {PaymentIntentId}, Error: {Error}", 
+                    paymentIntentId, stripeEx.Message);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ GENERAL ERROR PROCESSING GENERIC REFUND - PaymentIntentId: {PaymentIntentId}, Error: {Error}", 
+                    paymentIntentId, ex.Message);
+                return false;
+            }
         }
 
         [HttpPost("hire-service")]
@@ -2370,18 +2739,30 @@ namespace newApi.Controllers
                 if (!refundSuccess)
                 {
                     _logger.LogError("Failed to process Stripe refund for searchHireId={SearchHireId}", searchHire.Id);
+                    
+                    // 🚨 Registrar fallo crítico de refund
+                    await _loggingService.LogCriticalAsync(
+                        $"Failed to process Stripe refund - SearchHireId: {searchHire.Id}",
+                        $"Client refund failed for search hire",
+                        searchHire.ClientId,
+                        "SubscriptionController.ProcessClientRefund",
+                        "SearchHire",
+                        searchHire.Id,
+                        new { SearchHireId = searchHire.Id, ClientId = searchHire.ClientId }
+                    );
+                    
                     return StatusCode(500, new { message = "Failed to process refund" });
                 }
 
                 // Actualizar estado del SearchHire a cancelado
                 searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
-                searchHire.UpdatedAt = DateTime.UtcNow;
-                await _context.SaveChangesAsync();
+                    searchHire.UpdatedAt = DateTime.UtcNow;
+                    await _context.SaveChangesAsync();
 
-                // 📝 LOGGING: Registrar acción de cancelación
-                await _userActionLogging.LogUserActionAsync(userId, "CANCEL_SERVICE", 
+                    // 📝 LOGGING: Registrar acción de cancelación
+                    await _userActionLogging.LogUserActionAsync(userId, "CANCEL_SERVICE", 
                     $"Canceló servicio {searchHire.Id} como experto con refund real de Stripe", 
-                    "SearchHire", searchHire.Id);
+                        "SearchHire", searchHire.Id);
 
                 _logger.LogInformation("Service cancelled with real Stripe refund for searchHireId={SearchHireId}, clientId={ClientId}", searchHire.Id, searchHire.ClientId);
                 return Ok(new { message = "Service cancelled and refunded via Stripe" });
@@ -3096,6 +3477,18 @@ searchHire.Id, searchHire.Amount);
             {
                 _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", 
                     searchHireId, ex.Message);
+                
+                // 🚨 Registrar fallo crítico de transferencia Stripe
+                await _loggingService.LogCriticalAsync(
+                    $"Stripe transfer failed - SearchHireId: {searchHireId}",
+                    $"Stripe error: {ex.Message}",
+                    null,
+                    "SubscriptionController.ProcessStripeTransfer",
+                    "SearchHire",
+                    searchHireId,
+                    new { SearchHireId = searchHireId, StripeError = ex.Message, StripeErrorType = ex.GetType().Name }
+                );
+                
                 throw new Exception($"Stripe transfer failed: {ex.Message}");
             }
             catch (Exception ex)

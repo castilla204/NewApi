@@ -35,7 +35,6 @@ namespace newApi.Services
                 // Log en base de datos
                 var logEntry = new Log
                 {
-                    LogLevel = "Information",
                     Message = $"User Action: {action}",
                     Details = details,
                     UserId = userId,
@@ -75,7 +74,6 @@ namespace newApi.Services
                 // Log en base de datos
                 var logEntry = new Log
                 {
-                    LogLevel = "Warning", // Admin actions are more critical
                     Message = $"Admin Action: {action}",
                     Details = details,
                     UserId = adminUserId,
@@ -106,7 +104,6 @@ namespace newApi.Services
                 // Log en base de datos
                 var logEntry = new Log
                 {
-                    LogLevel = "Information",
                     Message = $"System Action: {action}",
                     Details = details,
                     UserId = null, // System action

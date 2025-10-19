@@ -23,6 +23,7 @@ namespace newApi.Services
         private readonly IConfiguration _configuration;
         private readonly IAccountDeletionNotificationService _notificationService;
         private readonly SystemStatusService _systemStatusService;
+        private readonly StripeRefundService _refundService;
 
         // Estados de contratación que requieren atención especial
         private readonly string[] _activeStatuses = { "pending", "awaiting_client_decision", "disputed" };
@@ -32,13 +33,33 @@ namespace newApi.Services
             ILogger<AccountDeletionService> logger,
             IConfiguration configuration,
             IAccountDeletionNotificationService notificationService,
-            SystemStatusService systemStatusService)
+            SystemStatusService systemStatusService,
+            StripeRefundService refundService)
         {
             _context = context;
             _logger = logger;
             _configuration = configuration;
             _notificationService = notificationService;
             _systemStatusService = systemStatusService;
+            _refundService = refundService;
+        }
+
+        /// <summary>
+        /// Helper method to get StatusId from StatusValue
+        /// </summary>
+        private async Task<int> GetStatusIdByValueAsync(string statusValue)
+        {
+            var systemStatus = await _context.SystemStatuses
+                .FirstOrDefaultAsync(s => s.StatusValue == statusValue && s.StatusType == "SearchHireStatus");
+            
+            if (systemStatus == null)
+            {
+                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
+                // Default to "pending" (ID = 1)
+                return 1;
+            }
+            
+            return systemStatus.Id;
         }
 
         public async Task<AccountDeletionStatusDto> CheckDeletionStatusAsync(int userId)
@@ -166,7 +187,8 @@ namespace newApi.Services
 
             // Buscar como cliente
             var clientContracts = await _context.SearchHires
-                .Where(sh => sh.ClientId == userId && _activeStatuses.Contains(sh.Status))
+                .Where(sh => sh.ClientId == userId && _activeStatuses.Contains(sh.Status.StatusValue))
+                .Include(sh => sh.Status)
                 .Include(sh => sh.Expert)
                 .Include(sh => sh.SearchService)
                     .ThenInclude(ss => ss.ServiceType)
@@ -178,7 +200,7 @@ namespace newApi.Services
                 activeContracts.Add(new ActiveContractInfo
                 {
                     SearchHireId = contract.Id,
-                    Status = contract.Status,
+                    Status = contract.Status.StatusValue,
                     ServiceName = contract.SearchService.ServiceType?.Name ?? "Servicio",
                     Amount = contract.Amount,
                     CreatedAt = contract.CreatedAt,
@@ -191,7 +213,8 @@ namespace newApi.Services
 
             // Buscar como experto
             var expertContracts = await _context.SearchHires
-                .Where(sh => sh.ExpertId == userId && _activeStatuses.Contains(sh.Status))
+                .Where(sh => sh.ExpertId == userId && _activeStatuses.Contains(sh.Status.StatusValue))
+                .Include(sh => sh.Status)
                 .Include(sh => sh.Client)
                 .Include(sh => sh.SearchService)
                     .ThenInclude(ss => ss.ServiceType)
@@ -203,7 +226,7 @@ namespace newApi.Services
                 activeContracts.Add(new ActiveContractInfo
                 {
                     SearchHireId = contract.Id,
-                    Status = contract.Status,
+                    Status = contract.Status.StatusValue,
                     ServiceName = contract.SearchService.ServiceType?.Name ?? "Servicio",
                     Amount = contract.Amount,
                     CreatedAt = contract.CreatedAt,
@@ -227,6 +250,7 @@ namespace newApi.Services
             foreach (var contract in activeContracts)
             {
                 var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Status)
                     .Include(sh => sh.Client)
                     .Include(sh => sh.Expert)
                     .FirstOrDefaultAsync(sh => sh.Id == contract.SearchHireId);
@@ -291,7 +315,7 @@ namespace newApi.Services
                      {
                          // Si el cliente elimina su cuenta, dar el dinero al experto
                          await ProcessTransferToExpertAsync(searchHire.Id, moneyConfig);
-                         searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
+                         searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
                          searchHire.UpdatedAt = DateTime.UtcNow;
                          
                          _logger.LogInformation("Processed transfer to expert for SearchHire {SearchHireId} due to client account deletion with config: {Config}", 
@@ -301,7 +325,7 @@ namespace newApi.Services
                      {
                          // Si el experto elimina su cuenta, reembolsar al cliente
                          await ProcessClientRefundAsync(searchHire.Id, reasonText, moneyConfig);
-                         searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
+                         searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
                          searchHire.UpdatedAt = DateTime.UtcNow;
                          
                          _logger.LogInformation("Processed client refund for SearchHire {SearchHireId} due to expert account deletion with config: {Config}", 
@@ -335,7 +359,7 @@ namespace newApi.Services
                     };
 
                     _context.Disputes.Add(dispute);
-                    searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
+                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
                     searchHire.UpdatedAt = DateTime.UtcNow;
 
                     transactionsProcessed.Add(new DisputeCreatedInfo
@@ -362,6 +386,7 @@ namespace newApi.Services
                 // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
                 var searchHire = await _context.SearchHires
                     .FromSqlRaw("SELECT * FROM \"SearchHires\" WHERE \"Id\" = {0} FOR UPDATE", searchHireId)
+                    .Include(sh => sh.Status)
                     .Include(sh => sh.Client)
                     .Include(sh => sh.Expert)
                     .FirstOrDefaultAsync();
@@ -373,40 +398,30 @@ namespace newApi.Services
                 }
 
                 // Verificar que el servicio esté en estado activo
-                if (searchHire.Status != "pending" && searchHire.Status != "awaiting_client_decision")
+                if (searchHire.Status.StatusValue != "pending" && searchHire.Status.StatusValue != "awaiting_client_decision")
                 {
                     _logger.LogWarning("SearchHire is not in active status for searchHireId={SearchHireId}, current status={Status}", 
                         searchHireId, searchHire.Status);
                     throw new Exception($"SearchHire is not in active status: {searchHire.Status}");
                 }
 
-                 // Calcular reembolso basado en la configuración de dinero
-                 var refundAmount = moneyConfig != null 
-                     ? searchHire.Amount * (moneyConfig.ClientPercentage / 100)
-                     : searchHire.Amount; // Si no hay configuración, reembolsar el 100%
+                 // 💳 PROCESAR REFUND REAL EN STRIPE usando el método existente
+                 var refundSuccess = await _refundService.ProcessAutomaticClientRefundAsync(searchHire.Id, reason);
                  
-                 searchHire.Client.Balance += refundAmount;
-                 
-                 // Crear transacción financiera
-                 var financialTransaction = new FinancialTransaction
+                 if (!refundSuccess)
                  {
-                     UserId = searchHire.ClientId,
-                     Amount = refundAmount,
-                     TransactionType = "Refund",
-                     RelatedEntityType = "SearchHire",
-                     RelatedEntityId = searchHire.Id,
-                     CreatedAt = DateTime.UtcNow
-                 };
-                 _context.FinancialTransactions.Add(financialTransaction);
-                 
+                     _logger.LogError("Failed to process Stripe refund for account deletion searchHireId={SearchHireId}", searchHire.Id);
+                     throw new Exception("Failed to process Stripe refund");
+                 }
+
                  // Actualizar estado del servicio
-                 searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
+                 searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
                  searchHire.UpdatedAt = DateTime.UtcNow;
                  
                  await _context.SaveChangesAsync();
 
-                 _logger.LogInformation("Successfully processed client refund for searchHireId={SearchHireId}, refunded amount={Amount}, original amount={OriginalAmount}, reason={Reason}, config={Config}",
-                     searchHire.Id, refundAmount, searchHire.Amount, reason, moneyConfig?.Source ?? "default");
+                 _logger.LogInformation("Successfully processed real Stripe refund for account deletion searchHireId={SearchHireId}, reason={Reason}",
+                     searchHire.Id, reason);
             }
             catch (Exception ex)
             {
@@ -423,6 +438,7 @@ namespace newApi.Services
             // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
             var searchHire = await _context.SearchHires
                 .FromSqlRaw("SELECT * FROM \"SearchHires\" WHERE \"Id\" = {0} FOR UPDATE", searchHireId)
+                .Include(sh => sh.Status)
                 .Include(sh => sh.Expert)
                 .ThenInclude(e => e.ExpertProfile)
                 .Include(sh => sh.SearchService)
@@ -436,7 +452,7 @@ namespace newApi.Services
             }
 
             // Verificar que el servicio esté en estado válido para transferencia
-            if (searchHire.Status != "pending" && searchHire.Status != "awaiting_client_decision")
+            if (searchHire.Status.StatusValue != "pending" && searchHire.Status.StatusValue != "awaiting_client_decision")
             {
                 _logger.LogWarning("SearchHire is not in valid status for transfer for searchHireId={SearchHireId}, current status={Status}", 
                     searchHireId, searchHire.Status);

@@ -31,7 +31,13 @@ namespace newApi.Services
         {
             try
             {
+                _logger.LogInformation("🔍 SEARCHING MONEY DISTRIBUTION - Status: {StatusValue}, CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}", 
+                    statusValue, categoryId, serviceTypeCategoryId);
+                
                 // 1. Buscar configuración específica (categoría + tipo)
+                _logger.LogInformation("🔍 SEARCHING SPECIFIC CONFIG - CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}", 
+                    categoryId, serviceTypeCategoryId);
+                
                 var config = await _context.StatusConfigurations
                     .Include(sc => sc.Status)
                     .Where(sc => sc.Status.StatusValue == statusValue &&
@@ -42,12 +48,21 @@ namespace newApi.Services
 
                 if (config != null)
                 {
-                    _logger.LogInformation("Found specific configuration for status={Status}, category={Category}, type={Type}", 
-                        statusValue, categoryId, serviceTypeCategoryId);
+                    _logger.LogInformation("✅ FOUND SPECIFIC CONFIG - Status: {Status}, Category: {Category}, Type: {Type}, Client: {Client}%, Expert: {Expert}%, Platform: {Platform}%", 
+                        statusValue, categoryId, serviceTypeCategoryId, config.ClientPercentage, config.ExpertPercentage, config.PlatformPercentage);
                     return config;
                 }
+                else
+                {
+                    _logger.LogInformation("🔍 NO SPECIFIC CONFIG FOUND - Status: {Status}, Category: {Category}, Type: {Type}", 
+                        statusValue, categoryId, serviceTypeCategoryId);
+                }
+
+                _logger.LogInformation("🔍 CONTINUING TO CATEGORY SEARCH...");
 
                 // 2. Buscar configuración por categoría (tipo = NULL)
+                _logger.LogInformation("🔍 SEARCHING CATEGORY CONFIG - CategoryId: {CategoryId}", categoryId);
+                
                 config = await _context.StatusConfigurations
                     .Include(sc => sc.Status)
                     .Where(sc => sc.Status.StatusValue == statusValue &&
@@ -58,12 +73,21 @@ namespace newApi.Services
 
                 if (config != null)
                 {
-                    _logger.LogInformation("Found category configuration for status={Status}, category={Category}", 
-                        statusValue, categoryId);
+                    _logger.LogInformation("✅ FOUND CATEGORY CONFIG - Status: {Status}, Category: {Category}, Client: {Client}%, Expert: {Expert}%, Platform: {Platform}%", 
+                        statusValue, categoryId, config.ClientPercentage, config.ExpertPercentage, config.PlatformPercentage);
                     return config;
                 }
+                else
+                {
+                    _logger.LogInformation("🔍 NO CATEGORY CONFIG FOUND - Status: {Status}, Category: {Category}", 
+                        statusValue, categoryId);
+                }
+
+                _logger.LogInformation("🔍 CONTINUING TO GLOBAL SEARCH...");
 
                 // 3. Buscar configuración global (categoría = NULL, tipo = NULL)
+                _logger.LogInformation("🔍 SEARCHING GLOBAL CONFIG");
+                
                 config = await _context.StatusConfigurations
                     .Include(sc => sc.Status)
                     .Where(sc => sc.Status.StatusValue == statusValue &&
@@ -74,11 +98,16 @@ namespace newApi.Services
 
                 if (config != null)
                 {
-                    _logger.LogInformation("Found global configuration for status={Status}", statusValue);
+                    _logger.LogInformation("✅ FOUND GLOBAL CONFIG - Status: {Status}, Client: {Client}%, Expert: {Expert}%, Platform: {Platform}%", 
+                        statusValue, config.ClientPercentage, config.ExpertPercentage, config.PlatformPercentage);
                     return config;
                 }
+                else
+                {
+                    _logger.LogInformation("🔍 NO GLOBAL CONFIG FOUND - Status: {Status}", statusValue);
+                }
 
-                _logger.LogWarning("No configuration found for status={Status}, category={Category}, type={Type}", 
+                _logger.LogWarning("❌ NO CONFIGURATION FOUND - Status: {Status}, Category: {Category}, Type: {Type}", 
                     statusValue, categoryId, serviceTypeCategoryId);
                 return null;
             }
@@ -100,6 +129,9 @@ namespace newApi.Services
         {
             try
             {
+                _logger.LogInformation("🔍 GETTING MONEY DISTRIBUTION CONFIG - Status: {StatusValue}, CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}", 
+                    statusValue, categoryId, serviceTypeCategoryId);
+                
                 var config = await GetMoneyDistributionAsync(statusValue, categoryId, serviceTypeCategoryId);
                 
                 if (config != null)
@@ -113,7 +145,7 @@ namespace newApi.Services
                     };
                 }
 
-                _logger.LogWarning("No money distribution configuration found for status={Status}, categoryId={CategoryId}, serviceTypeCategoryId={ServiceTypeCategoryId}", 
+                _logger.LogWarning("🔍 NO MONEY DISTRIBUTION CONFIG FOUND - Status: {Status}, CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}", 
                     statusValue, categoryId, serviceTypeCategoryId);
                 return null;
             }

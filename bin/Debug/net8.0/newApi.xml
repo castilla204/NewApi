@@ -203,7 +203,7 @@
             Controlador para la gestión de disputas por parte de administradores
             </summary>
         </member>
-        <member name="M:newApi.Controllers.DisputeController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Logging.ILogger{newApi.Controllers.DisputeController},Microsoft.Extensions.Configuration.IConfiguration,Google.Cloud.Storage.V1.StorageClient,newApi.Services.IAuthorizationServices,newApi.Services.SystemStatusService)">
+        <member name="M:newApi.Controllers.DisputeController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Logging.ILogger{newApi.Controllers.DisputeController},Microsoft.Extensions.Configuration.IConfiguration,Google.Cloud.Storage.V1.StorageClient,newApi.Services.IAuthorizationServices,newApi.Services.SystemStatusService,newApi.Services.StripeRefundService)">
             <summary>
             Constructor del controlador de disputas
             </summary>
@@ -211,6 +211,11 @@
             <param name="logger">Logger para registro de eventos</param>
             <param name="configuration">Configuración de la aplicación</param>
             <param name="storageClient">Cliente de Google Cloud Storage</param>
+        </member>
+        <member name="M:newApi.Controllers.DisputeController.GetStatusIdByValueAsync(System.String)">
+            <summary>
+            Helper method to get StatusId from StatusValue
+            </summary>
         </member>
         <member name="M:newApi.Controllers.DisputeController.CreateDispute(newApi.DataLayer.Models.DTOs.CreateDisputeDto)">
             <summary>
@@ -267,6 +272,11 @@
             Permite al experto responder a una disputa del cliente
             </summary>
         </member>
+        <member name="M:newApi.Controllers.SearchController.GetStatusIdByValueAsync(System.String)">
+            <summary>
+            Helper method to get StatusId from StatusValue
+            </summary>
+        </member>
         <member name="M:newApi.Controllers.SearchController.ApplySorting(System.Linq.IQueryable{newApi.DataLayer.Models.PostGresModels.Search},System.String,System.String)">
             <summary>
             Aplica ordenamiento a la query según los parámetros especificados
@@ -275,6 +285,11 @@
         <member name="M:newApi.Controllers.SearchController.GetSearchDetailsComplete(System.Int32)">
             <summary>
             Obtener detalles completos de una búsqueda (optimizado para SearchDetails)
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.SearchHireController.GetStatusIdByValueAsync(System.String)">
+            <summary>
+            Helper method to get StatusId from StatusValue
             </summary>
         </member>
         <member name="M:newApi.Controllers.SearchHireController.CheckExpertResponseAsync(System.Int32)">
@@ -352,6 +367,11 @@
             </summary>
             <param name="id">ID del tipo de servicio</param>
             <returns>Tipo de servicio específico</returns>
+        </member>
+        <member name="M:newApi.Controllers.SubscriptionController.GetStatusIdByValueAsync(System.String)">
+            <summary>
+            Helper method to get StatusId from StatusValue
+            </summary>
         </member>
         <member name="M:newApi.Controllers.SubscriptionController.CreateAccountLink">
             <summary>
@@ -1421,6 +1441,24 @@
         <member name="M:newApi.Migrations.AddAppointmentReportSentStatus.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
+        <member name="T:newApi.Migrations.ChangeSearchHireStatusToStatusId">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.ChangeSearchHireStatusToStatusId.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.ChangeSearchHireStatusToStatusId.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.RemoveBalanceFieldFromUsers">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.RemoveBalanceFieldFromUsers.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.RemoveBalanceFieldFromUsers.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
         <member name="M:newApi.Migrations.fixingerror.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
@@ -2018,6 +2056,16 @@
         <member name="M:newApi.Migrations.AddIsFinalizationStatusToSystemStatuses.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
+        <member name="M:newApi.Services.AccountDeletionService.GetStatusIdByValueAsync(System.String)">
+            <summary>
+            Helper method to get StatusId from StatusValue
+            </summary>
+        </member>
+        <member name="M:newApi.Services.AppointmentService.GetStatusIdByValueAsync(System.String)">
+            <summary>
+            Helper method to get StatusId from StatusValue
+            </summary>
+        </member>
         <member name="M:newApi.Services.AppointmentService.ValidateAppointmentLocationAsync(newApi.DataLayer.Models.PostGresModels.SearchHire,System.Nullable{System.Decimal},System.Nullable{System.Decimal})">
             <summary>
             Valida que la ubicación propuesta para la cita esté dentro del rango del experto
@@ -2028,6 +2076,31 @@
         <member name="M:newApi.Services.AppointmentService.CalculateDistance(System.Decimal,System.Decimal,System.Decimal,System.Decimal)">
             <summary>
             Calcula la distancia entre dos puntos geográficos usando la fórmula de Haversine
+            </summary>
+        </member>
+        <member name="M:newApi.Services.StripeRefundService.ProcessAutomaticClientRefundAsync(System.Int32,System.String)">
+            <summary>
+            Procesa refund automático real a Stripe
+            </summary>
+            <param name="searchHireId">ID del servicio contratado</param>
+            <param name="reason">Razón del reembolso</param>
+            <returns>True si se procesó correctamente, false en caso contrario</returns>
+        </member>
+        <member name="M:newApi.Services.StripeRefundService.ProcessTransferToExpertAsync(System.Int32)">
+            <summary>
+            Procesa transferencia al experto
+            </summary>
+            <param name="searchHireId">ID del servicio contratado</param>
+            <returns>True si se procesó correctamente, false en caso contrario</returns>
+        </member>
+        <member name="M:newApi.Services.SearchHireService.GetStatusIdByValueAsync(System.String)">
+            <summary>
+            Helper method to get StatusId from StatusValue
+            </summary>
+        </member>
+        <member name="M:newApi.Services.SubscriptionService.GetStatusIdByValueAsync(System.String)">
+            <summary>
+            Helper method to get StatusId from StatusValue
             </summary>
         </member>
         <member name="T:newApi.Services.SystemStatusService">

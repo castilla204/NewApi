@@ -10,13 +10,35 @@ namespace newApi.Services
 {
     public class SubscriptionService : ISubscriptionService
     {
-        private readonly AppDbContext _context; private readonly ILogger _logger; private readonly ICheckingClientDecisionService _checkingClientDecisionService;
+        private readonly AppDbContext _context; 
+        private readonly ILogger _logger; 
+        private readonly ICheckingClientDecisionService _checkingClientDecisionService;
+        private readonly StripeRefundService _refundService;
 
-        public SubscriptionService(AppDbContext context, ILogger<SubscriptionService> logger, ICheckingClientDecisionService checkingClientDecisionService)
+        public SubscriptionService(AppDbContext context, ILogger<SubscriptionService> logger, ICheckingClientDecisionService checkingClientDecisionService, StripeRefundService refundService)
         {
             _context = context;
             _logger = logger;
             _checkingClientDecisionService = checkingClientDecisionService;
+            _refundService = refundService;
+        }
+
+        /// <summary>
+        /// Helper method to get StatusId from StatusValue
+        /// </summary>
+        private async Task<int> GetStatusIdByValueAsync(string statusValue)
+        {
+            var systemStatus = await _context.SystemStatuses
+                .FirstOrDefaultAsync(s => s.StatusValue == statusValue && s.StatusType == "SearchHireStatus");
+            
+            if (systemStatus == null)
+            {
+                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
+                // Default to "pending" (ID = 1)
+                return 1;
+            }
+            
+            return systemStatus.Id;
         }
 
         public async Task<SubscriptionLimits> GetUserSubscriptionLimits(int userId)
@@ -69,10 +91,11 @@ namespace newApi.Services
             try
             {
                 var expiredHires = await _context.SearchHires
+                    .Include(sh => sh.Status)
                     .Include(sh => sh.Expert)
                     .ThenInclude(e => e.ExpertProfile)
                     .Include(sh => sh.Client)
-                    .Where(sh => sh.Status == SearchHireStatus.Pending.ToStringValue()
+                    .Where(sh => sh.Status.StatusValue == SearchHireStatus.Pending.ToStringValue()
                               && sh.CompletionDeadline <= DateTime.UtcNow)
                     .ToListAsync();
 
@@ -83,7 +106,7 @@ namespace newApi.Services
                     using var transaction = await _context.Database.BeginTransactionAsync();
                     try
                     {
-                        if (searchHire.Status != SearchHireStatus.Pending.ToStringValue())
+                        if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue())
                         {
                             _logger.LogWarning("SearchHireId={SearchHireId} is no longer in pending, skipping", searchHire.Id);
                             await transaction.CommitAsync();
@@ -95,14 +118,14 @@ namespace newApi.Services
                         
                         if (refundSuccess)
                         {
-                            searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
+                            searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
                             searchHire.UpdatedAt = DateTime.UtcNow;
                             _logger.LogInformation("Refunded client and cancelled searchHireId={SearchHireId} due to expert timeout", searchHire.Id);
                         }
                         else
                         {
                             // Si falla el reembolso, marcar como transfer_failed para revisión manual
-                            searchHire.Status = SearchHireStatus.TransferFailed.ToStringValue();
+                            searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.TransferFailed.ToStringValue());
                             searchHire.UpdatedAt = DateTime.UtcNow;
                             _logger.LogError("Failed to refund client for expired searchHireId={SearchHireId}, marked as transfer_failed", searchHire.Id);
                         }
@@ -139,7 +162,8 @@ namespace newApi.Services
                 // Procesar contrataciones donde el experto completó el trabajo pero el cliente no ha decidido en 24h
                 // En este caso, aprobamos automáticamente y transferimos al experto
                 var query = _context.SearchHires
-                    .Where(sh => sh.Status == SearchHireStatus.AwaitingClientDecision.ToStringValue()
+                    .Include(sh => sh.Status)
+                    .Where(sh => sh.Status.StatusValue == SearchHireStatus.AwaitingClientDecision.ToStringValue()
                               && sh.UpdatedAt.HasValue
                               && sh.UpdatedAt.Value <= cutoffDate)
                     .Select(sh => new { sh.Id, sh.ClientId, sh.ExpertId, sh.Amount });
@@ -161,9 +185,10 @@ namespace newApi.Services
                         foreach (var item in batch)
                         {
                             var searchHire = await _context.SearchHires
+                                .Include(sh => sh.Status)
                                 .FirstOrDefaultAsync(sh => sh.Id == item.Id);
 
-                            if (searchHire == null || searchHire.Status != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                            if (searchHire == null || searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
                             {
                                 continue;
                             }
@@ -181,7 +206,7 @@ namespace newApi.Services
 
                             // Only update status and create notifications if transfer succeeds
                             searchHire.ClientApproved = true;
-                            searchHire.Status = SearchHireStatus.Completed.ToStringValue();
+                            searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Completed.ToStringValue());
                             searchHire.UpdatedAt = DateTime.UtcNow;
 
                             if (item.ExpertId.HasValue)
@@ -234,6 +259,7 @@ namespace newApi.Services
             try
             {
                 var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Status)
                     .Include(sh => sh.Client)
                     .Include(sh => sh.Expert)
                     .ThenInclude(e => e.ExpertProfile)
@@ -246,49 +272,32 @@ namespace newApi.Services
                 }
 
                 // Verificar que el servicio esté en estado activo
-                if (searchHire.Status != SearchHireStatus.Pending.ToStringValue())
+                if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue())
                 {
                     _logger.LogWarning("SearchHire is not in active status for searchHireId={SearchHireId}, current status={Status}", 
-                        searchHireId, searchHire.Status);
+                        searchHireId, searchHire.Status.StatusValue);
                     return false;
                 }
 
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
+                // 💳 PROCESAR REFUND REAL EN STRIPE usando el método existente
+                var refundSuccess = await _refundService.ProcessAutomaticClientRefundAsync(searchHireId, reason);
+                
+                if (!refundSuccess)
                 {
-                    // Reembolsar al cliente
-                    searchHire.Client.Balance += searchHire.Amount;
-                    
-                    // Crear transacción financiera de reembolso
-                    var refundTransaction = new FinancialTransaction
-                    {
-                        UserId = searchHire.ClientId,
-                        Amount = searchHire.Amount,
-                        TransactionType = "Refund",
-                        RelatedEntityType = "SearchHire",
-                        RelatedEntityId = searchHireId,
-                        CreatedAt = DateTime.UtcNow
-                    };
-                    _context.FinancialTransactions.Add(refundTransaction);
-
-                    // Actualizar estado del SearchHire
-                    searchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
-                    searchHire.UpdatedAt = DateTime.UtcNow;
-
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
-
-                    _logger.LogInformation("Client refund processed successfully for searchHireId={SearchHireId}, amount={Amount}", 
-                        searchHireId, searchHire.Amount);
-                    
-                    return true;
-                }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Error processing client refund for searchHireId={SearchHireId}", searchHireId);
+                    _logger.LogError("Failed to process Stripe refund for searchHireId={SearchHireId}", searchHireId);
                     return false;
                 }
+
+                // Actualizar estado del SearchHire
+                searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
+                searchHire.UpdatedAt = DateTime.UtcNow;
+
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Real Stripe refund processed successfully for searchHireId={SearchHireId}, reason={Reason}", 
+                    searchHireId, reason);
+                
+                return true;
             }
             catch (Exception ex)
             {

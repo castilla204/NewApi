@@ -27,6 +27,7 @@ namespace newApi.Services
             var hires = await _context.SearchHires
                 .Include(h => h.Client)
                 .Include(h => h.Expert)
+                .Include(h => h.Status)
                 .Include(h => h.SearchService)
                     .ThenInclude(s => s.Images)
                 .Include(h => h.SearchService)
@@ -46,6 +47,7 @@ namespace newApi.Services
             var hires = await _context.SearchHires
                 .Include(h => h.Client)
                 .Include(h => h.Expert)
+                .Include(h => h.Status)
                 .Include(h => h.SearchService)
                     .ThenInclude(s => s.Images)
                 .Include(h => h.SearchService)
@@ -70,13 +72,14 @@ namespace newApi.Services
                     .ThenInclude(ss => ss.SelectedDeliverableTypes)
                         .ThenInclude(ssdt => ssdt.DeliverableType)
                 .Include(sh => sh.Deliverables)
+                .Include(sh => sh.Status)
                 .FirstOrDefaultAsync(sh => sh.Id == hireId && sh.ExpertId == userId);
             
             if (hire == null)
                 return (false, "Servicio no encontrado o no tienes permisos para modificarlo");
 
             // Validar archivos obligatorios cuando se cambia a "Completed"
-            if (status == "Completed")
+            if (status == "completed")
             {
                 var validationResult = await ValidateRequiredDeliverables(hire);
                 if (!validationResult.IsValid)
@@ -88,7 +91,7 @@ namespace newApi.Services
                 hire.UpdatedAt = DateTime.UtcNow;
             }
 
-            hire.Status = status;
+            hire.StatusId = await GetStatusIdByValueAsync(status);
             await _context.SaveChangesAsync();
             return (true, string.Empty);
         }
@@ -143,6 +146,24 @@ namespace newApi.Services
             }
         }
 
+        /// <summary>
+        /// Helper method to get StatusId from StatusValue
+        /// </summary>
+        private async Task<int> GetStatusIdByValueAsync(string statusValue)
+        {
+            var systemStatus = await _context.SystemStatuses
+                .FirstOrDefaultAsync(s => s.StatusValue == statusValue && s.StatusType == "SearchHireStatus");
+            
+            if (systemStatus == null)
+            {
+                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
+                // Default to "pending" (ID = 1)
+                return 1;
+            }
+            
+            return systemStatus.Id;
+        }
+
         private static SearchHireResponseDto MapToResponseDto(SearchHire hire)
         {
             // Contar mensajes no leídos del experto en las conversaciones
@@ -157,8 +178,8 @@ namespace newApi.Services
                 ExpertId = hire.ExpertId,
                 SearchServiceId = hire.SearchServiceId,
                 SearchId = hire.SearchId,
-                Status = hire.Status,
-                StatusTranslated = hire.Status.ToSpanishTranslation(), // ✅ NUEVO: Estado traducido al español
+                Status = hire.Status?.StatusValue ?? "unknown",
+                StatusTranslated = hire.Status?.StatusValue?.ToSpanishTranslation() ?? "Desconocido",
                 ExpertTransferId = hire.ExpertTransferId,
                 Amount = hire.Amount,
                 CreatedAt = hire.CreatedAt,

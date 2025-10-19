@@ -27,6 +27,7 @@ namespace newApi.Controllers
         private readonly StorageClient _storageClient;
         private readonly IAuthorizationServices _authService;
         private readonly SystemStatusService _systemStatusService;
+        private readonly StripeRefundService _refundService;
 
         /// <summary>
         /// Constructor del controlador de disputas
@@ -35,7 +36,7 @@ namespace newApi.Controllers
         /// <param name="logger">Logger para registro de eventos</param>
         /// <param name="configuration">Configuración de la aplicación</param>
         /// <param name="storageClient">Cliente de Google Cloud Storage</param>
-        public DisputeController(AppDbContext context, ILogger<DisputeController> logger, IConfiguration configuration, StorageClient storageClient, IAuthorizationServices authService, SystemStatusService systemStatusService)
+        public DisputeController(AppDbContext context, ILogger<DisputeController> logger, IConfiguration configuration, StorageClient storageClient, IAuthorizationServices authService, SystemStatusService systemStatusService, StripeRefundService refundService)
         {
             _context = context;
             _logger = logger;
@@ -43,6 +44,25 @@ namespace newApi.Controllers
             _storageClient = storageClient;
             _authService = authService;
             _systemStatusService = systemStatusService;
+            _refundService = refundService;
+        }
+
+        /// <summary>
+        /// Helper method to get StatusId from StatusValue
+        /// </summary>
+        private async Task<int> GetStatusIdByValueAsync(string statusValue)
+        {
+            var systemStatus = await _context.SystemStatuses
+                .FirstOrDefaultAsync(s => s.StatusValue == statusValue && s.StatusType == "SearchHireStatus");
+            
+            if (systemStatus == null)
+            {
+                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
+                // Default to "pending" (ID = 1)
+                return 1;
+            }
+            
+            return systemStatus.Id;
         }
 
         /// <summary>
@@ -75,9 +95,9 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Service not found or unauthorized" });
                 }
 
-                if (searchHire.Status != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                if (searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
                 {
-                    _logger.LogError("Service is not in awaiting_client_decision status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
+                    _logger.LogError("Service is not in awaiting_client_decision status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status.StatusValue);
                     return BadRequest(new { message = "Service is not awaiting client decision" });
                 }
 
@@ -88,7 +108,7 @@ namespace newApi.Controllers
                     using var transaction = await _context.Database.BeginTransactionAsync();
                     try
                     {
-                        searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
+                        searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
                         searchHire.ClientApproved = false;
                         searchHire.UpdatedAt = DateTime.UtcNow;
 
@@ -145,7 +165,11 @@ namespace newApi.Controllers
                 // Construir query base con includes
                 var query = _context.Disputes
                     .Include(d => d.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(d => d.SearchHire)
                         .ThenInclude(sh => sh.Client)
+                    .Include(d => d.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(d => d.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                     .Include(d => d.SearchHire)
@@ -230,8 +254,8 @@ namespace newApi.Controllers
                     SearchHire = new SearchHireInfoDto
                     {
                         Id = d.SearchHire.Id,
-                        Status = d.SearchHire.Status,
-                        StatusTranslated = d.SearchHire.Status.ToSpanishTranslation(),
+                        Status = d.SearchHire.Status.StatusValue,
+                        StatusTranslated = d.SearchHire.Status.StatusValue.ToSpanishTranslation(),
                         Amount = d.SearchHire.Amount,
                         CreatedAt = d.SearchHire.CreatedAt
                     },
@@ -323,7 +347,11 @@ namespace newApi.Controllers
 
                 var dispute = await _context.Disputes
                     .Include(d => d.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(d => d.SearchHire)
                         .ThenInclude(sh => sh.Client)
+                    .Include(d => d.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(d => d.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                     .FirstOrDefaultAsync(d => d.Id == disputeId);
@@ -353,69 +381,35 @@ namespace newApi.Controllers
                         switch (request.Action.ToLower())
                         {
                             case "refund_client":
-                                // 🎯 USAR CONFIGURACIÓN DE DISTRIBUCIÓN DE DINERO
-                                var clientConfig = await _systemStatusService.GetMoneyDistributionConfigAsync("dispute-resolved-client", 
-                                    dispute.SearchHire.SearchService?.CategoryId, 
-                                    dispute.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
+                                // 💳 PROCESAR REFUND REAL EN STRIPE usando el método existente
+                                var refundReason = $"Dispute resolved in favor of client: {request.ResolutionComments}";
+                                var refundSuccess = await _refundService.ProcessAutomaticClientRefundAsync(dispute.SearchHire.Id, refundReason);
                                 
-                                var clientRefundAmount = clientConfig != null 
-                                    ? dispute.SearchHire.Amount * (clientConfig.ClientPercentage / 100)
-                                    : dispute.SearchHire.Amount; // Si no hay configuración, reembolsar el 100%
-                                
-                                _logger.LogInformation("Using money distribution config for dispute client refund: Client={ClientPercentage}%, Expert={ExpertPercentage}%, Platform={PlatformPercentage}%, Source={Source} for disputeId={DisputeId}", 
-                                    clientConfig?.ClientPercentage ?? 100, clientConfig?.ExpertPercentage ?? 0, clientConfig?.PlatformPercentage ?? 0, clientConfig?.Source ?? "default", disputeId);
-                                
-                                // Reembolsar al cliente
-                                dispute.SearchHire.Client.Balance += clientRefundAmount;
-                                
-                                // Crear transacción financiera
-                                _context.FinancialTransactions.Add(new FinancialTransaction
+                                if (!refundSuccess)
                                 {
-                                    UserId = dispute.SearchHire.ClientId,
-                                    Amount = clientRefundAmount,
-                                    TransactionType = "DisputeRefund",
-                                    RelatedEntityType = "Dispute",
-                                    RelatedEntityId = dispute.Id,
-                                    CreatedAt = DateTime.UtcNow
-                                });
+                                    _logger.LogError("Failed to process Stripe refund for dispute searchHireId={SearchHireId}", dispute.SearchHire.Id);
+                                    await transaction.RollbackAsync();
+                                    return StatusCode(500, new { message = "Failed to process client refund" });
+                                }
 
                                 // Actualizar estado del SearchHire a disputa resuelta a favor del cliente
-                                dispute.SearchHire.Status = "dispute-resolved-client";
+                                dispute.SearchHire.StatusId = await GetStatusIdByValueAsync("dispute_resolved_client");
                                 dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
                                 break;
 
                             case "pay_expert":
-                                // 🎯 USAR CONFIGURACIÓN DE DISTRIBUCIÓN DE DINERO
-                                var expertConfig = await _systemStatusService.GetMoneyDistributionConfigAsync("dispute-resolved-expert", 
-                                    dispute.SearchHire.SearchService?.CategoryId, 
-                                    dispute.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
+                                // 💳 PROCESAR TRANSFERENCIA REAL AL EXPERTO usando el método existente
+                                var transferSuccess = await _refundService.ProcessTransferToExpertAsync(dispute.SearchHire.Id);
                                 
-                                var expertPayoutAmount = expertConfig != null 
-                                    ? dispute.SearchHire.Amount * (expertConfig.ExpertPercentage / 100)
-                                    : dispute.SearchHire.Amount; // Si no hay configuración, pagar el 100%
-                                
-                                _logger.LogInformation("Using money distribution config for dispute expert payout: Client={ClientPercentage}%, Expert={ExpertPercentage}%, Platform={PlatformPercentage}%, Source={Source} for disputeId={DisputeId}", 
-                                    expertConfig?.ClientPercentage ?? 0, expertConfig?.ExpertPercentage ?? 100, expertConfig?.PlatformPercentage ?? 0, expertConfig?.Source ?? "default", disputeId);
-                                
-                                // Pagar al experto (si existe)
-                                if (dispute.SearchHire.Expert != null)
+                                if (!transferSuccess)
                                 {
-                                    dispute.SearchHire.Expert.Balance += expertPayoutAmount;
-                                    
-                                    // Crear transacción financiera
-                                    _context.FinancialTransactions.Add(new FinancialTransaction
-                                    {
-                                        UserId = dispute.SearchHire.ExpertId.Value,
-                                        Amount = expertPayoutAmount,
-                                        TransactionType = "DisputePayout",
-                                        RelatedEntityType = "Dispute",
-                                        RelatedEntityId = dispute.Id,
-                                        CreatedAt = DateTime.UtcNow
-                                    });
+                                    _logger.LogError("Failed to process expert transfer for dispute searchHireId={SearchHireId}", dispute.SearchHire.Id);
+                                    await transaction.RollbackAsync();
+                                    return StatusCode(500, new { message = "Failed to process expert transfer" });
                                 }
 
                                 // Actualizar estado del SearchHire a disputa resuelta a favor del experto
-                                dispute.SearchHire.Status = "dispute-resolved-expert";
+                                dispute.SearchHire.StatusId = await GetStatusIdByValueAsync("dispute_resolved_expert");
                                 dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
                                 break;
 
@@ -462,7 +456,11 @@ namespace newApi.Controllers
 
                 var dispute = await _context.Disputes
                     .Include(d => d.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(d => d.SearchHire)
                         .ThenInclude(sh => sh.Client)
+                    .Include(d => d.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(d => d.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                     .Include(d => d.SearchHire)
@@ -488,8 +486,8 @@ namespace newApi.Controllers
                     SearchHire = new SearchHireInfoDto
                     {
                         Id = dispute.SearchHire.Id,
-                        Status = dispute.SearchHire.Status,
-                        StatusTranslated = dispute.SearchHire.Status.ToSpanishTranslation(),
+                        Status = dispute.SearchHire.Status.StatusValue,
+                        StatusTranslated = dispute.SearchHire.Status.StatusValue.ToSpanishTranslation(),
                         Amount = dispute.SearchHire.Amount,
                         CreatedAt = dispute.SearchHire.CreatedAt
                     },
@@ -607,8 +605,8 @@ namespace newApi.Controllers
                     {
                         Id = dispute.SearchHire.Id,
                         ExpertId = dispute.SearchHire.ExpertId,
-                        Status = dispute.SearchHire.Status,
-                        StatusTranslated = dispute.SearchHire.Status.ToSpanishTranslation(),
+                        Status = dispute.SearchHire.Status.StatusValue,
+                        StatusTranslated = dispute.SearchHire.Status.StatusValue.ToSpanishTranslation(),
                         CreatedAt = dispute.SearchHire.CreatedAt,
                         Expert = dispute.SearchHire.Expert != null ? new UserDto
                         {
@@ -722,7 +720,7 @@ namespace newApi.Controllers
                 }
 
                 // Verificar que el servicio está en un estado que permite disputas
-                if (searchHire.Status != SearchHireStatus.Completed.ToStringValue() && searchHire.Status != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                if (searchHire.Status.StatusValue != SearchHireStatus.Completed.ToStringValue() && searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
                 {
                     return BadRequest(new { message = "Cannot dispute this service in its current status" });
                 }
@@ -759,7 +757,7 @@ namespace newApi.Controllers
                         _logger.LogInformation("Dispute saved successfully. DisputeId={DisputeId}", dispute.Id);
 
                         // Actualizar el estado del SearchHire a Disputed
-                        searchHire.Status = SearchHireStatus.Disputed.ToStringValue();
+                        searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
                         await _context.SaveChangesAsync();
                         
                         await transaction.CommitAsync();
@@ -874,7 +872,11 @@ namespace newApi.Controllers
                 // Construir query base con includes
                 var query = _context.Disputes
                     .Include(d => d.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(d => d.SearchHire)
                         .ThenInclude(sh => sh.Client)
+                    .Include(d => d.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(d => d.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                     .Include(d => d.SearchHire)
@@ -964,8 +966,8 @@ namespace newApi.Controllers
                     SearchHire = new SearchHireInfoDto
                     {
                         Id = dispute.SearchHire.Id,
-                        Status = dispute.SearchHire.Status,
-                        StatusTranslated = dispute.SearchHire.Status.ToSpanishTranslation(),
+                        Status = dispute.SearchHire.Status.StatusValue,
+                        StatusTranslated = dispute.SearchHire.Status.StatusValue.ToSpanishTranslation(),
                         Amount = dispute.SearchHire.Amount,
                         CreatedAt = dispute.SearchHire.CreatedAt
                     },
@@ -1056,7 +1058,11 @@ namespace newApi.Controllers
 
                 var dispute = await _context.Disputes
                     .Include(d => d.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(d => d.SearchHire)
                         .ThenInclude(sh => sh.Expert)
+                    .Include(d => d.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(d => d.SearchHire)
                         .ThenInclude(sh => sh.Client)
                     .FirstOrDefaultAsync(d => d.Id == disputeId);
@@ -1102,6 +1108,8 @@ namespace newApi.Controllers
                 var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
 
                 var dispute = await _context.Disputes
+                    .Include(d => d.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(d => d.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                     .Include(d => d.Files)

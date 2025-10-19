@@ -496,11 +496,7 @@ namespace newApi.Services
             }
         }
 
-        public async Task<decimal> GetUserBalanceAsync(int userId)
-        {
-            var user = await _context.Users.FirstOrDefaultAsync(z => z.Id == userId);
-            return user?.Balance ?? 0;
-        }
+        // ✅ REMOVED: GetUserBalanceAsync method eliminated - balance system removed
 
         public async Task<(bool Success, bool IsOnVacation)> ToggleVacationMode(int userId)
         {

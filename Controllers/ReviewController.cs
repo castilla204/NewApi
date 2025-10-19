@@ -53,6 +53,7 @@ namespace newApi.Controllers
 
                 // Verificar que el searchHireId exista y que el usuario sea el cliente
                 var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Status)
                     .Include(sh => sh.SearchService)
                     .FirstOrDefaultAsync(sh => sh.Id == searchHireId && sh.ClientId == userId);
                 if (searchHire == null)
@@ -67,9 +68,9 @@ namespace newApi.Controllers
                 }
 
                 // Verificar el estado del SearchHire
-                if (searchHire.Status != SearchHireStatus.DisputeResolvedClient.ToStringValue() &&
-                    searchHire.Status != SearchHireStatus.DisputeResolvedExpert.ToStringValue() &&
-                    searchHire.Status != SearchHireStatus.Completed.ToStringValue())
+                if (searchHire.Status.StatusValue != SearchHireStatus.DisputeResolvedClient.ToStringValue() &&
+                    searchHire.Status.StatusValue != SearchHireStatus.DisputeResolvedExpert.ToStringValue() &&
+                    searchHire.Status.StatusValue != SearchHireStatus.Completed.ToStringValue())
                 {
                     return BadRequest(new { message = "Reviews can only be submitted for SearchHires in 'dispute-resolved-client', 'dispute-resolved-expert' or 'completed' status" });
                 }

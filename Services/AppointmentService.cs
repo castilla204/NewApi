@@ -13,12 +13,32 @@ namespace newApi.Services
         private readonly AppDbContext _context;
         private readonly ILogger<AppointmentService> _logger;
         private readonly SystemStatusService _systemStatusService;
+        private readonly StripeRefundService _refundService;
 
-        public AppointmentService(AppDbContext context, ILogger<AppointmentService> logger, SystemStatusService systemStatusService)
+        public AppointmentService(AppDbContext context, ILogger<AppointmentService> logger, SystemStatusService systemStatusService, StripeRefundService refundService)
         {
             _context = context;
             _logger = logger;
             _systemStatusService = systemStatusService;
+            _refundService = refundService;
+        }
+
+        /// <summary>
+        /// Helper method to get StatusId from StatusValue
+        /// </summary>
+        private async Task<int> GetStatusIdByValueAsync(string statusValue)
+        {
+            var systemStatus = await _context.SystemStatuses
+                .FirstOrDefaultAsync(s => s.StatusValue == statusValue && s.StatusType == "SearchHireStatus");
+            
+            if (systemStatus == null)
+            {
+                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
+                // Default to "pending" (ID = 1)
+                return 1;
+            }
+            
+            return systemStatus.Id;
         }
 
         public async Task<AppointmentDto?> GetAppointmentAsync(int id)
@@ -30,6 +50,8 @@ namespace newApi.Services
                         .ThenInclude(sh => sh.Client)
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .Include(a => a.Timers)
                     .FirstOrDefaultAsync(a => a.Id == id);
@@ -55,6 +77,8 @@ namespace newApi.Services
                         .ThenInclude(sh => sh.Client)
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .Include(a => a.Timers)
                     .FirstOrDefaultAsync(a => a.SearchHireId == searchHireId);
@@ -80,6 +104,8 @@ namespace newApi.Services
                         .ThenInclude(sh => sh.Client)
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .Include(a => a.Timers)
                     .Where(a => a.SearchHire.ClientId == userId || a.SearchHire.ExpertId == userId)
@@ -159,6 +185,8 @@ namespace newApi.Services
                         .ThenInclude(sh => sh.Client)
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .Include(a => a.Timers)
                     .FirstAsync(a => a.Id == appointment.Id);
@@ -178,6 +206,7 @@ namespace newApi.Services
             {
                 var appointment = await _context.Appointments
                     .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .FirstOrDefaultAsync(a => a.SearchHireId == searchHireId);
 
@@ -283,6 +312,8 @@ namespace newApi.Services
                         .ThenInclude(sh => sh.Client)
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .Include(a => a.Timers)
                     .FirstAsync(a => a.Id == appointment.Id);
@@ -302,6 +333,7 @@ namespace newApi.Services
             {
                 var appointment = await _context.Appointments
                     .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .FirstOrDefaultAsync(a => a.Id == dto.AppointmentId);
 
@@ -346,6 +378,8 @@ namespace newApi.Services
                         .ThenInclude(sh => sh.Client)
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .Include(a => a.Timers)
                     .FirstAsync(a => a.Id == appointment.Id);
@@ -363,29 +397,55 @@ namespace newApi.Services
         {
             try
             {
+                _logger.LogInformation("🔍 REJECT APPOINTMENT STARTED - AppointmentId: {AppointmentId}, UserId: {UserId}", dto.AppointmentId, userId);
+                
                 var appointment = await _context.Appointments
                     .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .FirstOrDefaultAsync(a => a.Id == dto.AppointmentId);
 
                 if (appointment == null)
+                {
+                    _logger.LogError("🔍 APPOINTMENT NOT FOUND - AppointmentId: {AppointmentId}", dto.AppointmentId);
                     throw new ArgumentException("Appointment not found");
+                }
+
+                _logger.LogInformation("🔍 APPOINTMENT FOUND - Id: {Id}, SearchHireId: {SearchHireId}, ExpertId: {ExpertId}, RejectionCount: {RejectionCount}, CancellationCount: {CancellationCount}", 
+                    appointment.Id, appointment.SearchHireId, appointment.SearchHire.ExpertId, appointment.RejectionCount, appointment.CancellationCount);
 
                 // Verificar que el usuario es el experto
                 if (appointment.SearchHire.ExpertId != userId)
+                {
+                    _logger.LogError("🔍 UNAUTHORIZED ACCESS - UserId: {UserId} is not the expert (ExpertId: {ExpertId})", userId, appointment.SearchHire.ExpertId);
                     throw new UnauthorizedAccessException("Only the expert can reject appointments");
+                }
+
+                _logger.LogInformation("🔍 AUTHORIZATION OK - UserId: {UserId} is the expert", userId);
+
+                // 🔍 LOGS DETALLADOS: Analizar el estado actual
+                _logger.LogInformation("🔍 REJECT APPOINTMENT ANALYSIS - AppointmentId: {AppointmentId}, Current RejectionCount: {RejectionCount}, Current CancellationCount: {CancellationCount}", 
+                    appointment.Id, appointment.RejectionCount, appointment.CancellationCount);
 
                 // Determinar el estado según el número de rechazos
                 string statusValue;
-                if (appointment.RejectionCount >= 1)
+                bool isSecondRejection = appointment.RejectionCount >= 1;
+                
+                _logger.LogInformation("🔍 REJECTION ANALYSIS - isSecondRejection: {IsSecondRejection} (RejectionCount >= 1: {RejectionCount} >= 1)", 
+                    isSecondRejection, appointment.RejectionCount);
+                
+                if (isSecondRejection)
                 {
                     // Segundo rechazo o más - cancelar por rechazos múltiples
-                    statusValue = "appointment_cancelled_by_expert_rejection";
+                    // ✅ CORRECCIÓN: Usar el estado correcto para segunda cancelación
+                    statusValue = "appointment_cancelled_by_expert_second";
+                    _logger.LogInformation("🔍 SECOND REJECTION DETECTED - Using status: {StatusValue}", statusValue);
                 }
                 else
                 {
                     // Primer rechazo
                     statusValue = "appointment_rejected";
+                    _logger.LogInformation("🔍 FIRST REJECTION - Using status: {StatusValue}", statusValue);
                 }
 
                 var newStatus = await _context.SystemStatuses
@@ -398,23 +458,45 @@ namespace newApi.Services
                 // Actualizar la cita
                 appointment.StatusId = newStatus.Id;
                 appointment.RejectionCount++;
+                
+                // ✅ CORRECCIÓN: Incrementar CancellationCount para segunda cancelación
+                if (isSecondRejection)
+                {
+                    appointment.CancellationCount++;
+                    _logger.LogInformation("🔍 CANCELLATION COUNT INCREMENTED - New CancellationCount: {CancellationCount}", appointment.CancellationCount);
+                }
+                
                 appointment.LastRejectionAt = DateTime.UtcNow;
                 appointment.LastResponseAt = DateTime.UtcNow;
                 appointment.UpdatedAt = DateTime.UtcNow;
+
+                _logger.LogInformation("🔍 APPOINTMENT UPDATED - StatusId: {StatusId}, RejectionCount: {RejectionCount}, CancellationCount: {CancellationCount}", 
+                    appointment.StatusId, appointment.RejectionCount, appointment.CancellationCount);
 
                 // Actualizar el SearchHire según el mapeo de estados
                 var appointmentStatusEnum = statusValue switch
                 {
                     "appointment_rejected" => AppointmentStatus.AppointmentRejected,
-                    "appointment_cancelled_by_expert_rejection" => AppointmentStatus.AppointmentCancelledByExpertRejection,
+                    "appointment_cancelled_by_expert_second" => AppointmentStatus.AppointmentCancelledByExpertSecond,
                     _ => throw new InvalidOperationException($"Unknown appointment status: {statusValue}")
                 };
 
+                _logger.LogInformation("🔍 MAPPING APPOINTMENT STATUS - appointmentStatusEnum: {AppointmentStatusEnum}", appointmentStatusEnum);
+                
                 var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatusEnum);
+                _logger.LogInformation("🔍 TARGET SEARCH HIRE STATUS - targetSearchHireStatus: {TargetSearchHireStatus}", targetSearchHireStatus);
+                
                 if (targetSearchHireStatus.HasValue)
                 {
-                    appointment.SearchHire.Status = targetSearchHireStatus.Value.ToStringValue();
+                    var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
+                    appointment.SearchHire.StatusId = statusId;
                     appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                    _logger.LogInformation("🔍 SEARCH HIRE STATUS UPDATED - StatusId: {StatusId}, StatusValue: {StatusValue}", 
+                        statusId, targetSearchHireStatus.Value.ToStringValue());
+                }
+                else
+                {
+                    _logger.LogWarning("🔍 NO TARGET SEARCH HIRE STATUS FOUND - appointmentStatusEnum: {AppointmentStatusEnum}", appointmentStatusEnum);
                 }
 
                 // Marcar timers de respuesta como expirados
@@ -432,12 +514,61 @@ namespace newApi.Services
 
                 await _context.SaveChangesAsync();
 
+                // ✅ CORRECCIÓN: Procesar refund automático para segunda cancelación
+                if (isSecondRejection)
+                {
+                    try
+                    {
+                        _logger.LogInformation("🔍 PROCESSING AUTOMATIC REFUND - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}, Amount: {Amount}", 
+                            appointment.Id, appointment.SearchHireId, appointment.SearchHire.Amount);
+                        
+                        // 🔍 LOG: Verificar configuración de dinero antes del refund
+                        var moneyConfig = await _systemStatusService.GetMoneyDistributionConfigAsync(
+                            "appointment_cancelled_by_expert_second", 
+                            appointment.SearchHire.SearchService?.CategoryId, 
+                            appointment.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
+                        
+                        _logger.LogInformation("🔍 MONEY DISTRIBUTION CONFIG - Status: appointment_cancelled_by_expert_second, CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}, Config: {Config}", 
+                            appointment.SearchHire.SearchService?.CategoryId, 
+                            appointment.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId,
+                            moneyConfig != null ? $"Client: {moneyConfig.ClientPercentage}%, Expert: {moneyConfig.ExpertPercentage}%, Platform: {moneyConfig.PlatformPercentage}%" : "NULL");
+                        
+                        // Usar el servicio de refund para procesar la devolución automática
+                        var refundSuccess = await _refundService.ProcessAutomaticClientRefundAsync(
+                            appointment.SearchHireId, 
+                            "Segunda cancelación por rechazo del experto");
+                        
+                        if (refundSuccess)
+                        {
+                            _logger.LogInformation("✅ AUTOMATIC REFUND SUCCESS - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
+                                appointment.Id, appointment.SearchHireId);
+                        }
+                        else
+                        {
+                            _logger.LogError("❌ AUTOMATIC REFUND FAILED - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
+                                appointment.Id, appointment.SearchHireId);
+                        }
+                    }
+                    catch (Exception refundEx)
+                    {
+                        _logger.LogError(refundEx, "❌ ERROR PROCESSING AUTOMATIC REFUND - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
+                            appointment.Id, appointment.SearchHireId);
+                        // No lanzar la excepción para no afectar el flujo principal
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("🔍 NO REFUND PROCESSING - First rejection, isSecondRejection: {IsSecondRejection}", isSecondRejection);
+                }
+
                 // Cargar la cita actualizada con todas las relaciones
                 var updatedAppointment = await _context.Appointments
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Client)
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .Include(a => a.Timers)
                     .FirstAsync(a => a.Id == appointment.Id);
@@ -446,7 +577,8 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error rejecting appointment {AppointmentId}", dto.AppointmentId);
+                _logger.LogError(ex, "🔍 ERROR REJECTING APPOINTMENT - AppointmentId: {AppointmentId}, UserId: {UserId}, Error: {Error}", 
+                    dto.AppointmentId, userId, ex.Message);
                 throw;
             }
         }
@@ -457,6 +589,7 @@ namespace newApi.Services
             {
                 var appointment = await _context.Appointments
                     .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .FirstOrDefaultAsync(a => a.Id == dto.AppointmentId);
 
@@ -519,7 +652,8 @@ namespace newApi.Services
                 var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatusEnum);
                 if (targetSearchHireStatus.HasValue)
                 {
-                    appointment.SearchHire.Status = targetSearchHireStatus.Value.ToStringValue();
+                    var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
+                    appointment.SearchHire.StatusId = statusId;
                     appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
                 }
 
@@ -542,6 +676,8 @@ namespace newApi.Services
                         .ThenInclude(sh => sh.Client)
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .Include(a => a.Timers)
                     .FirstAsync(a => a.Id == appointment.Id);
@@ -656,7 +792,8 @@ namespace newApi.Services
                                     timer.Appointment.UpdatedAt = DateTime.UtcNow;
                                     
                                     // Actualizar el SearchHire para que use el estado del sistema centralizado
-                                    timer.Appointment.SearchHire.Status = SearchHireStatus.AwaitingClientDecision.ToStringValue();
+                                    var awaitingStatusId = await GetStatusIdByValueAsync(SearchHireStatus.AwaitingClientDecision.ToStringValue());
+                                    timer.Appointment.SearchHire.StatusId = awaitingStatusId;
                                     timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
                                     
                                     _logger.LogInformation("Appointment {AppointmentId} automatically completed and SearchHire moved to awaiting_client_decision - all required files were uploaded", timer.Appointment.Id);
@@ -675,7 +812,8 @@ namespace newApi.Services
                                     timer.Appointment.UpdatedAt = DateTime.UtcNow;
                                     
                                     // También actualizar el SearchHire para que use el estado del sistema centralizado
-                                    timer.Appointment.SearchHire.Status = SearchHireStatus.Cancelled.ToStringValue();
+                                    var cancelledStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
+                                    timer.Appointment.SearchHire.StatusId = cancelledStatusId;
                                     timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
                                     
                                     _logger.LogInformation("Appointment {AppointmentId} cancelled due to expert not submitting report within 24h - missing files: {MissingFiles}", 
@@ -746,6 +884,7 @@ namespace newApi.Services
             {
                 var appointment = await _context.Appointments
                     .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .FirstOrDefaultAsync(a => a.Id == appointmentId);
 
@@ -797,11 +936,12 @@ namespace newApi.Services
                 
                 if (targetSearchHireStatus.HasValue)
                 {
-                    var oldStatus = appointment.SearchHire.Status;
-                    appointment.SearchHire.Status = targetSearchHireStatus.Value.ToStringValue();
+                    var oldStatusValue = appointment.SearchHire.Status?.StatusValue ?? "unknown";
+                    var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
+                    appointment.SearchHire.StatusId = statusId;
                     appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
                     _logger.LogInformation("✅ Updated SearchHire {SearchHireId} status: {OldStatus} → {NewStatus}", 
-                        appointment.SearchHire.Id, oldStatus, appointment.SearchHire.Status);
+                        appointment.SearchHire.Id, oldStatusValue, targetSearchHireStatus.Value.ToStringValue());
                 }
                 else
                 {
@@ -832,6 +972,8 @@ namespace newApi.Services
                         .ThenInclude(sh => sh.Client)
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
                     .Include(a => a.Timers)
                     .FirstAsync(a => a.Id == appointment.Id);

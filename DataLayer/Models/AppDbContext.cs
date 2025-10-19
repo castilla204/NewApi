@@ -28,6 +28,8 @@ namespace newApi.DataLayer.Models
         public DbSet<SystemSetting> SystemSettings { get; set; }
         public DbSet<AI> AIs { get; set; }
         public DbSet<Log> Logs { get; set; }
+        public DbSet<LogType> LogTypes { get; set; }
+        public DbSet<Severity> Severities { get; set; }
         public DbSet<ExpertProfile> ExpertProfiles { get; set; }
         public DbSet<SearchService> SearchServices { get; set; }
         public DbSet<SearchServiceImage> SearchServiceImages { get; set; }
@@ -677,6 +679,20 @@ namespace newApi.DataLayer.Models
                 entity.HasIndex(e => new { e.SearchServiceId, e.DeliverableTypeId })
                     .IsUnique();
             });
+
+            // Configuración de la relación Log-LogType
+            modelBuilder.Entity<Log>()
+                .HasOne(l => l.LogType)
+                .WithMany(lt => lt.Logs)
+                .HasForeignKey(l => l.LogTypeId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // Configuración de la relación LogType-Severity (opcional)
+            modelBuilder.Entity<LogType>()
+                .HasOne(lt => lt.Severity)
+                .WithMany(s => s.LogTypes)
+                .HasForeignKey(lt => lt.SeverityId)
+                .OnDelete(DeleteBehavior.SetNull);
         }
     }
 }

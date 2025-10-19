@@ -198,7 +198,7 @@ namespace newApi.Services
                             ? expert.ReviewsReceived.Average(r => r.Score)
                             : 0,
                         TotalReviews = expert.ReviewsReceived?.Count ?? 0,
-                        CompletedSearches = expert.SearchHiresAsExpert?.Count(sh => sh.Status == "Completed") ?? 0,
+                        CompletedSearches = expert.SearchHiresAsExpert?.Count(sh => sh.Status.StatusValue == "completed") ?? 0,
                         RegisteredSince = firstService.ExpertProfile.CreatedAt,
                         Latitude = firstService.ExpertProfile.Latitude,
                         Longitude = firstService.ExpertProfile.Longitude
@@ -600,7 +600,7 @@ namespace newApi.Services
                 Expert = baseDto.Expert,
                 SelectedDeliverableTypes = baseDto.SelectedDeliverableTypes,
                 CategoryName = ss.Category?.Name ?? "Unknown Category",
-                CompletedSearches = ss.ExpertProfile?.User?.SearchHiresAsExpert?.Count(sh => sh.Status == "Completed") ?? 0,
+                CompletedSearches = ss.ExpertProfile?.User?.SearchHiresAsExpert?.Count(sh => sh.Status.StatusValue == "completed") ?? 0,
                 AverageRating = ss.ExpertProfile?.User?.ReviewsReceived != null && ss.ExpertProfile.User.ReviewsReceived.Any()
                     ? ss.ExpertProfile.User.ReviewsReceived.Average(r => r.Score)
                     : 0

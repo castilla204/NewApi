@@ -9,7 +9,8 @@ namespace newApi.DataLayer.Models.PostGresModels
         public int? ExpertId { get; set; }
         public int SearchServiceId { get; set; }
         public int SearchId { get; set; }
-        public string Status { get; set; }
+        public int StatusId { get; set; }
+        public virtual SystemStatus Status { get; set; }
         public string? ExpertTransferId { get; set; }
         public decimal Amount { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

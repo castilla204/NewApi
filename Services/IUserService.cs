@@ -18,6 +18,6 @@ namespace newApi.Services
         Task<ExpertProfileDto> GetExpertProfile(int userId);
         Task<(bool Success, ExpertProfileDto UpdatedProfile)> UpdateExpertProfile(int userId, UpdateExpertProfileRequestDto request);
         Task<User> GetUserAsync(int userId);
-        Task<decimal> GetUserBalanceAsync(int userId);
+        // ✅ REMOVED: GetUserBalanceAsync method eliminated - balance system removed
     }
 }

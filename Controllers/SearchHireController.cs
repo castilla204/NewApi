@@ -24,20 +24,41 @@ namespace newApi.Controllers
         private readonly ILogger<SearchHireController> _logger;
         private readonly IConfiguration _configuration;
         private readonly IAuthorizationServices _authService;
+        private readonly StripeRefundService _refundService;
 
         public SearchHireController(
             SearchHireService searchHireService,
             AppDbContext context,
             ILogger<SearchHireController> logger,
             IConfiguration configuration,
-            IAuthorizationServices authService)
+            IAuthorizationServices authService,
+            StripeRefundService refundService)
         {
             _searchHireService = searchHireService;
             _context = context;
             _logger = logger;
             _configuration = configuration;
             _authService = authService;
+            _refundService = refundService;
             StripeConfiguration.ApiKey = configuration["Stripe:SecretKey"];
+        }
+
+        /// <summary>
+        /// Helper method to get StatusId from StatusValue
+        /// </summary>
+        private async Task<int> GetStatusIdByValueAsync(string statusValue)
+        {
+            var systemStatus = await _context.SystemStatuses
+                .FirstOrDefaultAsync(s => s.StatusValue == statusValue && s.StatusType == "SearchHireStatus");
+            
+            if (systemStatus == null)
+            {
+                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
+                // Default to "pending" (ID = 1)
+                return 1;
+            }
+            
+            return systemStatus.Id;
         }
 
         // POST: api/searchhire
@@ -113,7 +134,7 @@ namespace newApi.Controllers
                     ClientId = search.UserId,
                     ExpertId = dto.ExpertId.Value,
                     SearchServiceId = searchService.Id,
-                    Status = "pending",
+                    StatusId = await GetStatusIdByValueAsync("pending"),
                     Amount = searchService.Price,
                     CreatedAt = DateTime.UtcNow,
                     Conversations = new List<Conversation>()
@@ -168,6 +189,7 @@ namespace newApi.Controllers
             try
             {
                 var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Status)
                     .Include(sh => sh.Client)
                     .Include(sh => sh.Expert)
                     .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
@@ -179,10 +201,10 @@ namespace newApi.Controllers
                 }
 
                 // Verificar que el servicio esté activo
-                if (searchHire.Status != "active")
+                if (searchHire.Status.StatusValue != "active")
                 {
                     _logger.LogInformation("SearchHire is not active for searchHireId={SearchHireId}, current status={Status}", 
-                        searchHireId, searchHire.Status);
+                        searchHireId, searchHire.Status.StatusValue);
                     return;
                 }
 
@@ -205,41 +227,24 @@ namespace newApi.Controllers
                 {
                     _logger.LogWarning("Expert has not responded within 24 hours for searchHireId={SearchHireId}, processing automatic refund", searchHireId);
                     
-                    // Procesar reembolso automático usando la función centralizada del SubscriptionController
-                    using var transaction = await _context.Database.BeginTransactionAsync();
-                    try
+                    // 💳 PROCESAR REFUND REAL EN STRIPE usando el método existente
+                    var refundReason = "Expert did not respond within 24 hours - automatic refund";
+                    var refundSuccess = await _refundService.ProcessAutomaticClientRefundAsync(searchHireId, refundReason);
+                    
+                    if (!refundSuccess)
                     {
-                        // Reembolsar al cliente
-                        searchHire.Client.Balance += searchHire.Amount;
-                        
-                        // Crear transacción financiera
-                        var financialTransaction = new FinancialTransaction
-                        {
-                            UserId = searchHire.ClientId,
-                            Amount = searchHire.Amount,
-                            TransactionType = "Refund",
-                            RelatedEntityType = "SearchHire",
-                            RelatedEntityId = searchHire.Id,
-                            CreatedAt = DateTime.UtcNow
-                        };
-                        _context.FinancialTransactions.Add(financialTransaction);
-                        
-                        // Actualizar estado del servicio
-                        searchHire.Status = "cancelled";
-                        searchHire.UpdatedAt = DateTime.UtcNow;
-                        
-                        await _context.SaveChangesAsync();
-                        await transaction.CommitAsync();
+                        _logger.LogError("Failed to process Stripe refund for automatic refund searchHireId={SearchHireId}", searchHireId);
+                        return;
+                    }
 
-                        _logger.LogInformation("Automatic refund processed successfully for searchHireId={SearchHireId}, refunded amount={Amount}", 
-                            searchHireId, searchHire.Amount);
-                    }
-                    catch (Exception ex)
-                    {
-                        await transaction.RollbackAsync();
-                        _logger.LogError(ex, "Error processing automatic refund for searchHireId={SearchHireId}: {ErrorMessage}", 
-                            searchHireId, ex.Message);
-                    }
+                    // Actualizar estado del servicio
+                    searchHire.StatusId = await GetStatusIdByValueAsync("cancelled");
+                    searchHire.UpdatedAt = DateTime.UtcNow;
+                    
+                    await _context.SaveChangesAsync();
+
+                    _logger.LogInformation("Real Stripe automatic refund processed successfully for searchHireId={SearchHireId}, reason={Reason}", 
+                        searchHireId, refundReason);
                 }
                 else
                 {
@@ -260,6 +265,7 @@ namespace newApi.Controllers
             try
             {
                 var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Status)
                     .Include(sh => sh.Search)
                     .Include(sh => sh.Conversations)
                     .FirstOrDefaultAsync(sh => sh.Id == id);

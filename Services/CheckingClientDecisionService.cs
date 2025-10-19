@@ -34,6 +34,7 @@ namespace newApi.Services
                 // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
                 var searchHire = await _context.SearchHires
                     .FromSqlRaw("SELECT * FROM \"SearchHires\" WHERE \"Id\" = {0} FOR UPDATE", searchHireId)
+                    .Include(sh => sh.Status)
                     .Include(sh => sh.Expert)
                     .ThenInclude(e => e.ExpertProfile)
                     .Include(sh => sh.SearchService)
@@ -47,12 +48,12 @@ namespace newApi.Services
                 }
 
             // Verificar que el servicio esté en estado válido para transferencia
-            if (searchHire.Status != SearchHireStatus.Pending.ToStringValue() && 
-                searchHire.Status != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+            if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue() && 
+                searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
             {
                 _logger.LogWarning("SearchHire is not in valid status for transfer for searchHireId={SearchHireId}, current status={Status}", 
-                    searchHireId, searchHire.Status);
-                throw new Exception($"SearchHire is not in valid status for transfer: {searchHire.Status}");
+                    searchHireId, searchHire.Status.StatusValue);
+                throw new Exception($"SearchHire is not in valid status for transfer: {searchHire.Status.StatusValue}");
             }
 
             // 🚨 PROTECCIÓN CONTRA TRANSFERENCIAS DUPLICADAS

@@ -41,6 +41,24 @@ namespace newApi.Controllers
             _subscriptionService = subscriptionService;
         }
 
+        /// <summary>
+        /// Helper method to get StatusId from StatusValue
+        /// </summary>
+        private async Task<int> GetStatusIdByValueAsync(string statusValue)
+        {
+            var systemStatus = await _context.SystemStatuses
+                .FirstOrDefaultAsync(s => s.StatusValue == statusValue && s.StatusType == "SearchHireStatus");
+            
+            if (systemStatus == null)
+            {
+                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
+                // Default to "pending" (ID = 1)
+                return 1;
+            }
+            
+            return systemStatus.Id;
+        }
+
         [HttpGet("debug-auth")]
         public async Task<IActionResult> DebugAuth()
         {
@@ -108,6 +126,8 @@ namespace newApi.Controllers
                     .Include(s => s.User)
                     .Include(s => s.SearchParameters)
                     .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                         .ThenInclude(e => e.ExpertProfile)
                     .AsQueryable();
@@ -138,7 +158,8 @@ namespace newApi.Controllers
 
                 if (!string.IsNullOrEmpty(request.SearchHireStatus))
                 {
-                    query = query.Where(s => s.SearchHire != null && s.SearchHire.Status == request.SearchHireStatus);
+                    var statusId = await GetStatusIdByValueAsync(request.SearchHireStatus);
+                    query = query.Where(s => s.SearchHire != null && s.SearchHire.StatusId == statusId);
                 }
 
                 // Contar total de resultados
@@ -176,8 +197,8 @@ namespace newApi.Controllers
                     {
                         Id = s.SearchHire.Id,
                         ExpertId = s.SearchHire.ExpertId ?? 0,
-                        Status = s.SearchHire.Status,
-                        StatusTranslated = s.SearchHire.Status.ToSpanishTranslation(),
+                        Status = s.SearchHire.Status.StatusValue,
+                        StatusTranslated = s.SearchHire.Status.StatusValue.ToSpanishTranslation(),
                         CreatedAt = s.SearchHire.CreatedAt,
                         Expert = s.SearchHire.Expert != null ? new UserDto
                         {
@@ -272,146 +293,49 @@ namespace newApi.Controllers
                     using var transaction = await _context.Database.BeginTransactionAsync();
                     try
                     {
-                        if (user.Balance >= service.Price)
+                        // ✅ All payments are now processed through Stripe - no internal balance system
+                        var amountToCharge = service.Price;
+
+                        var domain = "https://atrapo.io";
+                        var options = new SessionCreateOptions
                         {
-                            var search = new Search
+                            PaymentMethodTypes = new List<string> { "card" },
+                            LineItems = new List<SessionLineItemOptions>
                             {
-                                UserId = userId,
-                                Frequency = searchDto.Frequency,
-                                Title = searchDto.Title,
-                                Description = searchDto.Description,
-                                IsActive = searchDto.IsActive,
-                                NextExecution = DateTime.UtcNow,
-                                StartDate = searchDto.StartDate,
-                                CreatedAt = DateTime.UtcNow
-                            };
-                            await _context.Searches.AddAsync(search);
-                            await _context.SaveChangesAsync();
-
-                            var searchParameter = new SearchParameter
-                            {
-                                Keywords = parameterDto.Keywords,
-                                UserSearch = parameterDto.UserSearch,
-                                Latitude = parameterDto.Latitude,
-                                Longitude = parameterDto.Longitude,
-                                LocationName = parameterDto.LocationName,
-                                ShippingAvailable = parameterDto.ShippingAvailable,
-                                StrictMatchOnly = parameterDto.StrictMatchOnly,
-                                Category = parameterDto.Category,
-                                LocationRange = parameterDto.LocationRange,
-                                MinPrice = parameterDto.MinPrice,
-                                MaxPrice = parameterDto.MaxPrice,
-                                BrandId = parameterDto.BrandId,
-                                ModelId = parameterDto.ModelId,
-                                ServiceTypeId = parameterDto.ServiceTypeId,
-                                SearchId = search.Id
-                            };
-                            await _context.SearchParameters.AddAsync(searchParameter);
-                            await _context.SaveChangesAsync();
-
-                            if (parameterDto.PlatformIds != null && parameterDto.PlatformIds.Any())
-                            {
-                                var platforms = await _context.Platforms
-                                    .Where(p => parameterDto.PlatformIds.Contains(p.Id))
-                                    .ToListAsync();
-                                if (platforms.Count != parameterDto.PlatformIds.Count)
+                                new SessionLineItemOptions
                                 {
-                                    return BadRequest(new { message = "Some platform IDs are invalid" });
-                                }
-                                foreach (var platform in platforms)
-                                {
-                                    _context.SearchParameterPlatforms.Add(new SearchParameterPlatform
+                                    PriceData = new SessionLineItemPriceDataOptions
                                     {
-                                        SearchParameterId = searchParameter.SearchParameterId,
-                                        PlatformId = platform.Id
-                                    });
-                                }
-                            }
-
-                            var expertProfile = await _context.ExpertProfiles
-                            .FirstOrDefaultAsync(z => z.Id == service.ExpertProfileId);
-
-                            var expertuserid = expertProfile?.UserId ?? 0;
-
-                            if (expertuserid == userId)
-                            {
-                                return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
-                            }
-
-                            var searchHire = new SearchHire
-                            {
-                                ClientId = userId,
-                                ExpertId = expertuserid,
-                                SearchServiceId = service.Id,
-                                SearchId = search.Id,
-                                Status = SearchHireStatus.Pending.ToStringValue(),
-                                Amount = service.Price,
-                                CreatedAt = DateTime.UtcNow,
-                                CompletionDeadline = DateTime.UtcNow.AddDays(7)
-                            };
-                            _context.SearchHires.Add(searchHire);
-
-                            user.Balance -= service.Price;
-                            _context.FinancialTransactions.Add(new FinancialTransaction
-                            {
-                                UserId = userId,
-                                Amount = -service.Price,
-                                TransactionType = "ServicePayment",
-                                RelatedEntityType = "SearchHire",
-                                RelatedEntityId = searchHire.Id,
-                                CreatedAt = DateTime.UtcNow
-                            });
-
-                            await _context.SaveChangesAsync();
-                            await transaction.CommitAsync();
-
-                            return Ok(new { message = "Search created and service hired successfully", searchId = search.Id, searchHireId = searchHire.Id });
-                        }
-                        else
-                        {
-                            var amountToCharge = service.Price;
-
-                            var domain = "https://atrapo.io";
-                            var options = new SessionCreateOptions
-                            {
-                                PaymentMethodTypes = new List<string> { "card" },
-                                LineItems = new List<SessionLineItemOptions>
-                                {
-                                    new SessionLineItemOptions
-                                    {
-                                        PriceData = new SessionLineItemPriceDataOptions
+                                        Currency = "eur",
+                                        UnitAmount = (long)(amountToCharge * 100),
+                                        ProductData = new SessionLineItemPriceDataProductDataOptions
                                         {
-                                            Currency = "eur",
-                                            UnitAmount = (long)(amountToCharge * 100),
-                                            ProductData = new SessionLineItemPriceDataProductDataOptions
-                                            {
-                                                Name = $"Payment for Service {service.Id}"
-                                            }
-                                        },
-                                        Quantity = 1
-                                    }
-                                },
-                                Mode = "payment",
-                                SuccessUrl = $"{domain}/success?userId={userId}&serviceId={service.Id}",
-                                CancelUrl = $"{domain}/cancel",
-                                CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "unknown@example.com",
-                                Metadata = new Dictionary<string, string>
-                                {
-                                    { "userId", userId.ToString() },
-                                    { "serviceId", service.Id.ToString() },
-                                    { "amount", amountToCharge.ToString() },
-                                    { "pendingHire", "true" },
-                                    { "searchData", JsonSerializer.Serialize(searchDto) },
-                                    { "parameters", JsonSerializer.Serialize(parameterDto) }
+                                            Name = $"Payment for Service {service.Id}"
+                                        }
+                                    },
+                                    Quantity = 1
                                 }
-                            };
+                            },
+                            Mode = "payment",
+                            SuccessUrl = $"{domain}/success?userId={userId}&serviceId={service.Id}",
+                            CancelUrl = $"{domain}/cancel",
+                            CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "unknown@example.com",
+                            Metadata = new Dictionary<string, string>
+                            {
+                                { "userId", userId.ToString() },
+                                { "serviceId", service.Id.ToString() },
+                                { "amount", amountToCharge.ToString() },
+                                { "pendingHire", "true" },
+                                { "searchData", JsonSerializer.Serialize(searchDto) },
+                                { "parameters", JsonSerializer.Serialize(parameterDto) }
+                            }
+                        };
 
-                            var serviceStripe = new SessionService();
-                            var session = await serviceStripe.CreateAsync(options);
-                            await transaction.CommitAsync();
+                        var serviceStripe = new SessionService();
+                        var session = await serviceStripe.CreateAsync(options);
+                        await transaction.CommitAsync();
 
-                            return Ok(new { url = session.Url });
-                        }
+                        return Ok(new { url = session.Url });
                     }
                         catch (StripeException ex)
                         {
@@ -529,6 +453,8 @@ namespace newApi.Controllers
                     .Include(s => s.User)
                     .Include(s => s.SearchParameters)
                     .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                         .ThenInclude(e => e.ExpertProfile)
                     .Include(s => s.SearchHire)
@@ -563,7 +489,8 @@ namespace newApi.Controllers
 
                 if (!string.IsNullOrEmpty(request.SearchHireStatus))
                 {
-                    query = query.Where(s => s.SearchHire != null && s.SearchHire.Status == request.SearchHireStatus);
+                    var statusId = await GetStatusIdByValueAsync(request.SearchHireStatus);
+                    query = query.Where(s => s.SearchHire != null && s.SearchHire.StatusId == statusId);
                 }
 
                 var totalCount = await query.CountAsync();
@@ -605,8 +532,8 @@ namespace newApi.Controllers
                         {
                             Id = s.SearchHire.Id,
                             ExpertId = s.SearchHire.ExpertId ?? 0,
-                            Status = s.SearchHire.Status,
-                            StatusTranslated = s.SearchHire.Status.ToSpanishTranslation(),
+                            Status = s.SearchHire.Status.StatusValue,
+                            StatusTranslated = s.SearchHire.Status.StatusValue.ToSpanishTranslation(),
                             CreatedAt = s.SearchHire.CreatedAt,
                             Expert = s.SearchHire.Expert != null ? new UserDto
                             {
@@ -678,6 +605,8 @@ namespace newApi.Controllers
             var userSearches = _context.Searches
                 .Where(s => s.UserId == userId)
                 .Include(s => s.SearchHire)
+                    .ThenInclude(sh => sh.Status)
+                .Include(s => s.SearchHire)
                     .ThenInclude(sh => sh.Conversations)
                     .ThenInclude(c => c.Messages)
                 .Include(s => s.SearchHire)
@@ -727,6 +656,7 @@ namespace newApi.Controllers
 
                 var search = await _context.Searches
                     .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Status)
                     .FirstOrDefaultAsync(s => s.Id == searchId && (s.UserId == userId || _authService.IsAdmin(User)));
 
                 if (search == null)
@@ -734,7 +664,7 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Search not found" });
                 }
 
-                if (search.SearchHire != null && !new[] { "pending", "awaiting_client_decision" }.Contains(search.SearchHire.Status))
+                if (search.SearchHire != null && !new[] { "pending", "awaiting_client_decision" }.Contains(search.SearchHire.Status.StatusValue))
                 {
                     return BadRequest(new { message = "No se puede modificar el estado de una búsqueda finalizada" });
                 }
@@ -807,6 +737,8 @@ namespace newApi.Controllers
                     .Include(s => s.User)
                     .Include(s => s.SearchParameters)
                     .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                         .ThenInclude(e => e.ExpertProfile)
                     .Include(s => s.SearchHire)
@@ -857,8 +789,8 @@ namespace newApi.Controllers
                     {
                         Id = search.SearchHire.Id,
                         ExpertId = search.SearchHire.ExpertId ?? 0,
-                        Status = search.SearchHire.Status,
-                        StatusTranslated = search.SearchHire.Status.ToSpanishTranslation(),
+                        Status = search.SearchHire.Status.StatusValue,
+                        StatusTranslated = search.SearchHire.Status.StatusValue.ToSpanishTranslation(),
                         CreatedAt = search.SearchHire.CreatedAt,
                         Expert = search.SearchHire.Expert != null ? new UserDto
                         {
@@ -937,6 +869,8 @@ namespace newApi.Controllers
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Client)
                     .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.SearchService)
@@ -969,7 +903,7 @@ namespace newApi.Controllers
                 // Obtener configuración de distribución de dinero a través del servicio
                 var systemStatusService = HttpContext.RequestServices.GetRequiredService<SystemStatusService>();
                 var moneyDistribution = await systemStatusService.GetMoneyDistributionAsync(
-                    search.SearchHire.Status, 
+                    search.SearchHire.Status.StatusValue, 
                     search.SearchHire.SearchService?.CategoryId, 
                     search.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
 
@@ -1046,7 +980,7 @@ namespace newApi.Controllers
                         SearchHire = search.SearchHire != null ? new SearchHireDto
                         {
                             Id = search.SearchHire.Id,
-                            Status = search.SearchHire.Status,
+                            Status = search.SearchHire.Status.StatusValue,
                             CreatedAt = search.SearchHire.CreatedAt,
                             Expert = search.SearchHire.Expert != null ? new UserDto
                             {

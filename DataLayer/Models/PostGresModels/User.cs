@@ -19,7 +19,6 @@ namespace newApi.DataLayer.Models.PostGresModels
         public DateTime CreatedAt { get; set; }
         public bool IsBlocked { get; set; }
         public UserRole Role { get; set; }
-        public decimal Balance { get; set; } = 0m; 
         public virtual ExpertProfile ExpertProfile { get; set; }
         public virtual ICollection<Search> Searches { get; set; }
         public virtual ICollection<Like> Likes { get; set; }

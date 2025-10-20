@@ -14,13 +14,15 @@ namespace newApi.Services
         private readonly ILogger<AppointmentService> _logger;
         private readonly SystemStatusService _systemStatusService;
         private readonly StripeRefundService _refundService;
+        private readonly ILoggingService _loggingService;
 
-        public AppointmentService(AppDbContext context, ILogger<AppointmentService> logger, SystemStatusService systemStatusService, StripeRefundService refundService)
+        public AppointmentService(AppDbContext context, ILogger<AppointmentService> logger, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService)
         {
             _context = context;
             _logger = logger;
             _systemStatusService = systemStatusService;
             _refundService = refundService;
+            _loggingService = loggingService;
         }
 
         /// <summary>
@@ -533,10 +535,12 @@ namespace newApi.Services
                             appointment.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId,
                             moneyConfig != null ? $"Client: {moneyConfig.ClientPercentage}%, Expert: {moneyConfig.ExpertPercentage}%, Platform: {moneyConfig.PlatformPercentage}%" : "NULL");
                         
-                        // Usar el servicio de refund para procesar la devolución automática
-                        var refundSuccess = await _refundService.ProcessAutomaticClientRefundAsync(
-                            appointment.SearchHireId, 
-                            "Segunda cancelación por rechazo del experto");
+                        // Orquestar refund+transfer según configuración del subestado de finalización
+                        var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                            appointment.SearchHireId,
+                            "appointment_cancelled_by_expert_second",
+                            "Segunda cancelación por rechazo del experto",
+                            userId);
                         
                         if (refundSuccess)
                         {
@@ -547,12 +551,48 @@ namespace newApi.Services
                         {
                             _logger.LogError("❌ AUTOMATIC REFUND FAILED - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
                                 appointment.Id, appointment.SearchHireId);
+                            
+                            // Log critical error for money transaction failure
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Automatic refund failed",
+                                details: $"Automatic refund failed for Appointment {appointment.Id}",
+                                userId: appointment.SearchHire?.ClientId,
+                                source: "AppointmentService.RejectAppointmentAsync",
+                                relatedEntityType: "Refund",
+                                relatedEntityId: appointment.SearchHireId,
+                                additionalData: new { 
+                                    AppointmentId = appointment.Id,
+                                    SearchHireId = appointment.SearchHireId,
+                                    Amount = appointment.SearchHire?.Amount,
+                                    ClientId = appointment.SearchHire?.ClientId,
+                                    ExpertId = appointment.SearchHire?.ExpertId
+                                }
+                            );
                         }
                     }
                     catch (Exception refundEx)
                     {
                         _logger.LogError(refundEx, "❌ ERROR PROCESSING AUTOMATIC REFUND - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
                             appointment.Id, appointment.SearchHireId);
+                        
+                        // Log critical error for money transaction failure
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Error processing automatic refund",
+                            details: refundEx.ToString(),
+                            userId: appointment.SearchHire?.ClientId,
+                            source: "AppointmentService.RejectAppointmentAsync",
+                            relatedEntityType: "Refund",
+                            relatedEntityId: appointment.SearchHireId,
+                            additionalData: new { 
+                                AppointmentId = appointment.Id,
+                                SearchHireId = appointment.SearchHireId,
+                                Amount = appointment.SearchHire?.Amount,
+                                ClientId = appointment.SearchHire?.ClientId,
+                                ExpertId = appointment.SearchHire?.ExpertId,
+                                ErrorMessage = refundEx.Message
+                            }
+                        );
+                        
                         // No lanzar la excepción para no afectar el flujo principal
                     }
                 }
@@ -655,6 +695,29 @@ namespace newApi.Services
                     var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
                     appointment.SearchHire.StatusId = statusId;
                     appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                }
+
+                // Si el subestado NO es de finalización, no invocar orquestador (primera cancelación, reprogramable)
+                if (cancelledStatus.IsFinalizationStatus)
+                {
+                    // Orquestar movimientos de dinero según el estado determinado (subestado → fallback final), respetando granularidad
+                    try
+                    {
+                        var distributionOk = await _refundService.ProcessMoneyDistributionAsync(
+                            appointment.SearchHireId,
+                            statusValue,
+                            "Cancellation flow from CancelAppointmentAsync",
+                            userId);
+                        if (!distributionOk)
+                        {
+                            _logger.LogWarning("Money distribution not applied for AppointmentId={AppointmentId}, SearchHireId={SearchHireId}, Status={Status}",
+                                appointment.Id, appointment.SearchHireId, statusValue);
+                        }
+                    }
+                    catch (Exception distEx)
+                    {
+                        _logger.LogError(distEx, "Error orchestrating money distribution for AppointmentId={AppointmentId}, SearchHireId={SearchHireId}", appointment.Id, appointment.SearchHireId);
+                    }
                 }
 
                 // Marcar todos los timers activos como expirados

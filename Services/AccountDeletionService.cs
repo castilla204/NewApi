@@ -24,6 +24,7 @@ namespace newApi.Services
         private readonly IAccountDeletionNotificationService _notificationService;
         private readonly SystemStatusService _systemStatusService;
         private readonly StripeRefundService _refundService;
+        private readonly ILoggingService _loggingService;
 
         // Estados de contratación que requieren atención especial
         private readonly string[] _activeStatuses = { "pending", "awaiting_client_decision", "disputed" };
@@ -34,7 +35,8 @@ namespace newApi.Services
             IConfiguration configuration,
             IAccountDeletionNotificationService notificationService,
             SystemStatusService systemStatusService,
-            StripeRefundService refundService)
+            StripeRefundService refundService,
+            ILoggingService loggingService)
         {
             _context = context;
             _logger = logger;
@@ -42,6 +44,7 @@ namespace newApi.Services
             _notificationService = notificationService;
             _systemStatusService = systemStatusService;
             _refundService = refundService;
+            _loggingService = loggingService;
         }
 
         /// <summary>
@@ -405,12 +408,32 @@ namespace newApi.Services
                     throw new Exception($"SearchHire is not in active status: {searchHire.Status}");
                 }
 
-                 // 💳 PROCESAR REFUND REAL EN STRIPE usando el método existente
-                 var refundSuccess = await _refundService.ProcessAutomaticClientRefundAsync(searchHire.Id, reason);
+                 // Orquestar refund+transfer según configuración del estado de cancelación por eliminación
+                 var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                     searchHire.Id,
+                     "appointment_cancelled_by_expert",
+                     reason);
                  
                  if (!refundSuccess)
                  {
                      _logger.LogError("Failed to process Stripe refund for account deletion searchHireId={SearchHireId}", searchHire.Id);
+                     
+                     // Log critical error for money transaction failure
+                     await _loggingService.LogCriticalAsync(
+                         message: "CRITICAL: Failed to process Stripe refund for account deletion",
+                         details: $"Stripe refund failed for account deletion SearchHire {searchHire.Id}",
+                         userId: searchHire.ClientId,
+                         source: "AccountDeletionService.ProcessClientRefundAsync",
+                         relatedEntityType: "Refund",
+                         relatedEntityId: searchHire.Id,
+                         additionalData: new { 
+                             SearchHireId = searchHire.Id,
+                             Amount = searchHire.Amount,
+                             ClientId = searchHire.ClientId,
+                             Reason = "Account deletion"
+                         }
+                     );
+                     
                      throw new Exception("Failed to process Stripe refund");
                  }
 
@@ -427,6 +450,20 @@ namespace newApi.Services
             {
                 _logger.LogError(ex, "Error processing client refund for searchHireId={SearchHireId}: {ErrorMessage}", 
                     searchHireId, ex.Message);
+                
+                // Log critical error for money transaction failure
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error processing client refund for account deletion",
+                    details: ex.ToString(),
+                    source: "AccountDeletionService.ProcessClientRefundAsync",
+                    relatedEntityType: "Refund",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        ErrorMessage = ex.Message
+                    }
+                );
+                
                 throw;
             }
         }
@@ -488,6 +525,22 @@ namespace newApi.Services
             if (string.IsNullOrEmpty(expertStripeAccountId))
             {
                 _logger.LogError("Expert has no Stripe account for searchHireId={SearchHireId}, expertId={ExpertId}", searchHireId, searchHire.ExpertId);
+                
+                // Log critical error for money transaction failure
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Expert has no Stripe account for transfer",
+                    details: $"Expert {searchHire.ExpertId} has no Stripe account configured for transfer",
+                    userId: searchHire.ExpertId,
+                    source: "AccountDeletionService.ProcessTransferToExpertAsync",
+                    relatedEntityType: "Transfer",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        Amount = searchHire.Amount,
+                        ExpertId = searchHire.ExpertId
+                    }
+                );
+                
                 throw new Exception("Expert has no Stripe account configured");
             }
 
@@ -531,12 +584,48 @@ namespace newApi.Services
             {
                 _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", 
                     searchHireId, ex.Message);
+                
+                // Log critical error for money transaction failure
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Stripe transfer error for account deletion",
+                    details: ex.ToString(),
+                    userId: searchHire?.ExpertId,
+                    source: "AccountDeletionService.ProcessTransferToExpertAsync",
+                    relatedEntityType: "Transfer",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        Amount = searchHire?.Amount,
+                        ExpertId = searchHire?.ExpertId,
+                        StripeError = ex.Message,
+                        StripeErrorType = ex.StripeError?.Type,
+                        StripeErrorCode = ex.StripeError?.Code
+                    }
+                );
+                
                 throw new Exception($"Stripe transfer failed: {ex.Message}");
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", 
                     searchHireId, ex.Message);
+                
+                // Log critical error for money transaction failure
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error processing transfer for account deletion",
+                    details: ex.ToString(),
+                    userId: searchHire?.ExpertId,
+                    source: "AccountDeletionService.ProcessTransferToExpertAsync",
+                    relatedEntityType: "Transfer",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        Amount = searchHire?.Amount,
+                        ExpertId = searchHire?.ExpertId,
+                        ErrorMessage = ex.Message
+                    }
+                );
+                
                 throw;
             }
         }

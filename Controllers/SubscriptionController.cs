@@ -38,10 +38,11 @@ namespace newApi.Controllers
         private readonly string? _generalWebhookSecret;
         private readonly IUserActionLoggingService _userActionLogging;
         private readonly SystemStatusService _systemStatusService;
+        private readonly StripeRefundService _refundService;
         private readonly IAuthorizationServices _authService;
         private readonly ILoggingService _loggingService;
 
-        public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, IUserActionLoggingService userActionLogging, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService)
+        public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, IUserActionLoggingService userActionLogging, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService)
         {
             _logger = logger;
             _logger.LogInformation("Initializing SubscriptionController");
@@ -53,6 +54,7 @@ namespace newApi.Controllers
             _authService = authService;
             _storageClient = storageClient;
             _loggingService = loggingService;
+            _refundService = refundService;
             _webhookSecret = _configuration["Stripe:WebhookSecret"];
             _generalWebhookSecret = _configuration["Stripe:GeneralWebhookSecret"];
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
@@ -2391,10 +2393,20 @@ namespace newApi.Controllers
                 }
 
                 // 💳 Crear refund en Stripe
+                // Si es un reembolso parcial, calcular el importe en céntimos a partir del PaymentIntent
+                long? refundAmountInCents = null;
+                if (refundPercentage < 100)
+                {
+                    var piService = new PaymentIntentService();
+                    var paymentIntent = await piService.GetAsync(paymentIntentId);
+                    // Amount está en céntimos
+                    refundAmountInCents = (long)Math.Round(paymentIntent.Amount * (decimal)refundPercentage / 100m);
+                }
+
                 var refundOptions = new RefundCreateOptions
                 {
                     PaymentIntent = paymentIntentId,
-                    Amount = refundPercentage == 100 ? null : (long?)(refundPercentage * 100), // null = 100%, específico = porcentaje
+                    Amount = refundAmountInCents, // null = 100%
                     Reason = RefundReasons.RequestedByCustomer,
                     Metadata = new Dictionary<string, string>
                     {
@@ -2658,14 +2670,25 @@ namespace newApi.Controllers
                         }
                         else
                         {
-                            await ProcessTransferToExpert(searchHire.Id);
+                            var ok = await _refundService.ProcessMoneyDistributionAsync(
+                                searchHire.Id,
+                                "completed",
+                                "Client approved service",
+                                userId);
+                            if (!ok)
+                            {
+                                await transaction.RollbackAsync();
+                                _logger.LogError("Money distribution failed for searchHireId={SearchHireId}", searchHire.Id);
+                                return StatusCode(500, new { message = "Failed to process payment to expert" });
+                            }
+
                             searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Completed.ToStringValue());
                             searchHire.UpdatedAt = DateTime.UtcNow;
-                            _logger.LogInformation("Client approved service, transfer completed for searchHireId={SearchHireId}", searchHire.Id);
+                            _logger.LogInformation("Client approved service, distribution completed for searchHireId={SearchHireId}", searchHire.Id);
                             
                             // 📝 LOGGING: Registrar acción de aprobación
                             await _userActionLogging.LogUserActionAsync(userId, "APPROVE_SERVICE", 
-                                $"Aprobó servicio {searchHire.Id} y se completó transferencia", 
+                                $"Aprobó servicio {searchHire.Id} y se completó distribución", 
                                 "SearchHire", searchHire.Id);
                         }
 
@@ -2732,10 +2755,13 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Service is not pending" });
                 }
 
-                // 💳 PROCESAR REFUND REAL EN STRIPE usando el método existente
-                var refundReason = $"Expert cancelled service {searchHire.Id}";
-                var refundSuccess = await ProcessAutomaticClientRefundAsync(searchHire.Id, refundReason);
-                
+                // 💳 Orquestador central: refund/transfer según configuración
+                var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                    searchHire.Id,
+                    "appointment_cancelled_by_expert",
+                    $"Expert cancelled service {searchHire.Id}",
+                    userId);
+
                 if (!refundSuccess)
                 {
                     _logger.LogError("Failed to process Stripe refund for searchHireId={SearchHireId}", searchHire.Id);
@@ -2764,7 +2790,7 @@ namespace newApi.Controllers
                     $"Canceló servicio {searchHire.Id} como experto con refund real de Stripe", 
                         "SearchHire", searchHire.Id);
 
-                _logger.LogInformation("Service cancelled with real Stripe refund for searchHireId={SearchHireId}, clientId={ClientId}", searchHire.Id, searchHire.ClientId);
+                _logger.LogInformation("Service cancelled with central refund for searchHireId={SearchHireId}, clientId={ClientId}", searchHire.Id, searchHire.ClientId);
                 return Ok(new { message = "Service cancelled and refunded via Stripe" });
             }
             catch (Exception ex)
@@ -2810,81 +2836,49 @@ namespace newApi.Controllers
 
                 if (request.ResolveInFavorOfClient)
                 {
-                    // 💸 REFUND AUTOMÁTICO: Procesar reembolso real a Stripe a favor del cliente
-                    var success = await ProcessAutomaticClientRefundAsync(searchHire.Id, "Admin force-finalized in favor of client");
-                    
-                    if (success)
+                    var success = await _refundService.ProcessMoneyDistributionAsync(
+                        searchHire.Id,
+                        "dispute_resolved_client",
+                        "Force finalize in favor of client",
+                        int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"));
+
+                    if (!success)
                     {
-                        searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedClient.ToStringValue());
-                        _logger.LogInformation("Force-finalized in favor of client with automatic refund for searchHireId={SearchHireId}, refunded amount={Amount}",
-searchHire.Id, searchHire.Amount);
-                        
-                        // 📝 LOGGING: Registrar finalización forzada a favor del cliente con refund
-                        await _userActionLogging.LogAdminActionAsync(int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"), "FORCE_FINALIZE_CLIENT_REFUND", 
-                            $"Finalizó forzadamente servicio {searchHire.Id} a favor del cliente con refund automático", 
-                            "SearchHire", searchHire.Id);
-                        
-                        return Ok(new { message = "Service finalized successfully in favor of client with automatic refund" });
-                    }
-                    else
-                    {
-                        _logger.LogError("Failed to process automatic client refund for searchHireId={SearchHireId}", searchHire.Id);
+                        _logger.LogError("Failed to process client refund via orchestrator for force-finalize searchHireId={SearchHireId}", searchHire.Id);
                         return StatusCode(500, new { message = "Failed to process client refund" });
                     }
+
+                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedClient.ToStringValue());
+                    _logger.LogInformation("Force-finalized in favor of client via orchestrator for searchHireId={SearchHireId}", searchHire.Id);
+
+                    await _userActionLogging.LogAdminActionAsync(int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"), "FORCE_FINALIZE_CLIENT_REFUND", 
+                        $"Finalizó forzadamente servicio {searchHire.Id} a favor del cliente con orquestador", 
+                        "SearchHire", searchHire.Id);
+
+                    return Ok(new { message = "Service finalized successfully in favor of client" });
                 }
                 else
                 {
-                    // Verificar que el experto tenga Stripe configurado antes de transferir
-                    if (string.IsNullOrEmpty(searchHire.Expert.ExpertProfile?.StripeAccountId))
+                    var success = await _refundService.ProcessMoneyDistributionAsync(
+                        searchHire.Id,
+                        "dispute_resolved_expert",
+                        "Force finalize in favor of expert",
+                        int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"));
+
+                    if (!success)
                     {
-                        _logger.LogError("Expert has no Stripe account configured for searchHireId={SearchHireId}, expertId={ExpertId}", 
-                            searchHire.Id, searchHire.ExpertId);
-                        return BadRequest(new { message = "Expert has no Stripe account configured" });
-                    }
-                    
-                    // Procesar transferencia al experto
-                    using var transaction = await _context.Database.BeginTransactionAsync();
-                    try
-                    {
-                        await ProcessTransferToExpert(searchHire.Id);
-                        // Actualizar estado a disputa resuelta a favor del experto
-                        searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedExpert.ToStringValue());
-                        
-                        await _context.SaveChangesAsync();
-                        await transaction.CommitAsync();
-                        
-                        // 📝 LOGGING: Registrar finalización forzada a favor del experto
-                        await _userActionLogging.LogAdminActionAsync(int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"), "FORCE_FINALIZE_EXPERT", 
-                            $"Finalizó forzadamente servicio {searchHire.Id} a favor del experto", 
-                            "SearchHire", searchHire.Id);
-                        
-                        // 🎯 USAR CONFIGURACIÓN REAL EN LUGAR DE COMISIÓN HARDCODEADA
-                        var config = await GetMoneyDistributionConfigAsync("completed", 
-                            searchHire.SearchService?.CategoryId, 
-                            searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
-                        
-                        var actualAmount = config != null ? 
-                            searchHire.Amount * (config.ExpertPercentage / 100) : 
-                            searchHire.Amount * 0.9m; // Fallback si no hay configuración
-                        
-                        _logger.LogInformation("Force-finalized in favor of expert for searchHireId={SearchHireId}, transferred amount={Amount}",
-                            searchHire.Id, actualAmount);
-                        
-                        return Ok(new { message = "Service finalized successfully in favor of expert" });
-                    }
-                    catch (StripeException ex)
-                    {
-                        await transaction.RollbackAsync();
-                        _logger.LogError(ex, "Stripe error finalizing service for searchHireId={SearchHireId}: {ErrorMessage}",
-                            searchHire.Id, ex.Message);
+                        _logger.LogError("Failed to process expert payout via orchestrator for force-finalize searchHireId={SearchHireId}", searchHire.Id);
                         return StatusCode(500, new { message = "Failed to process service finalization" });
                     }
-                    catch (Exception ex)
-                    {
-                        await transaction.RollbackAsync();
-                        _logger.LogError(ex, "Database error finalizing service for searchHireId={SearchHireId}", searchHire.Id);
-                        return StatusCode(500, new { message = "Failed to finalize service" });
-                    }
+
+                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedExpert.ToStringValue());
+                    _logger.LogInformation("Force-finalized in favor of expert via orchestrator for searchHireId={SearchHireId}", searchHire.Id);
+
+                    await _userActionLogging.LogAdminActionAsync(int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"), "FORCE_FINALIZE_EXPERT", 
+                        $"Finalizó forzadamente servicio {searchHire.Id} a favor del experto con orquestador", 
+                        "SearchHire", searchHire.Id);
+
+                    return Ok(new { message = "Service finalized successfully in favor of expert" });
                 }
             }
             catch (Exception ex)
@@ -2950,47 +2944,55 @@ searchHire.Id, searchHire.Amount);
                     dispute.Status = "Resolved";
                     dispute.ResolutionComments = request.Resolution;
 
-                    if (request.ResolveInFavorOfClient)
+                if (request.ResolveInFavorOfClient)
+                {
+                    // Orquestador: 100% a cliente según configuración de disputa
+                    var success = await _refundService.ProcessMoneyDistributionAsync(
+                        searchHire.Id,
+                        "dispute_resolved_client",
+                        $"Dispute resolved in favor of client: {request.Resolution}",
+                        int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"));
+
+                    if (!success)
                     {
-                        // 💸 REFUND AUTOMÁTICO: Procesar reembolso real a Stripe a favor del cliente
-                        var success = await ProcessAutomaticClientRefundAsync(searchHire.Id, $"Dispute resolved in favor of client: {request.Resolution}");
-                        
-                        if (!success)
-                        {
-                            _logger.LogError("Failed to process automatic client refund for dispute searchHireId={SearchHireId}", searchHire.Id);
-                            await transaction.RollbackAsync();
-                            return StatusCode(500, new { message = "Failed to process client refund" });
-                        }
-                        
-                        searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedClient.ToStringValue());
-                        _logger.LogInformation("Dispute resolved in favor of client with automatic refund for searchHireId={SearchHireId}", searchHire.Id);
-                        
-                        // 📝 LOGGING: Registrar resolución de disputa a favor del cliente con refund
-                        var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-                        await _userActionLogging.LogAdminActionAsync(adminUserId, "RESOLVE_DISPUTE_CLIENT_REFUND", 
-                            $"Resolvió disputa {searchHire.Id} a favor del cliente con refund automático: {request.Resolution}", 
-                            "SearchHire", searchHire.Id);
+                        _logger.LogError("Failed to process client refund via orchestrator for dispute searchHireId={SearchHireId}", searchHire.Id);
+                        await transaction.RollbackAsync();
+                        return StatusCode(500, new { message = "Failed to process client refund" });
                     }
+
+                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedClient.ToStringValue());
+                    _logger.LogInformation("Dispute resolved in favor of client via orchestrator for searchHireId={SearchHireId}", searchHire.Id);
+
+                    // 📝 LOGGING
+                    var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                    await _userActionLogging.LogAdminActionAsync(adminUserId, "RESOLVE_DISPUTE_CLIENT_REFUND", 
+                        $"Resolvió disputa {searchHire.Id} a favor del cliente con orquestador: {request.Resolution}", 
+                        "SearchHire", searchHire.Id);
+                }
                     else
                     {
-                        // Verificar que el experto tenga Stripe configurado antes de transferir
-                        if (string.IsNullOrEmpty(searchHire.Expert.ExpertProfile?.StripeAccountId))
-                        {
-                            _logger.LogError("Expert has no Stripe account configured for searchHireId={SearchHireId}, expertId={ExpertId}", 
-                                searchHire.Id, searchHire.ExpertId);
-                            await transaction.RollbackAsync();
-                            return BadRequest(new { message = "Expert has no Stripe account configured" });
-                        }
-                        
-                        await ProcessTransferToExpert(searchHire.Id);
-                        searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedExpert.ToStringValue());
-                        _logger.LogInformation("Dispute resolved in favor of expert for searchHireId={SearchHireId}", searchHire.Id);
-                        
-                        // 📝 LOGGING: Registrar resolución de disputa a favor del experto
-                        var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-                        await _userActionLogging.LogAdminActionAsync(adminUserId, "RESOLVE_DISPUTE_EXPERT", 
-                            $"Resolvió disputa {searchHire.Id} a favor del experto: {request.Resolution}", 
-                            "SearchHire", searchHire.Id);
+                    // Orquestador: 100% a experto según configuración de disputa
+                    var success = await _refundService.ProcessMoneyDistributionAsync(
+                        searchHire.Id,
+                        "dispute_resolved_expert",
+                        $"Dispute resolved in favor of expert: {request.Resolution}",
+                        int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"));
+
+                    if (!success)
+                    {
+                        _logger.LogError("Failed to process expert payout via orchestrator for dispute searchHireId={SearchHireId}", searchHire.Id);
+                        await transaction.RollbackAsync();
+                        return StatusCode(500, new { message = "Failed to process expert payout" });
+                    }
+
+                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedExpert.ToStringValue());
+                    _logger.LogInformation("Dispute resolved in favor of expert via orchestrator for searchHireId={SearchHireId}", searchHire.Id);
+
+                    // 📝 LOGGING
+                    var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                    await _userActionLogging.LogAdminActionAsync(adminUserId, "RESOLVE_DISPUTE_EXPERT", 
+                        $"Resolvió disputa {searchHire.Id} a favor del experto con orquestador: {request.Resolution}", 
+                        "SearchHire", searchHire.Id);
                     }
                     searchHire.UpdatedAt = DateTime.UtcNow;
 
@@ -3341,18 +3343,21 @@ searchHire.Id, searchHire.Amount);
 
                 if (!hasExpertMessage)
                 {
-                    _logger.LogWarning("Expert has not responded within 24 hours for searchHireId={SearchHireId}, processing automatic refund", searchHireId);
-                    
-                    // Procesar reembolso automático
-                    var success = await ProcessClientRefundAsync(searchHireId, "Expert did not respond within 24 hours - automatic refund");
-                    
+                    _logger.LogWarning("Expert has not responded within 24 hours for searchHireId={SearchHireId}, processing automatic refund via orchestrator", searchHireId);
+
+                    var success = await _refundService.ProcessMoneyDistributionAsync(
+                        searchHireId,
+                        "appointment_cancelled_by_no_response",
+                        "Automatic refund: expert did not respond within 24 hours",
+                        searchHire.ClientId);
+
                     if (success)
                     {
-                        _logger.LogInformation("Automatic refund processed successfully for searchHireId={SearchHireId}", searchHireId);
+                        _logger.LogInformation("Automatic refund (no response) processed successfully for searchHireId={SearchHireId}", searchHireId);
                     }
                     else
                     {
-                        _logger.LogError("Failed to process automatic refund for searchHireId={SearchHireId}", searchHireId);
+                        _logger.LogError("Failed to process automatic refund (no response) for searchHireId={SearchHireId}", searchHireId);
                     }
                 }
                 else

@@ -19,12 +19,16 @@ namespace newApi.Services
         private readonly AppDbContext _context;
         private readonly ILogger<CheckingClientDecisionService> _logger;
         private readonly SystemStatusService _systemStatusService;
+        private readonly StripeRefundService _refundService;
+        private readonly ILoggingService _loggingService;
 
-        public CheckingClientDecisionService(AppDbContext context, ILogger<CheckingClientDecisionService> logger, SystemStatusService systemStatusService)
+        public CheckingClientDecisionService(AppDbContext context, ILogger<CheckingClientDecisionService> logger, SystemStatusService systemStatusService, ILoggingService loggingService, StripeRefundService refundService)
         {
             _context = context;
             _logger = logger;
             _systemStatusService = systemStatusService;
+            _loggingService = loggingService;
+            _refundService = refundService;
         }
 
         public async Task ProcessTransferToExpert(int searchHireId)
@@ -64,69 +68,34 @@ namespace newApi.Services
                 throw new Exception($"Transfer already exists for this SearchHire: {searchHire.ExpertTransferId}");
             }
 
-                // 🎯 USAR SISTEMA DE CONFIGURACIONES EN LUGAR DE COMISIÓN FIJA
-                var config = await GetMoneyDistributionConfigAsync("appointment_awaiting_report", 
-                    searchHire.SearchService?.CategoryId, 
-                    searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
-                
-                if (config == null)
+                // Orquestar distribución según configuración: usar estado final 'completed'
+                var ok = await _refundService.ProcessMoneyDistributionAsync(
+                    searchHireId,
+                    "completed",
+                    "Auto transfer after client decision",
+                    null);
+
+                if (!ok)
                 {
-                    _logger.LogError("No money distribution configuration found for searchHireId={SearchHireId}", searchHireId);
-                    throw new Exception("No money distribution configuration found");
+                    throw new Exception("Money distribution orchestration failed");
                 }
-                
-                var amountToExpert = searchHire.Amount * (config.ExpertPercentage / 100);
-                var amountInCents = (long)(amountToExpert * 100);
-                
-                _logger.LogInformation("Using money distribution config: Expert={ExpertPercentage}%, Platform={PlatformPercentage}%, Source={Source} for searchHireId={SearchHireId}", 
-                    config.ExpertPercentage, config.PlatformPercentage, config.Source, searchHireId);
-
-                var expertStripeAccountId = searchHire.Expert?.ExpertProfile?.StripeAccountId;
-                if (string.IsNullOrEmpty(expertStripeAccountId))
-                {
-                    _logger.LogError("Expert has no Stripe account for searchHireId={SearchHireId}, expertId={ExpertId}", searchHireId, searchHire.ExpertId);
-                    throw new Exception("Expert has no Stripe account configured");
-                }
-
-                var transferOptions = new TransferCreateOptions
-                {
-                    Amount = amountInCents,
-                    Currency = "eur",
-                    Destination = expertStripeAccountId,
-                    Metadata = new Dictionary<string, string>
-                {
-                    { "searchHireId", searchHireId.ToString() }
-                }
-                };
-
-                var transferService = new TransferService();
-                var transfer = await transferService.CreateAsync(transferOptions);
-                searchHire.ExpertTransferId = transfer.Id;
-                _logger.LogInformation("Transfer created for searchHireId={SearchHireId}, transferId={TransferId}, amount={Amount}", searchHireId, transfer.Id, amountToExpert);
-
-
-
-                var expertTransaction = new FinancialTransaction
-                {
-                    UserId = searchHire.ExpertId ?? 0,
-                    Amount = amountToExpert,
-                    TransactionType = "Payout",
-                    RelatedEntityType = "SearchHire",
-                    RelatedEntityId = searchHireId,
-                    CreatedAt = DateTime.UtcNow
-                };
-                _context.FinancialTransactions.Add(expertTransaction);
-
-                // 🚨 ACTUALIZAR BALANCE DEL CLIENTE (dinero ya se retiró al contratar)
-                // El balance del cliente ya se redujo cuando contrató el servicio
-                // Aquí solo registramos la transacción de pago al experto
-
-                // NO hacer SaveChanges aquí - se hace en el código que llama
-                // await _context.SaveChangesAsync();
             }
             catch (Exception ex)
             {
-                throw ex;
+                // Log critical error for money transaction failure
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error processing transfer to expert",
+                    details: ex.ToString(),
+                    source: "CheckingClientDecisionService.ProcessTransferToExpert",
+                    relatedEntityType: "Transfer",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        ErrorMessage = ex.Message
+                    }
+                );
+                
+                throw;
             }
 
         }

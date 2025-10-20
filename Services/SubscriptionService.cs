@@ -14,13 +14,15 @@ namespace newApi.Services
         private readonly ILogger _logger; 
         private readonly ICheckingClientDecisionService _checkingClientDecisionService;
         private readonly StripeRefundService _refundService;
+        private readonly ILoggingService _loggingService;
 
-        public SubscriptionService(AppDbContext context, ILogger<SubscriptionService> logger, ICheckingClientDecisionService checkingClientDecisionService, StripeRefundService refundService)
+        public SubscriptionService(AppDbContext context, ILogger<SubscriptionService> logger, ICheckingClientDecisionService checkingClientDecisionService, StripeRefundService refundService, ILoggingService loggingService)
         {
             _context = context;
             _logger = logger;
             _checkingClientDecisionService = checkingClientDecisionService;
             _refundService = refundService;
+            _loggingService = loggingService;
         }
 
         /// <summary>
@@ -43,14 +45,15 @@ namespace newApi.Services
 
         public async Task<SubscriptionLimits> GetUserSubscriptionLimits(int userId)
         {
+            // Suscripciones periódicas deshabilitadas: se elimina lectura de SubscriptionPlan
+            // Implementación anterior comentada para referencia:
+            /*
             try
             {
-                // Get user with subscription plan
                 var user = await _context.Users
                     .Include(u => u.SubscriptionPlan)
                     .FirstOrDefaultAsync(u => u.Id == userId);
 
-                // If no subscription found, get the free plan
                 if (user?.SubscriptionPlan == null)
                 {
                     var freePlan = await _context.SubscriptionPlans
@@ -59,11 +62,7 @@ namespace newApi.Services
                     if (freePlan == null)
                     {
                         _logger.LogWarning("No free plan found in database");
-                        return new SubscriptionLimits
-                        {
-                            MaxSearches = 1,
-                            MinSearchInterval = 24
-                        };
+                        return new SubscriptionLimits { MaxSearches = 1, MinSearchInterval = 24 };
                     }
 
                     return new SubscriptionLimits
@@ -84,6 +83,11 @@ namespace newApi.Services
                 _logger.LogError(ex, "Error getting subscription limits for user {UserId}", userId);
                 throw;
             }
+            */
+
+            // Devolver límites neutros por ahora
+            await Task.CompletedTask;
+            return new SubscriptionLimits { MaxSearches = 9999, MinSearchInterval = 0 };
         }
 
         public async Task ProcessExpiredServicesAsync()
@@ -128,6 +132,23 @@ namespace newApi.Services
                             searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.TransferFailed.ToStringValue());
                             searchHire.UpdatedAt = DateTime.UtcNow;
                             _logger.LogError("Failed to refund client for expired searchHireId={SearchHireId}, marked as transfer_failed", searchHire.Id);
+                            
+                            // Log critical error for money transaction failure
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Failed to refund client for expired service",
+                                details: $"Failed to process refund for expired SearchHire {searchHire.Id}",
+                                userId: searchHire.ClientId,
+                                source: "SubscriptionService.ProcessExpiredServicesAsync",
+                                relatedEntityType: "Refund",
+                                relatedEntityId: searchHire.Id,
+                                additionalData: new { 
+                                    SearchHireId = searchHire.Id,
+                                    Amount = searchHire.Amount,
+                                    ClientId = searchHire.ClientId,
+                                    ExpertId = searchHire.ExpertId,
+                                    Reason = "Expert did not respond within deadline"
+                                }
+                            );
                         }
 
                         await _context.SaveChangesAsync();
@@ -137,6 +158,23 @@ namespace newApi.Services
                     {
                         await transaction.RollbackAsync();
                         _logger.LogError(ex, "Error processing searchHireId={SearchHireId}", searchHire.Id);
+                        
+                        // Log critical error for money transaction failure
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Error processing expired service",
+                            details: ex.ToString(),
+                            userId: searchHire.ClientId,
+                            source: "SubscriptionService.ProcessExpiredServicesAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHire.Id,
+                            additionalData: new { 
+                                SearchHireId = searchHire.Id,
+                                Amount = searchHire.Amount,
+                                ClientId = searchHire.ClientId,
+                                ExpertId = searchHire.ExpertId,
+                                ErrorMessage = ex.Message
+                            }
+                        );
                     }
                 }
             }
@@ -201,6 +239,24 @@ namespace newApi.Services
                             catch (Exception ex)
                             {
                                 _logger.LogError(ex, "Failed to process transfer for SearchHireId={SearchHireId}", item.Id);
+                                
+                                // Log critical error for money transaction failure
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Failed to process transfer to expert",
+                                    details: ex.ToString(),
+                                    userId: item.ExpertId,
+                                    source: "SubscriptionService.ProcessAwaitingClientDecisionAsync",
+                                    relatedEntityType: "Transfer",
+                                    relatedEntityId: item.Id,
+                                    additionalData: new { 
+                                        SearchHireId = item.Id,
+                                        Amount = item.Amount,
+                                        ClientId = item.ClientId,
+                                        ExpertId = item.ExpertId,
+                                        ErrorMessage = ex.Message
+                                    }
+                                );
+                                
                                 continue; // Skip to next record if transfer fails
                             }
 
@@ -242,6 +298,19 @@ namespace newApi.Services
                     {
                         await transaction.RollbackAsync();
                         _logger.LogError(ex, "Error processing batch of SearchHires starting at index {Index}", i);
+                        
+                        // Log critical error for money transaction failure
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Error processing batch of SearchHires",
+                            details: ex.ToString(),
+                            source: "SubscriptionService.ProcessAwaitingClientDecisionAsync",
+                            relatedEntityType: "BatchTransfer",
+                            additionalData: new { 
+                                BatchIndex = i,
+                                BatchSize = batch.Count,
+                                ErrorMessage = ex.Message
+                            }
+                        );
                     }
                 }
             }
@@ -279,12 +348,32 @@ namespace newApi.Services
                     return false;
                 }
 
-                // 💳 PROCESAR REFUND REAL EN STRIPE usando el método existente
-                var refundSuccess = await _refundService.ProcessAutomaticClientRefundAsync(searchHireId, reason);
+                // Orquestar refund+transfer según configuración del estado de no respuesta
+                var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                    searchHireId,
+                    "appointment_cancelled_by_no_response",
+                    reason);
                 
                 if (!refundSuccess)
                 {
                     _logger.LogError("Failed to process Stripe refund for searchHireId={SearchHireId}", searchHireId);
+                    
+                    // Log critical error for money transaction failure
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Failed to process Stripe refund",
+                        details: $"Stripe refund failed for SearchHire {searchHireId}",
+                        userId: searchHire?.ClientId,
+                        source: "SubscriptionService.ProcessClientRefundAsync",
+                        relatedEntityType: "Refund",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { 
+                            SearchHireId = searchHireId,
+                            Amount = searchHire?.Amount,
+                            ClientId = searchHire?.ClientId,
+                            Reason = reason
+                        }
+                    );
+                    
                     return false;
                 }
 
@@ -303,6 +392,20 @@ namespace newApi.Services
             {
                 _logger.LogError(ex, "Error in ProcessClientRefundAsync for searchHireId={SearchHireId}: {ErrorMessage}", 
                     searchHireId, ex.Message);
+                
+                // Log critical error for money transaction failure
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: ProcessClientRefundAsync failed",
+                    details: ex.ToString(),
+                    source: "SubscriptionService.ProcessClientRefundAsync",
+                    relatedEntityType: "Refund",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        ErrorMessage = ex.Message
+                    }
+                );
+                
                 return false;
             }
         }

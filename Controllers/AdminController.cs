@@ -54,9 +54,10 @@ namespace newApi.Controllers
                         _logger.LogInformation("Processing refund for SearchHire {SearchHireId}, Amount: {Amount}, ClientId: {ClientId}", 
                             searchHire.Id, searchHire.Amount, searchHire.ClientId);
 
-                        // Procesar el refund usando el servicio existente
-                        var refundSuccess = await _refundService.ProcessAutomaticClientRefundAsync(
-                            searchHire.Id, 
+                        // Usar orquestador para la segunda cancelación del experto
+                        var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                            searchHire.Id,
+                            "appointment_cancelled_by_expert_second",
                             "Refund procesado manualmente para segunda cancelación no procesada");
 
                         results.Add(new

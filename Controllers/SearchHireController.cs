@@ -227,10 +227,12 @@ namespace newApi.Controllers
                 {
                     _logger.LogWarning("Expert has not responded within 24 hours for searchHireId={SearchHireId}, processing automatic refund", searchHireId);
                     
-                    // 💳 PROCESAR REFUND REAL EN STRIPE usando el método existente
+                    // Orquestar distribución de dinero por estado final 'cancelled'
                     var refundReason = "Expert did not respond within 24 hours - automatic refund";
-                    var refundSuccess = await _refundService.ProcessAutomaticClientRefundAsync(searchHireId, refundReason);
-                    
+                    var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                        searchHireId,
+                        "cancelled",
+                        refundReason);
                     if (!refundSuccess)
                     {
                         _logger.LogError("Failed to process Stripe refund for automatic refund searchHireId={SearchHireId}", searchHireId);

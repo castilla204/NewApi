@@ -381,37 +381,39 @@ namespace newApi.Controllers
                         switch (request.Action.ToLower())
                         {
                             case "refund_client":
-                                // 💳 PROCESAR REFUND REAL EN STRIPE usando el método existente
-                                var refundReason = $"Dispute resolved in favor of client: {request.ResolutionComments}";
-                                var refundSuccess = await _refundService.ProcessAutomaticClientRefundAsync(dispute.SearchHire.Id, refundReason);
-                                
-                                if (!refundSuccess)
                                 {
-                                    _logger.LogError("Failed to process Stripe refund for dispute searchHireId={SearchHireId}", dispute.SearchHire.Id);
-                                    await transaction.RollbackAsync();
-                                    return StatusCode(500, new { message = "Failed to process client refund" });
+                                    var refundReason = $"Dispute resolved in favor of client: {request.ResolutionComments}";
+                                    var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                                        dispute.SearchHire.Id,
+                                        "dispute_resolved_client",
+                                        refundReason);
+                                    if (!refundSuccess)
+                                    {
+                                        _logger.LogError("Failed to process client refund for dispute searchHireId={SearchHireId}", dispute.SearchHire.Id);
+                                        await transaction.RollbackAsync();
+                                        return StatusCode(500, new { message = "Failed to process client refund" });
+                                    }
+                                    dispute.SearchHire.StatusId = await GetStatusIdByValueAsync("dispute_resolved_client");
+                                    dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
+                                    break;
                                 }
-
-                                // Actualizar estado del SearchHire a disputa resuelta a favor del cliente
-                                dispute.SearchHire.StatusId = await GetStatusIdByValueAsync("dispute_resolved_client");
-                                dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
-                                break;
 
                             case "pay_expert":
-                                // 💳 PROCESAR TRANSFERENCIA REAL AL EXPERTO usando el método existente
-                                var transferSuccess = await _refundService.ProcessTransferToExpertAsync(dispute.SearchHire.Id);
-                                
-                                if (!transferSuccess)
                                 {
-                                    _logger.LogError("Failed to process expert transfer for dispute searchHireId={SearchHireId}", dispute.SearchHire.Id);
-                                    await transaction.RollbackAsync();
-                                    return StatusCode(500, new { message = "Failed to process expert transfer" });
+                                    var transferSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                                        dispute.SearchHire.Id,
+                                        "dispute_resolved_expert",
+                                        "Dispute resolved in favor of expert");
+                                    if (!transferSuccess)
+                                    {
+                                        _logger.LogError("Failed to process expert transfer for dispute searchHireId={SearchHireId}", dispute.SearchHire.Id);
+                                        await transaction.RollbackAsync();
+                                        return StatusCode(500, new { message = "Failed to process expert transfer" });
+                                    }
+                                    dispute.SearchHire.StatusId = await GetStatusIdByValueAsync("dispute_resolved_expert");
+                                    dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
+                                    break;
                                 }
-
-                                // Actualizar estado del SearchHire a disputa resuelta a favor del experto
-                                dispute.SearchHire.StatusId = await GetStatusIdByValueAsync("dispute_resolved_expert");
-                                dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
-                                break;
 
                             default:
                                 return BadRequest(new { message = "Invalid action. Valid actions: refund_client, pay_expert" });

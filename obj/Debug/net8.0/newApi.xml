@@ -2153,12 +2153,13 @@
             Calcula la distancia entre dos puntos geográficos usando la fórmula de Haversine
             </summary>
         </member>
-        <member name="M:newApi.Services.StripeRefundService.ProcessAutomaticClientRefundAsync(System.Int32,System.String)">
+        <member name="M:newApi.Services.StripeRefundService.ProcessAutomaticClientRefundAsync(System.Int32,System.String,System.String)">
             <summary>
             Procesa refund automático real a Stripe
             </summary>
             <param name="searchHireId">ID del servicio contratado</param>
             <param name="reason">Razón del reembolso</param>
+            <param name="statusValue">Estado específico para buscar configuración (ej: "appointment_cancelled_by_expert_second")</param>
             <returns>True si se procesó correctamente, false en caso contrario</returns>
         </member>
         <member name="M:newApi.Services.StripeRefundService.ProcessTransferToExpertAsync(System.Int32)">
@@ -2167,6 +2168,17 @@
             </summary>
             <param name="searchHireId">ID del servicio contratado</param>
             <returns>True si se procesó correctamente, false en caso contrario</returns>
+        </member>
+        <member name="M:newApi.Services.StripeRefundService.ProcessMoneyDistributionAsync(System.Int32,System.String,System.String,System.Nullable{System.Int32})">
+            <summary>
+            Orquesta la distribución de dinero según un estado concreto: realiza refund al cliente y transferencia al experto.
+            Respeta subestados de finalización y granularidad (categoría/tipo/global) mediante el statusValue recibido.
+            </summary>
+            <param name="searchHireId">ID del servicio contratado</param>
+            <param name="statusValue">Estado específico, p.ej. "appointment_cancelled_by_expert_second"</param>
+            <param name="reason">Razón del movimiento</param>
+            <param name="initiatedByUserId">Opcional: usuario que inicia la operación (para trazas)</param>
+            <returns>True si refund y (si aplica) transfer se procesan correctamente</returns>
         </member>
         <member name="M:newApi.Services.SearchHireService.GetStatusIdByValueAsync(System.String)">
             <summary>

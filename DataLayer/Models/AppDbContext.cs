@@ -515,7 +515,9 @@ namespace newApi.DataLayer.Models
                     .IsRequired();
                 entity.Property(e => e.RejectionCount)
                     .HasDefaultValue(0);
-                entity.Property(e => e.CancellationCount)
+                entity.Property(e => e.ClientCancellationCount)
+                    .HasDefaultValue(0);
+                entity.Property(e => e.ExpertCancellationCount)
                     .HasDefaultValue(0);
                 entity.Property(e => e.IsLocked)
                     .HasDefaultValue(false);

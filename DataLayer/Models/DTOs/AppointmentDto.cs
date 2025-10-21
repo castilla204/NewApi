@@ -23,7 +23,8 @@ namespace newApi.DataLayer.Models.DTOs
         public DateTime? CompletedAt { get; set; }
         public int? CompletedBy { get; set; }
         public int RejectionCount { get; set; }
-        public int CancellationCount { get; set; }
+        public int ClientCancellationCount { get; set; }
+        public int ExpertCancellationCount { get; set; }
         public DateTime? LastRejectionAt { get; set; }
         public DateTime? LastProposalAt { get; set; }
         public DateTime? LastResponseAt { get; set; }

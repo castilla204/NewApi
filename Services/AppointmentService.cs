@@ -413,8 +413,8 @@ namespace newApi.Services
                     throw new ArgumentException("Appointment not found");
                 }
 
-                _logger.LogInformation("🔍 APPOINTMENT FOUND - Id: {Id}, SearchHireId: {SearchHireId}, ExpertId: {ExpertId}, RejectionCount: {RejectionCount}, CancellationCount: {CancellationCount}", 
-                    appointment.Id, appointment.SearchHireId, appointment.SearchHire.ExpertId, appointment.RejectionCount, appointment.CancellationCount);
+                _logger.LogInformation("🔍 APPOINTMENT FOUND - Id: {Id}, SearchHireId: {SearchHireId}, ExpertId: {ExpertId}, RejectionCount: {RejectionCount}, ClientCancellationCount: {ClientCancellationCount}, ExpertCancellationCount: {ExpertCancellationCount}", 
+                    appointment.Id, appointment.SearchHireId, appointment.SearchHire.ExpertId, appointment.RejectionCount, appointment.ClientCancellationCount, appointment.ExpertCancellationCount);
 
                 // Verificar que el usuario es el experto
                 if (appointment.SearchHire.ExpertId != userId)
@@ -426,8 +426,8 @@ namespace newApi.Services
                 _logger.LogInformation("🔍 AUTHORIZATION OK - UserId: {UserId} is the expert", userId);
 
                 // 🔍 LOGS DETALLADOS: Analizar el estado actual
-                _logger.LogInformation("🔍 REJECT APPOINTMENT ANALYSIS - AppointmentId: {AppointmentId}, Current RejectionCount: {RejectionCount}, Current CancellationCount: {CancellationCount}", 
-                    appointment.Id, appointment.RejectionCount, appointment.CancellationCount);
+                _logger.LogInformation("🔍 REJECT APPOINTMENT ANALYSIS - AppointmentId: {AppointmentId}, Current RejectionCount: {RejectionCount}, ClientCancellationCount: {ClientCancellationCount}, ExpertCancellationCount: {ExpertCancellationCount}", 
+                    appointment.Id, appointment.RejectionCount, appointment.ClientCancellationCount, appointment.ExpertCancellationCount);
 
                 // Determinar el estado según el número de rechazos
                 string statusValue;
@@ -461,19 +461,19 @@ namespace newApi.Services
                 appointment.StatusId = newStatus.Id;
                 appointment.RejectionCount++;
                 
-                // ✅ CORRECCIÓN: Incrementar CancellationCount para segunda cancelación
+                // ✅ CORRECCIÓN: Incrementar ExpertCancellationCount para segunda cancelación
                 if (isSecondRejection)
                 {
-                    appointment.CancellationCount++;
-                    _logger.LogInformation("🔍 CANCELLATION COUNT INCREMENTED - New CancellationCount: {CancellationCount}", appointment.CancellationCount);
+                    appointment.ExpertCancellationCount++;
+                    _logger.LogInformation("🔍 EXPERT CANCELLATION COUNT INCREMENTED - New ExpertCancellationCount: {ExpertCancellationCount}", appointment.ExpertCancellationCount);
                 }
                 
                 appointment.LastRejectionAt = DateTime.UtcNow;
                 appointment.LastResponseAt = DateTime.UtcNow;
                 appointment.UpdatedAt = DateTime.UtcNow;
 
-                _logger.LogInformation("🔍 APPOINTMENT UPDATED - StatusId: {StatusId}, RejectionCount: {RejectionCount}, CancellationCount: {CancellationCount}", 
-                    appointment.StatusId, appointment.RejectionCount, appointment.CancellationCount);
+                _logger.LogInformation("🔍 APPOINTMENT UPDATED - StatusId: {StatusId}, RejectionCount: {RejectionCount}, ClientCancellationCount: {ClientCancellationCount}, ExpertCancellationCount: {ExpertCancellationCount}", 
+                    appointment.StatusId, appointment.RejectionCount, appointment.ClientCancellationCount, appointment.ExpertCancellationCount);
 
                 // Actualizar el SearchHire según el mapeo de estados
                 var appointmentStatusEnum = statusValue switch
@@ -640,12 +640,12 @@ namespace newApi.Services
                 if (appointment.SearchHire.ClientId != userId && appointment.SearchHire.ExpertId != userId)
                     throw new UnauthorizedAccessException("Only the client or expert can cancel appointments");
 
-                // Determinar el estado de cancelación según quién cancela y el número de cancelaciones
+                // Determinar el estado de cancelación según quién cancela y el número de cancelaciones específicas
                 string statusValue;
                 if (appointment.SearchHire.ClientId == userId)
                 {
-                    // Cliente cancela - verificar si es primera o segunda cancelación
-                    if (appointment.CancellationCount >= 1)
+                    // Cliente cancela - verificar si es primera o segunda cancelación del cliente
+                    if (appointment.ClientCancellationCount >= 1)
                     {
                         statusValue = "appointment_cancelled_by_client_second";
                     }
@@ -656,8 +656,8 @@ namespace newApi.Services
                 }
                 else
                 {
-                    // Experto cancela - verificar si es primera o segunda cancelación
-                    if (appointment.CancellationCount >= 1)
+                    // Experto cancela - verificar si es primera o segunda cancelación del experto
+                    if (appointment.ExpertCancellationCount >= 1)
                     {
                         statusValue = "appointment_cancelled_by_expert_second";
                     }
@@ -676,7 +676,19 @@ namespace newApi.Services
 
                 // Actualizar la cita
                 appointment.StatusId = cancelledStatus.Id;
-                appointment.CancellationCount++;
+                
+                // Incrementar contadores específicos según quién cancela
+                if (appointment.SearchHire.ClientId == userId)
+                {
+                    appointment.ClientCancellationCount++;
+                    appointment.LastClientCancellationAt = DateTime.UtcNow;
+                }
+                else
+                {
+                    appointment.ExpertCancellationCount++;
+                    appointment.LastExpertCancellationAt = DateTime.UtcNow;
+                }
+                
                 appointment.UpdatedAt = DateTime.UtcNow;
 
                 // Actualizar el SearchHire según el mapeo de estados
@@ -1229,7 +1241,8 @@ namespace newApi.Services
                 CompletedAt = appointment.CompletedAt,
                 CompletedBy = appointment.CompletedBy,
                 RejectionCount = appointment.RejectionCount,
-                CancellationCount = appointment.CancellationCount,
+                ClientCancellationCount = appointment.ClientCancellationCount,
+                ExpertCancellationCount = appointment.ExpertCancellationCount,
                 LastRejectionAt = appointment.LastRejectionAt,
                 LastProposalAt = appointment.LastProposalAt,
                 LastResponseAt = appointment.LastResponseAt,

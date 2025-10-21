@@ -274,12 +274,34 @@ namespace newApi.Services
 
                  try
                  {
-                     // Cancelar citas asociadas si existen
-                     var appointments = await _context.Appointments
+                     // 🚨 VERIFICACIÓN CRÍTICA: No tocar nada si ya está finalizado
+                     if (searchHire.Status.IsFinalizationStatus)
+                     {
+                         _logger.LogInformation("SearchHire {SearchHireId} already finalized with status {Status}, skipping all processing for account deletion", 
+                             searchHire.Id, searchHire.Status.StatusValue);
+                         
+                         continue; // Saltar al siguiente SearchHire - NO tocar nada
+                     }
+
+                     // Verificar si hay subestado de finalización en appointment
+                     var existingAppointment = await _context.Appointments
+                         .Include(a => a.Status)
+                         .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
+                     
+                     if (existingAppointment?.Status != null && existingAppointment.Status.IsFinalizationStatus)
+                     {
+                         _logger.LogInformation("SearchHire {SearchHireId} has appointment with finalization sub-status {Status}, skipping all processing for account deletion", 
+                             searchHire.Id, existingAppointment.Status.StatusValue);
+                         
+                         continue; // Saltar al siguiente SearchHire - NO tocar nada
+                     }
+
+                     // Cancelar citas asociadas si existen (solo para SearchHires NO finalizados)
+                     var appointmentsToProcess = await _context.Appointments
                          .Where(a => a.SearchHireId == searchHire.Id)
                          .ToListAsync();
                      
-                     foreach (var appointment in appointments)
+                     foreach (var appointment in appointmentsToProcess)
                      {
                          // Usar el estado apropiado según quién elimina la cuenta
                          appointment.StatusId = isClientDeleting ? 13 : 15; // appointment_cancelled_by_client : appointment_cancelled_by_expert
@@ -287,52 +309,80 @@ namespace newApi.Services
                          _logger.LogInformation("Cancelled appointment {AppointmentId} due to account deletion", appointment.Id);
                      }
 
-                     // 🎯 LÓGICA INTELIGENTE: Determinar configuración según si hay subestado de appointment DE FINALIZACIÓN
-                     string configStatus;
-                     
-                     // Verificar si hay una cita asociada con subestado específico DE FINALIZACIÓN
-                     var existingAppointment = await _context.Appointments
-                         .Include(a => a.Status)
-                         .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
-                     
-                     if (existingAppointment?.Status != null && existingAppointment.Status.IsFinalizationStatus)
-                     {
-                         // CASO 1: Hay subestado de appointment DE FINALIZACIÓN - usar configuración específica del subestado
-                         configStatus = existingAppointment.Status.StatusValue;
-                         _logger.LogInformation("Using appointment sub-status configuration: {ConfigStatus} for SearchHire {SearchHireId}", 
-                             configStatus, searchHire.Id);
-                     }
-                     else
-                     {
-                         // CASO 2: No hay subestado de appointment o no es de finalización - usar configuración del estado final
-                         configStatus = "cancelled";
-                         _logger.LogInformation("No appointment sub-status found or not finalization, using final status configuration: {ConfigStatus} for SearchHire {SearchHireId}", 
-                             configStatus, searchHire.Id);
-                     }
-                     
-                     var moneyConfig = await _systemStatusService.GetMoneyDistributionConfigAsync(configStatus, 
-                         searchHire.SearchService?.CategoryId, 
-                         searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
+                     // 🎯 PROCESAR DINERO SOLO PARA SEARCHHIRES NO FINALIZADOS
+                     _logger.LogInformation("Processing money distribution for non-finalized SearchHire {SearchHireId} with status {Status}", 
+                         searchHire.Id, searchHire.Status.StatusValue);
 
                      if (isClientDeleting)
                      {
                          // Si el cliente elimina su cuenta, dar el dinero al experto
-                         await ProcessTransferToExpertAsync(searchHire.Id, moneyConfig);
+                        var transferSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                            searchHire.Id,
+                            "cancelled_by_client_account_delete",
+                            "Client account deletion - transfer to expert");
+                        
+                        if (!transferSuccess)
+                        {
+                            _logger.LogError("Failed to process transfer to expert for account deletion searchHireId={SearchHireId}", searchHire.Id);
+                            
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Failed to process transfer to expert for account deletion",
+                                details: $"Transfer to expert failed for account deletion SearchHire {searchHire.Id}",
+                                userId: searchHire.ExpertId,
+                                source: "AccountDeletionService.ProcessAccountDeletionAsync",
+                                relatedEntityType: "Transfer",
+                                relatedEntityId: searchHire.Id,
+                                additionalData: new { 
+                                    SearchHireId = searchHire.Id,
+                                    Amount = searchHire.Amount,
+                                    ExpertId = searchHire.ExpertId
+                                }
+                            );
+                            
+                            throw new Exception("Failed to process transfer to expert");
+                        }
+                        
                          searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
                          searchHire.UpdatedAt = DateTime.UtcNow;
                          
-                         _logger.LogInformation("Processed transfer to expert for SearchHire {SearchHireId} due to client account deletion with config: {Config}", 
-                             searchHire.Id, moneyConfig?.Source ?? "default");
+                        _logger.LogInformation("Processed transfer to expert for SearchHire {SearchHireId} due to client account deletion", 
+                            searchHire.Id);
                      }
                      else
                      {
                          // Si el experto elimina su cuenta, reembolsar al cliente
-                         await ProcessClientRefundAsync(searchHire.Id, reasonText, moneyConfig);
+                        var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                            searchHire.Id,
+                            "cancelled_by_expert_account_delete",
+                            reasonText);
+                        
+                        if (!refundSuccess)
+                        {
+                            _logger.LogError("Failed to process Stripe refund for account deletion searchHireId={SearchHireId}", searchHire.Id);
+                            
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Failed to process Stripe refund for account deletion",
+                                details: $"Stripe refund failed for account deletion SearchHire {searchHire.Id}",
+                                userId: searchHire.ClientId,
+                                source: "AccountDeletionService.ProcessAccountDeletionAsync",
+                                relatedEntityType: "Refund",
+                                relatedEntityId: searchHire.Id,
+                                additionalData: new { 
+                                    SearchHireId = searchHire.Id,
+                                    Amount = searchHire.Amount,
+                                    ClientId = searchHire.ClientId,
+                                    Reason = "Account deletion"
+                                }
+                            );
+                            
+                            throw new Exception("Failed to process Stripe refund");
+                        }
+                        
                          searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
                          searchHire.UpdatedAt = DateTime.UtcNow;
                          
-                         _logger.LogInformation("Processed client refund for SearchHire {SearchHireId} due to expert account deletion with config: {Config}", 
-                             searchHire.Id, moneyConfig?.Source ?? "default");
+                        _logger.LogInformation("Processed client refund for SearchHire {SearchHireId} due to expert account deletion", 
+                            searchHire.Id);
                      }
 
                     transactionsProcessed.Add(new DisputeCreatedInfo
@@ -380,255 +430,7 @@ namespace newApi.Services
             return transactionsProcessed;
         }
 
-         private async Task ProcessClientRefundAsync(int searchHireId, string reason, MoneyDistributionConfigDto? moneyConfig = null)
-        {
-            _logger.LogInformation("Processing client refund for searchHireId={SearchHireId}, reason={Reason}", searchHireId, reason);
 
-            try
-            {
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var searchHire = await _context.SearchHires
-                    .FromSqlRaw("SELECT * FROM \"SearchHires\" WHERE \"Id\" = {0} FOR UPDATE", searchHireId)
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.Expert)
-                    .FirstOrDefaultAsync();
-
-                if (searchHire == null)
-                {
-                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
-                    throw new Exception("SearchHire not found");
-                }
-
-                // Verificar que el servicio esté en estado activo
-                if (searchHire.Status.StatusValue != "pending" && searchHire.Status.StatusValue != "awaiting_client_decision")
-                {
-                    _logger.LogWarning("SearchHire is not in active status for searchHireId={SearchHireId}, current status={Status}", 
-                        searchHireId, searchHire.Status);
-                    throw new Exception($"SearchHire is not in active status: {searchHire.Status}");
-                }
-
-                 // Orquestar refund+transfer según configuración del estado de cancelación por eliminación
-                 var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
-                     searchHire.Id,
-                     "appointment_cancelled_by_expert",
-                     reason);
-                 
-                 if (!refundSuccess)
-                 {
-                     _logger.LogError("Failed to process Stripe refund for account deletion searchHireId={SearchHireId}", searchHire.Id);
-                     
-                     // Log critical error for money transaction failure
-                     await _loggingService.LogCriticalAsync(
-                         message: "CRITICAL: Failed to process Stripe refund for account deletion",
-                         details: $"Stripe refund failed for account deletion SearchHire {searchHire.Id}",
-                         userId: searchHire.ClientId,
-                         source: "AccountDeletionService.ProcessClientRefundAsync",
-                         relatedEntityType: "Refund",
-                         relatedEntityId: searchHire.Id,
-                         additionalData: new { 
-                             SearchHireId = searchHire.Id,
-                             Amount = searchHire.Amount,
-                             ClientId = searchHire.ClientId,
-                             Reason = "Account deletion"
-                         }
-                     );
-                     
-                     throw new Exception("Failed to process Stripe refund");
-                 }
-
-                 // Actualizar estado del servicio
-                 searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
-                 searchHire.UpdatedAt = DateTime.UtcNow;
-                 
-                 await _context.SaveChangesAsync();
-
-                 _logger.LogInformation("Successfully processed real Stripe refund for account deletion searchHireId={SearchHireId}, reason={Reason}",
-                     searchHire.Id, reason);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error processing client refund for searchHireId={SearchHireId}: {ErrorMessage}", 
-                    searchHireId, ex.Message);
-                
-                // Log critical error for money transaction failure
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Error processing client refund for account deletion",
-                    details: ex.ToString(),
-                    source: "AccountDeletionService.ProcessClientRefundAsync",
-                    relatedEntityType: "Refund",
-                    relatedEntityId: searchHireId,
-                    additionalData: new { 
-                        SearchHireId = searchHireId,
-                        ErrorMessage = ex.Message
-                    }
-                );
-                
-                throw;
-            }
-        }
-
-         private async Task ProcessTransferToExpertAsync(int searchHireId, MoneyDistributionConfigDto? moneyConfig = null)
-        {
-            _logger.LogInformation("Processing transfer to expert for searchHireId={SearchHireId}", searchHireId);
-
-            // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-            var searchHire = await _context.SearchHires
-                .FromSqlRaw("SELECT * FROM \"SearchHires\" WHERE \"Id\" = {0} FOR UPDATE", searchHireId)
-                .Include(sh => sh.Status)
-                .Include(sh => sh.Expert)
-                .ThenInclude(e => e.ExpertProfile)
-                .Include(sh => sh.SearchService)
-                .ThenInclude(ss => ss.ServiceType)
-                .FirstOrDefaultAsync();
-
-            if (searchHire == null)
-            {
-                _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
-                throw new Exception("SearchHire not found");
-            }
-
-            // Verificar que el servicio esté en estado válido para transferencia
-            if (searchHire.Status.StatusValue != "pending" && searchHire.Status.StatusValue != "awaiting_client_decision")
-            {
-                _logger.LogWarning("SearchHire is not in valid status for transfer for searchHireId={SearchHireId}, current status={Status}", 
-                    searchHireId, searchHire.Status);
-                throw new Exception($"SearchHire is not in valid status for transfer: {searchHire.Status}");
-            }
-
-            // 🚨 PROTECCIÓN CONTRA TRANSFERENCIAS DUPLICADAS
-            if (!string.IsNullOrEmpty(searchHire.ExpertTransferId))
-            {
-                _logger.LogWarning("Transfer already exists for searchHireId={SearchHireId}, transferId={TransferId}", 
-                    searchHireId, searchHire.ExpertTransferId);
-                throw new Exception($"Transfer already exists for this SearchHire: {searchHire.ExpertTransferId}");
-            }
-
-             // Usar configuración de distribución de dinero pasada como parámetro o obtener una por defecto
-             var config = moneyConfig ?? await _systemStatusService.GetMoneyDistributionConfigAsync("completed", 
-                 searchHire.SearchService?.CategoryId, 
-                 searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
-             
-             if (config == null)
-             {
-                 _logger.LogError("No money distribution configuration found for searchHireId={SearchHireId}", searchHireId);
-                 throw new Exception("No money distribution configuration found");
-             }
-             
-             var amountToExpert = searchHire.Amount * (config.ExpertPercentage / 100);
-             var amountInCents = (long)(amountToExpert * 100);
-             
-             _logger.LogInformation("Using money distribution config: Expert={ExpertPercentage}%, Platform={PlatformPercentage}%, Source={Source} for searchHireId={SearchHireId}", 
-                 config.ExpertPercentage, config.PlatformPercentage, config.Source, searchHireId);
-
-            var expertStripeAccountId = searchHire.Expert.ExpertProfile?.StripeAccountId;
-            if (string.IsNullOrEmpty(expertStripeAccountId))
-            {
-                _logger.LogError("Expert has no Stripe account for searchHireId={SearchHireId}, expertId={ExpertId}", searchHireId, searchHire.ExpertId);
-                
-                // Log critical error for money transaction failure
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Expert has no Stripe account for transfer",
-                    details: $"Expert {searchHire.ExpertId} has no Stripe account configured for transfer",
-                    userId: searchHire.ExpertId,
-                    source: "AccountDeletionService.ProcessTransferToExpertAsync",
-                    relatedEntityType: "Transfer",
-                    relatedEntityId: searchHireId,
-                    additionalData: new { 
-                        SearchHireId = searchHireId,
-                        Amount = searchHire.Amount,
-                        ExpertId = searchHire.ExpertId
-                    }
-                );
-                
-                throw new Exception("Expert has no Stripe account configured");
-            }
-
-            try
-            {
-                var transferOptions = new TransferCreateOptions
-                {
-                    Amount = amountInCents,
-                    Currency = "eur",
-                    Destination = expertStripeAccountId,
-                    Metadata = new Dictionary<string, string>
-                    {
-                        { "searchHireId", searchHireId.ToString() }
-                    }
-                };
-
-                var transferService = new TransferService();
-                var transfer = await transferService.CreateAsync(transferOptions);
-                searchHire.ExpertTransferId = transfer.Id;
-                
-                _logger.LogInformation("Transfer created for searchHireId={SearchHireId}, transferId={TransferId}, amount={Amount}", searchHireId, transfer.Id, amountToExpert);
-
-                // Crear transacción financiera para el pago al experto
-                var expertTransaction = new FinancialTransaction
-                {
-                    UserId = searchHire.ExpertId.Value,
-                    Amount = amountToExpert,
-                    TransactionType = "Payout",
-                    RelatedEntityType = "SearchHire",
-                    RelatedEntityId = searchHireId,
-                    CreatedAt = DateTime.UtcNow
-                };
-                _context.FinancialTransactions.Add(expertTransaction);
-
-                await _context.SaveChangesAsync();
-                
-                _logger.LogInformation("Successfully processed transfer to expert for searchHireId={SearchHireId}, amount={Amount}", 
-                    searchHireId, amountToExpert);
-            }
-            catch (StripeException ex)
-            {
-                _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", 
-                    searchHireId, ex.Message);
-                
-                // Log critical error for money transaction failure
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Stripe transfer error for account deletion",
-                    details: ex.ToString(),
-                    userId: searchHire?.ExpertId,
-                    source: "AccountDeletionService.ProcessTransferToExpertAsync",
-                    relatedEntityType: "Transfer",
-                    relatedEntityId: searchHireId,
-                    additionalData: new { 
-                        SearchHireId = searchHireId,
-                        Amount = searchHire?.Amount,
-                        ExpertId = searchHire?.ExpertId,
-                        StripeError = ex.Message,
-                        StripeErrorType = ex.StripeError?.Type,
-                        StripeErrorCode = ex.StripeError?.Code
-                    }
-                );
-                
-                throw new Exception($"Stripe transfer failed: {ex.Message}");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", 
-                    searchHireId, ex.Message);
-                
-                // Log critical error for money transaction failure
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Error processing transfer for account deletion",
-                    details: ex.ToString(),
-                    userId: searchHire?.ExpertId,
-                    source: "AccountDeletionService.ProcessTransferToExpertAsync",
-                    relatedEntityType: "Transfer",
-                    relatedEntityId: searchHireId,
-                    additionalData: new { 
-                        SearchHireId = searchHireId,
-                        Amount = searchHire?.Amount,
-                        ExpertId = searchHire?.ExpertId,
-                        ErrorMessage = ex.Message
-                    }
-                );
-                
-                throw;
-            }
-        }
 
 
         private async Task DeleteUserDataAsync(int userId)

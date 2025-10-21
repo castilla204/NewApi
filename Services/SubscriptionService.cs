@@ -12,15 +12,13 @@ namespace newApi.Services
     {
         private readonly AppDbContext _context; 
         private readonly ILogger _logger; 
-        private readonly ICheckingClientDecisionService _checkingClientDecisionService;
         private readonly StripeRefundService _refundService;
         private readonly ILoggingService _loggingService;
 
-        public SubscriptionService(AppDbContext context, ILogger<SubscriptionService> logger, ICheckingClientDecisionService checkingClientDecisionService, StripeRefundService refundService, ILoggingService loggingService)
+        public SubscriptionService(AppDbContext context, ILogger<SubscriptionService> logger, StripeRefundService refundService, ILoggingService loggingService)
         {
             _context = context;
             _logger = logger;
-            _checkingClientDecisionService = checkingClientDecisionService;
             _refundService = refundService;
             _loggingService = loggingService;
         }
@@ -117,14 +115,18 @@ namespace newApi.Services
                             continue;
                         }
 
-                        // Si el experto no responde en 2 días, devolver el dinero al cliente
-                        var refundSuccess = await ProcessClientRefundAsync(searchHire.Id, "Expert did not respond within deadline");
+                        // Si el experto no responde en 2 días, usar orquestador central
+                        var success = await _refundService.ProcessMoneyDistributionAsync(
+                            searchHire.Id,
+                            "cancelled_by_no_response",
+                            "Expert did not respond within deadline",
+                            null);
                         
-                        if (refundSuccess)
+                        if (success)
                         {
                             searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
                             searchHire.UpdatedAt = DateTime.UtcNow;
-                            _logger.LogInformation("Refunded client and cancelled searchHireId={SearchHireId} due to expert timeout", searchHire.Id);
+                            _logger.LogInformation("Processed money distribution and cancelled searchHireId={SearchHireId} due to expert timeout", searchHire.Id);
                         }
                         else
                         {
@@ -231,10 +233,14 @@ namespace newApi.Services
                                 continue;
                             }
 
-                            // Call ProcessTransferToExpert first
+                            // Call central orchestrator directly
                             try
                             {
-                                await _checkingClientDecisionService.ProcessTransferToExpert(item.Id);
+                                await _refundService.ProcessMoneyDistributionAsync(
+                                    item.Id,
+                                    "completed_without_client_approval",
+                                    "Auto transfer after client timeout (24h)",
+                                    null);
                             }
                             catch (Exception ex)
                             {
@@ -321,93 +327,5 @@ namespace newApi.Services
             }
         }
 
-        public async Task<bool> ProcessClientRefundAsync(int searchHireId, string reason)
-        {
-            _logger.LogInformation("Processing client refund for searchHireId={SearchHireId}, reason={Reason}", searchHireId, reason);
-
-            try
-            {
-                var searchHire = await _context.SearchHires
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.Expert)
-                    .ThenInclude(e => e.ExpertProfile)
-                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
-
-                if (searchHire == null)
-                {
-                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
-                    return false;
-                }
-
-                // Verificar que el servicio esté en estado activo
-                if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue())
-                {
-                    _logger.LogWarning("SearchHire is not in active status for searchHireId={SearchHireId}, current status={Status}", 
-                        searchHireId, searchHire.Status.StatusValue);
-                    return false;
-                }
-
-                // Orquestar refund+transfer según configuración del estado de no respuesta
-                var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
-                    searchHireId,
-                    "appointment_cancelled_by_no_response",
-                    reason);
-                
-                if (!refundSuccess)
-                {
-                    _logger.LogError("Failed to process Stripe refund for searchHireId={SearchHireId}", searchHireId);
-                    
-                    // Log critical error for money transaction failure
-                    await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: Failed to process Stripe refund",
-                        details: $"Stripe refund failed for SearchHire {searchHireId}",
-                        userId: searchHire?.ClientId,
-                        source: "SubscriptionService.ProcessClientRefundAsync",
-                        relatedEntityType: "Refund",
-                        relatedEntityId: searchHireId,
-                        additionalData: new { 
-                            SearchHireId = searchHireId,
-                            Amount = searchHire?.Amount,
-                            ClientId = searchHire?.ClientId,
-                            Reason = reason
-                        }
-                    );
-                    
-                    return false;
-                }
-
-                // Actualizar estado del SearchHire
-                searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
-                searchHire.UpdatedAt = DateTime.UtcNow;
-
-                await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Real Stripe refund processed successfully for searchHireId={SearchHireId}, reason={Reason}", 
-                    searchHireId, reason);
-                
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error in ProcessClientRefundAsync for searchHireId={SearchHireId}: {ErrorMessage}", 
-                    searchHireId, ex.Message);
-                
-                // Log critical error for money transaction failure
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: ProcessClientRefundAsync failed",
-                    details: ex.ToString(),
-                    source: "SubscriptionService.ProcessClientRefundAsync",
-                    relatedEntityType: "Refund",
-                    relatedEntityId: searchHireId,
-                    additionalData: new { 
-                        SearchHireId = searchHireId,
-                        ErrorMessage = ex.Message
-                    }
-                );
-                
-                return false;
-            }
-        }
     }
 }

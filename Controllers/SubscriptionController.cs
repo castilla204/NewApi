@@ -2141,7 +2141,7 @@ namespace newApi.Controllers
                     return; // ✅ Idempotencia: no procesar refund duplicado
                 }
 
-                // ✅ USAR MÉTODO GENÉRICO: 100% porque no se creó nada
+                // ✅ USAR MÉTODO DIRECTO: 100% porque no se creó nada (no hay SearchHire)
                 var additionalMetadata = new Dictionary<string, string>
                 {
                     { "serviceId", serviceId.ToString() },
@@ -2738,6 +2738,7 @@ namespace newApi.Controllers
                     .FromSqlRaw("SELECT * FROM \"SearchHires\" WHERE \"Id\" = {0} AND \"ExpertId\" = {1} FOR UPDATE", request.SearchHireId, userId)
                     .Include(sh => sh.Status)
                     .Include(sh => sh.Client)
+                    .Include(sh => sh.Appointment)
                     .Include(sh => sh.SearchService)
                         .ThenInclude(ss => ss.ServiceType)
                             .ThenInclude(st => st.ServiceTypeCategory)
@@ -2755,29 +2756,67 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Service is not pending" });
                 }
 
-                // 💳 Orquestador central: refund/transfer según configuración
-                var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
-                    searchHire.Id,
-                    "appointment_cancelled_by_expert",
-                    $"Expert cancelled service {searchHire.Id}",
-                    userId);
+                // Verificar contador de cancelaciones del experto
+                var appointment = searchHire.Appointment;
+                if (appointment == null)
+                {
+                    _logger.LogError("No appointment found for searchHireId={SearchHireId}", searchHire.Id);
+                    return BadRequest(new { message = "No appointment found" });
+                }
+
+                // Determinar si es primera o segunda cancelación del experto
+                string statusValue;
+                if (appointment.ExpertCancellationCount >= 1)
+                {
+                    statusValue = "appointment_cancelled_by_expert_second";
+                }
+                else
+                {
+                    statusValue = "appointment_cancelled_by_expert";
+                }
+
+                // Obtener información del estado para verificar si es de finalización
+                var cancelledStatus = await _context.SystemStatuses
+                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && s.StatusValue == statusValue);
+
+                if (cancelledStatus == null)
+                {
+                    _logger.LogError("Appointment status not found: {StatusValue}", statusValue);
+                    return BadRequest(new { message = "Invalid cancellation status" });
+                }
+
+                // Solo procesar distribución de dinero si es estado de finalización
+                bool refundSuccess = true;
+                if (cancelledStatus.IsFinalizationStatus)
+                {
+                    // 💳 Orquestador central: refund/transfer según configuración
+                    refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                        searchHire.Id,
+                        statusValue,
+                        $"Expert cancelled service {searchHire.Id}",
+                        userId);
+                }
+                else
+                {
+                    _logger.LogInformation("Skipping money distribution for non-finalization status: {StatusValue}", statusValue);
+                }
 
                 if (!refundSuccess)
                 {
-                    _logger.LogError("Failed to process Stripe refund for searchHireId={SearchHireId}", searchHire.Id);
+                    _logger.LogError("Failed to process money distribution for searchHireId={SearchHireId}", searchHire.Id);
                     
-                    // 🚨 Registrar fallo crítico de refund
+                    // 🚨 Registrar fallo crítico de distribución
                     await _loggingService.LogCriticalAsync(
-                        $"Failed to process Stripe refund - SearchHireId: {searchHire.Id}",
-                        $"Client refund failed for search hire",
+                        $"Failed to process money distribution - SearchHireId: {searchHire.Id}",
+                        $"Money distribution failed for search hire",
                         searchHire.ClientId,
-                        "SubscriptionController.ProcessClientRefund",
+                        "SubscriptionController.CancelService",
                         "SearchHire",
                         searchHire.Id,
-                        new { SearchHireId = searchHire.Id, ClientId = searchHire.ClientId }
+                        new { SearchHireId = searchHire.Id, ClientId = searchHire.ClientId, StatusValue = statusValue }
                     );
                     
-                    return StatusCode(500, new { message = "Failed to process refund" });
+                    return StatusCode(500, new { message = "Failed to process money distribution" });
                 }
 
                 // Actualizar estado del SearchHire a cancelado
@@ -2859,26 +2898,8 @@ namespace newApi.Controllers
                 }
                 else
                 {
-                    var success = await _refundService.ProcessMoneyDistributionAsync(
-                        searchHire.Id,
-                        "dispute_resolved_expert",
-                        "Force finalize in favor of expert",
-                        int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"));
-
-                    if (!success)
-                    {
-                        _logger.LogError("Failed to process expert payout via orchestrator for force-finalize searchHireId={SearchHireId}", searchHire.Id);
-                        return StatusCode(500, new { message = "Failed to process service finalization" });
-                    }
-
-                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedExpert.ToStringValue());
-                    _logger.LogInformation("Force-finalized in favor of expert via orchestrator for searchHireId={SearchHireId}", searchHire.Id);
-
-                    await _userActionLogging.LogAdminActionAsync(int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"), "FORCE_FINALIZE_EXPERT", 
-                        $"Finalizó forzadamente servicio {searchHire.Id} a favor del experto con orquestador", 
-                        "SearchHire", searchHire.Id);
-
-                    return Ok(new { message = "Service finalized successfully in favor of expert" });
+                    _logger.LogWarning("Force finalize in favor of expert is no longer supported for searchHireId={SearchHireId}", searchHire.Id);
+                    return BadRequest(new { message = "Force finalize in favor of expert is no longer supported. Use dispute resolution instead." });
                 }
             }
             catch (Exception ex)
@@ -3046,156 +3067,6 @@ namespace newApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Procesa refund automático real a Stripe cuando el admin da la razón al cliente en una disputa
-        /// </summary>
-        /// <param name="searchHireId">ID del servicio contratado</param>
-        /// <param name="reason">Razón del reembolso</param>
-        /// <returns>True si se procesó correctamente, false en caso contrario</returns>
-        public async Task<bool> ProcessAutomaticClientRefundAsync(int searchHireId, string reason)
-        {
-            _logger.LogInformation("Processing automatic client refund for searchHireId={SearchHireId}, reason={Reason}", searchHireId, reason);
-
-            try
-            {
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var searchHire = await _context.SearchHires
-                    .FromSqlRaw("SELECT * FROM \"SearchHires\" WHERE \"Id\" = {0} FOR UPDATE", searchHireId)
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.SearchService)
-                    .ThenInclude(ss => ss.ServiceType)
-                    .ThenInclude(st => st.ServiceTypeCategory)
-                    .FirstOrDefaultAsync();
-
-                if (searchHire == null)
-                {
-                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
-                    return false;
-                }
-
-                // Obtener configuración de distribución de dinero para cancelación de experto
-                var config = await GetMoneyDistributionConfigAsync("appointment_cancelled_by_expert", 
-                    searchHire.SearchService?.CategoryId, 
-                    searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
-                
-                if (config == null)
-                {
-                    _logger.LogError("No money distribution configuration found for appointment_cancelled_by_expert status for searchHireId={SearchHireId}", searchHireId);
-                    return false;
-                }
-
-                // Calcular montos según porcentajes de la base de datos
-                var clientRefundAmount = searchHire.Amount * (config.ClientPercentage / 100);
-                var expertAmount = searchHire.Amount * (config.ExpertPercentage / 100);
-                var platformAmount = searchHire.Amount * (config.PlatformPercentage / 100);
-
-                _logger.LogInformation("Money distribution for searchHireId={SearchHireId}: Client={ClientAmount}€ ({ClientPercentage}%), Expert={ExpertAmount}€ ({ExpertPercentage}%), Platform={PlatformAmount}€ ({PlatformPercentage}%)",
-                    searchHireId, clientRefundAmount, config.ClientPercentage, expertAmount, config.ExpertPercentage, platformAmount, config.PlatformPercentage);
-
-                // Buscar la transacción de pago original del servicio
-                var servicePayment = await _context.FinancialTransactions
-                    .Where(ft => ft.UserId == searchHire.ClientId 
-                              && ft.TransactionType == "ServicePayment"
-                              && ft.RelatedEntityType == "SearchHire"
-                              && ft.RelatedEntityId == searchHireId
-                              && !string.IsNullOrEmpty(ft.StripePaymentIntentId))
-                    .FirstOrDefaultAsync();
-
-                if (servicePayment == null)
-                {
-                    _logger.LogError("No service payment found for searchHireId={SearchHireId}", searchHireId);
-                    return false;
-                }
-
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
-                {
-                    // 💳 CREAR REFUND REAL EN STRIPE (solo el porcentaje del cliente)
-                    var refundOptions = new RefundCreateOptions
-                    {
-                        PaymentIntent = servicePayment.StripePaymentIntentId,
-                        Amount = (long)(clientRefundAmount * 100), // Solo el porcentaje del cliente en céntimos
-                        Reason = RefundReasons.RequestedByCustomer,
-                        Metadata = new Dictionary<string, string>
-                        {
-                            { "userId", searchHire.ClientId.ToString() },
-                            { "searchHireId", searchHireId.ToString() },
-                            { "refundType", "expert_cancellation" },
-                            { "reason", reason },
-                            { "originalTransactionId", servicePayment.Id.ToString() },
-                            { "clientPercentage", config.ClientPercentage.ToString() },
-                            { "expertPercentage", config.ExpertPercentage.ToString() },
-                            { "platformPercentage", config.PlatformPercentage.ToString() }
-                        }
-                    };
-
-                    var refundService = new RefundService();
-                    var refund = await refundService.CreateAsync(refundOptions);
-
-                    // Actualizar transacción original como refundada
-                    servicePayment.IsRefunded = true;
-                    servicePayment.StripeRefundId = refund.Id;
-
-                    // Crear transacción de refund para el cliente
-                    var refundTransaction = new FinancialTransaction
-                    {
-                        UserId = searchHire.ClientId,
-                        Amount = clientRefundAmount, // Solo el porcentaje del cliente
-                        TransactionType = "Refund",
-                        RelatedEntityType = "SearchHire",
-                        RelatedEntityId = searchHireId,
-                        StripePaymentIntentId = servicePayment.StripePaymentIntentId,
-                        StripeRefundId = refund.Id,
-                        CreatedAt = DateTime.UtcNow
-                    };
-                    _context.FinancialTransactions.Add(refundTransaction);
-
-                    // Si el experto debe recibir algo, crear transacción de pago al experto
-                    if (expertAmount > 0 && searchHire.ExpertId.HasValue)
-                    {
-                        var expertTransaction = new FinancialTransaction
-                        {
-                            UserId = searchHire.ExpertId.Value,
-                            Amount = expertAmount,
-                            TransactionType = "Payout",
-                            RelatedEntityType = "SearchHire",
-                            RelatedEntityId = searchHireId,
-                            CreatedAt = DateTime.UtcNow
-                        };
-                        _context.FinancialTransactions.Add(expertTransaction);
-                    }
-
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
-
-                    _logger.LogInformation("Successfully processed automatic client refund for searchHireId={SearchHireId}, refundId={RefundId}, clientRefund={ClientRefund}€, expertAmount={ExpertAmount}€, platformAmount={PlatformAmount}€, reason={Reason}",
-                        searchHireId, refund.Id, clientRefundAmount, expertAmount, platformAmount, reason);
-
-                    return true;
-                }
-                catch (StripeException ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Stripe error processing automatic client refund for searchHireId={SearchHireId}: {ErrorMessage}", 
-                        searchHireId, ex.Message);
-                    return false;
-                }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Error processing automatic client refund for searchHireId={SearchHireId}: {ErrorMessage}", 
-                        searchHireId, ex.Message);
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error in ProcessAutomaticClientRefundAsync for searchHireId={SearchHireId}: {ErrorMessage}", 
-                    searchHireId, ex.Message);
-                return false;
-            }
-        }
 
         /// <summary>
         /// Obtiene la configuración de distribución de dinero según el estado y categorías
@@ -3205,94 +3076,6 @@ namespace newApi.Controllers
         /// <param name="serviceTypeCategoryId">ID de la categoría del tipo de servicio</param>
         /// <returns>Configuración de distribución de dinero</returns>
 
-        /// <summary>
-        /// Función centralizada para dar la razón al cliente y procesar el reembolso (balance interno)
-        /// </summary>
-        /// <param name="searchHireId">ID del servicio contratado</param>
-        /// <param name="reason">Razón del reembolso</param>
-        /// <returns>True si se procesó correctamente, false en caso contrario</returns>
-        public async Task<bool> ProcessClientRefundAsync(int searchHireId, string reason)
-        {
-            _logger.LogInformation("Processing client refund for searchHireId={SearchHireId}, reason={Reason}", searchHireId, reason);
-
-            try
-            {
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var searchHire = await _context.SearchHires
-                    .FromSqlRaw("SELECT * FROM \"SearchHires\" WHERE \"Id\" = {0} FOR UPDATE", searchHireId)
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.Expert)
-                    .ThenInclude(e => e.ExpertProfile)
-                    .FirstOrDefaultAsync();
-
-                if (searchHire == null)
-                {
-                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
-                    return false;
-                }
-
-                // Verificar que el servicio esté en estado activo
-                if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue())
-                {
-                    _logger.LogWarning("SearchHire is not in active status for searchHireId={SearchHireId}, current status={Status}", 
-                        searchHireId, searchHire.Status);
-                    return false;
-                }
-
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
-                {
-                    // 🎯 USAR CONFIGURACIÓN DE DISTRIBUCIÓN DE DINERO
-                    var config = await GetMoneyDistributionConfigAsync("cancelled", 
-                        searchHire.SearchService?.CategoryId, 
-                        searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
-                    
-                    var refundAmount = config != null 
-                        ? searchHire.Amount * (config.ClientPercentage / 100)
-                        : searchHire.Amount; // Si no hay configuración, reembolsar el 100%
-                    
-                    _logger.LogInformation("Using money distribution config for refund: Client={ClientPercentage}%, Expert={ExpertPercentage}%, Platform={PlatformPercentage}%, Source={Source} for searchHireId={SearchHireId}", 
-                        config?.ClientPercentage ?? 100, config?.ExpertPercentage ?? 0, config?.PlatformPercentage ?? 0, config?.Source ?? "default", searchHireId);
-                    
-                    // 💳 PROCESAR REFUND REAL EN STRIPE usando el método existente
-                    var refundReason = "Force finalize - refund to client";
-                    var refundSuccess = await ProcessAutomaticClientRefundAsync(searchHireId, refundReason);
-                    
-                    if (!refundSuccess)
-                    {
-                        _logger.LogError("Failed to process Stripe refund for force finalize searchHireId={SearchHireId}", searchHireId);
-                        await transaction.RollbackAsync();
-                        return false;
-                    }
-                    
-                    // Actualizar estado del servicio
-                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
-                    searchHire.UpdatedAt = DateTime.UtcNow;
-                    
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
-
-                    _logger.LogInformation("Successfully processed client refund for searchHireId={SearchHireId}, refunded amount={Amount}, original amount={OriginalAmount}, reason={Reason}",
-                        searchHire.Id, refundAmount, searchHire.Amount, reason);
-
-                    return true;
-                }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Error processing client refund for searchHireId={SearchHireId}: {ErrorMessage}", 
-                        searchHireId, ex.Message);
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error in ProcessClientRefundAsync for searchHireId={SearchHireId}: {ErrorMessage}", 
-                    searchHireId, ex.Message);
-                return false;
-            }
-        }
 
         /// <summary>
         /// Verifica si el experto ha respondido en las primeras 24 horas
@@ -3372,137 +3155,6 @@ namespace newApi.Controllers
             }
         }
 
-        public async Task ProcessTransferToExpert(int searchHireId)
-        {
-            _logger.LogInformation("Processing transfer to expert for searchHireId={SearchHireId}", searchHireId);
-
-            // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-            var searchHire = await _context.SearchHires
-                .FromSqlRaw("SELECT * FROM \"SearchHires\" WHERE \"Id\" = {0} FOR UPDATE", searchHireId)
-                .Include(sh => sh.Status)
-                .Include(sh => sh.Expert)
-                .ThenInclude(e => e.ExpertProfile)
-                .Include(sh => sh.SearchService)
-                .ThenInclude(ss => ss.ServiceType)
-                .FirstOrDefaultAsync();
-
-            if (searchHire == null)
-            {
-                _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
-                throw new Exception("SearchHire not found");
-            }
-
-            // Verificar que el servicio esté en estado válido para transferencia
-            if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue() && 
-                searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
-            {
-                _logger.LogWarning("SearchHire is not in valid status for transfer for searchHireId={SearchHireId}, current status={Status}", 
-                    searchHireId, searchHire.Status);
-                throw new Exception($"SearchHire is not in valid status for transfer: {searchHire.Status}");
-            }
-
-            // 🚨 PROTECCIÓN CONTRA TRANSFERENCIAS DUPLICADAS
-            if (!string.IsNullOrEmpty(searchHire.ExpertTransferId))
-            {
-                _logger.LogWarning("Transfer already exists for searchHireId={SearchHireId}, transferId={TransferId}", 
-                    searchHireId, searchHire.ExpertTransferId);
-                throw new Exception($"Transfer already exists for this SearchHire: {searchHire.ExpertTransferId}");
-            }
-
-            // 🎯 USAR SISTEMA DE CONFIGURACIONES EN LUGAR DE COMISIÓN FIJA
-            var config = await GetMoneyDistributionConfigAsync("completed", 
-                searchHire.SearchService?.CategoryId, 
-                searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
-            
-            if (config == null)
-            {
-                _logger.LogError("No money distribution configuration found for searchHireId={SearchHireId}", searchHireId);
-                throw new Exception("No money distribution configuration found");
-            }
-            
-            var amountToExpert = searchHire.Amount * (config.ExpertPercentage / 100);
-            var amountInCents = (long)(amountToExpert * 100);
-            
-            _logger.LogInformation("Using money distribution config: Expert={ExpertPercentage}%, Platform={PlatformPercentage}%, Source={Source} for searchHireId={SearchHireId}", 
-                config.ExpertPercentage, config.PlatformPercentage, config.Source, searchHireId);
-
-            var expertStripeAccountId = searchHire.Expert.ExpertProfile?.StripeAccountId;
-            if (string.IsNullOrEmpty(expertStripeAccountId))
-            {
-                _logger.LogError("Expert has no Stripe account for searchHireId={SearchHireId}, expertId={ExpertId}", searchHireId, searchHire.ExpertId);
-                throw new Exception("Expert has no Stripe account configured");
-            }
-
-            try
-            {
-                var transferOptions = new TransferCreateOptions
-                {
-                    Amount = amountInCents,
-                    Currency = "eur",
-                    Destination = expertStripeAccountId,
-                    Metadata = new Dictionary<string, string>
-                    {
-                        { "searchHireId", searchHireId.ToString() }
-                    }
-                };
-
-                var transferService = new TransferService();
-                var transfer = await transferService.CreateAsync(transferOptions);
-                searchHire.ExpertTransferId = transfer.Id;
-                
-                // NO actualizar el estado aquí - se hace en el código que llama
-                // searchHire.Status = SearchHireStatus.Completed.ToStringValue();
-                // searchHire.UpdatedAt = DateTime.UtcNow;
-                
-                _logger.LogInformation("Transfer created for searchHireId={SearchHireId}, transferId={TransferId}, amount={Amount}", searchHireId, transfer.Id, amountToExpert);
-
-                // Crear transacción financiera para el pago al experto
-                var expertTransaction = new FinancialTransaction
-                {
-                    UserId = searchHire.ExpertId.Value,
-                    Amount = amountToExpert,
-                    TransactionType = "Payout",
-                    RelatedEntityType = "SearchHire",
-                    RelatedEntityId = searchHireId,
-                    CreatedAt = DateTime.UtcNow
-                };
-                _context.FinancialTransactions.Add(expertTransaction);
-
-                // 🚨 ACTUALIZAR BALANCE DEL CLIENTE (dinero ya se retiró al contratar)
-                // El balance del cliente ya se redujo cuando contrató el servicio
-                // Aquí solo registramos la transacción de pago al experto
-
-                // NO hacer SaveChanges aquí - se hace en el código que llama
-                // await _context.SaveChangesAsync();
-                
-                _logger.LogInformation("Successfully processed transfer to expert for searchHireId={SearchHireId}, amount={Amount}", 
-                    searchHireId, amountToExpert);
-            }
-            catch (StripeException ex)
-            {
-                _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", 
-                    searchHireId, ex.Message);
-                
-                // 🚨 Registrar fallo crítico de transferencia Stripe
-                await _loggingService.LogCriticalAsync(
-                    $"Stripe transfer failed - SearchHireId: {searchHireId}",
-                    $"Stripe error: {ex.Message}",
-                    null,
-                    "SubscriptionController.ProcessStripeTransfer",
-                    "SearchHire",
-                    searchHireId,
-                    new { SearchHireId = searchHireId, StripeError = ex.Message, StripeErrorType = ex.GetType().Name }
-                );
-                
-                throw new Exception($"Stripe transfer failed: {ex.Message}");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", 
-                    searchHireId, ex.Message);
-                throw;
-            }
-        }
 
         private async Task<MoneyDistributionConfigDto?> GetMoneyDistributionConfigAsync(string status, int? categoryId, int? serviceTypeCategoryId)
         {

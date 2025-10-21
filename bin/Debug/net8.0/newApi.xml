@@ -405,15 +405,7 @@
             <param name="reason">Razón del refund</param>
             <param name="metadata">Metadata adicional</param>
         </member>
-        <member name="M:newApi.Controllers.SubscriptionController.ProcessAutomaticClientRefundAsync(System.Int32,System.String)">
-            <summary>
-            Procesa refund automático real a Stripe cuando el admin da la razón al cliente en una disputa
-            </summary>
-            <param name="searchHireId">ID del servicio contratado</param>
-            <param name="reason">Razón del reembolso</param>
-            <returns>True si se procesó correctamente, false en caso contrario</returns>
-        </member>
-        <member name="M:newApi.Controllers.SubscriptionController.ProcessClientRefundAsync(System.Int32,System.String)">
+        <member name="M:newApi.Controllers.SubscriptionController.CheckExpertResponseAsync(System.Int32)">
             <summary>
             Obtiene la configuración de distribución de dinero según el estado y categorías
             </summary>
@@ -421,14 +413,6 @@
             <param name="categoryId">ID de la categoría</param>
             <param name="serviceTypeCategoryId">ID de la categoría del tipo de servicio</param>
             <returns>Configuración de distribución de dinero</returns>
-            <summary>
-            Función centralizada para dar la razón al cliente y procesar el reembolso (balance interno)
-            </summary>
-            <param name="searchHireId">ID del servicio contratado</param>
-            <param name="reason">Razón del reembolso</param>
-            <returns>True si se procesó correctamente, false en caso contrario</returns>
-        </member>
-        <member name="M:newApi.Controllers.SubscriptionController.CheckExpertResponseAsync(System.Int32)">
             <summary>
             Verifica si el experto ha respondido en las primeras 24 horas
             </summary>
@@ -2131,6 +2115,39 @@
         <member name="M:newApi.Migrations.RemoveLogLevelColumn.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
+        <member name="T:newApi.Migrations.AddSeparateCancellationCounters">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddSeparateCancellationCounters.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddSeparateCancellationCounters.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddSeparateCancellationCounters.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.RemoveGlobalCancellationCount">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.RemoveGlobalCancellationCount.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.RemoveGlobalCancellationCount.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.RemoveGlobalCancellationCount.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.AddCancelledByNoResponseStatus">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddCancelledByNoResponseStatus.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddCancelledByNoResponseStatus.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
         <member name="M:newApi.Services.AccountDeletionService.GetStatusIdByValueAsync(System.String)">
             <summary>
             Helper method to get StatusId from StatusValue
@@ -2152,22 +2169,6 @@
             <summary>
             Calcula la distancia entre dos puntos geográficos usando la fórmula de Haversine
             </summary>
-        </member>
-        <member name="M:newApi.Services.StripeRefundService.ProcessAutomaticClientRefundAsync(System.Int32,System.String,System.String)">
-            <summary>
-            Procesa refund automático real a Stripe
-            </summary>
-            <param name="searchHireId">ID del servicio contratado</param>
-            <param name="reason">Razón del reembolso</param>
-            <param name="statusValue">Estado específico para buscar configuración (ej: "appointment_cancelled_by_expert_second")</param>
-            <returns>True si se procesó correctamente, false en caso contrario</returns>
-        </member>
-        <member name="M:newApi.Services.StripeRefundService.ProcessTransferToExpertAsync(System.Int32)">
-            <summary>
-            Procesa transferencia al experto
-            </summary>
-            <param name="searchHireId">ID del servicio contratado</param>
-            <returns>True si se procesó correctamente, false en caso contrario</returns>
         </member>
         <member name="M:newApi.Services.StripeRefundService.ProcessMoneyDistributionAsync(System.Int32,System.String,System.String,System.Nullable{System.Int32})">
             <summary>

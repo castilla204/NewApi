@@ -27,8 +27,11 @@ namespace newApi.DataLayer.Models.PostGresModels
         
         // Campos para restricciones y control
         public int RejectionCount { get; set; } = 0;
-        public int CancellationCount { get; set; } = 0;
+        public int ClientCancellationCount { get; set; } = 0;
+        public int ExpertCancellationCount { get; set; } = 0;
         public DateTime? LastRejectionAt { get; set; }
+        public DateTime? LastClientCancellationAt { get; set; }
+        public DateTime? LastExpertCancellationAt { get; set; }
         public DateTime? LastProposalAt { get; set; }
         public DateTime? LastResponseAt { get; set; }
         public bool IsLocked { get; set; } = false; // Bloqueado por 12h antes de la cita

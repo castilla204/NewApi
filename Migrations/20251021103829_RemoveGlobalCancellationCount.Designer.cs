@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using newApi.DataLayer.Models;
@@ -11,9 +12,11 @@ using newApi.DataLayer.Models;
 namespace newApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251021103829_RemoveGlobalCancellationCount")]
+    partial class RemoveGlobalCancellationCount
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -51,7 +54,7 @@ namespace newApi.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.ToTable("AIs", (string)null);
+                    b.ToTable("AIs");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Ad", b =>
@@ -150,7 +153,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("PlatformId");
 
-                    b.ToTable("Ads", (string)null);
+                    b.ToTable("Ads");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Appointment", b =>
@@ -257,7 +260,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("StatusId");
 
-                    b.ToTable("Appointments", (string)null);
+                    b.ToTable("Appointments");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.AppointmentTimer", b =>
@@ -308,7 +311,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("TimerType");
 
-                    b.ToTable("AppointmentTimers", (string)null);
+                    b.ToTable("AppointmentTimers");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Category", b =>
@@ -339,7 +342,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("ParentId");
 
-                    b.ToTable("Categories", (string)null);
+                    b.ToTable("Categories");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Conversation", b =>
@@ -382,7 +385,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("SearchHireId");
 
-                    b.ToTable("Conversations", (string)null);
+                    b.ToTable("Conversations");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.DeliverableType", b =>
@@ -435,7 +438,7 @@ namespace newApi.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.ToTable("DeliverableTypes", (string)null);
+                    b.ToTable("DeliverableTypes");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Dispute", b =>
@@ -481,7 +484,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("SearchHireId");
 
-                    b.ToTable("Disputes", (string)null);
+                    b.ToTable("Disputes");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.DisputeFile", b =>
@@ -526,7 +529,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("UploadedByUserId");
 
-                    b.ToTable("DisputeFiles", (string)null);
+                    b.ToTable("DisputeFiles");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.ExpertProfile", b =>
@@ -586,7 +589,7 @@ namespace newApi.Migrations
                     b.HasIndex("UserId")
                         .IsUnique();
 
-                    b.ToTable("ExpertProfiles", (string)null);
+                    b.ToTable("ExpertProfiles");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.FinancialTransaction", b =>
@@ -632,7 +635,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("FinancialTransactions", (string)null);
+                    b.ToTable("FinancialTransactions");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Like", b =>
@@ -659,7 +662,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("Likes", (string)null);
+                    b.ToTable("Likes");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Log", b =>
@@ -706,7 +709,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("Logs", (string)null);
+                    b.ToTable("Logs");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.LogType", b =>
@@ -751,7 +754,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("SeverityId");
 
-                    b.ToTable("LogTypes", (string)null);
+                    b.ToTable("LogTypes");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Message", b =>
@@ -796,7 +799,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("SenderId");
 
-                    b.ToTable("Messages", (string)null);
+                    b.ToTable("Messages");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.MessageAttachment", b =>
@@ -832,7 +835,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("MessageId");
 
-                    b.ToTable("MessageAttachments", (string)null);
+                    b.ToTable("MessageAttachments");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Notification", b =>
@@ -875,7 +878,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("Notifications", (string)null);
+                    b.ToTable("Notifications");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Platform", b =>
@@ -907,7 +910,7 @@ namespace newApi.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("Platforms", (string)null);
+                    b.ToTable("Platforms");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.PlatformCategoryMapping", b =>
@@ -943,7 +946,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("PlatformId");
 
-                    b.ToTable("PlatformCategoryMappings", (string)null);
+                    b.ToTable("PlatformCategoryMappings");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.ProcessedWebhookEvent", b =>
@@ -998,7 +1001,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("ProcessedWebhookEvents", (string)null);
+                    b.ToTable("ProcessedWebhookEvents");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Review", b =>
@@ -1040,7 +1043,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("SearchHireId");
 
-                    b.ToTable("Reviews", (string)null);
+                    b.ToTable("Reviews");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.ReviewImage", b =>
@@ -1069,7 +1072,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("ReviewId");
 
-                    b.ToTable("ReviewImages", (string)null);
+                    b.ToTable("ReviewImages");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Search", b =>
@@ -1120,7 +1123,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("Searches", (string)null);
+                    b.ToTable("Searches");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchHire", b =>
@@ -1177,7 +1180,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("StatusId");
 
-                    b.ToTable("SearchHires", (string)null);
+                    b.ToTable("SearchHires");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchHireDeliverable", b =>
@@ -1213,7 +1216,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("SearchHireId");
 
-                    b.ToTable("SearchHireDeliverables", (string)null);
+                    b.ToTable("SearchHireDeliverables");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchParameter", b =>
@@ -1279,7 +1282,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("ServiceTypeId");
 
-                    b.ToTable("SearchParameters", (string)null);
+                    b.ToTable("SearchParameters");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchParameterPlatform", b =>
@@ -1294,7 +1297,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("PlatformId");
 
-                    b.ToTable("SearchParameterPlatforms", (string)null);
+                    b.ToTable("SearchParameterPlatforms");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchResult", b =>
@@ -1321,7 +1324,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("SearchId");
 
-                    b.ToTable("SearchResults", (string)null);
+                    b.ToTable("SearchResults");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchResultFiltered", b =>
@@ -1354,7 +1357,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("SearchId");
 
-                    b.ToTable("SearchResultsFiltered", (string)null);
+                    b.ToTable("SearchResultsFiltered");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchService", b =>
@@ -1403,7 +1406,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("ServiceTypeId");
 
-                    b.ToTable("SearchServices", (string)null);
+                    b.ToTable("SearchServices");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchServiceDeliverableType", b =>
@@ -1442,7 +1445,7 @@ namespace newApi.Migrations
                     b.HasIndex("SearchServiceId", "DeliverableTypeId")
                         .IsUnique();
 
-                    b.ToTable("SearchServiceDeliverableTypes", (string)null);
+                    b.ToTable("SearchServiceDeliverableTypes");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchServiceImage", b =>
@@ -1471,7 +1474,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("SearchServiceId");
 
-                    b.ToTable("SearchServiceImages", (string)null);
+                    b.ToTable("SearchServiceImages");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.ServiceType", b =>
@@ -1522,7 +1525,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("ServiceTypeCategoryId");
 
-                    b.ToTable("ServiceTypes", (string)null);
+                    b.ToTable("ServiceTypes");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.ServiceTypeCategory", b =>
@@ -1565,7 +1568,7 @@ namespace newApi.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("ServiceTypeCategories", (string)null);
+                    b.ToTable("ServiceTypeCategories");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Severity", b =>
@@ -1599,7 +1602,7 @@ namespace newApi.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("Severities", (string)null);
+                    b.ToTable("Severities");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.StatusConfiguration", b =>
@@ -1648,7 +1651,7 @@ namespace newApi.Migrations
                     b.HasIndex("StatusId", "CategoryId", "ServiceTypeCategoryId")
                         .IsUnique();
 
-                    b.ToTable("StatusConfigurations", (string)null);
+                    b.ToTable("StatusConfigurations");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.StatusMapping", b =>
@@ -1680,7 +1683,7 @@ namespace newApi.Migrations
                     b.HasIndex("SourceStatusId", "TargetStatusId")
                         .IsUnique();
 
-                    b.ToTable("StatusMappings", (string)null);
+                    b.ToTable("StatusMappings");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SubscriptionPlan", b =>
@@ -1741,7 +1744,7 @@ namespace newApi.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("SubscriptionPlans", (string)null);
+                    b.ToTable("SubscriptionPlans");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SystemSetting", b =>
@@ -1778,7 +1781,7 @@ namespace newApi.Migrations
                     b.HasIndex("Id")
                         .IsUnique();
 
-                    b.ToTable("SystemSettings", (string)null);
+                    b.ToTable("SystemSettings");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SystemStatus", b =>
@@ -1837,7 +1840,7 @@ namespace newApi.Migrations
                     b.HasIndex("StatusType", "StatusValue")
                         .IsUnique();
 
-                    b.ToTable("SystemStatuses", (string)null);
+                    b.ToTable("SystemStatuses");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.User", b =>
@@ -1885,7 +1888,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("SubscriptionPlanId");
 
-                    b.ToTable("Users", null, t =>
+                    b.ToTable("Users", t =>
                         {
                             t.HasCheckConstraint("CK_Users_Balance_NonNegative", "\"Balance\" >= 0");
                         });
@@ -1928,7 +1931,7 @@ namespace newApi.Migrations
                     b.HasIndex("UserId")
                         .IsUnique();
 
-                    b.ToTable("UserSettings", (string)null);
+                    b.ToTable("UserSettings");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.UserSubscription", b =>
@@ -1974,7 +1977,7 @@ namespace newApi.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("UserSubscriptions", (string)null);
+                    b.ToTable("UserSubscriptions");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Ad", b =>

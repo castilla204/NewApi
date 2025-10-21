@@ -230,7 +230,6 @@ builder.Services.AddScoped<IAuthorizationServices, AuthorizationServices>();
 builder.Services.AddScoped<ISubscriptionService, newApi.Services.SubscriptionService>();
 builder.Services.AddScoped<ISearchHireService, SearchHireService>();
 builder.Services.AddScoped<ISearchServiceService, SearchServiceService>();
-builder.Services.AddScoped<ICheckingClientDecisionService, CheckingClientDecisionService>();
 builder.Services.AddScoped<IAppointmentService, AppointmentService>();
 // Servicios redundantes eliminados - reemplazados por SystemStatusService
 // builder.Services.AddScoped<IAppointmentConfigService, AppointmentConfigService>();

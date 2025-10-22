@@ -1,7 +1,9 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.enums;
+using newApi.DataLayer.Models;
 using newApi.Services;
 using System.Security.Claims;
 
@@ -15,12 +17,92 @@ namespace newApi.Controllers
         private readonly IAppointmentService _appointmentService;
         private readonly ILogger<AppointmentController> _logger;
         private readonly IAuthorizationServices _authService;
+        private readonly AppDbContext _context;
+        private readonly SystemStatusService _systemStatusService;
 
-        public AppointmentController(IAppointmentService appointmentService, ILogger<AppointmentController> logger, IAuthorizationServices authService)
+        public AppointmentController(
+            IAppointmentService appointmentService, 
+            ILogger<AppointmentController> logger, 
+            IAuthorizationServices authService,
+            AppDbContext context,
+            SystemStatusService systemStatusService)
         {
             _appointmentService = appointmentService;
             _logger = logger;
             _authService = authService;
+            _context = context;
+            _systemStatusService = systemStatusService;
+        }
+
+        /// <summary>
+        /// Obtener todos los estados de citas disponibles
+        /// </summary>
+        [HttpGet("statuses")]
+        public async Task<IActionResult> GetAppointmentStatuses()
+        {
+            try
+            {
+                var statuses = await _context.SystemStatuses
+                    .Where(s => s.StatusType == "AppointmentStatus" && s.IsActive)
+                    .OrderBy(s => s.SortOrder)
+                    .Select(s => new {
+                        id = s.Id,
+                        statusValue = s.StatusValue,
+                        displayName = s.DisplayName,
+                        description = s.Description,
+                        isFinalizationStatus = s.IsFinalizationStatus,
+                        sortOrder = s.SortOrder,
+                        createdAt = s.CreatedAt,
+                        updatedAt = s.UpdatedAt
+                    })
+                    .AsNoTracking() // Optimización: no tracking para solo lectura
+                    .ToListAsync();
+                
+                return Ok(statuses);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting appointment statuses");
+                return StatusCode(500, new { message = "Internal server error" });
+            }
+        }
+
+        /// <summary>
+        /// Obtener configuración de distribución de dinero para un estado específico
+        /// </summary>
+        [HttpGet("money-distribution-config")]
+        [ResponseCache(Duration = 300)] // Cache de 5 minutos
+        public async Task<IActionResult> GetMoneyDistributionConfig(
+            [FromQuery] string status,
+            [FromQuery] int? categoryId = null,
+            [FromQuery] int? serviceTypeCategoryId = null)
+        {
+            try
+            {
+                var config = await _systemStatusService.GetMoneyDistributionConfigAsync(status, categoryId, serviceTypeCategoryId);
+                
+                if (config == null)
+                {
+                    return NotFound(new { message = "Money distribution configuration not found" });
+                }
+
+                var response = new {
+                    clientPercentage = config.ClientPercentage,
+                    expertPercentage = config.ExpertPercentage,
+                    platformPercentage = config.PlatformPercentage,
+                    source = "dynamic", // Indica que viene de la configuración dinámica
+                    status = status,
+                    categoryId = categoryId,
+                    serviceTypeCategoryId = serviceTypeCategoryId
+                };
+
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting money distribution config for status: {Status}", status);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
         }
 
         /// <summary>

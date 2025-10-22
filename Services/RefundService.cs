@@ -171,12 +171,66 @@ namespace newApi.Services
                         if (availableInEur < requiredCents)
                         {
                             _logger.LogError("❌ INSUFFICIENT PLATFORM BALANCE - Required={Required}¢, Available={Available}¢", requiredCents, availableInEur);
+                            
+                            // 🚨 LOG CRÍTICO: Especificar transacciones pendientes
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Money distribution failed - insufficient platform balance",
+                                details: $"SearchHire {searchHireId} finalization failed due to insufficient Stripe balance. " +
+                                        $"Required: {expertAmount:F2}€ for expert transfer, Available: {availableInEur/100:F2}€. " +
+                                        $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
+                                        $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) " +
+                                        $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) " +
+                                        $"3) Platform retains {platformAmount:F2}€. " +
+                                        $"Configuration: Client {config.ClientPercentage}%, Expert {config.ExpertPercentage}%, Platform {config.PlatformPercentage}%",
+                                userId: initiatedByUserId ?? searchHire.ClientId,
+                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                additionalData: new { 
+                                    Status = statusValue,
+                                    RequiredAmount = expertAmount,
+                                    AvailableAmount = availableInEur/100,
+                                    ClientRefundAmount = clientRefundAmount,
+                                    ExpertTransferAmount = expertAmount,
+                                    PlatformAmount = platformAmount,
+                                    ClientId = searchHire.ClientId,
+                                    ExpertId = searchHire.ExpertId,
+                                    ClientName = searchHire.Client?.Name,
+                                    ExpertName = searchHire.Expert?.Name
+                                }
+                            );
+                            
                             return false;
                         }
                     }
                     catch (Exception balEx)
                     {
                         _logger.LogError(balEx, "❌ Error checking Stripe balance before transfer");
+                        
+                        // 🚨 LOG CRÍTICO: Error al verificar saldo
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Error checking Stripe balance for money distribution",
+                            details: $"SearchHire {searchHireId} finalization failed due to error checking Stripe balance. " +
+                                    $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
+                                    $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) " +
+                                    $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) " +
+                                    $"3) Platform retains {platformAmount:F2}€. " +
+                                    $"Error: {balEx.Message}",
+                            userId: initiatedByUserId ?? searchHire.ClientId,
+                            source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId,
+                            additionalData: new { 
+                                Status = statusValue,
+                                Error = balEx.Message,
+                                ClientRefundAmount = clientRefundAmount,
+                                ExpertTransferAmount = expertAmount,
+                                PlatformAmount = platformAmount,
+                                ClientId = searchHire.ClientId,
+                                ExpertId = searchHire.ExpertId
+                            }
+                        );
+                        
                         return false;
                     }
                 }
@@ -202,14 +256,31 @@ namespace newApi.Services
                             if (string.IsNullOrEmpty(expertStripeAccountId))
                             {
                                 _logger.LogError("❌ EXPERT STRIPE ACCOUNT MISSING - SearchHireId={SearchHireId}, ExpertId={ExpertId}", searchHireId, searchHire.ExpertId);
+                                
+                                // 🚨 LOG CRÍTICO: Cuenta de Stripe del experto faltante
                                 await _loggingService.LogCriticalAsync(
-                                    message: "CRITICAL: Expert Stripe account missing",
-                                    details: $"Expert {searchHire.ExpertId} has no Stripe account configured",
+                                    message: "CRITICAL: Expert Stripe account missing - money distribution failed",
+                                    details: $"SearchHire {searchHireId} finalization failed because Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) has no Stripe account configured. " +
+                                            $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
+                                            $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) " +
+                                            $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) - REQUIRES MANUAL SETUP " +
+                                            $"3) Platform retains {platformAmount:F2}€. " +
+                                            $"Configuration: Client {config.ClientPercentage}%, Expert {config.ExpertPercentage}%, Platform {config.PlatformPercentage}%",
                                     userId: searchHire.ExpertId,
                                     source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                     relatedEntityType: "Transfer",
                                     relatedEntityId: searchHireId,
-                                    additionalData: new { Status = statusValue }
+                                    additionalData: new { 
+                                        Status = statusValue,
+                                        ClientRefundAmount = clientRefundAmount,
+                                        ExpertTransferAmount = expertAmount,
+                                        PlatformAmount = platformAmount,
+                                        ClientId = searchHire.ClientId,
+                                        ExpertId = searchHire.ExpertId,
+                                        ClientName = searchHire.Client?.Name,
+                                        ExpertName = searchHire.Expert?.Name,
+                                        ExpertStripeAccountId = expertStripeAccountId
+                                    }
                                 );
                                 await transaction.RollbackAsync();
                                 return false;
@@ -277,15 +348,68 @@ namespace newApi.Services
                                         {
                                             // Revertir el total transferido
                                         });
+                                        _logger.LogInformation("✅ TRANSFER REVERSED - TransferId={TransferId} after refund failure", createdTransferId);
                                     }
                                     catch (Exception revEx)
                                     {
                                         _logger.LogCritical(revEx, "❌ CRITICAL: Failed to reverse transfer after refund failure - TransferId={TransferId}", createdTransferId);
+                                        
+                                        // 🚨 LOG CRÍTICO: Error al revertir transferencia
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL: Failed to reverse transfer after refund failure",
+                                            details: $"SearchHire {searchHireId} finalization failed: refund failed and transfer reversal also failed. " +
+                                                    $"EXPERT ALREADY RECEIVED {expertAmount:F2}€ - MANUAL INTERVENTION REQUIRED. " +
+                                                    $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
+                                                    $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) " +
+                                                    $"2) Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) already received {expertAmount:F2}€ - NO ACTION NEEDED " +
+                                                    $"3) Platform retains {platformAmount:F2}€. " +
+                                                    $"TransferId: {createdTransferId}, RefundError: {refundEx.Message}, ReversalError: {revEx.Message}",
+                                            userId: initiatedByUserId ?? searchHire.ClientId,
+                                            source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                            relatedEntityType: "SearchHire",
+                                            relatedEntityId: searchHireId,
+                                            additionalData: new { 
+                                                Status = statusValue,
+                                                TransferId = createdTransferId,
+                                                ClientRefundAmount = clientRefundAmount,
+                                                ExpertTransferAmount = expertAmount,
+                                                PlatformAmount = platformAmount,
+                                                ClientId = searchHire.ClientId,
+                                                ExpertId = searchHire.ExpertId,
+                                                RefundError = refundEx.Message,
+                                                ReversalError = revEx.Message
+                                            }
+                                        );
                                     }
                                 }
 
                                 await transaction.RollbackAsync();
                                 _logger.LogError(refundEx, "Stripe refund failed, rolled back distribution - SH={SearchHireId}", searchHireId);
+                                
+                                // 🚨 LOG CRÍTICO: Reembolso falló
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Refund failed - money distribution rolled back",
+                                    details: $"SearchHire {searchHireId} finalization failed: refund to client failed. " +
+                                            $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
+                                            $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) - FAILED " +
+                                            $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) - NOT PROCESSED " +
+                                            $"3) Platform retains {platformAmount:F2}€. " +
+                                            $"RefundError: {refundEx.Message}",
+                                    userId: initiatedByUserId ?? searchHire.ClientId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId,
+                                    additionalData: new { 
+                                        Status = statusValue,
+                                        ClientRefundAmount = clientRefundAmount,
+                                        ExpertTransferAmount = expertAmount,
+                                        PlatformAmount = platformAmount,
+                                        ClientId = searchHire.ClientId,
+                                        ExpertId = searchHire.ExpertId,
+                                        RefundError = refundEx.Message
+                                    }
+                                );
+                                
                                 return false;
                             }
                         }

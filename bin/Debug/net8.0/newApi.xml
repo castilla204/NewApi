@@ -133,6 +133,16 @@
             Actualiza el estado de finalización de un estado específico
             </summary>
         </member>
+        <member name="M:newApi.Controllers.AppointmentController.GetAppointmentStatuses">
+            <summary>
+            Obtener todos los estados de citas disponibles
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AppointmentController.GetMoneyDistributionConfig(System.String,System.Nullable{System.Int32},System.Nullable{System.Int32})">
+            <summary>
+            Obtener configuración de distribución de dinero para un estado específico
+            </summary>
+        </member>
         <member name="M:newApi.Controllers.AppointmentController.GetAppointment(System.Int32)">
             <summary>
             Obtener una cita por ID

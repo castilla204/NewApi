@@ -439,8 +439,8 @@ namespace newApi.Services
                 if (isSecondRejection)
                 {
                     // Segundo rechazo o más - cancelar por rechazos múltiples
-                    // ✅ CORRECCIÓN: Usar el estado correcto para segunda cancelación
-                    statusValue = "appointment_cancelled_by_expert_second";
+                    // ✅ CORRECCIÓN: Usar el estado correcto para rechazo (no cancelación)
+                    statusValue = "appointment_cancelled_by_expert_rejection";
                     _logger.LogInformation("🔍 SECOND REJECTION DETECTED - Using status: {StatusValue}", statusValue);
                 }
                 else
@@ -479,7 +479,7 @@ namespace newApi.Services
                 var appointmentStatusEnum = statusValue switch
                 {
                     "appointment_rejected" => AppointmentStatus.AppointmentRejected,
-                    "appointment_cancelled_by_expert_second" => AppointmentStatus.AppointmentCancelledByExpertSecond,
+                    "appointment_cancelled_by_expert_rejection" => AppointmentStatus.AppointmentCancelledByExpertRejection,
                     _ => throw new InvalidOperationException($"Unknown appointment status: {statusValue}")
                 };
 
@@ -526,11 +526,11 @@ namespace newApi.Services
                         
                         // 🔍 LOG: Verificar configuración de dinero antes del refund
                         var moneyConfig = await _systemStatusService.GetMoneyDistributionConfigAsync(
-                            "appointment_cancelled_by_expert_second", 
+                            "appointment_cancelled_by_expert_rejection", 
                             appointment.SearchHire.SearchService?.CategoryId, 
                             appointment.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
                         
-                        _logger.LogInformation("🔍 MONEY DISTRIBUTION CONFIG - Status: appointment_cancelled_by_expert_second, CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}, Config: {Config}", 
+                        _logger.LogInformation("🔍 MONEY DISTRIBUTION CONFIG - Status: appointment_cancelled_by_expert_rejection, CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}, Config: {Config}", 
                             appointment.SearchHire.SearchService?.CategoryId, 
                             appointment.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId,
                             moneyConfig != null ? $"Client: {moneyConfig.ClientPercentage}%, Expert: {moneyConfig.ExpertPercentage}%, Platform: {moneyConfig.PlatformPercentage}%" : "NULL");
@@ -538,8 +538,8 @@ namespace newApi.Services
                         // Orquestar refund+transfer según configuración del subestado de finalización
                         var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
                             appointment.SearchHireId,
-                            "appointment_cancelled_by_expert_second",
-                            "Segunda cancelación por rechazo del experto",
+                            "appointment_cancelled_by_expert_rejection",
+                            "Segundo rechazo del experto - penalización máxima",
                             userId);
                         
                         if (refundSuccess)

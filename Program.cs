@@ -370,6 +370,8 @@ if (app.Environment.IsDevelopment())
 app.UseCors("AllowSpecificOrigin"); // Aplicar CORS antes de otros middleware
 
 // Development mode middleware - bypass authentication for testing
+// DISABLED: Using real JWT authentication instead
+/*
 app.Use(async (context, next) =>
 {
     // Log all headers for debugging
@@ -380,7 +382,7 @@ app.Use(async (context, next) =>
     
     // Check for development headers
     if (context.Request.Headers.ContainsKey("X-Development-Mode") && 
-        context.Request.Headers.ContainsKey("X-Bypass-Auth"))
+context.Request.Headers.ContainsKey("X-Bypass-Auth"))
     {
         logger.LogInformation("🔧 Development mode detected! Bypassing authentication for {Path}", context.Request.Path);
         
@@ -406,6 +408,7 @@ app.Use(async (context, next) =>
     
     await next();
 });
+*/
 
 app.UseAuthentication();
 app.UseAuthorization();

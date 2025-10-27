@@ -4,8 +4,11 @@ using Microsoft.EntityFrameworkCore;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.enums;
 using newApi.DataLayer.Models;
+using newApi.DataLayer.Models.PostGresModels;
 using newApi.Services;
 using System.Security.Claims;
+using Google.Cloud.Storage.V1;
+using Microsoft.Extensions.Configuration;
 
 namespace newApi.Controllers
 {
@@ -19,19 +22,25 @@ namespace newApi.Controllers
         private readonly IAuthorizationServices _authService;
         private readonly AppDbContext _context;
         private readonly SystemStatusService _systemStatusService;
+        private readonly StorageClient _storageClient;
+        private readonly IConfiguration _configuration;
 
         public AppointmentController(
             IAppointmentService appointmentService, 
             ILogger<AppointmentController> logger, 
             IAuthorizationServices authService,
             AppDbContext context,
-            SystemStatusService systemStatusService)
+            SystemStatusService systemStatusService,
+            StorageClient storageClient,
+            IConfiguration configuration)
         {
             _appointmentService = appointmentService;
             _logger = logger;
             _authService = authService;
             _context = context;
             _systemStatusService = systemStatusService;
+            _storageClient = storageClient;
+            _configuration = configuration;
         }
 
         /// <summary>
@@ -332,6 +341,261 @@ namespace newApi.Controllers
             }
         }
 
+        /// <summary>
+        /// Obtener archivos subidos para una cita (Experto)
+        /// </summary>
+        [HttpGet("files/{appointmentId}")]
+        public async Task<IActionResult> GetAppointmentFiles(int appointmentId)
+        {
+            try
+            {
+                var userId = GetCurrentUserId();
+                
+                var appointment = await _context.Appointments
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Deliverables)
+                    .FirstOrDefaultAsync(a => a.Id == appointmentId);
+
+                if (appointment == null)
+                {
+                    return NotFound(new { message = "Cita no encontrada" });
+                }
+
+                if (appointment.SearchHire.ExpertId != userId)
+                {
+                    return Forbid("Solo el experto puede ver los archivos de esta cita");
+                }
+
+                var files = appointment.SearchHire.Deliverables
+                    .Select(d => new
+                    {
+                        Id = d.Id,
+                        FileName = d.Url.Split('/').Last(),
+                        FileType = d.Type,
+                        Url = d.Url,
+                        CreatedAt = d.CreatedAt
+                    })
+                    .ToList();
+
+                return Ok(new { files });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting files for appointment: {AppointmentId}", appointmentId);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
+        }
+
+        /// <summary>
+        /// Eliminar un archivo de una cita (Experto)
+        /// </summary>
+        [HttpDelete("files/{appointmentId}/{deliverableId}")]
+        public async Task<IActionResult> DeleteAppointmentFile(int appointmentId, int deliverableId)
+        {
+            try
+            {
+                var userId = GetCurrentUserId();
+                
+                var appointment = await _context.Appointments
+                    .Include(a => a.SearchHire)
+                    .FirstOrDefaultAsync(a => a.Id == appointmentId);
+
+                if (appointment == null)
+                {
+                    return NotFound(new { message = "Cita no encontrada" });
+                }
+
+                if (appointment.SearchHire.ExpertId != userId)
+                {
+                    return Forbid("Solo el experto puede eliminar archivos de esta cita");
+                }
+
+                var deliverable = await _context.SearchHireDeliverables
+                    .FirstOrDefaultAsync(d => d.Id == deliverableId && d.SearchHireId == appointment.SearchHireId);
+
+                if (deliverable == null)
+                {
+                    return NotFound(new { message = "Archivo no encontrado" });
+                }
+
+                // Eliminar del Google Cloud Storage
+                try
+                {
+                    var bucketName = _configuration["GoogleCloud:BucketName"];
+                    if (!string.IsNullOrEmpty(bucketName) && !string.IsNullOrEmpty(deliverable.ObjectName))
+                    {
+                        await _storageClient.DeleteObjectAsync(bucketName, deliverable.ObjectName);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not delete file from Google Cloud Storage: {ObjectName}", deliverable.ObjectName);
+                }
+
+                // Eliminar de la base de datos
+                _context.SearchHireDeliverables.Remove(deliverable);
+                await _context.SaveChangesAsync();
+
+                return Ok(new { message = "Archivo eliminado exitosamente" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error deleting file {DeliverableId} for appointment: {AppointmentId}", deliverableId, appointmentId);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
+        }
+
+        /// <summary>
+        /// Validar archivos requeridos antes de enviar reporte (Experto)
+        /// </summary>
+        [HttpGet("validate-files/{appointmentId}")]
+        public async Task<IActionResult> ValidateRequiredFiles(int appointmentId)
+        {
+            try
+            {
+                var userId = GetCurrentUserId();
+                _logger.LogInformation("🔍 Validating files for appointment {AppointmentId} by user {UserId}", appointmentId, userId);
+                
+                var appointment = await _context.Appointments
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.SearchService)
+                            .ThenInclude(ss => ss.SelectedDeliverableTypes)
+                                .ThenInclude(ssdt => ssdt.DeliverableType)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Deliverables)
+                    .FirstOrDefaultAsync(a => a.Id == appointmentId);
+
+                if (appointment == null)
+                {
+                    _logger.LogWarning("❌ Appointment {AppointmentId} not found", appointmentId);
+                    return NotFound(new { message = "Cita no encontrada" });
+                }
+
+                if (appointment.SearchHire.ExpertId != userId)
+                {
+                    _logger.LogWarning("❌ User {UserId} is not the expert for appointment {AppointmentId}. ExpertId: {ExpertId}", 
+                        userId, appointmentId, appointment.SearchHire.ExpertId);
+                    return Forbid("Solo el experto puede validar archivos para esta cita");
+                }
+
+                // Obtener tipos de entregables requeridos
+                var requiredDeliverableTypes = appointment.SearchHire.SearchService.SelectedDeliverableTypes
+                    .Where(ssdt => ssdt.IsSelected)
+                    .Select(ssdt => ssdt.DeliverableType)
+                    .ToList();
+
+                var uploadedDeliverables = appointment.SearchHire.Deliverables.ToList();
+                var missingFiles = new List<string>();
+                var isValid = true;
+
+                _logger.LogInformation("📋 Required deliverable types: {RequiredTypes}", 
+                    string.Join(", ", requiredDeliverableTypes.Select(dt => dt.Name)));
+                _logger.LogInformation("📁 Uploaded deliverables count: {Count}", uploadedDeliverables.Count);
+                _logger.LogInformation("📁 Uploaded deliverables: {Deliverables}", 
+                    string.Join(", ", uploadedDeliverables.Select(d => $"{d.Type}({d.Id})")));
+
+                // Verificar PDF obligatorio
+                var pdfType = requiredDeliverableTypes.FirstOrDefault(dt => dt.Name == "PDF");
+                if (pdfType != null)
+                {
+                    var hasPdf = uploadedDeliverables.Any(d => d.Type == "pdf");
+                    if (!hasPdf)
+                    {
+                        missingFiles.Add("PDF");
+                        isValid = false;
+                        _logger.LogWarning("❌ Missing PDF file");
+                    }
+                    else
+                    {
+                        _logger.LogInformation("✅ PDF file found");
+                    }
+                }
+
+                // Verificar video si está configurado
+                var videoType = requiredDeliverableTypes.FirstOrDefault(dt => dt.Name == "Video");
+                if (videoType != null)
+                {
+                    var hasVideo = uploadedDeliverables.Any(d => d.Type == "video");
+                    if (!hasVideo)
+                    {
+                        missingFiles.Add("MP4");
+                        isValid = false;
+                        _logger.LogWarning("❌ Missing MP4 file");
+                    }
+                    else
+                    {
+                        _logger.LogInformation("✅ MP4 file found");
+                    }
+                }
+
+                var validationResult = new
+                {
+                    IsValid = isValid,
+                    MissingFiles = missingFiles,
+                    UploadedFiles = uploadedDeliverables.Select(d => new
+                    {
+                        Id = d.Id,
+                        Type = d.Type,
+                        FileName = d.Url.Split('/').Last(),
+                        CreatedAt = d.CreatedAt
+                    }).ToList(),
+                    RequiredTypes = requiredDeliverableTypes.Select(dt => dt.Name).ToList()
+                };
+
+                _logger.LogInformation("✅ Validation result: IsValid={IsValid}, MissingFiles={MissingFiles}", 
+                    isValid, string.Join(", ", missingFiles));
+
+                return Ok(validationResult);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error validating files for appointment: {AppointmentId}", appointmentId);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
+        }
+
+        /// <summary>
+        /// Subir archivos y enviar reporte del experto en una sola operación (Experto)
+        /// </summary>
+        [HttpPost("submit-report-with-files/{appointmentId}")]
+        public async Task<IActionResult> SubmitExpertReportWithFiles(int appointmentId, [FromForm] SubmitExpertReportWithFilesDto dto)
+        {
+            try
+            {
+                var userId = GetCurrentUserId();
+                
+                // Primero subir los archivos si los hay
+                if (dto.Files != null && dto.Files.Any())
+                {
+                    var uploadResult = await UploadDeliverablesForAppointment(appointmentId, userId, dto.Files);
+                    if (!uploadResult.Success)
+                    {
+                        return BadRequest(new { message = uploadResult.ErrorMessage });
+                    }
+                }
+
+                // Luego enviar el reporte
+                var appointment = await _appointmentService.SubmitExpertReportAsync(appointmentId, userId, dto.Notes);
+                return Ok(new { 
+                    message = "Reporte enviado exitosamente con archivos adjuntos",
+                    appointment = appointment 
+                });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = "Only the expert can submit reports" });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error submitting expert report with files for appointment: {AppointmentId}", appointmentId);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
+        }
+
 
 
         #region Admin Endpoints
@@ -397,6 +661,121 @@ namespace newApi.Controllers
                 throw new UnauthorizedAccessException("Invalid user ID");
             }
             return userId;
+        }
+
+        /// <summary>
+        /// Método auxiliar para subir deliverables para una cita
+        /// </summary>
+        private async Task<(bool Success, string ErrorMessage)> UploadDeliverablesForAppointment(int appointmentId, int userId, List<IFormFile> files)
+        {
+            try
+            {
+                _logger.LogInformation("📤 Starting file upload for appointment {AppointmentId} by user {UserId}. Files count: {FileCount}", 
+                    appointmentId, userId, files?.Count ?? 0);
+
+                // Obtener la cita y verificar que el usuario es el experto
+                var appointment = await _context.Appointments
+                    .Include(a => a.SearchHire)
+                    .FirstOrDefaultAsync(a => a.Id == appointmentId);
+
+                if (appointment == null)
+                {
+                    _logger.LogWarning("❌ Appointment {AppointmentId} not found", appointmentId);
+                    return (false, "Cita no encontrada");
+                }
+
+                if (appointment.SearchHire.ExpertId != userId)
+                {
+                    _logger.LogWarning("❌ User {UserId} is not the expert for appointment {AppointmentId}. ExpertId: {ExpertId}", 
+                        userId, appointmentId, appointment.SearchHire.ExpertId);
+                    return (false, "Solo el experto puede subir archivos para esta cita");
+                }
+
+                var searchHireId = appointment.SearchHireId;
+                var bucketName = _configuration["GoogleCloud:BucketName"];
+                
+                if (string.IsNullOrEmpty(bucketName))
+                {
+                    _logger.LogError("❌ Google Cloud Storage bucket name not configured");
+                    return (false, "Configuración de Google Cloud Storage faltante");
+                }
+
+                _logger.LogInformation("📁 Uploading files to SearchHire {SearchHireId} with bucket {BucketName}", searchHireId, bucketName);
+
+                foreach (var file in files)
+                {
+                    if (file.Length > 0)
+                    {
+                        _logger.LogInformation("📄 Processing file: {FileName} ({Size} bytes)", file.FileName, file.Length);
+
+                        // Validar tipo de archivo
+                        var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+                        if (!new[] { ".pdf", ".mp4" }.Contains(extension))
+                        {
+                            _logger.LogWarning("❌ Invalid file type: {Extension} for file {FileName}", extension, file.FileName);
+                            return (false, "Solo se permiten archivos PDF y MP4");
+                        }
+
+                        // Validar tamaño (10MB máximo)
+                        if (file.Length > 10 * 1024 * 1024)
+                        {
+                            _logger.LogWarning("❌ File too large: {FileName} ({Size} bytes)", file.FileName, file.Length);
+                            return (false, $"El archivo {file.FileName} excede el tamaño máximo de 10MB");
+                        }
+
+                        var uniqueFileName = $"{Guid.NewGuid()}{extension}";
+                        var objectName = $"deliverables/{uniqueFileName}";
+                        var contentType = extension == ".pdf" ? "application/pdf" : "video/mp4";
+
+                        try
+                        {
+                            _logger.LogInformation("☁️ Uploading to Google Cloud Storage: {ObjectName}", objectName);
+                            
+                            using (var inputStream = file.OpenReadStream())
+                            {
+                                await _storageClient.UploadObjectAsync(
+                                    bucket: bucketName,
+                                    objectName: objectName,
+                                    contentType: contentType,
+                                    source: inputStream
+                                );
+                            }
+
+                            var deliverableUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
+                            _logger.LogInformation("✅ File uploaded successfully: {Url}", deliverableUrl);
+
+                            var deliverable = new SearchHireDeliverable
+                            {
+                                SearchHireId = searchHireId,
+                                Url = deliverableUrl,
+                                ObjectName = objectName,
+                                Type = extension == ".pdf" ? "pdf" : "video",
+                                CreatedAt = DateTime.UtcNow
+                            };
+                            
+                            _context.SearchHireDeliverables.Add(deliverable);
+                            _logger.LogInformation("💾 Deliverable record created for SearchHire {SearchHireId}: Type={Type}, Id={Id}", 
+                                searchHireId, deliverable.Type, deliverable.Id);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "❌ Error uploading deliverable file: {FileName}", file.FileName);
+                            return (false, $"Error al subir el archivo {file.FileName}");
+                        }
+                    }
+                }
+
+                _logger.LogInformation("💾 Saving changes to database...");
+                await _context.SaveChangesAsync();
+                _logger.LogInformation("✅ All files uploaded and saved successfully for appointment {AppointmentId}", appointmentId);
+                
+                return (true, string.Empty);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error in UploadDeliverablesForAppointment for appointment {AppointmentId}", appointmentId);
+                return (false, "Error interno al subir archivos");
+            }
         }
 
         #endregion

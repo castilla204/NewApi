@@ -1202,6 +1202,7 @@ namespace newApi.Services
 
                 // Obtener los archivos ya subidos
                 var uploadedDeliverables = hire.Deliverables.ToList();
+                var missingFiles = new List<string>();
 
                 // Verificar PDF obligatorio
                 var pdfType = requiredDeliverableTypes.FirstOrDefault(dt => dt.Name == "PDF");
@@ -1210,7 +1211,7 @@ namespace newApi.Services
                     var hasPdf = uploadedDeliverables.Any(d => d.Type == "pdf");
                     if (!hasPdf)
                     {
-                        return (false, "Es obligatorio subir un archivo PDF antes de enviar el reporte");
+                        missingFiles.Add("PDF");
                     }
                 }
 
@@ -1221,8 +1222,15 @@ namespace newApi.Services
                     var hasVideo = uploadedDeliverables.Any(d => d.Type == "video");
                     if (!hasVideo)
                     {
-                        return (false, "Es obligatorio subir un archivo de video antes de enviar el reporte");
+                        missingFiles.Add("MP4");
                     }
+                }
+
+                // Si faltan archivos, devolver mensaje específico
+                if (missingFiles.Any())
+                {
+                    var missingFilesText = string.Join(" y ", missingFiles);
+                    return (false, $"Faltan archivos obligatorios: {missingFilesText}. Debes subir estos archivos antes de enviar el reporte.");
                 }
 
                 _logger.LogInformation("All required deliverables validated for SearchHire {HireId}", hire.Id);

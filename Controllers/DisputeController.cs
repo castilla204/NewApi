@@ -695,6 +695,7 @@ namespace newApi.Controllers
                 _logger.LogInformation("Looking for SearchHire with Id={SearchHireId}", request.SearchHireId);
                 var searchHire = await _context.SearchHires
                     .Include(sh => sh.Search)
+                    .Include(sh => sh.Status)
                     .FirstOrDefaultAsync(sh => sh.Id == request.SearchHireId);
 
                 if (searchHire == null)
@@ -704,7 +705,7 @@ namespace newApi.Controllers
                 }
 
                 _logger.LogInformation("SearchHire found. ClientId={ClientId}, ExpertId={ExpertId}, Status={Status}", 
-                    searchHire.ClientId, searchHire.ExpertId, searchHire.Status);
+                    searchHire.ClientId, searchHire.ExpertId, searchHire.Status?.StatusValue);
 
                 // Verificar que el usuario es el cliente o el experto del servicio
                 if (searchHire.ClientId != userId && searchHire.ExpertId != userId)
@@ -722,7 +723,7 @@ namespace newApi.Controllers
                 }
 
                 // Verificar que el servicio está en un estado que permite disputas
-                if (searchHire.Status.StatusValue != SearchHireStatus.Completed.ToStringValue() && searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                if (searchHire.Status?.StatusValue != SearchHireStatus.Completed.ToStringValue() && searchHire.Status?.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
                 {
                     return BadRequest(new { message = "Cannot dispute this service in its current status" });
                 }

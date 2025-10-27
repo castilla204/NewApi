@@ -14,6 +14,7 @@ using System.Linq;
 using System.Security.Claims;
 using System.Threading.Tasks;
 using newApi.DataLayer.Models.PostGresModels;
+using newApi.Services;
 
 namespace newApi.Controllers
 {
@@ -26,17 +27,20 @@ namespace newApi.Controllers
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
         private readonly ILogger<ReviewController> _logger;
+        private readonly ILoggingService _loggingService;
 
         public ReviewController(
             AppDbContext context,
             IConfiguration configuration,
             StorageClient storageClient,
-            ILogger<ReviewController> logger)
+            ILogger<ReviewController> logger,
+            ILoggingService loggingService)
         {
             _context = context;
             _configuration = configuration;
             _storageClient = storageClient;
             _logger = logger;
+            _loggingService = loggingService;
         }
 
         [HttpPost("search-hire/{searchHireId}")]
@@ -44,6 +48,8 @@ namespace newApi.Controllers
         {
             try
             {
+                _logger.LogInformation("📝 Starting review creation for SearchHire {SearchHireId}", searchHireId);
+                
                 // Obtener el usuario autenticado
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
@@ -108,18 +114,21 @@ namespace newApi.Controllers
                 var imageUrls = new List<string>();
                 if (reviewDto.Images != null && reviewDto.Images.Any())
                 {
+                    _logger.LogInformation("📸 Processing {ImageCount} images for review {ReviewId}", reviewDto.Images.Length, review.Id);
                     var bucketName = _configuration["GoogleCloud:BucketName"];
                     foreach (var imageFile in reviewDto.Images)
                     {
                         var extension = Path.GetExtension(imageFile.FileName).ToLowerInvariant();
                         if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
                         {
+                            _logger.LogWarning("❌ Invalid image format: {Extension} for file {FileName}", extension, imageFile.FileName);
                             return BadRequest(new { message = "Only JPG and PNG images are allowed" });
                         }
 
                         var uniqueFileName = $"{Guid.NewGuid()}{extension}";
                         var objectName = $"reviews/{uniqueFileName}";
 
+                        _logger.LogInformation("📤 Uploading image {FileName} ({Size} bytes) to Google Cloud Storage", imageFile.FileName, imageFile.Length);
                         using (var inputStream = imageFile.OpenReadStream())
                         using (var image = Image.Load(inputStream))
                         {
@@ -139,6 +148,7 @@ namespace newApi.Controllers
                                     contentType: "image/jpeg",
                                     source: outputStream
                                 );
+                                _logger.LogInformation("✅ Image {FileName} uploaded successfully to {ObjectName}", imageFile.FileName, objectName);
                             }
                         }
 
@@ -174,8 +184,42 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating review for SearchHire {SearchHireId}", searchHireId);
-                return StatusCode(500, new { message = "An error occurred while creating the review" });
+                _logger.LogError(ex, "❌ Error creating review for SearchHire {SearchHireId}: {ErrorMessage}", searchHireId, ex.Message);
+                
+                // 🚨 LOG CRÍTICO: Guardar en tabla Logs
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Review creation failed",
+                    details: $"Failed to create review for SearchHire {searchHireId}. Error: {ex.Message}. StackTrace: {ex.StackTrace}",
+                    userId: int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userId) ? userId : null,
+                    source: "ReviewController.CreateReview",
+                    relatedEntityType: "Review",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        ReviewDto = new { 
+                            Score = reviewDto?.Score,
+                            Description = reviewDto?.Description,
+                            ImageCount = reviewDto?.Images?.Length ?? 0
+                        }
+                    }
+                );
+                
+                // Determinar el tipo de error y devolver mensaje específico
+                var errorMessage = ex switch
+                {
+                    ArgumentException => "Invalid data provided for the review",
+                    UnauthorizedAccessException => "You are not authorized to create this review",
+                    InvalidOperationException => "Review cannot be created in the current state",
+                    _ => "An unexpected error occurred while creating the review"
+                };
+                
+                return StatusCode(500, new { 
+                    message = errorMessage,
+                    details = ex.Message,
+                    searchHireId = searchHireId
+                });
             }
         }
 

@@ -9,18 +9,21 @@ using newApi.DataLayer.Models.DTOs;
 [ApiController]
 public class UserController : ControllerBase
 {
-    private readonly UserService _userService;
-    private readonly ILogger<UserController> _logger;
-    private readonly IAuthorizationServices _authService;
+        private readonly UserService _userService;
+        private readonly ILogger<UserController> _logger;
+        private readonly IAuthorizationServices _authService;
+        private readonly ILoggingService _loggingService;
 
     public UserController(
         UserService userService,
         ILogger<UserController> logger,
-        IAuthorizationServices authService)
+        IAuthorizationServices authService,
+        ILoggingService loggingService)
     {
         _userService = userService;
         _logger = logger;
         _authService = authService;
+        _loggingService = loggingService;
     }
 
     [Authorize]
@@ -65,14 +68,66 @@ public class UserController : ControllerBase
             var success = await _userService.BlockUser(userId);
             if (!success)
             {
+                // 🚨 LOG CRÍTICO: Fallo al bloquear usuario
+                var adminUserId = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int adminId) ? adminId : (int?)null;
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Failed to block user",
+                    details: $"Admin {adminUserId} failed to block user {userId} - user may not exist or already blocked",
+                    userId: adminUserId,
+                    source: "UserController.BlockUser",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "BlockUser",
+                        TargetUserId = userId,
+                        AdminUserId = adminUserId,
+                        Success = false
+                    }
+                );
                 return BadRequest(new { message = "Cannot block this user" });
             }
+
+            // 🚨 LOG CRÍTICO: Usuario bloqueado exitosamente
+            var adminIdSuccess = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int adminIdSuccessValue) ? adminIdSuccessValue : (int?)null;
+            await _loggingService.LogCriticalAsync(
+                message: "CRITICAL: User blocked successfully",
+                details: $"Admin {adminIdSuccess} successfully blocked user {userId}",
+                userId: adminIdSuccess,
+                source: "UserController.BlockUser",
+                relatedEntityType: "User",
+                relatedEntityId: userId,
+                additionalData: new { 
+                    Action = "BlockUser",
+                    TargetUserId = userId,
+                    AdminUserId = adminIdSuccess,
+                    Success = true
+                }
+            );
 
             return Ok();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error blocking/unblocking user");
+            
+            // 🚨 LOG CRÍTICO: Error en bloqueo de usuario
+            var adminUserId = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int adminId) ? adminId : (int?)null;
+            await _loggingService.LogCriticalAsync(
+                message: "CRITICAL: Exception during user block operation",
+                details: $"Admin {adminUserId} encountered exception while blocking user {userId}: {ex.Message}",
+                userId: adminUserId,
+                source: "UserController.BlockUser",
+                relatedEntityType: "User",
+                relatedEntityId: userId,
+                additionalData: new { 
+                    Action = "BlockUser",
+                    TargetUserId = userId,
+                    AdminUserId = adminUserId,
+                    Exception = ex.Message,
+                    StackTrace = ex.StackTrace
+                }
+            );
+            
             return StatusCode(500, new { message = "Failed to update user status" });
         }
     }
@@ -92,14 +147,66 @@ public class UserController : ControllerBase
             var success = await _userService.DeleteUser(userId);
             if (!success)
             {
+                // 🚨 LOG CRÍTICO: Fallo al eliminar usuario
+                var adminUserId = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int adminId) ? adminId : (int?)null;
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Failed to delete user",
+                    details: $"Admin {adminUserId} failed to delete user {userId} - user may not exist or have active dependencies",
+                    userId: adminUserId,
+                    source: "UserController.DeleteUser",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "DeleteUser",
+                        TargetUserId = userId,
+                        AdminUserId = adminUserId,
+                        Success = false
+                    }
+                );
                 return BadRequest(new { message = "Cannot delete this user" });
             }
+
+            // 🚨 LOG CRÍTICO: Usuario eliminado exitosamente
+            var adminIdSuccess = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int adminIdSuccessValue) ? adminIdSuccessValue : (int?)null;
+            await _loggingService.LogCriticalAsync(
+                message: "CRITICAL: User deleted successfully",
+                details: $"Admin {adminIdSuccess} successfully deleted user {userId}",
+                userId: adminIdSuccess,
+                source: "UserController.DeleteUser",
+                relatedEntityType: "User",
+                relatedEntityId: userId,
+                additionalData: new { 
+                    Action = "DeleteUser",
+                    TargetUserId = userId,
+                    AdminUserId = adminIdSuccess,
+                    Success = true
+                }
+            );
 
             return NoContent();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error deleting user");
+            
+            // 🚨 LOG CRÍTICO: Error en eliminación de usuario
+            var adminUserId = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int adminId) ? adminId : (int?)null;
+            await _loggingService.LogCriticalAsync(
+                message: "CRITICAL: Exception during user deletion",
+                details: $"Admin {adminUserId} encountered exception while deleting user {userId}: {ex.Message}",
+                userId: adminUserId,
+                source: "UserController.DeleteUser",
+                relatedEntityType: "User",
+                relatedEntityId: userId,
+                additionalData: new { 
+                    Action = "DeleteUser",
+                    TargetUserId = userId,
+                    AdminUserId = adminUserId,
+                    Exception = ex.Message,
+                    StackTrace = ex.StackTrace
+                }
+            );
+            
             return StatusCode(500, new { message = "Failed to delete user" });
         }
     }
@@ -233,6 +340,24 @@ public class UserController : ControllerBase
             var (success, token, user, expertProfile) = await _userService.BecomeExpert(userId, request);
             if (!success)
             {
+                // 🚨 LOG CRÍTICO: Fallo al convertirse en experto
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Failed to become expert",
+                    details: $"User {userId} failed to become expert - validation or processing error",
+                    userId: userId,
+                    source: "UserController.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "BecomeExpert",
+                        UserId = userId,
+                        Success = false,
+                        RequestData = new {
+                            Description = request.Description,
+                            ProfilePictureSize = request.ProfilePicture?.Length ?? 0
+                        }
+                    }
+                );
                 return BadRequest(new { message = "Failed to become expert" });
             }
 
@@ -263,11 +388,47 @@ public class UserController : ControllerBase
                 }
             };
 
+            // 🚨 LOG CRÍTICO: Usuario se convirtió en experto exitosamente
+            await _loggingService.LogCriticalAsync(
+                message: "CRITICAL: User became expert successfully",
+                details: $"User {userId} successfully became expert with profile {expertProfile.Id}",
+                userId: userId,
+                source: "UserController.BecomeExpert",
+                relatedEntityType: "User",
+                relatedEntityId: userId,
+                additionalData: new { 
+                    Action = "BecomeExpert",
+                    UserId = userId,
+                    ExpertProfileId = expertProfile.Id,
+                    Success = true,
+                    StripeAccountId = expertProfile.StripeAccountId,
+                    StripeStatus = expertProfile.StripeStatus
+                }
+            );
+
             return Ok(response);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error becoming expert");
+            
+            // 🚨 LOG CRÍTICO: Error al convertirse en experto
+            var userIdForLog = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userIdValue) ? userIdValue : (int?)null;
+            await _loggingService.LogCriticalAsync(
+                message: "CRITICAL: Exception during become expert",
+                details: $"User {userIdForLog} encountered exception while becoming expert: {ex.Message}",
+                userId: userIdForLog,
+                source: "UserController.BecomeExpert",
+                relatedEntityType: "User",
+                relatedEntityId: userIdForLog,
+                additionalData: new { 
+                    Action = "BecomeExpert",
+                    UserId = userIdForLog,
+                    Exception = ex.Message,
+                    StackTrace = ex.StackTrace
+                }
+            );
+            
             return StatusCode(500, new { message = "Failed to become expert" });
         }
     }

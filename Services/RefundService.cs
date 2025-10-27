@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Stripe;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.enums;
@@ -239,7 +240,13 @@ namespace newApi.Services
                 var strategy = _context.Database.CreateExecutionStrategy();
                 return await strategy.ExecuteAsync(async () =>
                 {
-                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    // ✅ CORRECCIÓN: Verificar si ya hay una transacción activa
+                    var existingTransaction = _context.Database.CurrentTransaction;
+                    IDbContextTransaction transaction = null;
+                    if (existingTransaction == null)
+                    {
+                        transaction = await _context.Database.BeginTransactionAsync();
+                    }
                     try
                     {
                         var idempotencyKey = $"sh:{searchHireId}:status:{statusValue}";
@@ -282,7 +289,11 @@ namespace newApi.Services
                                         ExpertStripeAccountId = expertStripeAccountId
                                     }
                                 );
+                                // ✅ CORRECCIÓN: Solo hacer rollback si creamos la transacción
+                                if (transaction != null)
+                                {
                                 await transaction.RollbackAsync();
+                                }
                                 return false;
                             }
 
@@ -383,7 +394,11 @@ namespace newApi.Services
                                     }
                                 }
 
-                                await transaction.RollbackAsync();
+                                // ✅ CORRECCIÓN: Solo hacer rollback si creamos la transacción
+                                if (existingTransaction == null)
+                                {
+                                    await transaction.RollbackAsync();
+                                }
                                 _logger.LogError(refundEx, "Stripe refund failed, rolled back distribution - SH={SearchHireId}", searchHireId);
                                 
                                 // 🚨 LOG CRÍTICO: Reembolso falló
@@ -450,14 +465,23 @@ namespace newApi.Services
                         }
 
                         await _context.SaveChangesAsync();
+                        
+                        // ✅ CORRECCIÓN: Solo hacer commit si creamos la transacción
+                        if (transaction != null)
+                        {
                         await transaction.CommitAsync();
+                        }
 
                         _logger.LogInformation("✅ MONEY DISTRIBUTION DONE - SH={SearchHireId}", searchHireId);
                         return true;
                     }
                     catch (StripeException ex)
                     {
+                        // ✅ CORRECCIÓN: Solo hacer rollback si creamos la transacción
+                        if (transaction != null)
+                    {
                         await transaction.RollbackAsync();
+                        }
                         _logger.LogError(ex, "Stripe error processing money distribution for SH={SearchHireId}: {Error}", searchHireId, ex.Message);
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Stripe error in money distribution",
@@ -472,7 +496,11 @@ namespace newApi.Services
                     }
                     catch (Exception ex)
                     {
+                        // ✅ CORRECCIÓN: Solo hacer rollback si creamos la transacción
+                        if (transaction != null)
+                    {
                         await transaction.RollbackAsync();
+                        }
                         _logger.LogError(ex, "Error processing money distribution for SH={SearchHireId}: {Error}", searchHireId, ex.Message);
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Error in money distribution",

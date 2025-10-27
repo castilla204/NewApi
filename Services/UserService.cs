@@ -24,6 +24,7 @@ namespace newApi.Services
         private readonly IConfiguration _configuration;
         private readonly ILogger<UserService> _logger;
         private readonly StorageClient _storageClient;
+        private readonly ILoggingService _loggingService;
         private readonly string _twilioVerificationServiceSid;
         private readonly string _twilioauthToken;
 
@@ -31,12 +32,14 @@ namespace newApi.Services
      AppDbContext context,
      IConfiguration configuration,
      ILogger<UserService> logger,
-     StorageClient storageClient)
+     StorageClient storageClient,
+     ILoggingService loggingService)
         {
             _context = context;
             _configuration = configuration;
             _logger = logger;
             _storageClient = storageClient;
+            _loggingService = loggingService;
             _twilioVerificationServiceSid = configuration["Twilio:VerificationServiceSid"];
             _twilioauthToken = configuration["Twilio:AuthToken"];
         }
@@ -287,12 +290,48 @@ namespace newApi.Services
                             contentType: "image/jpeg",
                             source: outputStream
                         );
+                        
+                        // 🚨 LOG CRÍTICO: Imagen subida exitosamente
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Profile picture uploaded successfully",
+                            details: $"Profile picture uploaded successfully for user {userId} to {objectName}",
+                            userId: userId,
+                            source: "UserService.BecomeExpert",
+                            relatedEntityType: "User",
+                            relatedEntityId: userId,
+                            additionalData: new { 
+                                Action = "ProfilePictureUpload",
+                                UserId = userId,
+                                ObjectName = objectName,
+                                BucketName = bucketName,
+                                ContentType = "image/jpeg",
+                                Success = true
+                            }
+                        );
                     }
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error uploading profile picture for user ID {UserId}", userId);
+                
+                // 🚨 LOG CRÍTICO: Error en subida de imagen
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Profile picture upload failed",
+                    details: $"Profile picture upload failed for user {userId}: {ex.Message}",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "ProfilePictureUpload",
+                        UserId = userId,
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        Success = false
+                    }
+                );
+                
                 return (false, null, null, null);
             }
 

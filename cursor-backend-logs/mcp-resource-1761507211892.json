@@ -1,0 +1,30 @@
+[
+  {
+    "column_name": "Id",
+    "data_type": "integer"
+  },
+  {
+    "column_name": "PlatformId",
+    "data_type": "integer"
+  },
+  {
+    "column_name": "CategoryId",
+    "data_type": "integer"
+  },
+  {
+    "column_name": "UrlParameter",
+    "data_type": "text"
+  },
+  {
+    "column_name": "IsActive",
+    "data_type": "boolean"
+  },
+  {
+    "column_name": "CreatedAt",
+    "data_type": "timestamp with time zone"
+  },
+  {
+    "column_name": "UpdatedAt",
+    "data_type": "timestamp with time zone"
+  }
+]

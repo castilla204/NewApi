@@ -25,6 +25,7 @@ namespace newApi.Controllers
         private readonly IConfiguration _configuration;
         private readonly IAuthorizationServices _authService;
         private readonly StripeRefundService _refundService;
+        private readonly ILoggingService _loggingService;
 
         public SearchHireController(
             SearchHireService searchHireService,
@@ -32,7 +33,8 @@ namespace newApi.Controllers
             ILogger<SearchHireController> logger,
             IConfiguration configuration,
             IAuthorizationServices authService,
-            StripeRefundService refundService)
+            StripeRefundService refundService,
+            ILoggingService loggingService)
         {
             _searchHireService = searchHireService;
             _context = context;
@@ -40,6 +42,7 @@ namespace newApi.Controllers
             _configuration = configuration;
             _authService = authService;
             _refundService = refundService;
+            _loggingService = loggingService;
             StripeConfiguration.ApiKey = configuration["Stripe:SecretKey"];
         }
 
@@ -236,6 +239,26 @@ namespace newApi.Controllers
                     if (!refundSuccess)
                     {
                         _logger.LogError("Failed to process Stripe refund for automatic refund searchHireId={SearchHireId}", searchHireId);
+                        
+                        // 🚨 LOG CRÍTICO: Fallo en refund automático
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Automatic refund failed",
+                            details: $"Automatic refund failed for SearchHire {searchHireId} - expert did not respond within 24h",
+                            userId: searchHire.ClientId,
+                            source: "SearchHireController.ProcessNoResponseRefund",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId,
+                            additionalData: new { 
+                                Action = "ProcessNoResponseRefund",
+                                SearchHireId = searchHireId,
+                                ClientId = searchHire.ClientId,
+                                ExpertId = searchHire.ExpertId,
+                                Amount = searchHire.Amount,
+                                Status = "cancelled",
+                                Reason = refundReason,
+                                Success = false
+                            }
+                        );
                         return;
                     }
 
@@ -247,6 +270,26 @@ namespace newApi.Controllers
 
                     _logger.LogInformation("Real Stripe automatic refund processed successfully for searchHireId={SearchHireId}, reason={Reason}", 
                         searchHireId, refundReason);
+                    
+                    // 🚨 LOG CRÍTICO: Refund automático exitoso
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Automatic refund processed successfully",
+                        details: $"Automatic refund processed successfully for SearchHire {searchHireId} - expert did not respond within 24h",
+                        userId: searchHire.ClientId,
+                        source: "SearchHireController.ProcessNoResponseRefund",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { 
+                            Action = "ProcessNoResponseRefund",
+                            SearchHireId = searchHireId,
+                            ClientId = searchHire.ClientId,
+                            ExpertId = searchHire.ExpertId,
+                            Amount = searchHire.Amount,
+                            Status = "cancelled",
+                            Reason = refundReason,
+                            Success = true
+                        }
+                    );
                 }
                 else
                 {

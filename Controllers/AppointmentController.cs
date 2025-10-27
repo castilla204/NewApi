@@ -83,10 +83,23 @@ namespace newApi.Controllers
                 
                 if (config == null)
                 {
-                    return NotFound(new { message = "Money distribution configuration not found" });
+                    // Para estados que no requieren distribución de dinero (estados intermedios)
+                    // Devolver una respuesta indicando que no aplica distribución
+                    var response = new {
+                        clientPercentage = "0",
+                        expertPercentage = "0", 
+                        platformPercentage = "0",
+                        source = "no_distribution_required",
+                        status = status,
+                        categoryId = categoryId,
+                        serviceTypeCategoryId = serviceTypeCategoryId,
+                        message = "Este estado no requiere distribución de dinero"
+                    };
+
+                    return Ok(response);
                 }
 
-                var response = new {
+                var configResponse = new {
                     clientPercentage = config.ClientPercentage,
                     expertPercentage = config.ExpertPercentage,
                     platformPercentage = config.PlatformPercentage,
@@ -96,7 +109,7 @@ namespace newApi.Controllers
                     serviceTypeCategoryId = serviceTypeCategoryId
                 };
 
-                return Ok(response);
+                return Ok(configResponse);
             }
             catch (Exception ex)
             {

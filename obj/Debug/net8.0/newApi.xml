@@ -188,6 +188,26 @@
             Subir reporte del experto (Experto)
             </summary>
         </member>
+        <member name="M:newApi.Controllers.AppointmentController.GetAppointmentFiles(System.Int32)">
+            <summary>
+            Obtener archivos subidos para una cita (Experto)
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AppointmentController.DeleteAppointmentFile(System.Int32,System.Int32)">
+            <summary>
+            Eliminar un archivo de una cita (Experto)
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AppointmentController.ValidateRequiredFiles(System.Int32)">
+            <summary>
+            Validar archivos requeridos antes de enviar reporte (Experto)
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AppointmentController.SubmitExpertReportWithFiles(System.Int32,newApi.DataLayer.Models.DTOs.SubmitExpertReportWithFilesDto)">
+            <summary>
+            Subir archivos y enviar reporte del experto en una sola operación (Experto)
+            </summary>
+        </member>
         <member name="M:newApi.Controllers.AppointmentController.GetAppointmentMetrics">
             <summary>
             Obtener métricas de citas (Admin)
@@ -196,6 +216,11 @@
         <member name="M:newApi.Controllers.AppointmentController.CheckAppointmentTimers">
             <summary>
             Verificar timers de citas (Admin)
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AppointmentController.UploadDeliverablesForAppointment(System.Int32,System.Int32,System.Collections.Generic.List{Microsoft.AspNetCore.Http.IFormFile})">
+            <summary>
+            Método auxiliar para subir deliverables para una cita
             </summary>
         </member>
         <member name="M:newApi.Controllers.ChatController.GetAllConversations">
@@ -581,6 +606,11 @@
         <member name="T:newApi.DataLayer.Models.DTOs.SubmitExpertReportDto">
             <summary>
             DTO para subir reporte del experto
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.SubmitExpertReportWithFilesDto">
+            <summary>
+            DTO para subir archivos y enviar reporte del experto en una sola operación
             </summary>
         </member>
         <member name="T:newApi.DataLayer.Models.DTOs.AppointmentTimerDto">

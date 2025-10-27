@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Http;
+
 namespace newApi.DataLayer.Models.DTOs
 {
     /// <summary>
@@ -112,6 +114,15 @@ namespace newApi.DataLayer.Models.DTOs
     public class SubmitExpertReportDto
     {
         public string? Notes { get; set; }
+    }
+
+    /// <summary>
+    /// DTO para subir archivos y enviar reporte del experto en una sola operación
+    /// </summary>
+    public class SubmitExpertReportWithFilesDto
+    {
+        public string? Notes { get; set; }
+        public List<IFormFile>? Files { get; set; }
     }
 
 

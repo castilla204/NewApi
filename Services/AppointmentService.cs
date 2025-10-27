@@ -840,6 +840,90 @@ namespace newApi.Services
                             {
                                 timer.Appointment.StatusId = noResponseStatus.Id;
                                 timer.Appointment.UpdatedAt = DateTime.UtcNow;
+                                
+                                // 🎯 PROCESAR DINERO AUTOMÁTICAMENTE
+                                try
+                                {
+                                    var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
+                                        timer.Appointment.SearchHireId,
+                                        "appointment_cancelled_by_no_response",
+                                        "Client did not respond within 24h - automatic cancellation",
+                                        null);
+                                    
+                                    if (moneySuccess)
+                                    {
+                                        _logger.LogInformation("✅ Money distribution processed for appointment {AppointmentId} due to no response", timer.Appointment.Id);
+                                        
+                                        // 🚨 LOG CRÍTICO: Timer expirado - cliente no respondió
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL: Appointment timer expired - client no response",
+                                            details: $"Appointment {timer.Appointment.Id} cancelled due to client not responding within 24h",
+                                            userId: timer.Appointment.SearchHire?.ClientId,
+                                            source: "AppointmentService.CheckAppointmentTimersAsync",
+                                            relatedEntityType: "Appointment",
+                                            relatedEntityId: timer.Appointment.Id,
+                                            additionalData: new { 
+                                                Action = "TimerExpired",
+                                                TimerType = "response",
+                                                AppointmentId = timer.Appointment.Id,
+                                                SearchHireId = timer.Appointment.SearchHireId,
+                                                ClientId = timer.Appointment.SearchHire?.ClientId,
+                                                ExpertId = timer.Appointment.SearchHire?.ExpertId,
+                                                Status = "appointment_cancelled_by_no_response",
+                                                MoneyDistributionSuccess = true
+                                            }
+                                        );
+                                    }
+                                    else
+                                    {
+                                        _logger.LogError("❌ Failed to process money distribution for appointment {AppointmentId} due to no response", timer.Appointment.Id);
+                                        
+                                        // 🚨 LOG CRÍTICO: Fallo en distribución de dinero por timer expirado
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL: Money distribution failed for expired timer",
+                                            details: $"Appointment {timer.Appointment.Id} timer expired but money distribution failed",
+                                            userId: timer.Appointment.SearchHire?.ClientId,
+                                            source: "AppointmentService.CheckAppointmentTimersAsync",
+                                            relatedEntityType: "Appointment",
+                                            relatedEntityId: timer.Appointment.Id,
+                                            additionalData: new { 
+                                                Action = "TimerExpired",
+                                                TimerType = "response",
+                                                AppointmentId = timer.Appointment.Id,
+                                                SearchHireId = timer.Appointment.SearchHireId,
+                                                ClientId = timer.Appointment.SearchHire?.ClientId,
+                                                ExpertId = timer.Appointment.SearchHire?.ExpertId,
+                                                Status = "appointment_cancelled_by_no_response",
+                                                MoneyDistributionSuccess = false
+                                            }
+                                        );
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogError(ex, "❌ Error processing money distribution for appointment {AppointmentId} due to no response", timer.Appointment.Id);
+                                    
+                                    // 🚨 LOG CRÍTICO: Excepción en timer expirado
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL: Exception during timer expiration processing",
+                                        details: $"Appointment {timer.Appointment.Id} timer expired but exception occurred: {ex.Message}",
+                                        userId: timer.Appointment.SearchHire?.ClientId,
+                                        source: "AppointmentService.CheckAppointmentTimersAsync",
+                                        relatedEntityType: "Appointment",
+                                        relatedEntityId: timer.Appointment.Id,
+                                        additionalData: new { 
+                                            Action = "TimerExpired",
+                                            TimerType = "response",
+                                            AppointmentId = timer.Appointment.Id,
+                                            SearchHireId = timer.Appointment.SearchHireId,
+                                            ClientId = timer.Appointment.SearchHire?.ClientId,
+                                            ExpertId = timer.Appointment.SearchHire?.ExpertId,
+                                            Status = "appointment_cancelled_by_no_response",
+                                            Exception = ex.Message,
+                                            StackTrace = ex.StackTrace
+                                        }
+                                    );
+                                }
                             }
                             break;
                             
@@ -890,6 +974,29 @@ namespace newApi.Services
                                     var cancelledStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
                                     timer.Appointment.SearchHire.StatusId = cancelledStatusId;
                                     timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                                    
+                                    // 🎯 PROCESAR DINERO AUTOMÁTICAMENTE
+                                    try
+                                    {
+                                        var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
+                                            timer.Appointment.SearchHireId,
+                                            "appointment_cancelled_by_no_report",
+                                            "Expert did not submit report within 24h - automatic cancellation",
+                                            null);
+                                        
+                                        if (moneySuccess)
+                                        {
+                                            _logger.LogInformation("✅ Money distribution processed for appointment {AppointmentId} due to no report", timer.Appointment.Id);
+                                        }
+                                        else
+                                        {
+                                            _logger.LogError("❌ Failed to process money distribution for appointment {AppointmentId} due to no report", timer.Appointment.Id);
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger.LogError(ex, "❌ Error processing money distribution for appointment {AppointmentId} due to no report", timer.Appointment.Id);
+                                    }
                                     
                                     _logger.LogInformation("Appointment {AppointmentId} cancelled due to expert not submitting report within 24h - missing files: {MissingFiles}", 
                                         timer.Appointment.Id, validationResult.ErrorMessage);

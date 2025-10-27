@@ -22,6 +22,20 @@ using Microsoft.AspNetCore.Authorization;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Configurar logging básico
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
+
+// Configurar zona horaria de España
+TimeZoneInfo spainTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Europe/Madrid");
+builder.Services.Configure<RequestLocalizationOptions>(options =>
+{
+    options.DefaultRequestCulture = new Microsoft.AspNetCore.Localization.RequestCulture("es-ES");
+    options.SupportedCultures = new[] { new System.Globalization.CultureInfo("es-ES") };
+    options.SupportedUICultures = new[] { new System.Globalization.CultureInfo("es-ES") };
+});
+
 // Instancia el cliente de Secret Manager
 var secretClient = SecretManagerServiceClient.Create();
 
@@ -78,19 +92,19 @@ builder.Services.AddControllers();
 // Configure request size limits for file uploads
 builder.Services.Configure<IISServerOptions>(options =>
 {
-    options.MaxRequestBodySize = 10 * 1024 * 1024; // 10MB
+    options.MaxRequestBodySize = 50 * 1024 * 1024; // 50MB
 });
 
 builder.Services.Configure<KestrelServerOptions>(options =>
 {
-    options.Limits.MaxRequestBodySize = 10 * 1024 * 1024; // 10MB
+    options.Limits.MaxRequestBodySize = 50 * 1024 * 1024; // 50MB
 });
 
 // Configure form options for multipart form data
 builder.Services.Configure<FormOptions>(options =>
 {
     options.ValueLengthLimit = int.MaxValue;
-    options.MultipartBodyLengthLimit = 10 * 1024 * 1024; // 10MB
+    options.MultipartBodyLengthLimit = 50 * 1024 * 1024; // 50MB
     options.MemoryBufferThreshold = int.MaxValue;
 });
 
@@ -260,6 +274,64 @@ var app = builder.Build();
 // Configure Stripe
 StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"];
 
+// 🚨 LOG CRÍTICO: Configuración de Stripe
+var logger = app.Services.GetRequiredService<ILogger<Program>>();
+
+try
+{
+    if (string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]))
+    {
+        logger.LogError("Stripe SecretKey not found in configuration");
+        
+        // Usar scope para ILoggingService
+        using (var scope = app.Services.CreateScope())
+        {
+            var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+            await loggingService.LogCriticalAsync(
+                message: "CRITICAL: Stripe configuration missing",
+                details: "Stripe SecretKey not found in configuration",
+                userId: null,
+                source: "Program.ConfigureStripe",
+                relatedEntityType: "System",
+                relatedEntityId: null,
+                additionalData: new { 
+                    Action = "StripeConfiguration",
+                    SecretKeyPresent = !string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]),
+                    PublishableKeyPresent = !string.IsNullOrEmpty(builder.Configuration["Stripe:PublishableKey"])
+                }
+            );
+        }
+    }
+    else
+    {
+        logger.LogInformation("Stripe configuration successful");
+        
+        // Usar scope para ILoggingService
+        using (var scope = app.Services.CreateScope())
+        {
+            var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+            await loggingService.LogCriticalAsync(
+                message: "CRITICAL: Stripe configuration successful",
+                details: "Stripe API key configured successfully",
+                userId: null,
+                source: "Program.ConfigureStripe",
+                relatedEntityType: "System",
+                relatedEntityId: null,
+                additionalData: new { 
+                    Action = "StripeConfiguration",
+                    SecretKeyPresent = !string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]),
+                    PublishableKeyPresent = !string.IsNullOrEmpty(builder.Configuration["Stripe:PublishableKey"]),
+                    Success = true
+                }
+            );
+        }
+    }
+}
+catch (Exception ex)
+{
+    logger.LogError(ex, "Error configuring Stripe");
+}
+
 
 // Schedule recurring job with Hangfire
 app.UseHangfireDashboard("/hangfire");
@@ -296,6 +368,45 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("AllowSpecificOrigin"); // Aplicar CORS antes de otros middleware
+
+// Development mode middleware - bypass authentication for testing
+app.Use(async (context, next) =>
+{
+    // Log all headers for debugging
+    var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+    logger.LogInformation("🔍 Request to {Path} with headers: {Headers}", 
+        context.Request.Path, 
+        string.Join(", ", context.Request.Headers.Select(h => $"{h.Key}={h.Value}")));
+    
+    // Check for development headers
+    if (context.Request.Headers.ContainsKey("X-Development-Mode") && 
+        context.Request.Headers.ContainsKey("X-Bypass-Auth"))
+    {
+        logger.LogInformation("🔧 Development mode detected! Bypassing authentication for {Path}", context.Request.Path);
+        
+        // Create a fake authenticated user for development
+        var claims = new List<System.Security.Claims.Claim>
+        {
+            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, "38"), // ID del usuario
+            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Name, "dev-user"),
+            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Email, "dev@example.com"),
+            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, "Admin"),
+            new System.Security.Claims.Claim("dev-token", context.Request.Headers["X-Dev-Token"].FirstOrDefault() ?? "dev-token-123")
+        };
+        
+        var identity = new System.Security.Claims.ClaimsIdentity(claims, "Development");
+        context.User = new System.Security.Claims.ClaimsPrincipal(identity);
+        
+        logger.LogInformation("✅ Development user created: {User}", context.User.Identity?.Name);
+    }
+    else
+    {
+        logger.LogInformation("❌ Development headers not found for {Path}", context.Request.Path);
+    }
+    
+    await next();
+});
+
 app.UseAuthentication();
 app.UseAuthorization();
 

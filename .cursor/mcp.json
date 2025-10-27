@@ -1,0 +1,36 @@
+{
+  "mcpServers": {
+    "backend-logs": {
+      "command": "node",
+      "args": ["C:\\Users\\Diego\\OneDrive - Educacyl\\Escritorio\\App\\newApi\\cursor-backend-logs\\simple-log-monitor.js"],
+      "env": {
+        "PROJECT_PATH": "C:\\Users\\Diego\\OneDrive - Educacyl\\Escritorio\\App\\newApi"
+      }
+    },
+    "postgres-db": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres@latest",
+        "postgresql://admin:Pedrohabo1%2F%2F@185.166.39.4:30000/atrapo"
+      ],
+      "env": {
+        "PGPASSWORD": "Pedrohabo1//"
+      }
+    },
+    "http-api": {
+      "command": "node",
+      "args": ["C:\\Users\\Diego\\OneDrive - Educacyl\\Escritorio\\App\\newApi\\cursor-backend-logs\\http-api-server.js"],
+      "env": {
+        "BASE_URL": "http://localhost:7124"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@latest"],
+      "env": {
+        "ALLOWED_DIRECTORIES": "C:\\Users\\Diego\\OneDrive - Educacyl\\Escritorio\\App\\newApi"
+      }
+    }
+  }
+}

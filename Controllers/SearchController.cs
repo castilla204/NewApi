@@ -204,6 +204,22 @@ namespace newApi.Controllers
                         {
                             Name = s.SearchHire.Expert.Name,
                             ProfilePictureUrl = s.SearchHire.Expert.ExpertProfile?.ProfilePictureUrl ?? "/default-avatar.png"
+                        } : null,
+                        // ✅ NUEVO: Información completa del estado con colores
+                        StatusInfo = s.SearchHire.Status != null ? new SystemStatusDto
+                        {
+                            Id = s.SearchHire.Status.Id,
+                            StatusType = s.SearchHire.Status.StatusType,
+                            StatusName = s.SearchHire.Status.StatusName,
+                            StatusValue = s.SearchHire.Status.StatusValue,
+                            DisplayName = s.SearchHire.Status.DisplayName,
+                            Description = s.SearchHire.Status.Description,
+                            Color = s.SearchHire.Status.Color,
+                            IsActive = s.SearchHire.Status.IsActive,
+                            IsFinalizationStatus = s.SearchHire.Status.IsFinalizationStatus,
+                            SortOrder = s.SearchHire.Status.SortOrder,
+                            CreatedAt = s.SearchHire.Status.CreatedAt,
+                            UpdatedAt = s.SearchHire.Status.UpdatedAt
                         } : null
                     } : null
                 }).ToList();
@@ -539,6 +555,22 @@ namespace newApi.Controllers
                             {
                                 Name = s.SearchHire.Expert.Name,
                                 ProfilePictureUrl = s.SearchHire.Expert.ExpertProfile?.ProfilePictureUrl ?? "/default-avatar.png"
+                            } : null,
+                            // ✅ NUEVO: Información completa del estado con colores
+                            StatusInfo = s.SearchHire.Status != null ? new SystemStatusDto
+                            {
+                                Id = s.SearchHire.Status.Id,
+                                StatusType = s.SearchHire.Status.StatusType,
+                                StatusName = s.SearchHire.Status.StatusName,
+                                StatusValue = s.SearchHire.Status.StatusValue,
+                                DisplayName = s.SearchHire.Status.DisplayName,
+                                Description = s.SearchHire.Status.Description,
+                                Color = s.SearchHire.Status.Color,
+                                IsActive = s.SearchHire.Status.IsActive,
+                                IsFinalizationStatus = s.SearchHire.Status.IsFinalizationStatus,
+                                SortOrder = s.SearchHire.Status.SortOrder,
+                                CreatedAt = s.SearchHire.Status.CreatedAt,
+                                UpdatedAt = s.SearchHire.Status.UpdatedAt
                             } : null
                         } : null
                     };
@@ -810,6 +842,22 @@ namespace newApi.Controllers
                             ExpertLatitude = search.SearchHire.SearchService.ExpertProfile?.Latitude,
                             ExpertLongitude = search.SearchHire.SearchService.ExpertProfile?.Longitude,
                             LocationRange = search.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50 // Rango por defecto de 50km
+                        } : null,
+                        // ✅ NUEVO: Información completa del estado con colores
+                        StatusInfo = search.SearchHire.Status != null ? new SystemStatusDto
+                        {
+                            Id = search.SearchHire.Status.Id,
+                            StatusType = search.SearchHire.Status.StatusType,
+                            StatusName = search.SearchHire.Status.StatusName,
+                            StatusValue = search.SearchHire.Status.StatusValue,
+                            DisplayName = search.SearchHire.Status.DisplayName,
+                            Description = search.SearchHire.Status.Description,
+                            Color = search.SearchHire.Status.Color,
+                            IsActive = search.SearchHire.Status.IsActive,
+                            IsFinalizationStatus = search.SearchHire.Status.IsFinalizationStatus,
+                            SortOrder = search.SearchHire.Status.SortOrder,
+                            CreatedAt = search.SearchHire.Status.CreatedAt,
+                            UpdatedAt = search.SearchHire.Status.UpdatedAt
                         } : null
                     } : null
                 };
@@ -1012,6 +1060,22 @@ namespace newApi.Controllers
                                 ExpertLatitude = search.SearchHire.SearchService.ExpertProfile?.Latitude,
                                 ExpertLongitude = search.SearchHire.SearchService.ExpertProfile?.Longitude,
                                 LocationRange = search.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50 // Rango por defecto de 50km
+                            } : null,
+                            // ✅ NUEVO: Información completa del estado
+                            StatusInfo = search.SearchHire.Status != null ? new SystemStatusDto
+                            {
+                                Id = search.SearchHire.Status.Id,
+                                StatusType = search.SearchHire.Status.StatusType,
+                                StatusName = search.SearchHire.Status.StatusName,
+                                StatusValue = search.SearchHire.Status.StatusValue,
+                                DisplayName = search.SearchHire.Status.DisplayName,
+                                Description = search.SearchHire.Status.Description,
+                                Color = search.SearchHire.Status.Color,
+                                IsActive = search.SearchHire.Status.IsActive,
+                                IsFinalizationStatus = search.SearchHire.Status.IsFinalizationStatus,
+                                SortOrder = search.SearchHire.Status.SortOrder,
+                                CreatedAt = search.SearchHire.Status.CreatedAt,
+                                UpdatedAt = search.SearchHire.Status.UpdatedAt
                             } : null
                         } : null
                     },
@@ -1057,6 +1121,22 @@ namespace newApi.Controllers
                         ExpertLatitude = search.SearchHire?.SearchService?.ExpertProfile?.Latitude,
                         ExpertLongitude = search.SearchHire?.SearchService?.ExpertProfile?.Longitude,
                         LocationRange = search.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50, // Rango por defecto de 50km
+                        // ✅ NUEVO: Información completa del estado
+                        StatusInfo = search.SearchHire.Appointment.Status != null ? new SystemStatusDto
+                        {
+                            Id = search.SearchHire.Appointment.Status.Id,
+                            StatusType = search.SearchHire.Appointment.Status.StatusType,
+                            StatusName = search.SearchHire.Appointment.Status.StatusName,
+                            StatusValue = search.SearchHire.Appointment.Status.StatusValue,
+                            DisplayName = search.SearchHire.Appointment.Status.DisplayName,
+                            Description = search.SearchHire.Appointment.Status.Description,
+                            Color = search.SearchHire.Appointment.Status.Color,
+                            IsActive = search.SearchHire.Appointment.Status.IsActive,
+                            IsFinalizationStatus = search.SearchHire.Appointment.Status.IsFinalizationStatus,
+                            SortOrder = search.SearchHire.Appointment.Status.SortOrder,
+                            CreatedAt = search.SearchHire.Appointment.Status.CreatedAt,
+                            UpdatedAt = search.SearchHire.Appointment.Status.UpdatedAt
+                        } : null,
                         Timers = search.SearchHire.Appointment.Timers?.Select(t => new AppointmentTimerDto
                         {
                             Id = t.Id,

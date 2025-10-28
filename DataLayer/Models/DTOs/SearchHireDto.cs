@@ -13,6 +13,7 @@ namespace newApi.DataLayer.Models.DTOs
         public DateTime CreatedAt { get; set; } // ✅ NUEVO: Fecha de contratación del servicio
         public UserDto? Expert { get; set; }
         public ServiceInfo? Service { get; set; } // ✅ NUEVO: Información del servicio
+        public SystemStatusDto? StatusInfo { get; set; } // ✅ NUEVO: Información completa del estado
     }
 
     public class ServiceInfo
@@ -56,6 +57,7 @@ namespace newApi.DataLayer.Models.DTOs
         public UserDto? Expert { get; set; }
         public SearchServiceResponseDto Service { get; set; }
         public ServiceTypeDto ServiceType { get; set; }
+        public SystemStatusDto? StatusInfo { get; set; } // ✅ NUEVO: Información completa del estado con colores
         
         // Nuevos campos agregados
         public string? SearchTitle { get; set; } // Título de la contratación

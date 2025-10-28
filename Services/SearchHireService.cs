@@ -229,6 +229,23 @@ namespace newApi.Services
                     UpdatedAt = hire.SearchService.ServiceType.UpdatedAt
                 } : null,
                 
+                // ✅ NUEVO: Información completa del estado con colores
+                StatusInfo = hire.Status != null ? new SystemStatusDto
+                {
+                    Id = hire.Status.Id,
+                    StatusType = hire.Status.StatusType,
+                    StatusName = hire.Status.StatusName,
+                    StatusValue = hire.Status.StatusValue,
+                    DisplayName = hire.Status.DisplayName,
+                    Description = hire.Status.Description,
+                    Color = hire.Status.Color,
+                    IsActive = hire.Status.IsActive,
+                    IsFinalizationStatus = hire.Status.IsFinalizationStatus,
+                    SortOrder = hire.Status.SortOrder,
+                    CreatedAt = hire.Status.CreatedAt,
+                    UpdatedAt = hire.Status.UpdatedAt
+                } : null,
+                
                 // Nuevos campos agregados
                 SearchTitle = hire.Search?.Title,
                 SearchDescription = hire.Search?.Description,

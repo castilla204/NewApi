@@ -44,6 +44,7 @@ namespace newApi.DataLayer.Models.DTOs
         public string? ExpertLatitude { get; set; } // Coordenadas del experto al momento de la contratación
         public string? ExpertLongitude { get; set; } // Coordenadas del experto al momento de la contratación
         public int? LocationRange { get; set; } // Rango máximo permitido en km
+        public SystemStatusDto? StatusInfo { get; set; } // ✅ NUEVO: Información completa del estado
     }
 
     /// <summary>

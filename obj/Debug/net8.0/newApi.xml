@@ -1173,6 +1173,11 @@
             DTO para la respuesta de sincronización de estado de Stripe
             </summary>
         </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.SystemStatusDto">
+            <summary>
+            DTO para mostrar información de un estado del sistema
+            </summary>
+        </member>
         <member name="T:newApi.DataLayer.Models.DTOs.UpdateExpertProfileResponseDto">
             <summary>
             DTO para la respuesta de UpdateExpertProfile
@@ -2186,6 +2191,18 @@
             <inheritdoc />
         </member>
         <member name="M:newApi.Migrations.AddCancelledByNoResponseStatus.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.AddColorToSystemStatuses">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddColorToSystemStatuses.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddColorToSystemStatuses.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddColorToSystemStatuses.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
         <member name="M:newApi.Services.AccountDeletionService.GetStatusIdByValueAsync(System.String)">

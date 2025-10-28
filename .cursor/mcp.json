@@ -7,13 +7,15 @@
         "PROJECT_PATH": "C:\\Users\\Diego\\OneDrive - Educacyl\\Escritorio\\App\\newApi"
       }
     },
-    "postgres-db": {
+    "postgresql-mcp": {
       "command": "npx",
       "args": [
         "-y",
         "@modelcontextprotocol/server-postgres@latest",
         "postgresql://admin:Pedrohabo1%2F%2F@185.166.39.4:30000/atrapo"
       ],
+      "disabled": false,
+      "alwaysAllow": [],
       "env": {
         "PGPASSWORD": "Pedrohabo1//"
       }

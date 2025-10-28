@@ -29,6 +29,9 @@ namespace newApi.DataLayer.Models.PostGresModels
         [MaxLength(500)]
         public string? Description { get; set; } // Descripción del estado
         
+        [MaxLength(20)]
+        public string? Color { get; set; } // Color del estado para UI (ej: "#FF5733", "red", "green")
+        
         public bool IsActive { get; set; } = true;
         
         public bool IsFinalizationStatus { get; set; } = false; // Indica si es un estado de finalización donde se procesa dinero

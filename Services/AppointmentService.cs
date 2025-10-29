@@ -15,14 +15,16 @@ namespace newApi.Services
         private readonly SystemStatusService _systemStatusService;
         private readonly StripeRefundService _refundService;
         private readonly ILoggingService _loggingService;
+        private readonly IStripeValidationService _stripeValidationService;
 
-        public AppointmentService(AppDbContext context, ILogger<AppointmentService> logger, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService)
+        public AppointmentService(AppDbContext context, ILogger<AppointmentService> logger, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService)
         {
             _context = context;
             _logger = logger;
             _systemStatusService = systemStatusService;
             _refundService = refundService;
             _loggingService = loggingService;
+            _stripeValidationService = stripeValidationService;
         }
 
         /// <summary>
@@ -217,6 +219,8 @@ namespace newApi.Services
                 {
                     // Verificar que el SearchHire existe
                     var searchHire = await _context.SearchHires
+                        .Include(sh => sh.SearchService)
+                            .ThenInclude(ss => ss.ExpertProfile)
                         .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
 
                     if (searchHire == null)
@@ -225,6 +229,9 @@ namespace newApi.Services
                     // Verificar que el usuario es el cliente
                     if (searchHire.ClientId != userId)
                         throw new UnauthorizedAccessException("Only the client can propose appointments");
+
+                    // ✅ VALIDACIÓN REMOVIDA: Permitir continuar el flujo incluso si la cuenta cambia a Deauthorized
+                    // La validación de Stripe solo se aplica al CREAR contrataciones, no al continuar el flujo
 
                     // Obtener el estado "awaiting_appointment"
                     var awaitingStatus = await _context.SystemStatuses

@@ -388,9 +388,9 @@ public class UserController : ControllerBase
                 }
             };
 
-            // 🚨 LOG CRÍTICO: Usuario se convirtió en experto exitosamente
-            await _loggingService.LogCriticalAsync(
-                message: "CRITICAL: User became expert successfully",
+            // ✅ LOG INFORMATIVO: Usuario se convirtió en experto exitosamente
+            await _loggingService.LogInfoAsync(
+                message: "User became expert successfully",
                 details: $"User {userId} successfully became expert with profile {expertProfile.Id}",
                 userId: userId,
                 source: "UserController.BecomeExpert",

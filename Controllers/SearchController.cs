@@ -26,19 +26,22 @@ namespace newApi.Controllers
         private readonly IAuthorizationServices _authService;
         private readonly IUserService _userService;
         private readonly ISubscriptionService _subscriptionService;
+        private readonly IStripeValidationService _stripeValidationService;
 
         public SearchController(
             AppDbContext context,
             ILogger<SearchController> logger,
             IAuthorizationServices authService,
             IUserService userService,
-            ISubscriptionService subscriptionService)
+            ISubscriptionService subscriptionService,
+            IStripeValidationService stripeValidationService)
         {
             _context = context;
             _logger = logger;
             _authService = authService;
             _userService = userService;
             _subscriptionService = subscriptionService;
+            _stripeValidationService = stripeValidationService;
         }
 
         /// <summary>
@@ -297,10 +300,29 @@ namespace newApi.Controllers
                     return StatusCode(403, new { message = "Phone verification required to create searches" });
                 }
 
-                var service = await _context.SearchServices.FindAsync(searchDto.ServiceId);
+                var service = await _context.SearchServices
+                    .Include(ss => ss.ExpertProfile)
+                    .FirstOrDefaultAsync(ss => ss.Id == searchDto.ServiceId);
                 if (service == null)
                 {
                     return NotFound(new { message = "Service not found" });
+                }
+
+                // ✅ VALIDACIÓN CENTRALIZADA: Verificar que el experto puede recibir pagos
+                if (service.ExpertProfile != null)
+                {
+                    var validationResult = await _stripeValidationService.ValidateExpertCanReceivePaymentsAsync(
+                        service.ExpertProfile, "crear búsqueda");
+                    
+                    if (!validationResult.IsValid)
+                    {
+                        return BadRequest(new { 
+                            message = validationResult.ErrorMessage,
+                            stripeStatus = validationResult.StripeStatus,
+                            requiresStripeSetup = validationResult.RequiresStripeSetup,
+                            canRetry = validationResult.CanRetry
+                        });
+                    }
                 }
 
                 var strategy = _context.Database.CreateExecutionStrategy();

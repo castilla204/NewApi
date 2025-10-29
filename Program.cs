@@ -254,6 +254,7 @@ builder.Services.AddScoped<IAccountDeletionService, AccountDeletionService>();
 builder.Services.AddScoped<IAccountDeletionNotificationService, AccountDeletionNotificationService>();
 builder.Services.AddScoped<StripeRefundService>();
 builder.Services.AddScoped<ILoggingService, LoggingService>();
+builder.Services.AddScoped<IStripeValidationService, StripeValidationService>();
 
 // Background services - AppointmentTimerBackgroundService migrated to Hangfire
 

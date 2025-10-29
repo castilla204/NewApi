@@ -363,7 +363,7 @@ namespace newApi.Controllers
 
                 if (appointment.SearchHire.ExpertId != userId)
                 {
-                    return Forbid("Solo el experto puede ver los archivos de esta cita");
+                    return Forbid();
                 }
 
                 var files = appointment.SearchHire.Deliverables
@@ -407,7 +407,7 @@ namespace newApi.Controllers
 
                 if (appointment.SearchHire.ExpertId != userId)
                 {
-                    return Forbid("Solo el experto puede eliminar archivos de esta cita");
+                    return Forbid();
                 }
 
                 var deliverable = await _context.SearchHireDeliverables
@@ -475,7 +475,7 @@ namespace newApi.Controllers
                 {
                     _logger.LogWarning("❌ User {UserId} is not the expert for appointment {AppointmentId}. ExpertId: {ExpertId}", 
                         userId, appointmentId, appointment.SearchHire.ExpertId);
-                    return Forbid("Solo el experto puede validar archivos para esta cita");
+                    return Forbid();
                 }
 
                 // Obtener tipos de entregables requeridos

@@ -460,7 +460,7 @@
         </member>
         <member name="M:newApi.Controllers.SubscriptionController.MarkEventAsProcessedAsync(System.String,System.String,System.String,System.Nullable{System.Int32},System.String,System.String)">
             <summary>
-            Marca un evento como procesado en la base de datos
+            Marca un evento como procesado en la base de datos (UPSERT)
             </summary>
         </member>
         <member name="M:newApi.Controllers.SubscriptionController.GetRejectionMessage(System.String,System.Collections.Generic.List{System.String})">
@@ -486,6 +486,32 @@
         <member name="M:newApi.Controllers.SubscriptionController.GetErrorDescription(System.String)">
             <summary>
             Convierte códigos de error en descripciones amigables
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.SubscriptionController.HandleAccountRejection(System.Int32,System.String)">
+            <summary>
+            Maneja el rechazo de una cuenta de Stripe, notificando tanto al admin como al experto
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.SubscriptionController.NotifyExpertOfAccountRejection(System.Int32,System.String,System.Int32)">
+            <summary>
+            Crea una notificación para el experto cuando su cuenta es rechazada
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.SubscriptionController.HandleAccountDeauthorization(System.Int32,System.String)">
+            <summary>
+            Maneja la desautorización de una cuenta de Stripe, notificando tanto al admin como al experto
+            (porque puede tener contrataciones activas)
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.SubscriptionController.NotifyExpertOnly(System.Int32,System.String)">
+            <summary>
+            Solo notifica al experto cuando su cuenta es rechazada (no puede tener contrataciones activas)
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.SubscriptionController.NotifyExpertOfAccountDeauthorization(System.Int32,System.String,System.Int32)">
+            <summary>
+            Crea una notificación para el experto cuando su cuenta es desautorizada
             </summary>
         </member>
         <member name="M:newApi.Controllers.SystemStatusController.GetStatuses(System.String)">
@@ -2227,6 +2253,33 @@
             Calcula la distancia entre dos puntos geográficos usando la fórmula de Haversine
             </summary>
         </member>
+        <member name="T:newApi.Services.IStripeValidationService">
+            <summary>
+            Servicio centralizado para validaciones de Stripe y expertos
+            </summary>
+        </member>
+        <member name="M:newApi.Services.IStripeValidationService.ValidateExpertCanReceivePaymentsAsync(newApi.DataLayer.Models.PostGresModels.ExpertProfile,System.String)">
+            <summary>
+            Valida si un experto puede recibir pagos (excluyendo cuentas rechazadas para manejo administrativo)
+            </summary>
+            <param name="expertProfile">Perfil del experto a validar</param>
+            <param name="operation">Operación que se está intentando realizar</param>
+            <returns>Resultado de la validación con mensaje de error si aplica</returns>
+        </member>
+        <member name="M:newApi.Services.IStripeValidationService.ValidateExpertCanCreateServicesAsync(newApi.DataLayer.Models.PostGresModels.ExpertProfile)">
+            <summary>
+            Valida si un experto puede crear servicios
+            </summary>
+            <param name="expertProfile">Perfil del experto a validar</param>
+            <returns>Resultado de la validación con mensaje de error si aplica</returns>
+        </member>
+        <member name="M:newApi.Services.IStripeValidationService.ValidateExpertCanProposeAppointmentsAsync(newApi.DataLayer.Models.PostGresModels.ExpertProfile)">
+            <summary>
+            Valida si un experto puede proponer citas
+            </summary>
+            <param name="expertProfile">Perfil del experto a validar</param>
+            <returns>Resultado de la validación con mensaje de error si aplica</returns>
+        </member>
         <member name="M:newApi.Services.StripeRefundService.ProcessMoneyDistributionAsync(System.Int32,System.String,System.String,System.Nullable{System.Int32})">
             <summary>
             Orquesta la distribución de dinero según un estado concreto: realiza refund al cliente y transferencia al experto.
@@ -2241,6 +2294,26 @@
         <member name="M:newApi.Services.SearchHireService.GetStatusIdByValueAsync(System.String)">
             <summary>
             Helper method to get StatusId from StatusValue
+            </summary>
+        </member>
+        <member name="T:newApi.Services.StripeValidationService">
+            <summary>
+            Servicio centralizado para validaciones de Stripe y expertos
+            </summary>
+        </member>
+        <member name="M:newApi.Services.StripeValidationService.ValidateExpertCanReceivePaymentsAsync(newApi.DataLayer.Models.PostGresModels.ExpertProfile,System.String)">
+            <summary>
+            Valida si un experto puede recibir pagos (excluyendo cuentas rechazadas para manejo administrativo)
+            </summary>
+        </member>
+        <member name="M:newApi.Services.StripeValidationService.ValidateExpertCanCreateServicesAsync(newApi.DataLayer.Models.PostGresModels.ExpertProfile)">
+            <summary>
+            Valida si un experto puede crear servicios
+            </summary>
+        </member>
+        <member name="M:newApi.Services.StripeValidationService.ValidateExpertCanProposeAppointmentsAsync(newApi.DataLayer.Models.PostGresModels.ExpertProfile)">
+            <summary>
+            Valida si un experto puede proponer citas
             </summary>
         </member>
         <member name="M:newApi.Services.SubscriptionService.GetStatusIdByValueAsync(System.String)">

@@ -710,7 +710,7 @@ namespace newApi.Controllers
                 // Verificar que el usuario es el cliente o el experto del servicio
                 if (searchHire.ClientId != userId && searchHire.ExpertId != userId)
                 {
-                    return Forbid("You can only dispute services you are involved in");
+                    return Forbid();
                 }
 
                 // Verificar que no existe ya una disputa para este SearchHire

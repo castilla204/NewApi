@@ -169,7 +169,10 @@ namespace newApi.Controllers
                     }
                 }
 
-                using var transaction = await _context.Database.BeginTransactionAsync();
+                var strategy = _context.Database.CreateExecutionStrategy();
+                await strategy.ExecuteAsync(async () =>
+                {
+                    await using var transaction = await _context.Database.BeginTransactionAsync();
                 try
                 {
                     await _context.SaveChangesAsync();
@@ -181,6 +184,7 @@ namespace newApi.Controllers
                     _logger.LogError(ex, "Database error saving cancellation for user {UserId}", userId);
                     throw;
                 }
+                });
 
                 _logger.LogInformation("Subscription cancellation scheduled successfully for user {UserId}, endDate={EndDate}", userId, subscription.EndDate);
                 return Ok(new
@@ -483,6 +487,13 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Expert profile not found" });
                 }
 
+                // Si la cuenta está Rejected, no se puede crear AccountLink; devolver mensaje claro
+                if (expertProfile.StripeStatus == StripeStatus.Rejected)
+                {
+                    _logger.LogWarning("Cannot create onboarding link for rejected account: userId={UserId}, accountId={AccountId}", userId, expertProfile.StripeAccountId);
+                    return BadRequest(new { message = "La cuenta de pagos fue rechazada por Stripe. No se puede continuar. Reinicia el onboarding para crear una cuenta nueva." });
+                }
+
                 if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
                 {
                     _logger.LogInformation("Expert already has a Stripe account: userId={UserId}, stripeAccountId={StripeAccountId}", userId, expertProfile.StripeAccountId);
@@ -595,60 +606,60 @@ namespace newApi.Controllers
                 var strategy = _context.Database.CreateExecutionStrategy();
                 return await strategy.ExecuteAsync(async () =>
                 {
-                    using var transaction = await _context.Database.BeginTransactionAsync();
-                    try
-                    {
-                        // Guardar temporalmente el account ID hasta que se complete el onboarding
-                        expertProfile.PendingStripeAccountId = account.Id;
-                        expertProfile.OnboardingCompleted = false;
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    // Guardar temporalmente el account ID hasta que se complete el onboarding
+                    expertProfile.PendingStripeAccountId = account.Id;
+                    expertProfile.OnboardingCompleted = false;
                         expertProfile.StripeStatus = StripeStatus.Pending;
                         
                         _logger.LogInformation("Attempting to save Stripe account: userId={UserId}, accountId={AccountId}, pendingAccountId={PendingAccountId}", 
                             userId, expertProfile.StripeAccountId, account.Id);
                         
-                        await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync();
                         _logger.LogInformation("Successfully saved Stripe account to database: userId={UserId}", userId);
 
-                        var linkOptions = new AccountLinkCreateOptions
-                        {
-                            Account = account.Id,
-                            RefreshUrl = "https://atrapo.io/refresh-onboarding",
-                            ReturnUrl = "https://atrapo.io/complete-onboarding",
-                            Type = "account_onboarding",
-                            Collect = "eventually_due"
-                        };
+                    var linkOptions = new AccountLinkCreateOptions
+                    {
+                        Account = account.Id,
+                        RefreshUrl = "https://atrapo.io/refresh-onboarding",
+                        ReturnUrl = "https://atrapo.io/complete-onboarding",
+                        Type = "account_onboarding",
+                        Collect = "eventually_due"
+                    };
 
-                        var linkService = new AccountLinkService();
-                        AccountLink accountLink;
-                        try
-                        {
-                            accountLink = await linkService.CreateAsync(linkOptions);
-                            _logger.LogInformation("Onboarding link created for userId={UserId}, url={Url}", userId, accountLink.Url);
-                        }
-                        catch (StripeException ex)
-                        {
-                            await transaction.RollbackAsync();
-                            _logger.LogError(ex, "Stripe error creating onboarding link for userId={UserId}: {ErrorMessage}", userId, ex.Message);
-                            return StatusCode(500, new { message = "Failed to create onboarding link" });
-                        }
-
-                        await transaction.CommitAsync();
-                        return Ok(new { url = accountLink.Url });
+                    var linkService = new AccountLinkService();
+                    AccountLink accountLink;
+                    try
+                    {
+                        accountLink = await linkService.CreateAsync(linkOptions);
+                        _logger.LogInformation("Onboarding link created for userId={UserId}, url={Url}", userId, accountLink.Url);
                     }
+                    catch (StripeException ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Stripe error creating onboarding link for userId={UserId}: {ErrorMessage}", userId, ex.Message);
+                        return StatusCode(500, new { message = "Failed to create onboarding link" });
+                    }
+
+                    await transaction.CommitAsync();
+                    return Ok(new { url = accountLink.Url });
+                }
                     catch (DbUpdateException dbEx)
                     {
                         await transaction.RollbackAsync();
                         _logger.LogError(dbEx, "Database error saving Stripe account for userId={UserId}: {ErrorMessage}, InnerException={InnerException}", 
                             userId, dbEx.Message, dbEx.InnerException?.Message);
                         return StatusCode(500, new { message = "Failed to save Stripe account", details = dbEx.InnerException?.Message ?? dbEx.Message });
-                    }
-                    catch (Exception ex)
-                    {
-                        await transaction.RollbackAsync();
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
                         _logger.LogError(ex, "Unexpected error saving Stripe account for userId={UserId}: {ErrorMessage}, StackTrace={StackTrace}", 
                             userId, ex.Message, ex.StackTrace);
                         return StatusCode(500, new { message = "Failed to save Stripe account", details = ex.Message });
-                    }
+                }
                 });
             }
             catch (Exception ex)
@@ -689,6 +700,12 @@ namespace newApi.Controllers
                 {
                     _logger.LogError("Stripe account ID not found for expert userId={UserId}", userId);
                     return BadRequest(new { message = "Stripe account not found. Please complete onboarding first." });
+                }
+
+                if (expertProfile.StripeStatus == StripeStatus.Rejected)
+                {
+                    _logger.LogWarning("Cannot create account link for rejected account: userId={UserId}, accountId={AccountId}", userId, expertProfile.StripeAccountId);
+                    return BadRequest(new { message = "La cuenta de pagos fue rechazada por Stripe. No se puede abrir el panel. Reinicia el onboarding para crear una cuenta nueva." });
                 }
 
                 // Crear un enlace de cuenta de Stripe Connect para actualizar datos bancarios
@@ -747,6 +764,11 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Expert profile not found" });
                 }
 
+                // Permitir acceso al panel si está Approved o si está Deauthorized pero con contrataciones activas
+                var hasActiveHires = await _context.SearchHires
+                    .Include(sh => sh.Status)
+                    .AnyAsync(sh => sh.ExpertId == userId && sh.Status.StatusValue == "pending");
+
                 var status = new OnboardingStatusDto
                 {
                     HasStripeAccount = !string.IsNullOrEmpty(expertProfile.StripeAccountId),
@@ -755,7 +777,9 @@ namespace newApi.Controllers
                     StripeAccountId = expertProfile.StripeAccountId,
                     StripeStatus = expertProfile.StripeStatus.ToString(),
                     StripeStatusDetails = expertProfile.StripeStatusDetails,
-                    CanAccessStripe = !string.IsNullOrEmpty(expertProfile.StripeAccountId) && expertProfile.OnboardingCompleted
+                    CanAccessStripe =
+                        (expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted)
+                        || ((expertProfile.StripeStatus == StripeStatus.Deauthorized || expertProfile.StripeStatus == StripeStatus.Rejected) && hasActiveHires)
                 };
 
                 _logger.LogInformation("Onboarding status for userId={UserId}: {Status}", userId, System.Text.Json.JsonSerializer.Serialize(status));
@@ -808,6 +832,11 @@ namespace newApi.Controllers
                     }
                 }
 
+                // Permitir acceso al panel si está Approved o si está Deauthorized pero con contrataciones activas
+                var hasActiveHires = await _context.SearchHires
+                    .Include(sh => sh.Status)
+                    .AnyAsync(sh => sh.ExpertId == userId && sh.Status.StatusValue == "pending");
+
                 var status = new ExpertStatusDto
                 {
                     HasStripeAccount = !string.IsNullOrEmpty(expertProfile.StripeAccountId),
@@ -816,7 +845,9 @@ namespace newApi.Controllers
                     StripeStatus = expertProfile.StripeStatus.ToString(),
                     StripeStatusDetails = expertProfile.StripeStatusDetails,
                     StripeAccountId = expertProfile.StripeAccountId,
-                    CanAccessStripe = expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted,
+                    CanAccessStripe = (expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted)
+                        || ((expertProfile.StripeStatus == StripeStatus.Deauthorized || expertProfile.StripeStatus == StripeStatus.Rejected) && hasActiveHires),
+                    // Solo permitir creación/cobro cuando realmente está aprobado
                     CanCreateServices = expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted,
                     CanReceivePayments = expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted,
                     StatusMessage = GetStatusMessage(expertProfile.StripeStatus),
@@ -1528,10 +1559,12 @@ namespace newApi.Controllers
                                 _logger.LogInformation("✅ DEBUG: Final - verified={Verified}, rejected={Rejected}, disabledReason={DisabledReason}, errorDetails={Errors}",
                                     isAccountVerified, isRejected, disabledReason, string.Join("; ", errorDetails));
                                 
-                                // MEJORA: Usar transacción para actualizaciones atómicas
+                                // MEJORA: Usar transacción para actualizaciones atómicas con ExecutionStrategy (NpgsqlRetryingExecutionStrategy)
                                 var previousStatus = expertProfile.StripeStatus;
-                                using (var transaction = await _context.Database.BeginTransactionAsync())
+                                var strategy = _context.Database.CreateExecutionStrategy();
+                                await strategy.ExecuteAsync(async () =>
                                 {
+                                    await using var transaction = await _context.Database.BeginTransactionAsync();
                                     try
                                     {
                                         if (isAccountVerified)
@@ -1554,8 +1587,11 @@ namespace newApi.Controllers
                                             expertProfile.OnboardingCompleted = false;
                                             expertProfile.StripeStatusDetails = GetRejectionMessage(disabledReason, errorDetails);
                                             
-                                            // ✅ NUEVO: Solo notificar al experto (no puede tener contrataciones activas)
-                                            await NotifyExpertOnly(expertProfile.UserId, disabledReason);
+                                            // ✅ Notificar solo en transición real a Rejected para evitar duplicados
+                                            if (previousStatus != StripeStatus.Rejected)
+                                            {
+                                                await NotifyExpertOnly(expertProfile.UserId, disabledReason);
+                                            }
                                             
                                             _logger.LogWarning("❌ DEBUG: Account rejected for userId={UserId}, reason={Reason}", expertProfile.UserId, disabledReason);
                                         }
@@ -1589,7 +1625,7 @@ namespace newApi.Controllers
                                         await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, expertProfile.UserId, "Failed", ex.Message);
                                         throw;  // Retry por Stripe
                                     }
-                                }
+                                });
                                 }
                                 catch (Exception logicEx)
                                 {
@@ -1724,7 +1760,10 @@ namespace newApi.Controllers
                                 .FirstOrDefaultAsync(sh => sh.ExpertTransferId == transfer.Id);
                             if (searchHire != null)
                             {
-                                using var transaction = await _context.Database.BeginTransactionAsync();
+                                var transferFailedStrategy = _context.Database.CreateExecutionStrategy();
+                                await transferFailedStrategy.ExecuteAsync(async () =>
+                                {
+                                    await using var transaction = await _context.Database.BeginTransactionAsync();
                                 try
                                 {
                                     // 🚨 REGISTRAR FALLO DE TRANSFER - NO DEVOLVER AL CLIENTE
@@ -1781,6 +1820,7 @@ namespace newApi.Controllers
                                     _logger.LogError(ex, "Error reverting failed transfer for searchHireId={SearchHireId}, transferId={TransferId}",
                                         searchHire.Id, transfer.Id);
                                 }
+                                });
                             }
                             else
                             {

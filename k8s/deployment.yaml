@@ -13,6 +13,10 @@ spec:
       labels:
         app: new-api
     spec:
+      # 👇 ¡LA LÍNEA CRÍTICA AÑADIDA AQUÍ!
+      imagePullSecrets:
+      - name: regcred 
+      # -----------------------------------
       containers:
       - name: new-api
         image: erizo9/newapi:latest
@@ -26,6 +30,7 @@ spec:
           value: "5672"
         - name: RABBITMQ_USERNAME
           value: "admin"
+          # ... (El resto de env y mounts)
         - name: RABBITMQ_PASSWORD
           value: "__REDACTED_CREDENTIAL__"
         - name: GOOGLE_APPLICATION_CREDENTIALS

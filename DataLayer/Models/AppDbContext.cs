@@ -31,6 +31,7 @@ namespace newApi.DataLayer.Models
         public DbSet<LogType> LogTypes { get; set; }
         public DbSet<Severity> Severities { get; set; }
         public DbSet<ExpertProfile> ExpertProfiles { get; set; }
+        public DbSet<ExpertAvailability> ExpertAvailabilities { get; set; }
         public DbSet<SearchService> SearchServices { get; set; }
         public DbSet<SearchServiceImage> SearchServiceImages { get; set; }
         public DbSet<SearchHire> SearchHires { get; set; }
@@ -271,6 +272,22 @@ namespace newApi.DataLayer.Models
                 .WithOne(s => s.SearchHire)
                 .HasForeignKey<SearchHire>(sh => sh.SearchId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<SearchHire>()
+                .HasOne(sh => sh.ExpertAvailability)
+                .WithMany()
+                .HasForeignKey(sh => sh.ExpertAvailabilityId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            modelBuilder.Entity<ExpertAvailability>()
+                .HasOne(ea => ea.Expert)
+                .WithMany()
+                .HasForeignKey(ea => ea.ExpertId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<ExpertAvailability>()
+                .HasIndex(ea => new { ea.ExpertId, ea.IsActive, ea.EffectiveTo })
+                .HasFilter("\"EffectiveTo\" IS NULL AND \"IsActive\" = true");
 
             modelBuilder.Entity<Review>()
                 .HasOne(r => r.Reviewer)

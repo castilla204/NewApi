@@ -131,6 +131,12 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "No suitable SearchService found for the expert" });
                 }
 
+                // Obtener la disponibilidad actual del experto al momento de la contratación
+                var currentAvailability = await _context.ExpertAvailabilities
+                    .Where(ea => ea.ExpertId == expert.ExpertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
+                    .OrderByDescending(ea => ea.EffectiveFrom)
+                    .FirstOrDefaultAsync();
+
                 var searchHire = new SearchHire
                 {
                     SearchId = dto.SearchId,
@@ -140,6 +146,7 @@ namespace newApi.Controllers
                     StatusId = await GetStatusIdByValueAsync("pending"),
                     Amount = searchService.Price,
                     CreatedAt = DateTime.UtcNow,
+                    ExpertAvailabilityId = currentAvailability?.Id, // Guardar la disponibilidad usada
                     Conversations = new List<Conversation>()
                 };
 

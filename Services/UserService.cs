@@ -355,6 +355,58 @@ namespace newApi.Services
             _context.ExpertProfiles.Add(expertProfile);
             await _context.SaveChangesAsync();
 
+            // Crear disponibilidad horaria inicial si se proporciona
+            if (request.AvailabilityDaysOfWeek != null && request.AvailabilityDaysOfWeek.Count > 0 &&
+                !string.IsNullOrEmpty(request.AvailabilityStartTime) && !string.IsNullOrEmpty(request.AvailabilityEndTime))
+            {
+                try
+                {
+                    // Parsear tiempos
+                    if (TimeSpan.TryParse(request.AvailabilityStartTime, out var startTime) &&
+                        TimeSpan.TryParse(request.AvailabilityEndTime, out var endTime))
+                    {
+                        // Validar días válidos
+                        var validDays = new[] { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
+                        var invalidDays = request.AvailabilityDaysOfWeek.Except(validDays, StringComparer.OrdinalIgnoreCase).ToList();
+                        
+                        if (!invalidDays.Any() && startTime < endTime)
+                        {
+                            var now = DateTime.UtcNow;
+                            var availability = new ExpertAvailability
+                            {
+                                ExpertId = expertProfile.Id,
+                                DaysOfWeek = System.Text.Json.JsonSerializer.Serialize(request.AvailabilityDaysOfWeek),
+                                StartTime = startTime,
+                                EndTime = endTime,
+                                EffectiveFrom = now,
+                                EffectiveTo = null,
+                                IsActive = true,
+                                CreatedAt = now,
+                                UpdatedAt = now
+                            };
+
+                            _context.ExpertAvailabilities.Add(availability);
+                            await _context.SaveChangesAsync();
+                            _logger.LogInformation("Created initial availability for expert profile ID {ExpertProfileId}", expertProfile.Id);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Invalid availability data provided for user ID {UserId}: Invalid days or time range", userId);
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Invalid time format in availability for user ID {UserId}: StartTime={StartTime}, EndTime={EndTime}", 
+                            userId, request.AvailabilityStartTime, request.AvailabilityEndTime);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error creating initial availability for user ID {UserId}", userId);
+                    // No fallar la creación del perfil si hay error en disponibilidad
+                }
+            }
+
             var token = GenerateJwtToken(user);
             _logger.LogInformation("Successfully created expert profile for user ID {UserId}", userId);
             return (true, token, user, expertProfile);
@@ -369,6 +421,26 @@ namespace newApi.Services
             if (expertProfile == null)
                 return null;
 
+            // Obtener la disponibilidad actual activa
+            var currentAvailability = await _context.ExpertAvailabilities
+                .Where(ea => ea.ExpertId == expertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
+                .OrderByDescending(ea => ea.EffectiveFrom)
+                .FirstOrDefaultAsync();
+
+            CurrentExpertAvailabilityDto? availabilityDto = null;
+            if (currentAvailability != null)
+            {
+                var daysOfWeek = System.Text.Json.JsonSerializer.Deserialize<List<string>>(currentAvailability.DaysOfWeek) ?? new List<string>();
+                availabilityDto = new CurrentExpertAvailabilityDto
+                {
+                    Id = currentAvailability.Id,
+                    DaysOfWeek = daysOfWeek,
+                    StartTime = currentAvailability.StartTime,
+                    EndTime = currentAvailability.EndTime,
+                    EffectiveFrom = currentAvailability.EffectiveFrom
+                };
+            }
+
             return new ExpertProfileDto
             {
                 Id = expertProfile.Id,
@@ -381,12 +453,14 @@ namespace newApi.Services
                     Name = expertProfile.User.Name,
                     Email = expertProfile.User.Email
                 },
+                Reviews = new List<ReviewDto>(), // Inicializar lista vacía para mantener compatibilidad
                 Latitude = expertProfile.Latitude,
                 Longitude = expertProfile.Longitude,
                 StripeStatus = expertProfile.StripeStatus,
                 StripeStatusDetails = expertProfile.StripeStatusDetails,
                 OnboardingCompleted = expertProfile.OnboardingCompleted,
-                IsOnVacation = expertProfile.IsOnVacation
+                IsOnVacation = expertProfile.IsOnVacation,
+                CurrentAvailability = availabilityDto
             };
         }
 
@@ -499,6 +573,73 @@ namespace newApi.Services
                     {
                         _logger.LogError(ex, "Error uploading new profile picture for user ID {UserId}", userId);
                         return (false, null);
+                    }
+                }
+
+                // Actualizar disponibilidad horaria si se proporciona
+                if (request.AvailabilityDaysOfWeek != null && request.AvailabilityDaysOfWeek.Count > 0 &&
+                    !string.IsNullOrEmpty(request.AvailabilityStartTime) && !string.IsNullOrEmpty(request.AvailabilityEndTime))
+                {
+                    try
+                    {
+                        // Parsear tiempos
+                        if (TimeSpan.TryParse(request.AvailabilityStartTime, out var startTime) &&
+                            TimeSpan.TryParse(request.AvailabilityEndTime, out var endTime))
+                        {
+                            // Validar días válidos
+                            var validDays = new[] { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
+                            var invalidDays = request.AvailabilityDaysOfWeek.Except(validDays, StringComparer.OrdinalIgnoreCase).ToList();
+                            
+                            if (!invalidDays.Any() && startTime < endTime)
+                            {
+                                // Verificar si hay una disponibilidad activa
+                                var currentAvailability = await _context.ExpertAvailabilities
+                                    .Where(ea => ea.ExpertId == expertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
+                                    .OrderByDescending(ea => ea.EffectiveFrom)
+                                    .FirstOrDefaultAsync();
+
+                                var now = DateTime.UtcNow;
+
+                                // Si existe una disponibilidad activa, marcarla como inactiva
+                                if (currentAvailability != null)
+                                {
+                                    currentAvailability.IsActive = false;
+                                    currentAvailability.EffectiveTo = now;
+                                    currentAvailability.UpdatedAt = now;
+                                }
+
+                                // Crear nueva disponibilidad
+                                var newAvailability = new ExpertAvailability
+                                {
+                                    ExpertId = expertProfile.Id,
+                                    DaysOfWeek = System.Text.Json.JsonSerializer.Serialize(request.AvailabilityDaysOfWeek),
+                                    StartTime = startTime,
+                                    EndTime = endTime,
+                                    EffectiveFrom = now,
+                                    EffectiveTo = null,
+                                    IsActive = true,
+                                    CreatedAt = now,
+                                    UpdatedAt = now
+                                };
+
+                                _context.ExpertAvailabilities.Add(newAvailability);
+                                _logger.LogInformation("Updated availability for expert profile ID {ExpertProfileId}", expertProfile.Id);
+                            }
+                            else
+                            {
+                                _logger.LogWarning("Invalid availability data provided for user ID {UserId}: Invalid days or time range", userId);
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Invalid time format in availability for user ID {UserId}: StartTime={StartTime}, EndTime={EndTime}", 
+                                userId, request.AvailabilityStartTime, request.AvailabilityEndTime);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error updating availability for user ID {UserId}", userId);
+                        // No fallar la actualización del perfil si hay error en disponibilidad
                     }
                 }
 

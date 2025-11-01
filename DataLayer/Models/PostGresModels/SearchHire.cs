@@ -25,6 +25,13 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual ICollection<Conversation> Conversations { get; set; } = new List<Conversation>();
         public virtual ICollection<SearchHireDeliverable> Deliverables { get; set; } = new List<SearchHireDeliverable>();
         public virtual Appointment? Appointment { get; set; } // Solo si requiere cita
+        
+        /// <summary>
+        /// ID de la disponibilidad del experto usada al momento de crear esta contratación
+        /// Permite mantener la disponibilidad original aunque el experto la haya cambiado
+        /// </summary>
+        public int? ExpertAvailabilityId { get; set; }
+        public virtual ExpertAvailability? ExpertAvailability { get; set; }
     }
 
 }

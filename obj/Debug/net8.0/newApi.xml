@@ -307,6 +307,27 @@
             Permite al experto responder a una disputa del cliente
             </summary>
         </member>
+        <member name="T:newApi.Controllers.ExpertAvailabilityController">
+            <summary>
+            Controlador para gestionar la disponibilidad horaria de expertos (solo lectura)
+            La creación y actualización de disponibilidad se realiza a través del perfil de experto
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ExpertAvailabilityController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Logging.ILogger{newApi.Controllers.ExpertAvailabilityController})">
+            <summary>
+            Constructor del controlador de disponibilidad de expertos
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ExpertAvailabilityController.GetCurrentAvailability">
+            <summary>
+            Obtener la disponibilidad actual activa del experto autenticado
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ExpertAvailabilityController.GetAvailabilityHistory">
+            <summary>
+            Obtener el historial completo de disponibilidades del experto
+            </summary>
+        </member>
         <member name="M:newApi.Controllers.SearchController.GetStatusIdByValueAsync(System.String)">
             <summary>
             Helper method to get StatusId from StatusValue
@@ -452,6 +473,22 @@
             Verifica si el experto ha respondido en las primeras 24 horas
             </summary>
             <param name="searchHireId">ID del servicio contratado</param>
+        </member>
+        <member name="M:newApi.Controllers.SubscriptionController.CalculateCanRetryOnboarding(newApi.DataLayer.Models.PostGresModels.StripeStatus,System.String,System.String)">
+            <summary>
+            Calcula si se puede reintentar el onboarding basándose en el estado y el motivo de rechazo
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.SubscriptionController.ExtractRejectionReasonFromDetails(System.String)">
+            <summary>
+            Extrae el motivo del rechazo del mensaje formateado de StripeStatusDetails
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.SubscriptionController.IsPermanentRejection(System.String)">
+            <summary>
+            Determina si un rechazo es permanente (bloquea crear nueva cuenta) o temporal (permite reintentar)
+            Basado en la documentación oficial de Stripe Connect Account Requirements
+            </summary>
         </member>
         <member name="M:newApi.Controllers.SubscriptionController.IsEventProcessedAsync(System.String)">
             <summary>
@@ -1029,6 +1066,39 @@
             Archivos adjuntos de la respuesta del experto (opcional)
             </summary>
         </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.ExpertAvailabilityDto">
+            <summary>
+            DTO para la disponibilidad de un experto
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.CreateOrUpdateExpertAvailabilityDto">
+            <summary>
+            DTO para crear o actualizar disponibilidad
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.DTOs.CreateOrUpdateExpertAvailabilityDto.DaysOfWeek">
+            <summary>
+            Días de la semana en los que el experto trabaja
+            Valores permitidos: "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.DTOs.CreateOrUpdateExpertAvailabilityDto.StartTime">
+            <summary>
+            Hora de inicio de la franja horaria (misma para todos los días)
+            Formato: "HH:mm" (ej: "09:00")
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.DTOs.CreateOrUpdateExpertAvailabilityDto.EndTime">
+            <summary>
+            Hora de fin de la franja horaria (misma para todos los días)
+            Formato: "HH:mm" (ej: "18:00")
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.CurrentExpertAvailabilityDto">
+            <summary>
+            DTO para obtener solo la disponibilidad actual activa
+            </summary>
+        </member>
         <member name="T:newApi.DataLayer.Models.DTOs.MoneyDistributionConfigDto">
             <summary>
             DTO para configuración de distribución de dinero
@@ -1429,6 +1499,44 @@
             Relación con el usuario que subió el archivo
             </summary>
         </member>
+        <member name="T:newApi.DataLayer.Models.PostGresModels.ExpertAvailability">
+            <summary>
+            Disponibilidad de trabajo de los expertos
+            Guarda el historial completo: cuando se actualiza, se marca la anterior como inactiva
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.ExpertAvailability.DaysOfWeek">
+            <summary>
+            Días de la semana en formato JSON array: ["Monday", "Tuesday", "Wednesday", etc.]
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.ExpertAvailability.StartTime">
+            <summary>
+            Hora de inicio de la franja horaria (misma para todos los días)
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.ExpertAvailability.EndTime">
+            <summary>
+            Hora de fin de la franja horaria (misma para todos los días)
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.ExpertAvailability.EffectiveFrom">
+            <summary>
+            Fecha desde la cual esta disponibilidad está vigente
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.ExpertAvailability.EffectiveTo">
+            <summary>
+            Fecha hasta la cual esta disponibilidad está vigente
+            Null = disponibilidad actual/activa
+            Cuando se crea una nueva disponibilidad, se establece este campo en la anterior
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.ExpertAvailability.IsActive">
+            <summary>
+            Indica si esta es la disponibilidad actual activa
+            </summary>
+        </member>
         <member name="T:newApi.DataLayer.Models.PostGresModels.ProcessedWebhookEvent">
             <summary>
             Modelo para manejar la idempotencia de eventos de webhook de Stripe
@@ -1474,6 +1582,12 @@
             Datos adicionales del evento (opcional, para debugging)
             </summary>
         </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.SearchHire.ExpertAvailabilityId">
+            <summary>
+            ID de la disponibilidad del experto usada al momento de crear esta contratación
+            Permite mantener la disponibilidad original aunque el experto la haya cambiado
+            </summary>
+        </member>
         <member name="T:newApi.DataLayer.Models.PostGresModels.ServiceType">
             <summary>
             Tipos específicos de servicio (e.g., "Revisión de Electrodomésticos", "Revisión de Coches")
@@ -1500,6 +1614,39 @@
             <summary>
             Tabla centralizada para todos los estados del sistema
             Reemplaza los enums hardcodeados por una solución flexible y configurable
+            </summary>
+        </member>
+        <member name="P:newApi.ScrapperGateway.DataLayer.Models.DTOs.BecomeExpertRequestDto.AvailabilityDaysOfWeek">
+            <summary>
+            Días de la semana en los que el experto trabaja (múltiples valores permitidos en form-data)
+            Valores permitidos: "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+            </summary>
+        </member>
+        <member name="P:newApi.ScrapperGateway.DataLayer.Models.DTOs.BecomeExpertRequestDto.AvailabilityStartTime">
+            <summary>
+            Hora de inicio de la franja horaria (formato "HH:mm", ej: "09:00")
+            </summary>
+        </member>
+        <member name="P:newApi.ScrapperGateway.DataLayer.Models.DTOs.BecomeExpertRequestDto.AvailabilityEndTime">
+            <summary>
+            Hora de fin de la franja horaria (formato "HH:mm", ej: "18:00")
+            </summary>
+        </member>
+        <member name="P:newApi.ScrapperGateway.DataLayer.Models.DTOs.UpdateExpertProfileRequestDto.AvailabilityDaysOfWeek">
+            <summary>
+            Días de la semana en los que el experto trabaja (múltiples valores permitidos en form-data)
+            Valores permitidos: "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+            Si se proporciona, actualiza la disponibilidad del experto
+            </summary>
+        </member>
+        <member name="P:newApi.ScrapperGateway.DataLayer.Models.DTOs.UpdateExpertProfileRequestDto.AvailabilityStartTime">
+            <summary>
+            Hora de inicio de la franja horaria (formato "HH:mm", ej: "09:00")
+            </summary>
+        </member>
+        <member name="P:newApi.ScrapperGateway.DataLayer.Models.DTOs.UpdateExpertProfileRequestDto.AvailabilityEndTime">
+            <summary>
+            Hora de fin de la franja horaria (formato "HH:mm", ej: "18:00")
             </summary>
         </member>
         <member name="T:newApi.Migrations.AddServiceTypeCategoryTable">
@@ -2229,6 +2376,18 @@
             <inheritdoc />
         </member>
         <member name="M:newApi.Migrations.AddColorToSystemStatuses.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.AddExpertAvailabilitySystem">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddExpertAvailabilitySystem.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddExpertAvailabilitySystem.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddExpertAvailabilitySystem.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
         <member name="M:newApi.Services.AccountDeletionService.GetStatusIdByValueAsync(System.String)">

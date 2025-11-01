@@ -39,7 +39,7 @@ namespace newApi.Services
                 .OrderByDescending(h => h.CreatedAt)
                 .ToListAsync();
 
-            return hires.Select(MapToResponseDto).ToList();
+            return hires.Select(h => MapToResponseDto(h)).ToList();
         }
 
         public async Task<IEnumerable<SearchHireResponseDto>> GetExpertHires(int userId)
@@ -55,6 +55,9 @@ namespace newApi.Services
                 .Include(h => h.SearchService)
                     .ThenInclude(s => s.SelectedDeliverableTypes)
                         .ThenInclude(sdt => sdt.DeliverableType)
+                .Include(h => h.SearchService)
+                    .ThenInclude(s => s.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
                 .Include(h => h.Search) // Incluir datos de Search para título y descripción
                 .Include(h => h.Conversations)
                     .ThenInclude(c => c.Messages) // Incluir mensajes para contar pendientes
@@ -62,7 +65,24 @@ namespace newApi.Services
                 .OrderByDescending(h => h.CreatedAt)
                 .ToListAsync();
 
-            return hires.Select(MapToResponseDto).ToList();
+            // Obtener las disponibilidades de los expertos involucrados
+            var expertIds = hires
+                .Where(h => h.SearchService?.ExpertProfile != null)
+                .Select(h => h.SearchService.ExpertProfile.Id)
+                .Distinct()
+                .ToList();
+
+            var availabilities = await _context.ExpertAvailabilities
+                .Where(ea => expertIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                .OrderByDescending(ea => ea.EffectiveFrom)
+                .ToListAsync();
+
+            // Agrupar por ExpertId y tomar la más reciente de cada uno
+            var availabilityByExpert = availabilities
+                .GroupBy(ea => ea.ExpertId)
+                .ToDictionary(g => g.Key, g => g.First());
+
+            return hires.Select(h => MapToResponseDto(h, availabilityByExpert)).ToList();
         }
 
         public async Task<(bool Success, string ErrorMessage)> UpdateHireStatus(int userId, int hireId, string status)
@@ -164,7 +184,7 @@ namespace newApi.Services
             return systemStatus.Id;
         }
 
-        private static SearchHireResponseDto MapToResponseDto(SearchHire hire)
+        private static SearchHireResponseDto MapToResponseDto(SearchHire hire, Dictionary<int, ExpertAvailability>? availabilityByExpert = null)
         {
             // Contar mensajes no leídos del experto en las conversaciones
             var unreadMessagesCount = hire.Conversations
@@ -217,7 +237,8 @@ namespace newApi.Services
                         IsRequired = sdt.DeliverableType.IsRequired,
                         IsActive = sdt.DeliverableType.IsActive,
                         SortOrder = sdt.DeliverableType.SortOrder
-                    }).ToList() ?? new List<DeliverableTypeDto>()
+                    }).ToList() ?? new List<DeliverableTypeDto>(),
+                    Expert = hire.SearchService.ExpertProfile != null ? MapExpertProfileWithAvailability(hire.SearchService.ExpertProfile, availabilityByExpert) : null
                 },
                 ServiceType = hire.SearchService.ServiceType != null ? new ServiceTypeDto
                 {
@@ -250,6 +271,54 @@ namespace newApi.Services
                 SearchTitle = hire.Search?.Title,
                 SearchDescription = hire.Search?.Description,
                 UnreadMessagesCount = unreadMessagesCount
+            };
+        }
+
+        private static ExpertProfileDto MapExpertProfileWithAvailability(ExpertProfile expertProfile, Dictionary<int, ExpertAvailability>? availabilityByExpert = null)
+        {
+            // Obtener la disponibilidad actual activa
+            ExpertAvailability? currentAvailability = null;
+            if (availabilityByExpert != null && availabilityByExpert.TryGetValue(expertProfile.Id, out var availability))
+            {
+                currentAvailability = availability;
+            }
+
+            CurrentExpertAvailabilityDto? availabilityDto = null;
+            if (currentAvailability != null)
+            {
+                var daysOfWeek = System.Text.Json.JsonSerializer.Deserialize<List<string>>(currentAvailability.DaysOfWeek) ?? new List<string>();
+                availabilityDto = new CurrentExpertAvailabilityDto
+                {
+                    Id = currentAvailability.Id,
+                    DaysOfWeek = daysOfWeek,
+                    StartTime = currentAvailability.StartTime,
+                    EndTime = currentAvailability.EndTime,
+                    EffectiveFrom = currentAvailability.EffectiveFrom
+                };
+            }
+
+            return new ExpertProfileDto
+            {
+                Id = expertProfile.Id,
+                ProfilePictureUrl = expertProfile.ProfilePictureUrl,
+                Description = expertProfile.Description,
+                StripeAccountId = expertProfile.StripeAccountId,
+                CreatedAt = expertProfile.CreatedAt,
+                User = expertProfile.User != null ? new UserDto
+                {
+                    Id = expertProfile.User.Id,
+                    Name = expertProfile.User.Name,
+                    Email = expertProfile.User.Email,
+                    ProfilePictureUrl = null
+                } : null,
+                Reviews = new List<ReviewDto>(), // No incluimos reviews en este contexto
+                Latitude = expertProfile.Latitude,
+                Longitude = expertProfile.Longitude,
+                StripeStatus = expertProfile.StripeStatus,
+                StripeStatusDetails = expertProfile.StripeStatusDetails,
+                OnboardingCompleted = expertProfile.OnboardingCompleted,
+                IsOnVacation = expertProfile.IsOnVacation,
+                CurrentAvailability = availabilityDto
             };
         }
 

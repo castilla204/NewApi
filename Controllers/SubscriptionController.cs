@@ -487,11 +487,79 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Expert profile not found" });
                 }
 
-                // Si la cuenta está Rejected, no se puede crear AccountLink; devolver mensaje claro
+                // ⚠️ BLOQUEAR SOLO si es un rechazo permanente; permitir reintentos si es temporal
                 if (expertProfile.StripeStatus == StripeStatus.Rejected)
                 {
-                    _logger.LogWarning("Cannot create onboarding link for rejected account: userId={UserId}, accountId={AccountId}", userId, expertProfile.StripeAccountId);
-                    return BadRequest(new { message = "La cuenta de pagos fue rechazada por Stripe. No se puede continuar. Reinicia el onboarding para crear una cuenta nueva." });
+                    // Obtener el motivo del rechazo desde Stripe
+                    string disabledReason = null;
+                    // Primero intentar obtener de Stripe directamente
+                    if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                    {
+                        try
+                        {
+                            var accountServiceForCreate = new AccountService();
+                            var accountForCreate = await accountServiceForCreate.GetAsync(expertProfile.StripeAccountId);
+                            disabledReason = accountForCreate.Requirements?.DisabledReason;
+                        }
+                        catch (StripeException ex)
+                        {
+                            _logger.LogWarning(ex, "Could not retrieve rejection reason from Stripe for userId={UserId}: {ErrorMessage}", userId, ex.Message);
+                        }
+                    }
+                    
+                    // Si no se pudo obtener de Stripe, intentar extraer del StripeStatusDetails
+                    if (string.IsNullOrEmpty(disabledReason) && !string.IsNullOrEmpty(expertProfile.StripeStatusDetails))
+                    {
+                        disabledReason = ExtractRejectionReasonFromDetails(expertProfile.StripeStatusDetails);
+                        if (!string.IsNullOrEmpty(disabledReason))
+                        {
+                            _logger.LogInformation("✅ Extracted rejection reason from StripeStatusDetails in restart-onboarding for userId={UserId}: {Reason}", userId, disabledReason);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("⚠️ Could not extract rejection reason from StripeStatusDetails for userId={UserId}. Details: {Details}", userId, expertProfile.StripeStatusDetails);
+                        }
+                    }
+                    else if (string.IsNullOrEmpty(disabledReason))
+                    {
+                        _logger.LogWarning("⚠️ No rejection reason available (neither from Stripe nor from StripeStatusDetails) for userId={UserId}", userId);
+                    }
+                    
+                    // Si es un rechazo permanente, bloquear
+                    _logger.LogInformation("🔍 Checking if rejection is permanent for userId={UserId}, disabledReason={Reason}, isPermanent={IsPermanent}", 
+                        userId, disabledReason ?? "null", IsPermanentRejection(disabledReason));
+                    if (IsPermanentRejection(disabledReason))
+                    {
+                        _logger.LogWarning("🚫 BLOCKED: Cannot create onboarding link for permanently rejected account - userId={UserId}, accountId={AccountId}, reason={Reason}", 
+                            userId, expertProfile.StripeAccountId, disabledReason);
+                        
+                        string rejectionInfo = "Tu cuenta de pagos fue rechazada por Stripe.";
+                        if (!string.IsNullOrEmpty(expertProfile.StripeStatusDetails))
+                        {
+                            rejectionInfo = expertProfile.StripeStatusDetails;
+                        }
+                        
+                        return BadRequest(new { 
+                            message = "No se puede crear una nueva cuenta. " + rejectionInfo + " Por favor, contacta al soporte técnico para revisar tu situación.",
+                            blocked = true,
+                            reason = "account_permanently_rejected",
+                            rejectionReason = disabledReason,
+                            rejectionDetails = expertProfile.StripeStatusDetails
+                        });
+                    }
+                    else
+                    {
+                        // Es un rechazo temporal (requirements.past_due, etc.), permitir reintentar
+                        // Limpiar la cuenta rechazada y permitir crear una nueva
+                        _logger.LogInformation("✅ ALLOWED: Temporary rejection allows retry - userId={UserId}, reason={Reason}, cleaning up account", userId, disabledReason);
+                        expertProfile.StripeAccountId = null;
+                        expertProfile.PendingStripeAccountId = null;
+                        expertProfile.StripeStatus = StripeStatus.NotRequested;
+                        expertProfile.StripeStatusDetails = null;
+                        expertProfile.OnboardingCompleted = false;
+                        await _context.SaveChangesAsync();
+                        // Continuar con el flujo normal de creación de cuenta
+                    }
                 }
 
                 if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
@@ -818,17 +886,31 @@ namespace newApi.Controllers
 
                 // Si la cuenta está rechazada, obtener información detallada de Stripe
                 string rejectionReason = null;
-                if (expertProfile.StripeStatus == StripeStatus.Rejected && !string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                if (expertProfile.StripeStatus == StripeStatus.Rejected)
                 {
-                    try
+                    // Primero intentar obtener de Stripe directamente
+                    if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
                     {
-                        var accountService = new AccountService();
-                        var account = await accountService.GetAsync(expertProfile.StripeAccountId);
-                        rejectionReason = account.Requirements?.DisabledReason;
+                        try
+                        {
+                            var accountService = new AccountService();
+                            var account = await accountService.GetAsync(expertProfile.StripeAccountId);
+                            rejectionReason = account.Requirements?.DisabledReason;
+                        }
+                        catch (StripeException ex)
+                        {
+                            _logger.LogWarning(ex, "Could not retrieve rejection reason from Stripe for userId={UserId}: {ErrorMessage}", userId, ex.Message);
+                        }
                     }
-                    catch (StripeException ex)
+                    
+                    // Si no se pudo obtener de Stripe, intentar extraer del StripeStatusDetails
+                    if (string.IsNullOrEmpty(rejectionReason) && !string.IsNullOrEmpty(expertProfile.StripeStatusDetails))
                     {
-                        _logger.LogWarning(ex, "Could not retrieve rejection reason for userId={UserId}: {ErrorMessage}", userId, ex.Message);
+                        rejectionReason = ExtractRejectionReasonFromDetails(expertProfile.StripeStatusDetails);
+                        if (!string.IsNullOrEmpty(rejectionReason))
+                        {
+                            _logger.LogInformation("Extracted rejection reason from StripeStatusDetails for userId={UserId}: {Reason}", userId, rejectionReason);
+                        }
                     }
                 }
 
@@ -851,7 +933,11 @@ namespace newApi.Controllers
                     CanCreateServices = expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted,
                     CanReceivePayments = expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted,
                     StatusMessage = GetStatusMessage(expertProfile.StripeStatus),
-                    CanRetryOnboarding = expertProfile.StripeStatus == StripeStatus.Rejected || expertProfile.StripeStatus == StripeStatus.NotRequested,
+                    // Permitir reintentar si:
+                    // - No ha solicitado cuenta (NotRequested)
+                    // - Está Pending sin cuenta pendiente
+                    // - Está Rejected PERO es un rechazo temporal (requirements.past_due, etc.)
+                    CanRetryOnboarding = CalculateCanRetryOnboarding(expertProfile.StripeStatus, expertProfile.PendingStripeAccountId, rejectionReason),
                     RejectionReason = rejectionReason
                 };
 
@@ -1019,7 +1105,82 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Expert profile not found" });
                 }
 
-                // Si ya tiene cuenta completada, crear login link en lugar de reiniciar
+                // ⚠️ BLOQUEAR SOLO si es un rechazo permanente; permitir reintentos si es temporal
+                if (expertProfile.StripeStatus == StripeStatus.Rejected)
+                {
+                    // Obtener el motivo del rechazo desde Stripe
+                    string disabledReason = null;
+                    // Primero intentar obtener de Stripe directamente
+                    if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                    {
+                        try
+                        {
+                            var accountServiceForCreate = new AccountService();
+                            var accountForCreate = await accountServiceForCreate.GetAsync(expertProfile.StripeAccountId);
+                            disabledReason = accountForCreate.Requirements?.DisabledReason;
+                        }
+                        catch (StripeException ex)
+                        {
+                            _logger.LogWarning(ex, "Could not retrieve rejection reason from Stripe for userId={UserId}: {ErrorMessage}", userId, ex.Message);
+                        }
+                    }
+                    
+                    // Si no se pudo obtener de Stripe, intentar extraer del StripeStatusDetails
+                    if (string.IsNullOrEmpty(disabledReason) && !string.IsNullOrEmpty(expertProfile.StripeStatusDetails))
+                    {
+                        disabledReason = ExtractRejectionReasonFromDetails(expertProfile.StripeStatusDetails);
+                        if (!string.IsNullOrEmpty(disabledReason))
+                        {
+                            _logger.LogInformation("✅ Extracted rejection reason from StripeStatusDetails in restart-onboarding for userId={UserId}: {Reason}", userId, disabledReason);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("⚠️ Could not extract rejection reason from StripeStatusDetails for userId={UserId}. Details: {Details}", userId, expertProfile.StripeStatusDetails);
+                        }
+                    }
+                    else if (string.IsNullOrEmpty(disabledReason))
+                    {
+                        _logger.LogWarning("⚠️ No rejection reason available (neither from Stripe nor from StripeStatusDetails) for userId={UserId}", userId);
+                    }
+                    
+                    // Si es un rechazo permanente, bloquear
+                    _logger.LogInformation("🔍 Checking if rejection is permanent for userId={UserId}, disabledReason={Reason}, isPermanent={IsPermanent}", 
+                        userId, disabledReason ?? "null", IsPermanentRejection(disabledReason));
+                    if (IsPermanentRejection(disabledReason))
+                    {
+                        _logger.LogWarning("🚫 BLOCKED: Cannot restart onboarding for permanently rejected account - userId={UserId}, accountId={AccountId}, reason={Reason}", 
+                            userId, expertProfile.StripeAccountId, disabledReason);
+                        
+                        string rejectionInfo = "Tu cuenta de pagos fue rechazada por Stripe.";
+                        if (!string.IsNullOrEmpty(expertProfile.StripeStatusDetails))
+                        {
+                            rejectionInfo = expertProfile.StripeStatusDetails;
+                        }
+                        
+                        return BadRequest(new { 
+                            message = "No se puede crear una nueva cuenta. " + rejectionInfo + " Por favor, contacta al soporte técnico para revisar tu situación.",
+                            blocked = true,
+                            reason = "account_permanently_rejected",
+                            rejectionReason = disabledReason,
+                            rejectionDetails = expertProfile.StripeStatusDetails
+                        });
+                    }
+                    else
+                    {
+                        // Es un rechazo temporal (requirements.past_due, etc.), permitir reintentar
+                        // Limpiar la cuenta rechazada y permitir crear una nueva
+                        _logger.LogInformation("✅ ALLOWED: Temporary rejection allows retry - userId={UserId}, reason={Reason}, cleaning up and resetting", userId, disabledReason);
+                        expertProfile.StripeAccountId = null;
+                        expertProfile.PendingStripeAccountId = null;
+                        expertProfile.StripeStatus = StripeStatus.NotRequested;
+                        expertProfile.StripeStatusDetails = null;
+                        expertProfile.OnboardingCompleted = false;
+                        await _context.SaveChangesAsync();
+                        // Continuar con el flujo normal
+                    }
+                }
+
+                // Si ya tiene cuenta completada y NO está rechazada, crear login link en lugar de reiniciar
                 if (!string.IsNullOrEmpty(expertProfile.StripeAccountId) && expertProfile.OnboardingCompleted)
                 {
                     _logger.LogInformation("Expert already has completed onboarding: userId={UserId}, creating account link", userId);
@@ -2208,6 +2369,17 @@ namespace newApi.Controllers
                     throw new InvalidOperationException("No puedes contratarte a ti mismo como experto");
                 }
 
+                // Obtener la disponibilidad actual del experto al momento de la contratación
+                int? currentAvailabilityId = null;
+                if (expertProfile != null)
+                {
+                    var currentAvailability = await _context.ExpertAvailabilities
+                        .Where(ea => ea.ExpertId == expertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
+                        .OrderByDescending(ea => ea.EffectiveFrom)
+                        .FirstOrDefaultAsync();
+                    currentAvailabilityId = currentAvailability?.Id;
+                }
+
                 // Create search hire
                 var searchHire = new SearchHire
                 {
@@ -2218,7 +2390,8 @@ namespace newApi.Controllers
                         StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Pending.ToStringValue()),
                     Amount = service.Price,
                     CreatedAt = DateTime.UtcNow,
-                    CompletionDeadline = DateTime.UtcNow.AddDays(7)
+                    CompletionDeadline = DateTime.UtcNow.AddDays(7),
+                    ExpertAvailabilityId = currentAvailabilityId // Guardar la disponibilidad usada
                 };
                     // ✅ REMOVED: Balance verification eliminated - all payments are direct Stripe
 
@@ -3579,6 +3752,107 @@ namespace newApi.Controllers
     public partial class SubscriptionController
     {
         /// <summary>
+        /// Calcula si se puede reintentar el onboarding basándose en el estado y el motivo de rechazo
+        /// </summary>
+        private bool CalculateCanRetryOnboarding(StripeStatus stripeStatus, string? pendingStripeAccountId, string? rejectionReason)
+        {
+            // Permitir reintentar si no ha solicitado cuenta o está pendiente sin cuenta pendiente
+            bool canRetry = stripeStatus == StripeStatus.NotRequested || 
+                           (stripeStatus == StripeStatus.Pending && string.IsNullOrEmpty(pendingStripeAccountId));
+            
+            // Si está Rejected, solo permitir si NO es un rechazo permanente
+            if (stripeStatus == StripeStatus.Rejected && !string.IsNullOrEmpty(rejectionReason))
+            {
+                canRetry = !IsPermanentRejection(rejectionReason);
+            }
+            
+            return canRetry;
+        }
+
+        /// <summary>
+        /// Extrae el motivo del rechazo del mensaje formateado de StripeStatusDetails
+        /// </summary>
+        private string? ExtractRejectionReasonFromDetails(string? stripeStatusDetails)
+        {
+            if (string.IsNullOrEmpty(stripeStatusDetails))
+                return null;
+
+            var details = stripeStatusDetails.ToLower();
+            
+            // Buscar patrones conocidos en el mensaje (tanto en inglés como español)
+            // Buscar variantes de "requirements.past_due" / "requisitos vencidos"
+            if (details.Contains("requirements.past_due") || 
+                details.Contains("requisitos vencidos") || 
+                details.Contains("requisitos vencido") ||
+                details.Contains("hay requisitos vencidos") ||
+                details.Contains("requisitos vencido que debías"))
+                return "requirements.past_due";
+            else if (details.Contains("requirements.pending_verification") || details.Contains("verificación pendiente"))
+                return "requirements.pending_verification";
+            else if (details.Contains("action_required.requested_capabilities") || details.Contains("acción requerida"))
+                return "action_required.requested_capabilities";
+            else if (details.Contains("fields_needed") || details.Contains("campos faltantes"))
+                return "fields_needed";
+            else if (details.Contains("rejected.fraud") || details.Contains("fraude"))
+                return "rejected.fraud";
+            else if (details.Contains("rejected.terms_of_service") || details.Contains("términos de servicio"))
+                return "rejected.terms_of_service";
+            else if (details.Contains("rejected.unsupported_business") || details.Contains("negocio no permitido"))
+                return "rejected.unsupported_business";
+            else if (details.Contains("rejected.other") || details.Contains("rechazado por otros motivos"))
+                return "rejected.other";
+            else if (details.Contains("under_review") || details.Contains("en revisión"))
+                return "under_review";
+            else if (details.Contains("listed") || details.Contains("lista de sanciones"))
+                return "listed";
+            
+            return null;
+        }
+
+        /// <summary>
+        /// Determina si un rechazo es permanente (bloquea crear nueva cuenta) o temporal (permite reintentar)
+        /// Basado en la documentación oficial de Stripe Connect Account Requirements
+        /// </summary>
+        private bool IsPermanentRejection(string? disabledReason)
+        {
+            if (string.IsNullOrEmpty(disabledReason))
+                return true; // Si no sabemos el motivo, por seguridad bloqueamos
+
+            // Rechazos TEMPORALES que permiten reintentar:
+            // - requirements.past_due: Requisitos vencidos, puede completarlos y reintentar
+            // - requirements.pending_verification: Verificación pendiente, puede corregir y reintentar
+            // - action_required.requested_capabilities: Acción requerida, puede completarla
+            // - fields_needed: Campos faltantes, puede completarlos
+            if (disabledReason == "requirements.past_due" || 
+                disabledReason == "requirements.pending_verification" ||
+                disabledReason == "action_required.requested_capabilities" ||
+                disabledReason == "fields_needed")
+            {
+                return false; // Temporal, permite reintentar
+            }
+
+            // Rechazos PERMANENTES que bloquean crear nueva cuenta:
+            // - rejected.fraud: Fraude detectado - NO permitir crear otra cuenta
+            // - rejected.terms_of_service: Violación de términos - NO permitir crear otra cuenta
+            // - rejected.unsupported_business: Negocio no permitido - NO permitir crear otra cuenta
+            // - rejected.other: Otros motivos graves - NO permitir crear otra cuenta
+            // - under_review: En revisión manual - NO permitir crear otra mientras se revisa
+            // - listed: Lista de sanciones (OFAC, etc.) - NO permitir crear otra cuenta
+            // - other: Motivo desconocido genérico - Por seguridad, bloquear hasta revisar
+            if (disabledReason.StartsWith("rejected.") || 
+                disabledReason == "under_review" || 
+                disabledReason == "listed" ||
+                disabledReason == "other")
+            {
+                return true; // Permanente, bloquea
+            }
+
+            // Por defecto, si no conocemos el tipo, bloqueamos por seguridad
+            // Esto previene que valores nuevos o desconocidos permitan crear cuentas sin revisar
+            return true;
+        }
+
+        /// <summary>
         /// Verifica si un evento ya fue procesado para evitar duplicados
         /// </summary>
         private async Task<bool> IsEventProcessedAsync(string eventId)
@@ -3699,6 +3973,16 @@ namespace newApi.Controllers
                 case "requirements.pending_verification":
                     reasonMessage = "🔍 **Motivo**: Hay verificaciones pendientes que no se completaron correctamente.";
                     solutionMessage = "**Solución**: Revisa tu panel de Stripe y asegúrate de que todos los documentos estén correctamente subidos y sean legibles. Vuelve a enviar cualquier documento que haya sido rechazado.";
+                    break;
+
+                case "fields_needed":
+                    reasonMessage = "📝 **Motivo**: Faltan campos de información que debes completar.";
+                    solutionMessage = "**Solución**: Ve a tu panel de Stripe y completa todos los campos requeridos. Una vez completados, podrás reintentar la verificación.";
+                    break;
+
+                case "other":
+                    reasonMessage = "⚠️ **Motivo**: Rechazo por motivos no especificados.";
+                    solutionMessage = "**Solución**: Contacta al soporte de Stripe para obtener información específica sobre este rechazo y los pasos para resolverlo.";
                     break;
 
                 default:

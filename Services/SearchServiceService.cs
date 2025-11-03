@@ -105,6 +105,18 @@ namespace newApi.Services
                     .ToList();
                 _logger.LogInformation("Services after null coordinate filter: {ServiceCount}", services.Count);
 
+                // ✅ NUEVO: Cargar todas las disponibilidades activas de los expertos en una sola consulta
+                var expertProfileIds = services.Select(ss => ss.ExpertProfileId).Distinct().ToList();
+                var availabilities = await _context.ExpertAvailabilities
+                    .Where(ea => expertProfileIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                    .OrderByDescending(ea => ea.EffectiveFrom)
+                    .ToListAsync();
+                
+                // Agrupar por ExpertId y tomar la más reciente (si hay duplicados)
+                var availabilityByExpert = availabilities
+                    .GroupBy(ea => ea.ExpertId)
+                    .ToDictionary(g => g.Key, g => g.First());
+
                 var filteredServices = services
                     .Where(ss =>
                     {
@@ -137,7 +149,7 @@ namespace newApi.Services
                         }
                         return distance <= locationRange || (isExtremeDistance && distance <= locationRange * 2);
                     })
-                    .Select(ss => MapToDetailDto(ss))
+                    .Select(ss => MapToDetailDto(ss, availabilityByExpert))
                     .ToList();
 
                 _logger.LogInformation("Retrieved {ServiceCount} services for CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}, Latitude: {Latitude}, Longitude: {Longitude}, LocationRange: {LocationRange}",
@@ -305,8 +317,28 @@ namespace newApi.Services
                 if (service == null)
                 {
                     _logger.LogWarning("Service not found with Id: {Id}", id);
+                    return null;
                 }
-                return service == null ? null : MapToDetailDto(service);
+
+                // ✅ NUEVO: Cargar disponibilidad del experto
+                Dictionary<int, ExpertAvailability>? availabilityByExpert = null;
+                if (service.ExpertProfile != null)
+                {
+                    var currentAvailability = await _context.ExpertAvailabilities
+                        .Where(ea => ea.ExpertId == service.ExpertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
+                        .OrderByDescending(ea => ea.EffectiveFrom)
+                        .FirstOrDefaultAsync();
+                    
+                    if (currentAvailability != null)
+                    {
+                        availabilityByExpert = new Dictionary<int, ExpertAvailability>
+                        {
+                            { service.ExpertProfile.Id, currentAvailability }
+                        };
+                    }
+                }
+
+                return MapToDetailDto(service, availabilityByExpert);
             }
             catch (Exception ex)
             {
@@ -342,8 +374,26 @@ namespace newApi.Services
                     return null;
                 }
 
+                // ✅ NUEVO: Cargar disponibilidad del experto
+                Dictionary<int, ExpertAvailability>? availabilityByExpert = null;
+                if (service.ExpertProfile != null)
+                {
+                    var currentAvailability = await _context.ExpertAvailabilities
+                        .Where(ea => ea.ExpertId == service.ExpertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
+                        .OrderByDescending(ea => ea.EffectiveFrom)
+                        .FirstOrDefaultAsync();
+                    
+                    if (currentAvailability != null)
+                    {
+                        availabilityByExpert = new Dictionary<int, ExpertAvailability>
+                        {
+                            { service.ExpertProfile.Id, currentAvailability }
+                        };
+                    }
+                }
+
                 _logger.LogInformation("Successfully retrieved service with Id: {ServiceId} for HireId: {Id}", service.Id, id);
-                return MapToDetailDto(service);
+                return MapToDetailDto(service, availabilityByExpert);
             }
             catch (Exception ex)
             {
@@ -516,7 +566,7 @@ namespace newApi.Services
             }
         }
 
-        private static SearchServiceDetailDto MapToDetailDto(SearchService ss)
+        private static SearchServiceDetailDto MapToDetailDto(SearchService ss, Dictionary<int, ExpertAvailability>? availabilityByExpert = null)
         {
             if (ss == null) return null;
 
@@ -573,6 +623,21 @@ namespace newApi.Services
                     ImageUrls = r.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>()
                 }).ToList() ?? new List<ReviewDto>();
 
+                // ✅ NUEVO: Obtener la disponibilidad actual activa del experto
+                CurrentExpertAvailabilityDto? availabilityDto = null;
+                if (availabilityByExpert != null && availabilityByExpert.TryGetValue(ss.ExpertProfile.Id, out var currentAvailability))
+                {
+                    var daysOfWeek = System.Text.Json.JsonSerializer.Deserialize<List<string>>(currentAvailability.DaysOfWeek) ?? new List<string>();
+                    availabilityDto = new CurrentExpertAvailabilityDto
+                    {
+                        Id = currentAvailability.Id,
+                        DaysOfWeek = daysOfWeek,
+                        StartTime = currentAvailability.StartTime,
+                        EndTime = currentAvailability.EndTime,
+                        EffectiveFrom = currentAvailability.EffectiveFrom
+                    };
+                }
+
                 expertProfileDto = new ExpertProfileDto
                 {
                     Id = ss.ExpertProfile.Id,
@@ -583,7 +648,8 @@ namespace newApi.Services
                     Reviews = reviews,
                     Latitude = ss.ExpertProfile.Latitude,
                     Longitude = ss.ExpertProfile.Longitude,
-                    IsOnVacation = ss.ExpertProfile.IsOnVacation
+                    IsOnVacation = ss.ExpertProfile.IsOnVacation,
+                    CurrentAvailability = availabilityDto // ✅ NUEVO: Incluir horarios de disponibilidad
                 };
             }
 

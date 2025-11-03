@@ -1129,6 +1129,11 @@
             DTO para la respuesta completa de detalles de búsqueda
             </summary>
         </member>
+        <member name="P:newApi.DataLayer.Models.DTOs.SearchDetailsCompleteResponseDto.ExpertProfile">
+            <summary>
+            ✅ NUEVO: Perfil completo del experto incluyendo horarios de disponibilidad
+            </summary>
+        </member>
         <member name="T:newApi.DataLayer.Models.DTOs.SearchHireResponseDto">
             <summary>
             DTO for search hire response data

@@ -2087,6 +2087,13 @@ namespace newApi.Controllers
                             session?.Id, session?.Mode, JsonSerializer.Serialize(session?.Metadata));
                         if (session != null && session.Mode == "payment")
                         {
+                            // ✅ VALIDACIÓN: Verificar que PaymentIntentId no sea null
+                            if (string.IsNullOrEmpty(session.PaymentIntentId))
+                            {
+                                _logger.LogError("PaymentIntentId is null or empty for sessionId={SessionId}", session.Id);
+                                return BadRequest(new { error = "PaymentIntentId is missing from session" });
+                            }
+
                             // 🔍 IDEMPOTENCIA: Verificar si ya se procesó este evento
                             var existingTransaction = await _context.FinancialTransactions
                                 .FirstOrDefaultAsync(ft => ft.StripePaymentIntentId == session.PaymentIntentId && 
@@ -2111,7 +2118,9 @@ namespace newApi.Controllers
                                 }
                                 else
                                 {
-                                    _logger.LogInformation("Processing load money for userId={UserId}, amount={Amount}, paymentIntentId={PaymentIntentId}", userId, amount, session.PaymentIntentId);
+                                    // ✅ VALIDACIÓN: Verificar PaymentIntentId antes de usarlo
+                                    var paymentIntentId = session.PaymentIntentId ?? "unknown";
+                                    _logger.LogInformation("Processing load money for userId={UserId}, amount={Amount}, paymentIntentId={PaymentIntentId}", userId, amount, paymentIntentId);
                                     // ✅ REMOVED: Load money functionality eliminated - all payments are direct Stripe
                                 }
                             }
@@ -2225,6 +2234,40 @@ namespace newApi.Controllers
 
         private async Task HandlePendingHireCompleted(int userId, decimal amount, int serviceId, Dictionary<string, string> metadata, Session session)
         {
+            // ✅ VALIDACIÓN: Verificar que session y PaymentIntentId no sean null
+            if (session == null)
+            {
+                _logger.LogError("Session is null for userId={UserId}, serviceId={ServiceId}", userId, serviceId);
+                // ✅ No lanzar excepción aquí - retornar silenciosamente para no fallar el webhook
+                // El webhook ya respondió 200 OK, pero el procesamiento falló
+                await _loggingService.LogCriticalAsync(
+                    $"Session is null in HandlePendingHireCompleted",
+                    $"UserId: {userId}, ServiceId: {serviceId}",
+                    userId,
+                    "SubscriptionController.HandlePendingHireCompleted",
+                    "Payment",
+                    serviceId,
+                    new { UserId = userId, ServiceId = serviceId }
+                );
+                return;
+            }
+
+            if (string.IsNullOrEmpty(session.PaymentIntentId))
+            {
+                _logger.LogError("PaymentIntentId is null or empty for userId={UserId}, serviceId={ServiceId}, sessionId={SessionId}", userId, serviceId, session.Id);
+                // ✅ No lanzar excepción aquí - retornar silenciosamente para no fallar el webhook
+                await _loggingService.LogCriticalAsync(
+                    $"PaymentIntentId is null or empty in HandlePendingHireCompleted",
+                    $"UserId: {userId}, ServiceId: {serviceId}, SessionId: {session.Id}",
+                    userId,
+                    "SubscriptionController.HandlePendingHireCompleted",
+                    "Payment",
+                    serviceId,
+                    new { UserId = userId, ServiceId = serviceId, SessionId = session.Id }
+                );
+                return;
+            }
+
             _logger.LogInformation("Handling pending hire completed for userId={UserId}, serviceId={ServiceId}, amount={Amount}", userId, serviceId, amount);
 
             // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
@@ -2425,7 +2468,24 @@ namespace newApi.Controllers
                     _logger.LogError(ex, "❌ ERROR PROCESSING PENDING HIRE for userId={UserId}, serviceId={ServiceId}", userId, serviceId);
                     
                     // 🚨 CRÍTICO: Refund automático si falla la creación de búsqueda
-                    await ProcessAutomaticRefundOnError(session.PaymentIntentId, ex, userId, serviceId);
+                    // ✅ VALIDACIÓN: Solo procesar refund si session y PaymentIntentId no son null
+                    if (session != null && !string.IsNullOrEmpty(session.PaymentIntentId))
+                    {
+                        await ProcessAutomaticRefundOnError(session.PaymentIntentId, ex, userId, serviceId);
+                    }
+                    else
+                    {
+                        _logger.LogError("Cannot process refund: session or PaymentIntentId is null for userId={UserId}, serviceId={ServiceId}", userId, serviceId);
+                        await _loggingService.LogCriticalAsync(
+                            $"Cannot process automatic refund - missing PaymentIntentId",
+                            $"UserId: {userId}, ServiceId: {serviceId}, OriginalError: {ex.Message}",
+                            userId,
+                            "SubscriptionController.HandlePendingHireCompleted",
+                            "Payment",
+                            serviceId,
+                            new { ServiceId = serviceId, OriginalError = ex.Message }
+                        );
+                    }
                     
                 throw;
             }

@@ -1037,6 +1037,55 @@ namespace newApi.Controllers
                     search.SearchHire?.SearchService?.ExpertProfile?.Longitude ?? "NULL",
                     locationRange?.ToString() ?? "NULL");
 
+                // ✅ NUEVO: Cargar disponibilidad del experto si existe
+                ExpertProfileDto? expertProfileDto = null;
+                if (search.SearchHire?.SearchService?.ExpertProfile != null)
+                {
+                    var expertProfile = search.SearchHire.SearchService.ExpertProfile;
+                    var currentAvailability = await _context.ExpertAvailabilities
+                        .Where(ea => ea.ExpertId == expertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
+                        .OrderByDescending(ea => ea.EffectiveFrom)
+                        .FirstOrDefaultAsync();
+
+                    CurrentExpertAvailabilityDto? availabilityDto = null;
+                    if (currentAvailability != null)
+                    {
+                        var daysOfWeek = System.Text.Json.JsonSerializer.Deserialize<List<string>>(currentAvailability.DaysOfWeek) ?? new List<string>();
+                        availabilityDto = new CurrentExpertAvailabilityDto
+                        {
+                            Id = currentAvailability.Id,
+                            DaysOfWeek = daysOfWeek,
+                            StartTime = currentAvailability.StartTime,
+                            EndTime = currentAvailability.EndTime,
+                            EffectiveFrom = currentAvailability.EffectiveFrom
+                        };
+                    }
+
+                    expertProfileDto = new ExpertProfileDto
+                    {
+                        Id = expertProfile.Id,
+                        ProfilePictureUrl = expertProfile.ProfilePictureUrl ?? string.Empty,
+                        Description = expertProfile.Description ?? string.Empty,
+                        StripeAccountId = expertProfile.StripeAccountId,
+                        CreatedAt = expertProfile.CreatedAt,
+                        User = search.SearchHire.Expert != null ? new UserDto
+                        {
+                            Id = search.SearchHire.Expert.Id,
+                            Name = search.SearchHire.Expert.Name,
+                            Email = search.SearchHire.Expert.Email,
+                            ProfilePictureUrl = null
+                        } : null,
+                        Reviews = new List<ReviewDto>(), // Las reviews se cargan por separado si es necesario
+                        Latitude = expertProfile.Latitude ?? string.Empty,
+                        Longitude = expertProfile.Longitude ?? string.Empty,
+                        StripeStatus = expertProfile.StripeStatus,
+                        StripeStatusDetails = expertProfile.StripeStatusDetails,
+                        OnboardingCompleted = expertProfile.OnboardingCompleted,
+                        IsOnVacation = expertProfile.IsOnVacation,
+                        CurrentAvailability = availabilityDto // ✅ NUEVO: Horarios de disponibilidad
+                    };
+                }
+
                 // Crear respuesta completa con todos los datos usando DTO
                 var searchDetailsComplete = new SearchDetailsCompleteResponseDto
                 {
@@ -1189,7 +1238,8 @@ namespace newApi.Controllers
                         ExpertResponseAt = d.ExpertResponseAt,
                         CanExpertRespond = d.CanExpertRespond,
                         CreatedAt = d.CreatedAt
-                    }).ToList() ?? new List<DisputeDto>()
+                    }).ToList() ?? new List<DisputeDto>(),
+                    ExpertProfile = expertProfileDto // ✅ NUEVO: Perfil completo del experto con horarios
                 };
 
                 return Ok(searchDetailsComplete);

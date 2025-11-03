@@ -12,6 +12,10 @@ namespace newApi.DataLayer.Models.DTOs
         public AppointmentDto? Appointment { get; set; }
         public List<DeliverableDto> Deliverables { get; set; } = new List<DeliverableDto>();
         public List<DisputeDto> Disputes { get; set; } = new List<DisputeDto>();
+        /// <summary>
+        /// ✅ NUEVO: Perfil completo del experto incluyendo horarios de disponibilidad
+        /// </summary>
+        public ExpertProfileDto? ExpertProfile { get; set; }
     }
 }
 

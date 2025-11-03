@@ -2412,6 +2412,11 @@
             cambiar su ubicación después de ser contratado para afectar las citas.
             </summary>
         </member>
+        <member name="M:newApi.Services.AppointmentService.ValidateAppointmentAvailabilityAsync(newApi.DataLayer.Models.PostGresModels.SearchHire,System.DateTime)">
+            <summary>
+            Valida que la fecha/hora propuesta para la cita esté dentro del horario de disponibilidad del experto
+            </summary>
+        </member>
         <member name="M:newApi.Services.AppointmentService.CalculateDistance(System.Decimal,System.Decimal,System.Decimal,System.Decimal)">
             <summary>
             Calcula la distancia entre dos puntos geográficos usando la fórmula de Haversine

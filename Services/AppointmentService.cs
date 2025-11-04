@@ -221,63 +221,63 @@ namespace newApi.Services
                     {
                         // ✅ PROTECCIÓN: Usar row-level locking dentro de la transacción
                         // Intentar obtener la cita con FOR UPDATE (si existe)
-                        var appointment = await _context.Appointments
+                var appointment = await _context.Appointments
                             .FromSqlRaw("SELECT * FROM \"Appointments\" WHERE \"SearchHireId\" = {0} FOR UPDATE", searchHireId)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Status)
-                            .Include(a => a.Status)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(a => a.Status)
                             .FirstOrDefaultAsync();
 
                         // Si no existe la cita, crearla automáticamente dentro de la misma transacción
-                        if (appointment == null)
-                        {
-                            // Verificar que el SearchHire existe
-                            var searchHire = await _context.SearchHires
-                                .Include(sh => sh.SearchService)
-                                    .ThenInclude(ss => ss.ExpertProfile)
-                                .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+                if (appointment == null)
+                {
+                    // Verificar que el SearchHire existe
+                    var searchHire = await _context.SearchHires
+                        .Include(sh => sh.SearchService)
+                            .ThenInclude(ss => ss.ExpertProfile)
+                        .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
 
-                            if (searchHire == null)
-                                throw new ArgumentException("SearchHire not found");
+                    if (searchHire == null)
+                        throw new ArgumentException("SearchHire not found");
 
-                            // Verificar que el usuario es el cliente
-                            if (searchHire.ClientId != userId)
-                                throw new UnauthorizedAccessException("Only the client can propose appointments");
+                    // Verificar que el usuario es el cliente
+                    if (searchHire.ClientId != userId)
+                        throw new UnauthorizedAccessException("Only the client can propose appointments");
 
-                            // ✅ VALIDACIÓN REMOVIDA: Permitir continuar el flujo incluso si la cuenta cambia a Deauthorized
-                            // La validación de Stripe solo se aplica al CREAR contrataciones, no al continuar el flujo
+                    // ✅ VALIDACIÓN REMOVIDA: Permitir continuar el flujo incluso si la cuenta cambia a Deauthorized
+                    // La validación de Stripe solo se aplica al CREAR contrataciones, no al continuar el flujo
 
-                            // Obtener el estado "awaiting_appointment"
-                            var awaitingStatus = await _context.SystemStatuses
-                                .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-                                                        s.StatusValue == "awaiting_appointment");
+                    // Obtener el estado "awaiting_appointment"
+                    var awaitingStatus = await _context.SystemStatuses
+                        .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                                s.StatusValue == "awaiting_appointment");
 
-                            if (awaitingStatus == null)
-                                throw new InvalidOperationException("Awaiting appointment status not found");
+                    if (awaitingStatus == null)
+                        throw new InvalidOperationException("Awaiting appointment status not found");
 
                             // Crear la cita dentro de la transacción
-                            appointment = new Appointment
-                            {
-                                SearchHireId = searchHireId,
-                                StatusId = awaitingStatus.Id,
-                                CreatedAt = DateTime.UtcNow,
-                                UpdatedAt = DateTime.UtcNow
-                            };
+                    appointment = new Appointment
+                    {
+                        SearchHireId = searchHireId,
+                        StatusId = awaitingStatus.Id,
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow
+                    };
 
-                            _context.Appointments.Add(appointment);
-                            await _context.SaveChangesAsync();
+                    _context.Appointments.Add(appointment);
+                    await _context.SaveChangesAsync();
 
-                            // Recargar la cita con las relaciones
-                            appointment = await _context.Appointments
-                                .Include(a => a.SearchHire)
+                    // Recargar la cita con las relaciones
+                    appointment = await _context.Appointments
+                        .Include(a => a.SearchHire)
                                     .ThenInclude(sh => sh.Status)
-                                .Include(a => a.Status)
-                                .FirstAsync(a => a.Id == appointment.Id);
-                        }
+                        .Include(a => a.Status)
+                        .FirstAsync(a => a.Id == appointment.Id);
+                }
 
-                        // Verificar que el usuario es el cliente
-                        if (appointment.SearchHire.ClientId != userId)
-                            throw new UnauthorizedAccessException("Only the client can propose appointments");
+                // Verificar que el usuario es el cliente
+                if (appointment.SearchHire.ClientId != userId)
+                    throw new UnauthorizedAccessException("Only the client can propose appointments");
 
                         // ✅ VALIDACIÓN CRÍTICA: Solo se puede proponer si está en "awaiting_appointment" o "appointment_rejected"
                         // No se puede proponer si ya está propuesta, confirmada o cancelada
@@ -294,77 +294,84 @@ namespace newApi.Services
                             );
                         }
 
-                        // Obtener el estado "appointment_proposed"
-                        var proposedStatus = await _context.SystemStatuses
-                            .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-                                                    s.StatusValue == "appointment_proposed");
+                // Obtener el estado "appointment_proposed"
+                var proposedStatus = await _context.SystemStatuses
+                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                            s.StatusValue == "appointment_proposed");
 
-                        if (proposedStatus == null)
-                            throw new InvalidOperationException("Appointment proposed status not found");
+                if (proposedStatus == null)
+                    throw new InvalidOperationException("Appointment proposed status not found");
 
-                        // ✅ VALIDACIÓN: Verificar que la cita tenga al menos 24 horas de anticipación
-                        var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
-                        var timeUntilAppointment = proposedDateTime - DateTime.UtcNow;
-                        
-                        if (timeUntilAppointment.TotalHours < 24)
-                        {
-                            throw new InvalidOperationException(
-                                $"Las citas deben proponerse con al menos 24 horas de anticipación. " +
-                                $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
-                                $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} UTC"
-                            );
-                        }
+                // ✅ VALIDACIÓN: Verificar que la cita tenga al menos 24 horas de anticipación
+                var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
+                var timeUntilAppointment = proposedDateTime - DateTime.UtcNow;
+                
+                if (timeUntilAppointment.TotalHours < 24)
+                {
+                    throw new InvalidOperationException(
+                        $"Las citas deben proponerse con al menos 24 horas de anticipación. " +
+                        $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
+                        $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} UTC"
+                    );
+                }
 
-                        // ✅ VALIDACIÓN: Verificar que la ubicación propuesta esté dentro del rango del experto
-                        await ValidateAppointmentLocationAsync(appointment.SearchHire, dto.Latitude, dto.Longitude);
+                // ✅ VALIDACIÓN: Verificar que la ubicación propuesta esté dentro del rango del experto
+                await ValidateAppointmentLocationAsync(appointment.SearchHire, dto.Latitude, dto.Longitude);
 
                         // ✅ VALIDACIÓN: Verificar que la fecha/hora propuesta esté dentro del horario de disponibilidad del experto
                         await ValidateAppointmentAvailabilityAsync(appointment.SearchHire, proposedDateTime);
-                        
-                        // Actualizar la cita - asegurar que los DateTime tengan Kind=UTC
-                        appointment.ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc);
-                        appointment.ProposedTime = dto.ProposedTime;
-                        appointment.Location = dto.Location;
-                        appointment.Latitude = dto.Latitude;
-                        appointment.Longitude = dto.Longitude;
-                        appointment.DoorNumber = dto.DoorNumber;
-                        appointment.OwnerPhone = dto.OwnerPhone;
-                        appointment.SiteDetails = dto.SiteDetails;
-                        appointment.StatusId = proposedStatus.Id;
-                        appointment.LastProposalAt = DateTime.UtcNow;
-                        appointment.UpdatedAt = DateTime.UtcNow;
 
-                        // Crear timer para respuesta del cliente (24 horas)
-                        var responseTimer = new AppointmentTimer
-                        {
-                            AppointmentId = appointment.Id,
-                            TimerType = "response",
-                            StartTime = DateTime.UtcNow,
-                            EndTime = DateTime.UtcNow.AddHours(24),
-                            IsExpired = false,
-                            CreatedAt = DateTime.UtcNow
-                        };
+                // Actualizar la cita - asegurar que los DateTime tengan Kind=UTC
+                appointment.ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc);
+                appointment.ProposedTime = dto.ProposedTime;
+                appointment.Location = dto.Location;
+                appointment.Latitude = dto.Latitude;
+                appointment.Longitude = dto.Longitude;
+                appointment.DoorNumber = dto.DoorNumber;
+                appointment.OwnerPhone = dto.OwnerPhone;
+                appointment.SiteDetails = dto.SiteDetails;
+                appointment.StatusId = proposedStatus.Id;
+                appointment.LastProposalAt = DateTime.UtcNow;
+                appointment.UpdatedAt = DateTime.UtcNow;
 
-                        _context.AppointmentTimers.Add(responseTimer);
-                        await _context.SaveChangesAsync();
+                // Crear timer para respuesta del cliente (24 horas)
+                var responseTimer = new AppointmentTimer
+                {
+                    AppointmentId = appointment.Id,
+                    TimerType = "response",
+                    StartTime = DateTime.UtcNow,
+                    EndTime = DateTime.UtcNow.AddHours(24),
+                    IsExpired = false,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.AppointmentTimers.Add(responseTimer);
+                await _context.SaveChangesAsync();
 
                         // ✅ COMMIT: Confirmar la transacción
                         await transaction.CommitAsync();
                         _logger.LogInformation("🔍 TRANSACTION COMMITTED - AppointmentId: {AppointmentId}", appointment.Id);
 
-                        // Cargar la cita actualizada con todas las relaciones
-                        var updatedAppointment = await _context.Appointments
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Client)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Expert)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Status)
-                            .Include(a => a.Status)
-                            .Include(a => a.Timers)
-                            .FirstAsync(a => a.Id == appointment.Id);
+                // Cargar la cita actualizada con todas las relaciones
+                var updatedAppointment = await _context.Appointments
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Client)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(a => a.Status)
+                    .Include(a => a.Timers)
+                    .FirstAsync(a => a.Id == appointment.Id);
 
-                        return MapToDto(updatedAppointment);
+                // ✅ Enviar mensaje al chat con el cambio de estado (después del commit)
+                await SendAppointmentStatusChangeMessageAsync(
+                    appointment.SearchHireId, 
+                    AppointmentStatus.AppointmentProposed.ToStringValue(), 
+                    userId
+                );
+
+                return MapToDto(updatedAppointment);
                     }
                     catch (Exception innerEx)
                     {
@@ -396,23 +403,23 @@ namespace newApi.Services
                     try
                     {
                         // ✅ PROTECCIÓN: Usar row-level locking DENTRO de la transacción para evitar doble procesamiento
-                        var appointment = await _context.Appointments
+                var appointment = await _context.Appointments
                             .FromSqlRaw("SELECT * FROM \"Appointments\" WHERE \"Id\" = {0} FOR UPDATE", dto.AppointmentId)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Status)
-                            .Include(a => a.Status)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(a => a.Status)
                             .FirstOrDefaultAsync();
 
-                        if (appointment == null)
-                            throw new ArgumentException("Appointment not found");
+                if (appointment == null)
+                    throw new ArgumentException("Appointment not found");
 
                         var currentStatus = appointment.Status?.StatusValue ?? string.Empty;
                         _logger.LogInformation("🔍 CONFIRM APPOINTMENT STARTED - AppointmentId: {AppointmentId}, UserId: {UserId}, CurrentStatus: {CurrentStatus}", 
                             dto.AppointmentId, userId, currentStatus);
 
                         // ✅ VALIDACIÓN: Verificar que el usuario es el experto
-                        if (appointment.SearchHire.ExpertId != userId)
-                            throw new UnauthorizedAccessException("Only the expert can confirm appointments");
+                if (appointment.SearchHire.ExpertId != userId)
+                    throw new UnauthorizedAccessException("Only the expert can confirm appointments");
 
                         // ✅ VALIDACIÓN CRÍTICA: Solo se puede confirmar si la cita está en estado "appointment_proposed"
                         if (currentStatus != "appointment_proposed")
@@ -446,51 +453,58 @@ namespace newApi.Services
                             );
                         }
 
-                        // Obtener el estado "appointment_confirmed"
-                        var confirmedStatus = await _context.SystemStatuses
-                            .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-                                                    s.StatusValue == "appointment_confirmed");
+                // Obtener el estado "appointment_confirmed"
+                var confirmedStatus = await _context.SystemStatuses
+                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                            s.StatusValue == "appointment_confirmed");
 
-                        if (confirmedStatus == null)
-                            throw new InvalidOperationException("Appointment confirmed status not found");
-                        
-                        // Actualizar la cita
-                        appointment.StatusId = confirmedStatus.Id;
-                        appointment.LastResponseAt = DateTime.UtcNow;
-                        appointment.UpdatedAt = DateTime.UtcNow;
+                if (confirmedStatus == null)
+                    throw new InvalidOperationException("Appointment confirmed status not found");
 
-                        // Marcar timers de respuesta como expirados
-                        var responseTimers = await _context.AppointmentTimers
-                            .Where(t => t.AppointmentId == appointment.Id && 
-                                       t.TimerType == "response" && 
-                                       !t.IsExpired)
-                            .ToListAsync();
+                // Actualizar la cita
+                appointment.StatusId = confirmedStatus.Id;
+                appointment.LastResponseAt = DateTime.UtcNow;
+                appointment.UpdatedAt = DateTime.UtcNow;
 
-                        foreach (var timer in responseTimers)
-                        {
-                            timer.IsExpired = true;
-                            timer.ExpiredAt = DateTime.UtcNow;
-                        }
+                // Marcar timers de respuesta como expirados
+                var responseTimers = await _context.AppointmentTimers
+                    .Where(t => t.AppointmentId == appointment.Id && 
+                               t.TimerType == "response" && 
+                               !t.IsExpired)
+                    .ToListAsync();
 
-                        await _context.SaveChangesAsync();
+                foreach (var timer in responseTimers)
+                {
+                    timer.IsExpired = true;
+                    timer.ExpiredAt = DateTime.UtcNow;
+                }
+
+                await _context.SaveChangesAsync();
 
                         // ✅ COMMIT: Confirmar la transacción
                         await transaction.CommitAsync();
                         _logger.LogInformation("🔍 TRANSACTION COMMITTED - AppointmentId: {AppointmentId}", appointment.Id);
 
-                        // Cargar la cita actualizada con todas las relaciones
-                        var updatedAppointment = await _context.Appointments
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Client)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Expert)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Status)
-                            .Include(a => a.Status)
-                            .Include(a => a.Timers)
-                            .FirstAsync(a => a.Id == appointment.Id);
+                // Cargar la cita actualizada con todas las relaciones
+                var updatedAppointment = await _context.Appointments
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Client)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(a => a.Status)
+                    .Include(a => a.Timers)
+                    .FirstAsync(a => a.Id == appointment.Id);
 
-                        return MapToDto(updatedAppointment);
+                // ✅ Enviar mensaje al chat con el cambio de estado (después del commit)
+                await SendAppointmentStatusChangeMessageAsync(
+                    appointment.SearchHireId, 
+                    AppointmentStatus.AppointmentConfirmed.ToStringValue(), 
+                    userId
+                );
+
+                return MapToDto(updatedAppointment);
                     }
                     catch (Exception innerEx)
                     {
@@ -524,28 +538,28 @@ namespace newApi.Services
                     try
                     {
                         // ✅ PROTECCIÓN: Usar row-level locking DENTRO de la transacción para evitar doble procesamiento
-                        var appointment = await _context.Appointments
+                var appointment = await _context.Appointments
                             .FromSqlRaw("SELECT * FROM \"Appointments\" WHERE \"Id\" = {0} FOR UPDATE", dto.AppointmentId)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Status)
-                            .Include(a => a.Status)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(a => a.Status)
                             .FirstOrDefaultAsync();
 
-                        if (appointment == null)
-                        {
-                            _logger.LogError("🔍 APPOINTMENT NOT FOUND - AppointmentId: {AppointmentId}", dto.AppointmentId);
-                            throw new ArgumentException("Appointment not found");
-                        }
+                if (appointment == null)
+                {
+                    _logger.LogError("🔍 APPOINTMENT NOT FOUND - AppointmentId: {AppointmentId}", dto.AppointmentId);
+                    throw new ArgumentException("Appointment not found");
+                }
 
                         _logger.LogInformation("🔍 APPOINTMENT FOUND - Id: {Id}, SearchHireId: {SearchHireId}, ExpertId: {ExpertId}, CurrentStatus: {CurrentStatus}, RejectionCount: {RejectionCount}", 
                             appointment.Id, appointment.SearchHireId, appointment.SearchHire.ExpertId, appointment.Status?.StatusValue, appointment.RejectionCount);
 
                         // ✅ VALIDACIÓN: Verificar que el usuario es el experto
-                        if (appointment.SearchHire.ExpertId != userId)
-                        {
-                            _logger.LogError("🔍 UNAUTHORIZED ACCESS - UserId: {UserId} is not the expert (ExpertId: {ExpertId})", userId, appointment.SearchHire.ExpertId);
-                            throw new UnauthorizedAccessException("Only the expert can reject appointments");
-                        }
+                if (appointment.SearchHire.ExpertId != userId)
+                {
+                    _logger.LogError("🔍 UNAUTHORIZED ACCESS - UserId: {UserId} is not the expert (ExpertId: {ExpertId})", userId, appointment.SearchHire.ExpertId);
+                    throw new UnauthorizedAccessException("Only the expert can reject appointments");
+                }
 
                         // ✅ VALIDACIÓN CRÍTICA: Solo se puede rechazar si la cita está en estado "appointment_proposed"
                         // No se puede rechazar si está en "awaiting_appointment" (no hay propuesta aún) o en otros estados finales
@@ -583,199 +597,211 @@ namespace newApi.Services
                         }
 
                         _logger.LogInformation("🔍 AUTHORIZATION AND STATE VALIDATION OK - UserId: {UserId} is the expert, Status: {Status} is valid", userId, currentStatus);
-                        // 🔍 LOGS DETALLADOS: Analizar el estado actual
-                        _logger.LogInformation("🔍 REJECT APPOINTMENT ANALYSIS - AppointmentId: {AppointmentId}, Current RejectionCount: {RejectionCount}, ClientCancellationCount: {ClientCancellationCount}, ExpertCancellationCount: {ExpertCancellationCount}", 
-                            appointment.Id, appointment.RejectionCount, appointment.ClientCancellationCount, appointment.ExpertCancellationCount);
+                // 🔍 LOGS DETALLADOS: Analizar el estado actual
+                _logger.LogInformation("🔍 REJECT APPOINTMENT ANALYSIS - AppointmentId: {AppointmentId}, Current RejectionCount: {RejectionCount}, ClientCancellationCount: {ClientCancellationCount}, ExpertCancellationCount: {ExpertCancellationCount}", 
+                    appointment.Id, appointment.RejectionCount, appointment.ClientCancellationCount, appointment.ExpertCancellationCount);
 
-                        // Determinar el estado según el número de rechazos
-                        string statusValue;
-                        bool isSecondRejection = appointment.RejectionCount >= 1;
+                // Determinar el estado según el número de rechazos
+                string statusValue;
+                bool isSecondRejection = appointment.RejectionCount >= 1;
+                
+                _logger.LogInformation("🔍 REJECTION ANALYSIS - isSecondRejection: {IsSecondRejection} (RejectionCount >= 1: {RejectionCount} >= 1)", 
+                    isSecondRejection, appointment.RejectionCount);
+                
+                if (isSecondRejection)
+                {
+                    // Segundo rechazo o más - cancelar por rechazos múltiples
+                    // ✅ CORRECCIÓN: Usar el estado correcto para rechazo (no cancelación)
+                    statusValue = "appointment_cancelled_by_expert_rejection";
+                    _logger.LogInformation("🔍 SECOND REJECTION DETECTED - Using status: {StatusValue}", statusValue);
+                }
+                else
+                {
+                    // Primer rechazo
+                    statusValue = "appointment_rejected";
+                    _logger.LogInformation("🔍 FIRST REJECTION - Using status: {StatusValue}", statusValue);
+                }
+
+                var newStatus = await _context.SystemStatuses
+                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                            s.StatusValue == statusValue);
+
+                if (newStatus == null)
+                    throw new InvalidOperationException($"Appointment status '{statusValue}' not found");
+
+                // Actualizar la cita
+                appointment.StatusId = newStatus.Id;
+                appointment.RejectionCount++;
+                
+                // ✅ CORRECCIÓN: Incrementar ExpertCancellationCount para segunda cancelación
+                if (isSecondRejection)
+                {
+                    appointment.ExpertCancellationCount++;
+                    _logger.LogInformation("🔍 EXPERT CANCELLATION COUNT INCREMENTED - New ExpertCancellationCount: {ExpertCancellationCount}", appointment.ExpertCancellationCount);
+                }
+                
+                appointment.LastRejectionAt = DateTime.UtcNow;
+                appointment.LastResponseAt = DateTime.UtcNow;
+                appointment.UpdatedAt = DateTime.UtcNow;
+
+                _logger.LogInformation("🔍 APPOINTMENT UPDATED - StatusId: {StatusId}, RejectionCount: {RejectionCount}, ClientCancellationCount: {ClientCancellationCount}, ExpertCancellationCount: {ExpertCancellationCount}", 
+                    appointment.StatusId, appointment.RejectionCount, appointment.ClientCancellationCount, appointment.ExpertCancellationCount);
+
+                // Actualizar el SearchHire según el mapeo de estados
+                var appointmentStatusEnum = statusValue switch
+                {
+                    "appointment_rejected" => AppointmentStatus.AppointmentRejected,
+                    "appointment_cancelled_by_expert_rejection" => AppointmentStatus.AppointmentCancelledByExpertRejection,
+                    _ => throw new InvalidOperationException($"Unknown appointment status: {statusValue}")
+                };
+
+                _logger.LogInformation("🔍 MAPPING APPOINTMENT STATUS - appointmentStatusEnum: {AppointmentStatusEnum}", appointmentStatusEnum);
+                
+                var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatusEnum);
+                _logger.LogInformation("🔍 TARGET SEARCH HIRE STATUS - targetSearchHireStatus: {TargetSearchHireStatus}", targetSearchHireStatus);
+                
+                if (targetSearchHireStatus.HasValue)
+                {
+                    var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
+                    appointment.SearchHire.StatusId = statusId;
+                    appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                    _logger.LogInformation("🔍 SEARCH HIRE STATUS UPDATED - StatusId: {StatusId}, StatusValue: {StatusValue}", 
+                        statusId, targetSearchHireStatus.Value.ToStringValue());
+                }
+                else
+                {
+                    _logger.LogWarning("🔍 NO TARGET SEARCH HIRE STATUS FOUND - appointmentStatusEnum: {AppointmentStatusEnum}", appointmentStatusEnum);
+                }
+
+                // Marcar timers de respuesta como expirados
+                var responseTimers = await _context.AppointmentTimers
+                    .Where(t => t.AppointmentId == appointment.Id && 
+                               t.TimerType == "response" && 
+                               !t.IsExpired)
+                    .ToListAsync();
+
+                foreach (var timer in responseTimers)
+                {
+                    timer.IsExpired = true;
+                    timer.ExpiredAt = DateTime.UtcNow;
+                }
+
+                await _context.SaveChangesAsync();
+
+                // ✅ CORRECCIÓN: Procesar refund automático para segunda cancelación
+                if (isSecondRejection)
+                {
+                    try
+                    {
+                        _logger.LogInformation("🔍 PROCESSING AUTOMATIC REFUND - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}, Amount: {Amount}", 
+                            appointment.Id, appointment.SearchHireId, appointment.SearchHire.Amount);
                         
-                        _logger.LogInformation("🔍 REJECTION ANALYSIS - isSecondRejection: {IsSecondRejection} (RejectionCount >= 1: {RejectionCount} >= 1)", 
-                            isSecondRejection, appointment.RejectionCount);
+                        // 🔍 LOG: Verificar configuración de dinero antes del refund
+                        var moneyConfig = await _systemStatusService.GetMoneyDistributionConfigAsync(
+                            "appointment_cancelled_by_expert_rejection", 
+                            appointment.SearchHire.SearchService?.CategoryId, 
+                            appointment.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
                         
-                        if (isSecondRejection)
+                        _logger.LogInformation("🔍 MONEY DISTRIBUTION CONFIG - Status: appointment_cancelled_by_expert_rejection, CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}, Config: {Config}", 
+                            appointment.SearchHire.SearchService?.CategoryId, 
+                            appointment.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId,
+                            moneyConfig != null ? $"Client: {moneyConfig.ClientPercentage}%, Expert: {moneyConfig.ExpertPercentage}%, Platform: {moneyConfig.PlatformPercentage}%" : "NULL");
+                        
+                        // Orquestar refund+transfer según configuración del subestado de finalización
+                        var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                            appointment.SearchHireId,
+                            "appointment_cancelled_by_expert_rejection",
+                            "Segundo rechazo del experto - penalización máxima",
+                            userId);
+                        
+                        if (refundSuccess)
                         {
-                            // Segundo rechazo o más - cancelar por rechazos múltiples
-                            // ✅ CORRECCIÓN: Usar el estado correcto para rechazo (no cancelación)
-                            statusValue = "appointment_cancelled_by_expert_rejection";
-                            _logger.LogInformation("🔍 SECOND REJECTION DETECTED - Using status: {StatusValue}", statusValue);
+                            _logger.LogInformation("✅ AUTOMATIC REFUND SUCCESS - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
+                                appointment.Id, appointment.SearchHireId);
                         }
                         else
                         {
-                            // Primer rechazo
-                            statusValue = "appointment_rejected";
-                            _logger.LogInformation("🔍 FIRST REJECTION - Using status: {StatusValue}", statusValue);
-                        }
-
-                        var newStatus = await _context.SystemStatuses
-                            .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-                                                    s.StatusValue == statusValue);
-
-                        if (newStatus == null)
-                            throw new InvalidOperationException($"Appointment status '{statusValue}' not found");
-
-                        // Actualizar la cita
-                        appointment.StatusId = newStatus.Id;
-                        appointment.RejectionCount++;
-                        
-                        // ✅ CORRECCIÓN: Incrementar ExpertCancellationCount para segunda cancelación
-                        if (isSecondRejection)
-                        {
-                            appointment.ExpertCancellationCount++;
-                            _logger.LogInformation("🔍 EXPERT CANCELLATION COUNT INCREMENTED - New ExpertCancellationCount: {ExpertCancellationCount}", appointment.ExpertCancellationCount);
-                        }
-                        
-                        appointment.LastRejectionAt = DateTime.UtcNow;
-                        appointment.LastResponseAt = DateTime.UtcNow;
-                        appointment.UpdatedAt = DateTime.UtcNow;
-
-                        _logger.LogInformation("🔍 APPOINTMENT UPDATED - StatusId: {StatusId}, RejectionCount: {RejectionCount}, ClientCancellationCount: {ClientCancellationCount}, ExpertCancellationCount: {ExpertCancellationCount}", 
-                            appointment.StatusId, appointment.RejectionCount, appointment.ClientCancellationCount, appointment.ExpertCancellationCount);
-
-                        // Actualizar el SearchHire según el mapeo de estados
-                        var appointmentStatusEnum = statusValue switch
-                        {
-                            "appointment_rejected" => AppointmentStatus.AppointmentRejected,
-                            "appointment_cancelled_by_expert_rejection" => AppointmentStatus.AppointmentCancelledByExpertRejection,
-                            _ => throw new InvalidOperationException($"Unknown appointment status: {statusValue}")
-                        };
-
-                        _logger.LogInformation("🔍 MAPPING APPOINTMENT STATUS - appointmentStatusEnum: {AppointmentStatusEnum}", appointmentStatusEnum);
-                        
-                        var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatusEnum);
-                        _logger.LogInformation("🔍 TARGET SEARCH HIRE STATUS - targetSearchHireStatus: {TargetSearchHireStatus}", targetSearchHireStatus);
-                        
-                        if (targetSearchHireStatus.HasValue)
-                        {
-                            var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
-                            appointment.SearchHire.StatusId = statusId;
-                            appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
-                            _logger.LogInformation("🔍 SEARCH HIRE STATUS UPDATED - StatusId: {StatusId}, StatusValue: {StatusValue}", 
-                                statusId, targetSearchHireStatus.Value.ToStringValue());
-                        }
-                        else
-                        {
-                            _logger.LogWarning("🔍 NO TARGET SEARCH HIRE STATUS FOUND - appointmentStatusEnum: {AppointmentStatusEnum}", appointmentStatusEnum);
-                        }
-
-                        // Marcar timers de respuesta como expirados
-                        var responseTimers = await _context.AppointmentTimers
-                            .Where(t => t.AppointmentId == appointment.Id && 
-                                       t.TimerType == "response" && 
-                                       !t.IsExpired)
-                            .ToListAsync();
-
-                        foreach (var timer in responseTimers)
-                        {
-                            timer.IsExpired = true;
-                            timer.ExpiredAt = DateTime.UtcNow;
-                        }
-
-                        await _context.SaveChangesAsync();
-
-                        // ✅ CORRECCIÓN: Procesar refund automático para segunda cancelación
-                        if (isSecondRejection)
-                        {
-                            try
-                            {
-                                _logger.LogInformation("🔍 PROCESSING AUTOMATIC REFUND - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}, Amount: {Amount}", 
-                                    appointment.Id, appointment.SearchHireId, appointment.SearchHire.Amount);
-                                
-                                // 🔍 LOG: Verificar configuración de dinero antes del refund
-                                var moneyConfig = await _systemStatusService.GetMoneyDistributionConfigAsync(
-                                    "appointment_cancelled_by_expert_rejection", 
-                                    appointment.SearchHire.SearchService?.CategoryId, 
-                                    appointment.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
-                                
-                                _logger.LogInformation("🔍 MONEY DISTRIBUTION CONFIG - Status: appointment_cancelled_by_expert_rejection, CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}, Config: {Config}", 
-                                    appointment.SearchHire.SearchService?.CategoryId, 
-                                    appointment.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId,
-                                    moneyConfig != null ? $"Client: {moneyConfig.ClientPercentage}%, Expert: {moneyConfig.ExpertPercentage}%, Platform: {moneyConfig.PlatformPercentage}%" : "NULL");
-                                
-                                // Orquestar refund+transfer según configuración del subestado de finalización
-                                var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
-                                    appointment.SearchHireId,
-                                    "appointment_cancelled_by_expert_rejection",
-                                    "Segundo rechazo del experto - penalización máxima",
-                                    userId);
-                                
-                                if (refundSuccess)
-                                {
-                                    _logger.LogInformation("✅ AUTOMATIC REFUND SUCCESS - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
-                                        appointment.Id, appointment.SearchHireId);
+                            _logger.LogError("❌ AUTOMATIC REFUND FAILED - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
+                                appointment.Id, appointment.SearchHireId);
+                            
+                            // Log critical error for money transaction failure
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Automatic refund failed",
+                                details: $"Automatic refund failed for Appointment {appointment.Id}",
+                                userId: appointment.SearchHire?.ClientId,
+                                source: "AppointmentService.RejectAppointmentAsync",
+                                relatedEntityType: "Refund",
+                                relatedEntityId: appointment.SearchHireId,
+                                additionalData: new { 
+                                    AppointmentId = appointment.Id,
+                                    SearchHireId = appointment.SearchHireId,
+                                    Amount = appointment.SearchHire?.Amount,
+                                    ClientId = appointment.SearchHire?.ClientId,
+                                    ExpertId = appointment.SearchHire?.ExpertId
                                 }
-                                else
-                                {
-                                    _logger.LogError("❌ AUTOMATIC REFUND FAILED - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
-                                        appointment.Id, appointment.SearchHireId);
-                                    
-                                    // Log critical error for money transaction failure
-                                    await _loggingService.LogCriticalAsync(
-                                        message: "CRITICAL: Automatic refund failed",
-                                        details: $"Automatic refund failed for Appointment {appointment.Id}",
-                                        userId: appointment.SearchHire?.ClientId,
-                                        source: "AppointmentService.RejectAppointmentAsync",
-                                        relatedEntityType: "Refund",
-                                        relatedEntityId: appointment.SearchHireId,
-                                        additionalData: new { 
-                                            AppointmentId = appointment.Id,
-                                            SearchHireId = appointment.SearchHireId,
-                                            Amount = appointment.SearchHire?.Amount,
-                                            ClientId = appointment.SearchHire?.ClientId,
-                                            ExpertId = appointment.SearchHire?.ExpertId
-                                        }
-                                    );
-                                }
-                            }
-                            catch (Exception refundEx)
-                            {
-                                _logger.LogError(refundEx, "❌ ERROR PROCESSING AUTOMATIC REFUND - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
-                                    appointment.Id, appointment.SearchHireId);
-                                
-                                // Log critical error for money transaction failure
-                                await _loggingService.LogCriticalAsync(
-                                    message: "CRITICAL: Error processing automatic refund",
-                                    details: refundEx.ToString(),
-                                    userId: appointment.SearchHire?.ClientId,
-                                    source: "AppointmentService.RejectAppointmentAsync",
-                                    relatedEntityType: "Refund",
-                                    relatedEntityId: appointment.SearchHireId,
-                                    additionalData: new { 
-                                        AppointmentId = appointment.Id,
-                                        SearchHireId = appointment.SearchHireId,
-                                        Amount = appointment.SearchHire?.Amount,
-                                        ClientId = appointment.SearchHire?.ClientId,
-                                        ExpertId = appointment.SearchHire?.ExpertId,
-                                        ErrorMessage = refundEx.Message
-                                    }
-                                );
-                                
-                                // No lanzar la excepción para no afectar el flujo principal
-                            }
+                            );
                         }
-                        else
-                        {
-                            _logger.LogInformation("🔍 NO REFUND PROCESSING - First rejection, isSecondRejection: {IsSecondRejection}", isSecondRejection);
-                        }
+                    }
+                    catch (Exception refundEx)
+                    {
+                        _logger.LogError(refundEx, "❌ ERROR PROCESSING AUTOMATIC REFUND - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
+                            appointment.Id, appointment.SearchHireId);
+                        
+                        // Log critical error for money transaction failure
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Error processing automatic refund",
+                            details: refundEx.ToString(),
+                            userId: appointment.SearchHire?.ClientId,
+                            source: "AppointmentService.RejectAppointmentAsync",
+                            relatedEntityType: "Refund",
+                            relatedEntityId: appointment.SearchHireId,
+                            additionalData: new { 
+                                AppointmentId = appointment.Id,
+                                SearchHireId = appointment.SearchHireId,
+                                Amount = appointment.SearchHire?.Amount,
+                                ClientId = appointment.SearchHire?.ClientId,
+                                ExpertId = appointment.SearchHire?.ExpertId,
+                                ErrorMessage = refundEx.Message
+                            }
+                        );
+                        
+                        // No lanzar la excepción para no afectar el flujo principal
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("🔍 NO REFUND PROCESSING - First rejection, isSecondRejection: {IsSecondRejection}", isSecondRejection);
+                }
 
                         // ✅ COMMIT: Confirmar la transacción
                         await transaction.CommitAsync();
                         _logger.LogInformation("🔍 TRANSACTION COMMITTED - AppointmentId: {AppointmentId}", appointment.Id);
 
-                        // Cargar la cita actualizada con todas las relaciones
-                        var updatedAppointment = await _context.Appointments
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Client)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Expert)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Status)
-                            .Include(a => a.Status)
-                            .Include(a => a.Timers)
-                            .FirstAsync(a => a.Id == appointment.Id);
+                // Cargar la cita actualizada con todas las relaciones
+                var updatedAppointment = await _context.Appointments
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Client)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(a => a.Status)
+                    .Include(a => a.Timers)
+                    .FirstAsync(a => a.Id == appointment.Id);
 
-                        return MapToDto(updatedAppointment);
+                // ✅ Enviar mensaje al chat con el cambio de estado (después del commit)
+                // El statusValue se determina según si es primera o segunda cancelación
+                var statusValueToSend = isSecondRejection 
+                    ? AppointmentStatus.AppointmentCancelledByExpertRejection.ToStringValue()
+                    : AppointmentStatus.AppointmentRejected.ToStringValue();
+                
+                await SendAppointmentStatusChangeMessageAsync(
+                    appointment.SearchHireId, 
+                    statusValueToSend, 
+                    userId
+                );
+
+                return MapToDto(updatedAppointment);
                     }
                     catch (Exception innerEx)
                     {
@@ -808,23 +834,23 @@ namespace newApi.Services
                     try
                     {
                         // ✅ PROTECCIÓN: Usar row-level locking DENTRO de la transacción para evitar doble procesamiento
-                        var appointment = await _context.Appointments
+                var appointment = await _context.Appointments
                             .FromSqlRaw("SELECT * FROM \"Appointments\" WHERE \"Id\" = {0} FOR UPDATE", dto.AppointmentId)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Status)
-                            .Include(a => a.Status)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(a => a.Status)
                             .FirstOrDefaultAsync();
 
-                        if (appointment == null)
-                            throw new ArgumentException("Appointment not found");
+                if (appointment == null)
+                    throw new ArgumentException("Appointment not found");
 
                         var currentStatus = appointment.Status?.StatusValue ?? string.Empty;
                         _logger.LogInformation("🔍 CANCEL APPOINTMENT STARTED - AppointmentId: {AppointmentId}, UserId: {UserId}, CurrentStatus: {CurrentStatus}", 
                             dto.AppointmentId, userId, currentStatus);
 
                         // ✅ VALIDACIÓN: Verificar que el usuario es el cliente o el experto
-                        if (appointment.SearchHire.ClientId != userId && appointment.SearchHire.ExpertId != userId)
-                            throw new UnauthorizedAccessException("Only the client or expert can cancel appointments");
+                if (appointment.SearchHire.ClientId != userId && appointment.SearchHire.ExpertId != userId)
+                    throw new UnauthorizedAccessException("Only the client or expert can cancel appointments");
 
                         // ✅ VALIDACIÓN CRÍTICA: No se puede cancelar si está en "awaiting_appointment" (no hay propuesta aún)
                         // Solo se puede cancelar si hay una propuesta o cita confirmada
@@ -879,128 +905,135 @@ namespace newApi.Services
                             );
                         }
 
-                        // Determinar el estado de cancelación según quién cancela y el número de cancelaciones específicas
-                        string statusValue;
-                        if (appointment.SearchHire.ClientId == userId)
+                // Determinar el estado de cancelación según quién cancela y el número de cancelaciones específicas
+                string statusValue;
+                if (appointment.SearchHire.ClientId == userId)
+                {
+                    // Cliente cancela - verificar si es primera o segunda cancelación del cliente
+                    if (appointment.ClientCancellationCount >= 1)
+                    {
+                        statusValue = "appointment_cancelled_by_client_second";
+                    }
+                    else
+                    {
+                        statusValue = "appointment_cancelled_by_client";
+                    }
+                }
+                else
+                {
+                    // Experto cancela - verificar si es primera o segunda cancelación del experto
+                    if (appointment.ExpertCancellationCount >= 1)
+                    {
+                        statusValue = "appointment_cancelled_by_expert_second";
+                    }
+                    else
+                    {
+                        statusValue = "appointment_cancelled_by_expert";
+                    }
+                }
+
+                var cancelledStatus = await _context.SystemStatuses
+                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                            s.StatusValue == statusValue);
+
+                if (cancelledStatus == null)
+                    throw new InvalidOperationException($"Appointment cancelled status '{statusValue}' not found");
+
+                // Actualizar la cita
+                appointment.StatusId = cancelledStatus.Id;
+                
+                // Incrementar contadores específicos según quién cancela
+                if (appointment.SearchHire.ClientId == userId)
+                {
+                    appointment.ClientCancellationCount++;
+                    appointment.LastClientCancellationAt = DateTime.UtcNow;
+                }
+                else
+                {
+                    appointment.ExpertCancellationCount++;
+                    appointment.LastExpertCancellationAt = DateTime.UtcNow;
+                }
+                
+                appointment.UpdatedAt = DateTime.UtcNow;
+
+                // Actualizar el SearchHire según el mapeo de estados
+                var appointmentStatusEnum = statusValue switch
+                {
+                    "appointment_cancelled_by_client" => AppointmentStatus.AppointmentCancelledByClient,
+                    "appointment_cancelled_by_client_second" => AppointmentStatus.AppointmentCancelledByClientSecond,
+                    "appointment_cancelled_by_expert" => AppointmentStatus.AppointmentCancelledByExpert,
+                    "appointment_cancelled_by_expert_second" => AppointmentStatus.AppointmentCancelledByExpertSecond,
+                    _ => throw new InvalidOperationException($"Unknown appointment status: {statusValue}")
+                };
+
+                var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatusEnum);
+                if (targetSearchHireStatus.HasValue)
+                {
+                    var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
+                    appointment.SearchHire.StatusId = statusId;
+                    appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                }
+
+                // Si el subestado NO es de finalización, no invocar orquestador (primera cancelación, reprogramable)
+                if (cancelledStatus.IsFinalizationStatus)
+                {
+                    // Orquestar movimientos de dinero según el estado determinado (subestado → fallback final), respetando granularidad
+                    try
+                    {
+                        var distributionOk = await _refundService.ProcessMoneyDistributionAsync(
+                            appointment.SearchHireId,
+                            statusValue,
+                            "Cancellation flow from CancelAppointmentAsync",
+                            userId);
+                        if (!distributionOk)
                         {
-                            // Cliente cancela - verificar si es primera o segunda cancelación del cliente
-                            if (appointment.ClientCancellationCount >= 1)
-                            {
-                                statusValue = "appointment_cancelled_by_client_second";
-                            }
-                            else
-                            {
-                                statusValue = "appointment_cancelled_by_client";
-                            }
+                            _logger.LogWarning("Money distribution not applied for AppointmentId={AppointmentId}, SearchHireId={SearchHireId}, Status={Status}",
+                                appointment.Id, appointment.SearchHireId, statusValue);
                         }
-                        else
-                        {
-                            // Experto cancela - verificar si es primera o segunda cancelación del experto
-                            if (appointment.ExpertCancellationCount >= 1)
-                            {
-                                statusValue = "appointment_cancelled_by_expert_second";
-                            }
-                            else
-                            {
-                                statusValue = "appointment_cancelled_by_expert";
-                            }
-                        }
+                    }
+                    catch (Exception distEx)
+                    {
+                        _logger.LogError(distEx, "Error orchestrating money distribution for AppointmentId={AppointmentId}, SearchHireId={SearchHireId}", appointment.Id, appointment.SearchHireId);
+                    }
+                }
 
-                        var cancelledStatus = await _context.SystemStatuses
-                            .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-                                                    s.StatusValue == statusValue);
+                // Marcar todos los timers activos como expirados
+                var activeTimers = await _context.AppointmentTimers
+                    .Where(t => t.AppointmentId == appointment.Id && !t.IsExpired)
+                    .ToListAsync();
 
-                        if (cancelledStatus == null)
-                            throw new InvalidOperationException($"Appointment cancelled status '{statusValue}' not found");
-                        
-                        // Actualizar la cita
-                        appointment.StatusId = cancelledStatus.Id;
-                        
-                        // Incrementar contadores específicos según quién cancela
-                        if (appointment.SearchHire.ClientId == userId)
-                        {
-                            appointment.ClientCancellationCount++;
-                            appointment.LastClientCancellationAt = DateTime.UtcNow;
-                        }
-                        else
-                        {
-                            appointment.ExpertCancellationCount++;
-                            appointment.LastExpertCancellationAt = DateTime.UtcNow;
-                        }
-                        
-                        appointment.UpdatedAt = DateTime.UtcNow;
+                foreach (var timer in activeTimers)
+                {
+                    timer.IsExpired = true;
+                    timer.ExpiredAt = DateTime.UtcNow;
+                }
 
-                        // Actualizar el SearchHire según el mapeo de estados
-                        var appointmentStatusEnum = statusValue switch
-                        {
-                            "appointment_cancelled_by_client" => AppointmentStatus.AppointmentCancelledByClient,
-                            "appointment_cancelled_by_client_second" => AppointmentStatus.AppointmentCancelledByClientSecond,
-                            "appointment_cancelled_by_expert" => AppointmentStatus.AppointmentCancelledByExpert,
-                            "appointment_cancelled_by_expert_second" => AppointmentStatus.AppointmentCancelledByExpertSecond,
-                            _ => throw new InvalidOperationException($"Unknown appointment status: {statusValue}")
-                        };
-
-                        var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatusEnum);
-                        if (targetSearchHireStatus.HasValue)
-                        {
-                            var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
-                            appointment.SearchHire.StatusId = statusId;
-                            appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
-                        }
-
-                        // Si el subestado NO es de finalización, no invocar orquestador (primera cancelación, reprogramable)
-                        if (cancelledStatus.IsFinalizationStatus)
-                        {
-                            // Orquestar movimientos de dinero según el estado determinado (subestado → fallback final), respetando granularidad
-                            try
-                            {
-                                var distributionOk = await _refundService.ProcessMoneyDistributionAsync(
-                                    appointment.SearchHireId,
-                                    statusValue,
-                                    "Cancellation flow from CancelAppointmentAsync",
-                                    userId);
-                                if (!distributionOk)
-                                {
-                                    _logger.LogWarning("Money distribution not applied for AppointmentId={AppointmentId}, SearchHireId={SearchHireId}, Status={Status}",
-                                        appointment.Id, appointment.SearchHireId, statusValue);
-                                }
-                            }
-                            catch (Exception distEx)
-                            {
-                                _logger.LogError(distEx, "Error orchestrating money distribution for AppointmentId={AppointmentId}, SearchHireId={SearchHireId}", appointment.Id, appointment.SearchHireId);
-                            }
-                        }
-
-                        // Marcar todos los timers activos como expirados
-                        var activeTimers = await _context.AppointmentTimers
-                            .Where(t => t.AppointmentId == appointment.Id && !t.IsExpired)
-                            .ToListAsync();
-
-                        foreach (var timer in activeTimers)
-                        {
-                            timer.IsExpired = true;
-                            timer.ExpiredAt = DateTime.UtcNow;
-                        }
-
-                        await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync();
 
                         // ✅ COMMIT: Confirmar la transacción
                         await transaction.CommitAsync();
                         _logger.LogInformation("🔍 TRANSACTION COMMITTED - AppointmentId: {AppointmentId}", appointment.Id);
 
-                        // Cargar la cita actualizada con todas las relaciones
-                        var updatedAppointment = await _context.Appointments
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Client)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Expert)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Status)
-                            .Include(a => a.Status)
-                            .Include(a => a.Timers)
-                            .FirstAsync(a => a.Id == appointment.Id);
+                // Cargar la cita actualizada con todas las relaciones
+                var updatedAppointment = await _context.Appointments
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Client)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(a => a.Status)
+                    .Include(a => a.Timers)
+                    .FirstAsync(a => a.Id == appointment.Id);
 
-                        return MapToDto(updatedAppointment);
+                // ✅ Enviar mensaje al chat con el cambio de estado (después del commit)
+                await SendAppointmentStatusChangeMessageAsync(
+                    appointment.SearchHireId, 
+                    statusValue, 
+                    userId
+                );
+
+                return MapToDto(updatedAppointment);
                     }
                     catch (Exception innerEx)
                     {
@@ -1026,9 +1059,7 @@ namespace newApi.Services
                 var metrics = new AppointmentMetricsDto
                 {
                     TotalAppointments = await _context.Appointments.CountAsync(),
-                    PendingDisputes = await _context.Appointments
-                        .Where(a => a.DisputeReason != null)
-                        .CountAsync(),
+                    PendingDisputes = 0, // ✅ REMOVED: DisputeReason field eliminated
                     ClientNoShows = await _context.Appointments
                         .Where(a => a.Status.StatusValue == "appointment_cancelled_by_client")
                         .CountAsync(),
@@ -1177,6 +1208,18 @@ namespace newApi.Services
                                         }
                                     );
                                 }
+                                
+                                // ✅ Enviar mensaje al chat con el cambio de estado automático
+                                // Para cambios automáticos, el senderId es el ExpertId del SearchHire
+                                var expertIdForMessage = timer.Appointment.SearchHire?.ExpertId ?? 0;
+                                if (expertIdForMessage > 0)
+                                {
+                                    await SendAppointmentStatusChangeMessageAsync(
+                                        timer.Appointment.SearchHireId,
+                                        AppointmentStatus.AppointmentCancelledByNoResponse.ToStringValue(),
+                                        expertIdForMessage
+                                    );
+                                }
                             }
                             break;
                             
@@ -1209,6 +1252,18 @@ namespace newApi.Services
                                     timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
                                     
                                     _logger.LogInformation("Appointment {AppointmentId} automatically completed and SearchHire moved to awaiting_client_decision - all required files were uploaded", timer.Appointment.Id);
+                                    
+                                    // ✅ Enviar mensaje al chat con el cambio de estado automático
+                                    // Para cambios automáticos, el senderId es el ExpertId del SearchHire
+                                    var expertIdForMessage = timer.Appointment.SearchHire?.ExpertId ?? 0;
+                                    if (expertIdForMessage > 0)
+                                    {
+                                        await SendAppointmentStatusChangeMessageAsync(
+                                            timer.Appointment.SearchHireId,
+                                            AppointmentStatus.AppointmentReportSent.ToStringValue(),
+                                            expertIdForMessage
+                                        );
+                                    }
                                 }
                             }
                             else
@@ -1253,6 +1308,18 @@ namespace newApi.Services
                                     
                                     _logger.LogInformation("Appointment {AppointmentId} cancelled due to expert not submitting report within 24h - missing files: {MissingFiles}", 
                                         timer.Appointment.Id, validationResult.ErrorMessage);
+                                    
+                                    // ✅ Enviar mensaje al chat con el cambio de estado automático
+                                    // Para cambios automáticos, el senderId es el ExpertId del SearchHire
+                                    var expertIdForMessage = timer.Appointment.SearchHire?.ExpertId ?? 0;
+                                    if (expertIdForMessage > 0)
+                                    {
+                                    await SendAppointmentStatusChangeMessageAsync(
+                                        timer.Appointment.SearchHireId,
+                                        "appointment_cancelled_by_no_report",
+                                        expertIdForMessage
+                                    );
+                                    }
                                 }
                             }
                             break;
@@ -1296,6 +1363,21 @@ namespace newApi.Services
                         _context.AppointmentTimers.Add(expertReportTimer);
                         
                         _logger.LogInformation("Appointment {AppointmentId} changed from confirmed to awaiting_report with 24h timer for expert report", appointment.Id);
+                        
+                        // ✅ Enviar mensaje al chat con el cambio de estado automático
+                        // Para cambios automáticos, el senderId es el ExpertId del SearchHire
+                        var appointmentWithHire = await _context.Appointments
+                            .Include(a => a.SearchHire)
+                            .FirstOrDefaultAsync(a => a.Id == appointment.Id);
+                        
+                        if (appointmentWithHire?.SearchHire?.ExpertId.HasValue == true)
+                        {
+                            await SendAppointmentStatusChangeMessageAsync(
+                                appointmentWithHire.SearchHireId,
+                                AppointmentStatus.AppointmentAwaitingReport.ToStringValue(),
+                                appointmentWithHire.SearchHire.ExpertId.Value
+                            );
+                        }
                     }
                 }
 
@@ -1326,23 +1408,23 @@ namespace newApi.Services
                     try
                     {
                         // ✅ PROTECCIÓN: Usar row-level locking DENTRO de la transacción para evitar doble procesamiento
-                        var appointment = await _context.Appointments
+                var appointment = await _context.Appointments
                             .FromSqlRaw("SELECT * FROM \"Appointments\" WHERE \"Id\" = {0} FOR UPDATE", appointmentId)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Status)
-                            .Include(a => a.Status)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(a => a.Status)
                             .FirstOrDefaultAsync();
 
-                        if (appointment == null)
-                            throw new ArgumentException("Appointment not found");
+                if (appointment == null)
+                    throw new ArgumentException("Appointment not found");
 
                         var currentStatus = appointment.Status?.StatusValue ?? string.Empty;
                         _logger.LogInformation("🔍 SUBMIT EXPERT REPORT STARTED - AppointmentId: {AppointmentId}, ExpertId: {ExpertId}, CurrentStatus: {CurrentStatus}", 
                             appointmentId, expertId, currentStatus);
 
                         // ✅ VALIDACIÓN: Verificar que el usuario es el experto
-                        if (appointment.SearchHire.ExpertId != expertId)
-                            throw new UnauthorizedAccessException("Only the expert can submit reports");
+                if (appointment.SearchHire.ExpertId != expertId)
+                    throw new UnauthorizedAccessException("Only the expert can submit reports");
 
                         // ✅ VALIDACIÓN CRÍTICA: Solo se puede enviar reporte si está en estado "appointment_awaiting_report"
                         if (currentStatus != "appointment_awaiting_report")
@@ -1376,92 +1458,99 @@ namespace newApi.Services
                             );
                         }
 
-                        // Validar que se hayan subido los archivos obligatorios
-                        var validationResult = await ValidateRequiredDeliverablesAsync(appointment.SearchHire);
-                        if (!validationResult.IsValid)
-                        {
-                            throw new InvalidOperationException(validationResult.ErrorMessage);
-                        }
+                // Validar que se hayan subido los archivos obligatorios
+                var validationResult = await ValidateRequiredDeliverablesAsync(appointment.SearchHire);
+                if (!validationResult.IsValid)
+                {
+                    throw new InvalidOperationException(validationResult.ErrorMessage);
+                }
 
-                        // Obtener el estado appointment_report_sent para la cita
-                        var appointmentReportSentStatus = await _context.SystemStatuses
-                            .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-                                                    s.StatusValue == "appointment_report_sent");
+                // Obtener el estado appointment_report_sent para la cita
+                var appointmentReportSentStatus = await _context.SystemStatuses
+                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                            s.StatusValue == "appointment_report_sent");
 
-                        // Obtener el estado awaiting_client_decision para el SearchHire
-                        var awaitingClientDecisionStatus = await _context.SystemStatuses
-                            .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
-                                                    s.StatusValue == "awaiting_client_decision");
+                // Obtener el estado awaiting_client_decision para el SearchHire
+                var awaitingClientDecisionStatus = await _context.SystemStatuses
+                    .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                            s.StatusValue == "awaiting_client_decision");
 
-                        if (appointmentReportSentStatus == null)
-                            throw new InvalidOperationException("Appointment report sent status not found");
-                        
-                        if (awaitingClientDecisionStatus == null)
-                            throw new InvalidOperationException("Awaiting client decision status not found");
-                        
-                        // Actualizar la cita como informe enviado
-                        appointment.StatusId = appointmentReportSentStatus.Id;
-                        appointment.UpdatedAt = DateTime.UtcNow;
+                if (appointmentReportSentStatus == null)
+                    throw new InvalidOperationException("Appointment report sent status not found");
+                
+                if (awaitingClientDecisionStatus == null)
+                    throw new InvalidOperationException("Awaiting client decision status not found");
 
-                        // Actualizar el SearchHire según el mapeo de estados
-                        _logger.LogInformation("=== STARTING STATUS MAPPING ===");
-                        var appointmentStatusEnum = AppointmentStatus.AppointmentReportSent;
-                        _logger.LogInformation("🔍 Getting target SearchHire status for appointment status: {AppointmentStatus}", appointmentStatusEnum);
-                        
-                        var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatusEnum);
-                        _logger.LogInformation("🎯 Target SearchHire status result: {TargetStatus}", targetSearchHireStatus);
-                        
-                        if (targetSearchHireStatus.HasValue)
-                        {
-                            var oldStatusValue = appointment.SearchHire.Status?.StatusValue ?? "unknown";
-                            var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
-                            appointment.SearchHire.StatusId = statusId;
-                            appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
-                            _logger.LogInformation("✅ Updated SearchHire {SearchHireId} status: {OldStatus} → {NewStatus}", 
-                                appointment.SearchHire.Id, oldStatusValue, targetSearchHireStatus.Value.ToStringValue());
-                        }
-                        else
-                        {
-                            _logger.LogWarning("⚠️ No target SearchHire status found for appointment status: {AppointmentStatus}", appointmentStatusEnum);
-                        }
-                        _logger.LogInformation("=== STATUS MAPPING COMPLETED ===");
+                // Actualizar la cita como informe enviado
+                appointment.StatusId = appointmentReportSentStatus.Id;
+                appointment.UpdatedAt = DateTime.UtcNow;
 
-                        // Marcar timers de expert_report como expirados
-                        var expertReportTimers = await _context.AppointmentTimers
-                            .Where(t => t.AppointmentId == appointment.Id && 
-                                       t.TimerType == "expert_report" && 
-                                       !t.IsExpired)
-                            .ToListAsync();
+                // Actualizar el SearchHire según el mapeo de estados
+                _logger.LogInformation("=== STARTING STATUS MAPPING ===");
+                var appointmentStatusEnum = AppointmentStatus.AppointmentReportSent;
+                _logger.LogInformation("🔍 Getting target SearchHire status for appointment status: {AppointmentStatus}", appointmentStatusEnum);
+                
+                var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatusEnum);
+                _logger.LogInformation("🎯 Target SearchHire status result: {TargetStatus}", targetSearchHireStatus);
+                
+                if (targetSearchHireStatus.HasValue)
+                {
+                    var oldStatusValue = appointment.SearchHire.Status?.StatusValue ?? "unknown";
+                    var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
+                    appointment.SearchHire.StatusId = statusId;
+                    appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                    _logger.LogInformation("✅ Updated SearchHire {SearchHireId} status: {OldStatus} → {NewStatus}", 
+                        appointment.SearchHire.Id, oldStatusValue, targetSearchHireStatus.Value.ToStringValue());
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ No target SearchHire status found for appointment status: {AppointmentStatus}", appointmentStatusEnum);
+                }
+                _logger.LogInformation("=== STATUS MAPPING COMPLETED ===");
 
-                        foreach (var timer in expertReportTimers)
-                        {
-                            timer.IsExpired = true;
-                            timer.ExpiredAt = DateTime.UtcNow;
-                        }
+                // Marcar timers de expert_report como expirados
+                var expertReportTimers = await _context.AppointmentTimers
+                    .Where(t => t.AppointmentId == appointment.Id && 
+                               t.TimerType == "expert_report" && 
+                               !t.IsExpired)
+                    .ToListAsync();
 
-                        _logger.LogInformation("=== SAVING CHANGES TO DATABASE ===");
-                        await _context.SaveChangesAsync();
-                        _logger.LogInformation("=== DATABASE CHANGES SAVED ===");
+                foreach (var timer in expertReportTimers)
+                {
+                    timer.IsExpired = true;
+                    timer.ExpiredAt = DateTime.UtcNow;
+                }
+
+                _logger.LogInformation("=== SAVING CHANGES TO DATABASE ===");
+                await _context.SaveChangesAsync();
+                _logger.LogInformation("=== DATABASE CHANGES SAVED ===");
 
                         // ✅ COMMIT: Confirmar la transacción
                         await transaction.CommitAsync();
                         _logger.LogInformation("🔍 TRANSACTION COMMITTED - AppointmentId: {AppointmentId}", appointment.Id);
 
-                        // Cargar la cita actualizada con todas las relaciones
-                        var updatedAppointment = await _context.Appointments
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Client)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Expert)
-                            .Include(a => a.SearchHire)
-                                .ThenInclude(sh => sh.Status)
-                            .Include(a => a.Status)
-                            .Include(a => a.Timers)
-                            .FirstAsync(a => a.Id == appointment.Id);
+                // Cargar la cita actualizada con todas las relaciones
+                var updatedAppointment = await _context.Appointments
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Client)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Expert)
+                    .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(a => a.Status)
+                    .Include(a => a.Timers)
+                    .FirstAsync(a => a.Id == appointment.Id);
 
-                        _logger.LogInformation("Expert {ExpertId} submitted report for appointment {AppointmentId}", expertId, appointmentId);
+                _logger.LogInformation("Expert {ExpertId} submitted report for appointment {AppointmentId}", expertId, appointmentId);
 
-                        return MapToDto(updatedAppointment);
+                // ✅ Enviar mensaje al chat con el cambio de estado (después del commit)
+                await SendAppointmentStatusChangeMessageAsync(
+                    appointment.SearchHireId, 
+                    AppointmentStatus.AppointmentReportSent.ToStringValue(), 
+                    expertId
+                );
+
+                return MapToDto(updatedAppointment);
                     }
                     catch (Exception innerEx)
                     {
@@ -1756,6 +1845,48 @@ namespace newApi.Services
         /// <summary>
         /// Calcula la distancia entre dos puntos geográficos usando la fórmula de Haversine
         /// </summary>
+        /// <summary>
+        /// Envía un mensaje automático al chat cuando cambia el estado de una cita
+        /// Formato: "APPointmentStatusChange:{status_value}"
+        /// </summary>
+        private async Task SendAppointmentStatusChangeMessageAsync(int searchHireId, string statusValue, int senderId)
+        {
+            try
+            {
+                // Buscar la conversación activa del SearchHire
+                var conversation = await _context.Conversations
+                    .FirstOrDefaultAsync(c => c.SearchHireId == searchHireId && c.IsActive);
+
+                if (conversation == null)
+                {
+                    _logger.LogWarning("No active conversation found for SearchHireId {SearchHireId}, skipping status change message", searchHireId);
+                    return;
+                }
+
+                // Crear el mensaje con el formato esperado por el frontend
+                var message = new Message
+                {
+                    ConversationId = conversation.Id,
+                    SenderId = senderId,
+                    Content = $"APPointmentStatusChange:{statusValue}",
+                    SentAt = DateTime.UtcNow,
+                    IsRead = false
+                };
+
+                _context.Messages.Add(message);
+                conversation.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Sent appointment status change message to conversation {ConversationId}: {StatusValue}", conversation.Id, statusValue);
+            }
+            catch (Exception ex)
+            {
+                // No lanzar excepción - el envío del mensaje no debe afectar el flujo principal
+                _logger.LogError(ex, "Error sending appointment status change message for SearchHireId {SearchHireId}, StatusValue: {StatusValue}", 
+                    searchHireId, statusValue);
+            }
+        }
+
         private static decimal CalculateDistance(decimal lat1, decimal lon1, decimal lat2, decimal lon2)
         {
             const double R = 6371; // Radio de la Tierra en km
@@ -1783,16 +1914,14 @@ namespace newApi.Services
                 DoorNumber = appointment.DoorNumber,
                 OwnerPhone = appointment.OwnerPhone,
                 SiteDetails = appointment.SiteDetails,
-                DisputeReason = appointment.DisputeReason,
-                CompletedAt = appointment.CompletedAt,
-                CompletedBy = appointment.CompletedBy,
                 RejectionCount = appointment.RejectionCount,
                 ClientCancellationCount = appointment.ClientCancellationCount,
                 ExpertCancellationCount = appointment.ExpertCancellationCount,
                 LastRejectionAt = appointment.LastRejectionAt,
+                LastClientCancellationAt = appointment.LastClientCancellationAt,
+                LastExpertCancellationAt = appointment.LastExpertCancellationAt,
                 LastProposalAt = appointment.LastProposalAt,
                 LastResponseAt = appointment.LastResponseAt,
-                IsLocked = appointment.IsLocked,
                 CreatedAt = appointment.CreatedAt,
                 UpdatedAt = appointment.UpdatedAt,
                 ClientName = appointment.SearchHire?.Client?.Name ?? string.Empty,

@@ -273,22 +273,6 @@ namespace newApi.DataLayer.Models
                 .HasForeignKey<SearchHire>(sh => sh.SearchId)
                 .OnDelete(DeleteBehavior.Cascade);
 
-            modelBuilder.Entity<SearchHire>()
-                .HasOne(sh => sh.ExpertAvailability)
-                .WithMany()
-                .HasForeignKey(sh => sh.ExpertAvailabilityId)
-                .OnDelete(DeleteBehavior.SetNull);
-
-            modelBuilder.Entity<ExpertAvailability>()
-                .HasOne(ea => ea.Expert)
-                .WithMany()
-                .HasForeignKey(ea => ea.ExpertId)
-                .OnDelete(DeleteBehavior.Cascade);
-
-            modelBuilder.Entity<ExpertAvailability>()
-                .HasIndex(ea => new { ea.ExpertId, ea.IsActive, ea.EffectiveTo })
-                .HasFilter("\"EffectiveTo\" IS NULL AND \"IsActive\" = true");
-
             modelBuilder.Entity<Review>()
                 .HasOne(r => r.Reviewer)
                 .WithMany(u => u.ReviewsGiven)
@@ -536,8 +520,6 @@ namespace newApi.DataLayer.Models
                     .HasDefaultValue(0);
                 entity.Property(e => e.ExpertCancellationCount)
                     .HasDefaultValue(0);
-                entity.Property(e => e.IsLocked)
-                    .HasDefaultValue(false);
                 entity.Property(e => e.CreatedAt)
                     .HasDefaultValueSql("CURRENT_TIMESTAMP");
                 entity.Property(e => e.UpdatedAt)

@@ -21,10 +21,6 @@ namespace newApi.DataLayer.Models.PostGresModels
         public string? OwnerPhone { get; set; } // Teléfono del propietario del objeto
         public string? SiteDetails { get; set; } // Detalles específicos del sitio (opcional)
         
-        public string? DisputeReason { get; set; }
-        public DateTime? CompletedAt { get; set; }
-        public int? CompletedBy { get; set; }
-        
         // Campos para restricciones y control
         public int RejectionCount { get; set; } = 0;
         public int ClientCancellationCount { get; set; } = 0;
@@ -34,7 +30,6 @@ namespace newApi.DataLayer.Models.PostGresModels
         public DateTime? LastExpertCancellationAt { get; set; }
         public DateTime? LastProposalAt { get; set; }
         public DateTime? LastResponseAt { get; set; }
-        public bool IsLocked { get; set; } = false; // Bloqueado por 12h antes de la cita
         
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;

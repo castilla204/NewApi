@@ -21,16 +21,14 @@ namespace newApi.DataLayer.Models.DTOs
         public string? OwnerPhone { get; set; } // Teléfono del propietario del objeto
         public string? SiteDetails { get; set; } // Detalles específicos del sitio (opcional)
         
-        public string? DisputeReason { get; set; }
-        public DateTime? CompletedAt { get; set; }
-        public int? CompletedBy { get; set; }
         public int RejectionCount { get; set; }
         public int ClientCancellationCount { get; set; }
         public int ExpertCancellationCount { get; set; }
         public DateTime? LastRejectionAt { get; set; }
+        public DateTime? LastClientCancellationAt { get; set; }
+        public DateTime? LastExpertCancellationAt { get; set; }
         public DateTime? LastProposalAt { get; set; }
         public DateTime? LastResponseAt { get; set; }
-        public bool IsLocked { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
         

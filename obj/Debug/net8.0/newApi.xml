@@ -2395,6 +2395,18 @@
         <member name="M:newApi.Migrations.AddExpertAvailabilitySystem.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
+        <member name="T:newApi.Migrations.RemoveUnusedAppointmentFields">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.RemoveUnusedAppointmentFields.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.RemoveUnusedAppointmentFields.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.RemoveUnusedAppointmentFields.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
         <member name="M:newApi.Services.AccountDeletionService.GetStatusIdByValueAsync(System.String)">
             <summary>
             Helper method to get StatusId from StatusValue
@@ -2417,9 +2429,13 @@
             Valida que la fecha/hora propuesta para la cita esté dentro del horario de disponibilidad del experto
             </summary>
         </member>
-        <member name="M:newApi.Services.AppointmentService.CalculateDistance(System.Decimal,System.Decimal,System.Decimal,System.Decimal)">
+        <member name="M:newApi.Services.AppointmentService.SendAppointmentStatusChangeMessageAsync(System.Int32,System.String,System.Int32)">
             <summary>
             Calcula la distancia entre dos puntos geográficos usando la fórmula de Haversine
+            </summary>
+            <summary>
+            Envía un mensaje automático al chat cuando cambia el estado de una cita
+            Formato: "APPointmentStatusChange:{status_value}"
             </summary>
         </member>
         <member name="T:newApi.Services.IStripeValidationService">

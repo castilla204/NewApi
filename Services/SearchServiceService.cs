@@ -649,7 +649,10 @@ namespace newApi.Services
                     Latitude = ss.ExpertProfile.Latitude,
                     Longitude = ss.ExpertProfile.Longitude,
                     IsOnVacation = ss.ExpertProfile.IsOnVacation,
-                    CurrentAvailability = availabilityDto // ✅ NUEVO: Incluir horarios de disponibilidad
+                    CurrentAvailability = availabilityDto, // ✅ NUEVO: Incluir horarios de disponibilidad
+                    // ✅ FUTURE REQUIREMENTS
+                    StripeFutureRequirements = ss.ExpertProfile.StripeFutureRequirements,
+                    StripeFutureDueAt = ss.ExpertProfile.StripeFutureDueAt
                 };
             }
 
@@ -744,7 +747,10 @@ namespace newApi.Services
                     Reviews = reviews,
                     Latitude = ss.ExpertProfile.Latitude,
                     Longitude = ss.ExpertProfile.Longitude,
-                    IsOnVacation = ss.ExpertProfile.IsOnVacation
+                    IsOnVacation = ss.ExpertProfile.IsOnVacation,
+                    // ✅ FUTURE REQUIREMENTS
+                    StripeFutureRequirements = ss.ExpertProfile.StripeFutureRequirements,
+                    StripeFutureDueAt = ss.ExpertProfile.StripeFutureDueAt
                 };
             }
 

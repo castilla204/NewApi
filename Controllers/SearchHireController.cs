@@ -11,6 +11,7 @@ using System.Linq;
 using Stripe;
 using newApi.DataLayer.Models.DTOs;
 using Hangfire;
+using newApi.Common;
 
 namespace newApi.Controllers
 {
@@ -406,6 +407,247 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Failed to update status" });
             }
         }
+
+        [HttpPost("complete-service")]
+        public async Task<IActionResult> CompleteService([FromBody] CompleteServiceDto request)
+        {
+            _logger.LogInformation("CompleteService endpoint invoked for searchHireId={SearchHireId}", request.SearchHireId);
+
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
+                var searchHire = await _context.SearchHires
+                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                    .Include(sh => sh.Status)
+                    .Include(sh => sh.Expert)
+                    .ThenInclude(e => e.ExpertProfile)
+                    .Include(sh => sh.Client)
+                    .FirstOrDefaultAsync();
+
+                if (searchHire == null)
+                {
+                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", request.SearchHireId);
+                    return NotFound(new { message = "Service not found" });
+                }
+
+                if (searchHire.ClientId != userId)
+                {
+                    _logger.LogError("User is not the client for searchHireId={SearchHireId}, userId={UserId}", searchHire.Id, userId);
+                    return Unauthorized(new { message = "Unauthorized to complete this service" });
+                }
+
+                if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue() && 
+                    searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                {
+                    _logger.LogError("Service cannot be approved in status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status.StatusValue);
+                    return BadRequest(new { message = "Service cannot be approved in current state" });
+                }
+
+                if (request.ClientApproved == null)
+                {
+                    _logger.LogError("ClientApproved is required for client action: searchHireId={SearchHireId}", searchHire.Id);
+                    return BadRequest(new { error = "ClientApproved is required" });
+                }
+
+                // 🔄 USAR EXECUTION STRATEGY para compatibilidad con NpgsqlRetryingExecutionStrategy
+                var strategy = _context.Database.CreateExecutionStrategy();
+                return await strategy.ExecuteAsync(async () =>
+                {
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
+                    {
+                        searchHire.ClientApproved = request.ClientApproved.Value;
+                        if (!searchHire.ClientApproved.Value)
+                        {
+                            // 🛡️ DISPUTA: Cliente rechaza servicio → Abrir disputa para revisión admin
+                            var disputedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
+                            searchHire.StatusId = disputedStatusId;
+                            searchHire.UpdatedAt = DateTime.UtcNow;
+                            _logger.LogInformation("Client opened dispute for searchHireId={SearchHireId}", searchHire.Id);
+                        }
+                        else
+                        {
+                            var ok = await _refundService.ProcessMoneyDistributionAsync(
+                                searchHire.Id,
+                                SearchHireStatus.Completed.ToStringValue(),
+                                "Client approved service",
+                                userId);
+                            if (!ok)
+                            {
+                                await transaction.RollbackAsync();
+                                _logger.LogError("Money distribution failed for searchHireId={SearchHireId}", searchHire.Id);
+                                
+                                // ✅ MEJORA: NO duplicar log crítico - ProcessMoneyDistributionAsync ya lo registró
+                                // 🔍 Buscar el último log crítico relacionado DESPUÉS del rollback
+                                // IMPORTANTE: El log se crea ANTES de la transacción del controller
+                                // Limpiar el change tracker para forzar lectura fresca de la BD
+                                _context.ChangeTracker.Clear();
+                                
+                                // Usar FromSqlRaw con AsNoTracking para leer directamente de BD sin cache
+                                var lastCriticalLog = await _context.Logs
+                                    .FromSqlRaw("SELECT * FROM \"Logs\" WHERE \"RelatedEntityType\" = {0} " +
+                                               "AND \"RelatedEntityId\" = {1} " +
+                                               "AND \"Source\" = {2} " +
+                                               "AND \"CreatedAt\" >= NOW() - INTERVAL '5 minutes' " +
+                                               "ORDER BY \"CreatedAt\" DESC LIMIT 1",
+                                               "SearchHire", searchHire.Id, "StripeRefundService.ProcessMoneyDistributionAsync")
+                                    .AsNoTracking()
+                                    .FirstOrDefaultAsync();
+                                
+                                if (lastCriticalLog != null)
+                                {
+                                    _logger.LogWarning("Money distribution failed. See critical log ID {LogId} for details: {Message}", 
+                                        lastCriticalLog.Id, lastCriticalLog.Message);
+                                }
+                                else
+                                {
+                                    // Si no encontramos el log, puede ser un problema de timing o el log no se creó
+                                    // En este caso, logueamos un warning pero no duplicamos el log crítico
+                                    _logger.LogWarning("Money distribution failed for searchHireId={SearchHireId}. " +
+                                        "ProcessMoneyDistributionAsync should have logged the error. " +
+                                        "Check logs table for recent entries from StripeRefundService.ProcessMoneyDistributionAsync.", 
+                                        searchHire.Id);
+                                }
+                                
+                                return StatusCode(500, new { 
+                                    message = "Failed to process payment to expert",
+                                    logId = lastCriticalLog?.Id,
+                                    errorMessage = lastCriticalLog?.Message,
+                                    searchHireId = searchHire.Id
+                                });
+                            }
+
+                            var completedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Completed.ToStringValue());
+                            searchHire.StatusId = completedStatusId;
+                            searchHire.UpdatedAt = DateTime.UtcNow;
+                            _logger.LogInformation("Client approved service, distribution completed for searchHireId={SearchHireId}", searchHire.Id);
+                        }
+
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+
+                        return Ok(new { message = searchHire.ClientApproved.Value ? "Service completed" : "Dispute opened" });
+                    }
+                    catch (StripeException ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", searchHire.Id, ex.Message);
+                        
+                        // 🚨 LOG CRÍTICO: Error de Stripe durante completado de servicio (una sola vez, antes de ProcessMoneyDistributionAsync)
+                        // Este error ocurre ANTES de llamar a ProcessMoneyDistributionAsync, por lo que debe loguearse aquí
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Stripe error during service completion - before money distribution",
+                            details: $"Stripe exception occurred in CompleteService endpoint before calling ProcessMoneyDistributionAsync for SearchHire {searchHire.Id}. " +
+                                    $"Client {userId} approved service, but Stripe operation failed. " +
+                                    $"Stripe Error: {ex.Message}, Type: {ex.StripeError?.Type}, Code: {ex.StripeError?.Code}, DeclineCode: {ex.StripeError?.DeclineCode}. " +
+                                    $"SearchHire Status: {searchHire.Status?.StatusValue}, Amount: {searchHire.Amount}€, ExpertId: {searchHire.ExpertId}. " +
+                                    $"ACTION REQUIRED: Review Stripe error and retry service completion if applicable.",
+                            userId: userId,
+                            source: "SearchHireController.CompleteService",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHire.Id,
+                            additionalData: new { 
+                                SearchHireId = searchHire.Id,
+                                ExpertId = searchHire.ExpertId,
+                                Amount = searchHire.Amount,
+                                Status = searchHire.Status?.StatusValue,
+                                StripeError = ex.Message,
+                                StripeErrorType = ex.StripeError?.Type,
+                                StripeErrorCode = ex.StripeError?.Code,
+                                StripeDeclineCode = ex.StripeError?.DeclineCode,
+                                StripeParam = ex.StripeError?.Param
+                            }
+                        );
+                        
+                        return StatusCode(500, new { message = "Failed to process payment to expert" });
+                    }
+                    catch (Exception ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Database error completing service for searchHireId={SearchHireId}", searchHire.Id);
+                        
+                        // 🚨 LOG CRÍTICO: Error general durante completado de servicio (una sola vez, con información completa)
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Unexpected error completing service",
+                            details: $"An unexpected exception occurred while completing service for SearchHire {searchHire.Id}. " +
+                                    $"Client {userId} attempted to approve service (ClientApproved: {request.ClientApproved}). " +
+                                    $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                                    $"SearchHire Status: {searchHire.Status?.StatusValue}, Amount: {searchHire.Amount}€, ExpertId: {searchHire.ExpertId}, ClientId: {searchHire.ClientId}. " +
+                                    $"Stack Trace: {ex.StackTrace}. " +
+                                    $"ACTION REQUIRED: Review error details and retry if applicable.",
+                            userId: userId,
+                            source: "SearchHireController.CompleteService",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHire.Id,
+                            additionalData: new { 
+                                SearchHireId = searchHire.Id,
+                                ExpertId = searchHire.ExpertId,
+                                ClientId = searchHire.ClientId,
+                                Amount = searchHire.Amount,
+                                Status = searchHire.Status?.StatusValue,
+                                ClientApproved = request.ClientApproved,
+                                ErrorType = ex.GetType().Name,
+                                ErrorMessage = ex.Message,
+                                StackTrace = ex.StackTrace,
+                                InnerException = ex.InnerException?.Message
+                            }
+                        );
+                        
+                        return StatusCode(500, new { message = "Failed to complete service" });
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error completing service: {ErrorMessage}", ex.Message);
+                
+                // 🚨 LOG CRÍTICO: Error general fuera de la transacción (una sola vez, con información completa)
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                int? userId = null;
+                if (int.TryParse(userIdClaim, out int parsedUserId))
+                {
+                    userId = parsedUserId;
+                }
+                
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error in CompleteService endpoint - outer catch",
+                    details: $"An unexpected exception occurred in CompleteService endpoint before entering transaction. " +
+                            $"Request: SearchHireId={request?.SearchHireId}, ClientApproved={request?.ClientApproved}. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"User Context: userId={userId}, userIdClaim={userIdClaim}. " +
+                            $"Stack Trace: {ex.StackTrace}. " +
+                            $"ACTION REQUIRED: Review error - this indicates a pre-transaction validation or data loading issue.",
+                    userId: userId,
+                    source: "SearchHireController.CompleteService",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: request?.SearchHireId ?? 0,
+                    additionalData: new { 
+                        SearchHireId = request?.SearchHireId,
+                        ClientApproved = request?.ClientApproved,
+                        UserIdClaim = userIdClaim,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+                
+                return StatusCode(500, new { message = "Failed to complete service" });
+            }
+        }
+    }
+
+    public class CompleteServiceDto
+    {
+        public int SearchHireId { get; set; }
+        public bool? ClientApproved { get; set; }
     }
 
     public class CreateSearchHireDto

@@ -222,7 +222,7 @@ namespace newApi.Services
                         // ✅ PROTECCIÓN: Usar row-level locking dentro de la transacción
                         // Intentar obtener la cita con FOR UPDATE (si existe)
                 var appointment = await _context.Appointments
-                            .FromSqlRaw("SELECT * FROM \"Appointments\" WHERE \"SearchHireId\" = {0} FOR UPDATE", searchHireId)
+                            .FromSqlInterpolated($"SELECT * FROM \"Appointments\" WHERE \"SearchHireId\" = {searchHireId} FOR UPDATE")
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
@@ -386,6 +386,28 @@ namespace newApi.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error proposing appointment for SearchHire ID {SearchHireId}", searchHireId);
+                
+                // 🚨 LOG CRÍTICO: Error general proponiendo cita (una sola vez, con información completa)
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error proposing appointment",
+                    details: $"An unexpected exception occurred while proposing appointment for SearchHire {searchHireId}. " +
+                            $"User {userId} attempted to propose appointment. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"Stack Trace: {ex.StackTrace}. " +
+                            $"ACTION REQUIRED: Review error - appointment proposal failed. User may need to retry.",
+                    userId: userId,
+                    source: "AppointmentService.ProposeAppointmentAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: 0, // No appointment created yet
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        UserId = userId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
                 throw;
             }
         }
@@ -404,7 +426,7 @@ namespace newApi.Services
                     {
                         // ✅ PROTECCIÓN: Usar row-level locking DENTRO de la transacción para evitar doble procesamiento
                 var appointment = await _context.Appointments
-                            .FromSqlRaw("SELECT * FROM \"Appointments\" WHERE \"Id\" = {0} FOR UPDATE", dto.AppointmentId)
+                            .FromSqlInterpolated($"SELECT * FROM \"Appointments\" WHERE \"Id\" = {dto.AppointmentId} FOR UPDATE")
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
@@ -519,6 +541,28 @@ namespace newApi.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error confirming appointment {AppointmentId}", dto.AppointmentId);
+                
+                // 🚨 LOG CRÍTICO: Error general confirmando cita (una sola vez, con información completa)
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error confirming appointment",
+                    details: $"An unexpected exception occurred while confirming appointment {dto.AppointmentId}. " +
+                            $"User {userId} attempted to confirm appointment. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"Stack Trace: {ex.StackTrace}. " +
+                            $"ACTION REQUIRED: Review error - appointment confirmation failed. User may need to retry.",
+                    userId: userId,
+                    source: "AppointmentService.ConfirmAppointmentAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId,
+                    additionalData: new { 
+                        AppointmentId = dto.AppointmentId,
+                        UserId = userId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
                 throw;
             }
         }
@@ -539,7 +583,7 @@ namespace newApi.Services
                     {
                         // ✅ PROTECCIÓN: Usar row-level locking DENTRO de la transacción para evitar doble procesamiento
                 var appointment = await _context.Appointments
-                            .FromSqlRaw("SELECT * FROM \"Appointments\" WHERE \"Id\" = {0} FOR UPDATE", dto.AppointmentId)
+                            .FromSqlInterpolated($"SELECT * FROM \"Appointments\" WHERE \"Id\" = {dto.AppointmentId} FOR UPDATE")
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
@@ -747,21 +791,30 @@ namespace newApi.Services
                         _logger.LogError(refundEx, "❌ ERROR PROCESSING AUTOMATIC REFUND - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
                             appointment.Id, appointment.SearchHireId);
                         
-                        // Log critical error for money transaction failure
+                        // 🚨 LOG CRÍTICO: Error procesando refund automático (una sola vez, con información completa)
                         await _loggingService.LogCriticalAsync(
-                            message: "CRITICAL: Error processing automatic refund",
-                            details: refundEx.ToString(),
+                            message: "CRITICAL: Error processing automatic refund during appointment rejection",
+                            details: $"Automatic refund failed during appointment rejection for Appointment {appointment.Id} (SearchHire {appointment.SearchHireId}). " +
+                                    $"This occurred on second rejection by expert {userId}. " +
+                                    $"Error Type: {refundEx.GetType().Name}, Error Message: {refundEx.Message}. " +
+                                    $"SearchHire Amount: {appointment.SearchHire?.Amount}€, ClientId: {appointment.SearchHire?.ClientId}, ExpertId: {appointment.SearchHire?.ExpertId}. " +
+                                    $"Stack Trace: {refundEx.StackTrace}. " +
+                                    $"ACTION REQUIRED: Review refund error and manually process refund if needed. Appointment rejection completed but refund failed.",
                             userId: appointment.SearchHire?.ClientId,
                             source: "AppointmentService.RejectAppointmentAsync",
-                            relatedEntityType: "Refund",
-                            relatedEntityId: appointment.SearchHireId,
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: appointment.Id,
                             additionalData: new { 
                                 AppointmentId = appointment.Id,
                                 SearchHireId = appointment.SearchHireId,
                                 Amount = appointment.SearchHire?.Amount,
                                 ClientId = appointment.SearchHire?.ClientId,
                                 ExpertId = appointment.SearchHire?.ExpertId,
-                                ErrorMessage = refundEx.Message
+                                ExpertUserId = userId,
+                                ErrorType = refundEx.GetType().Name,
+                                ErrorMessage = refundEx.Message,
+                                StackTrace = refundEx.StackTrace,
+                                InnerException = refundEx.InnerException?.Message
                             }
                         );
                         
@@ -817,6 +870,28 @@ namespace newApi.Services
             {
                 _logger.LogError(ex, "🔍 ERROR REJECTING APPOINTMENT - AppointmentId: {AppointmentId}, UserId: {UserId}, Error: {Error}", 
                     dto.AppointmentId, userId, ex.Message);
+                
+                // 🚨 LOG CRÍTICO: Error general rechazando cita (una sola vez, con información completa)
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error rejecting appointment",
+                    details: $"An unexpected exception occurred while rejecting appointment {dto.AppointmentId}. " +
+                            $"Expert {userId} attempted to reject appointment. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"Stack Trace: {ex.StackTrace}. " +
+                            $"ACTION REQUIRED: Review error - appointment rejection failed. Expert may need to retry.",
+                    userId: userId,
+                    source: "AppointmentService.RejectAppointmentAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId,
+                    additionalData: new { 
+                        AppointmentId = dto.AppointmentId,
+                        UserId = userId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
                 throw;
             }
         }
@@ -835,7 +910,7 @@ namespace newApi.Services
                     {
                         // ✅ PROTECCIÓN: Usar row-level locking DENTRO de la transacción para evitar doble procesamiento
                 var appointment = await _context.Appointments
-                            .FromSqlRaw("SELECT * FROM \"Appointments\" WHERE \"Id\" = {0} FOR UPDATE", dto.AppointmentId)
+                            .FromSqlInterpolated($"SELECT * FROM \"Appointments\" WHERE \"Id\" = {dto.AppointmentId} FOR UPDATE")
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
@@ -1048,6 +1123,28 @@ namespace newApi.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error cancelling appointment {AppointmentId}", dto.AppointmentId);
+                
+                // 🚨 LOG CRÍTICO: Error general cancelando cita (una sola vez, con información completa)
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error cancelling appointment",
+                    details: $"An unexpected exception occurred while cancelling appointment {dto.AppointmentId}. " +
+                            $"User {userId} attempted to cancel appointment. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"Stack Trace: {ex.StackTrace}. " +
+                            $"ACTION REQUIRED: Review error - appointment cancellation failed. User may need to retry.",
+                    userId: userId,
+                    source: "AppointmentService.CancelAppointmentAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId,
+                    additionalData: new { 
+                        AppointmentId = dto.AppointmentId,
+                        UserId = userId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
                 throw;
             }
         }
@@ -1299,11 +1396,64 @@ namespace newApi.Services
                                         else
                                         {
                                             _logger.LogError("❌ Failed to process money distribution for appointment {AppointmentId} due to no report", timer.Appointment.Id);
+                                            
+                                            // 🚨 LOG CRÍTICO: Fallo en distribución de dinero por falta de reporte (una sola vez, con información completa)
+                                            await _loggingService.LogCriticalAsync(
+                                                message: "CRITICAL: Money distribution failed for expired report timer",
+                                                details: $"Appointment {timer.Appointment.Id} timer expired (expert did not submit report within 24h) but money distribution failed. " +
+                                                        $"Timer Type: report, AppointmentId: {timer.Appointment.Id}, SearchHireId: {timer.Appointment.SearchHireId}. " +
+                                                        $"ClientId: {timer.Appointment.SearchHire?.ClientId}, ExpertId: {timer.Appointment.SearchHire?.ExpertId}, Amount: {timer.Appointment.SearchHire?.Amount}€. " +
+                                                        $"ACTION REQUIRED: Review ProcessMoneyDistributionAsync error logs and manually process money distribution if needed.",
+                                                userId: timer.Appointment.SearchHire?.ClientId,
+                                                source: "AppointmentService.CheckAppointmentTimersAsync",
+                                                relatedEntityType: "Appointment",
+                                                relatedEntityId: timer.Appointment.Id,
+                                                additionalData: new { 
+                                                    Action = "TimerExpired",
+                                                    TimerType = "report",
+                                                    AppointmentId = timer.Appointment.Id,
+                                                    SearchHireId = timer.Appointment.SearchHireId,
+                                                    ClientId = timer.Appointment.SearchHire?.ClientId,
+                                                    ExpertId = timer.Appointment.SearchHire?.ExpertId,
+                                                    Amount = timer.Appointment.SearchHire?.Amount,
+                                                    Status = "appointment_cancelled_by_no_report",
+                                                    MoneyDistributionSuccess = false
+                                                }
+                                            );
                                         }
                                     }
                                     catch (Exception ex)
                                     {
                                         _logger.LogError(ex, "❌ Error processing money distribution for appointment {AppointmentId} due to no report", timer.Appointment.Id);
+                                        
+                                        // 🚨 LOG CRÍTICO: Excepción procesando distribución por falta de reporte (una sola vez, con información completa)
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL: Exception during money distribution for expired report timer",
+                                            details: $"Exception occurred while processing money distribution for Appointment {timer.Appointment.Id} due to expired report timer. " +
+                                                    $"Timer Type: report, AppointmentId: {timer.Appointment.Id}, SearchHireId: {timer.Appointment.SearchHireId}. " +
+                                                    $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                                                    $"ClientId: {timer.Appointment.SearchHire?.ClientId}, ExpertId: {timer.Appointment.SearchHire?.ExpertId}, Amount: {timer.Appointment.SearchHire?.Amount}€. " +
+                                                    $"Stack Trace: {ex.StackTrace}. " +
+                                                    $"ACTION REQUIRED: Review exception and manually process money distribution if needed.",
+                                            userId: timer.Appointment.SearchHire?.ClientId,
+                                            source: "AppointmentService.CheckAppointmentTimersAsync",
+                                            relatedEntityType: "Appointment",
+                                            relatedEntityId: timer.Appointment.Id,
+                                            additionalData: new { 
+                                                Action = "TimerExpired",
+                                                TimerType = "report",
+                                                AppointmentId = timer.Appointment.Id,
+                                                SearchHireId = timer.Appointment.SearchHireId,
+                                                ClientId = timer.Appointment.SearchHire?.ClientId,
+                                                ExpertId = timer.Appointment.SearchHire?.ExpertId,
+                                                Amount = timer.Appointment.SearchHire?.Amount,
+                                                Status = "appointment_cancelled_by_no_report",
+                                                ErrorType = ex.GetType().Name,
+                                                ErrorMessage = ex.Message,
+                                                StackTrace = ex.StackTrace,
+                                                InnerException = ex.InnerException?.Message
+                                            }
+                                        );
                                     }
                                     
                                     _logger.LogInformation("Appointment {AppointmentId} cancelled due to expert not submitting report within 24h - missing files: {MissingFiles}", 
@@ -1409,7 +1559,7 @@ namespace newApi.Services
                     {
                         // ✅ PROTECCIÓN: Usar row-level locking DENTRO de la transacción para evitar doble procesamiento
                 var appointment = await _context.Appointments
-                            .FromSqlRaw("SELECT * FROM \"Appointments\" WHERE \"Id\" = {0} FOR UPDATE", appointmentId)
+                            .FromSqlInterpolated($"SELECT * FROM \"Appointments\" WHERE \"Id\" = {appointmentId} FOR UPDATE")
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Status)
                     .Include(a => a.Status)
@@ -1565,6 +1715,28 @@ namespace newApi.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error submitting expert report for appointment {AppointmentId}", appointmentId);
+                
+                // 🚨 LOG CRÍTICO: Error general enviando reporte de experto (una sola vez, con información completa)
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error submitting expert report",
+                    details: $"An unexpected exception occurred while submitting expert report for appointment {appointmentId}. " +
+                            $"Expert {expertId} attempted to submit report. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"Stack Trace: {ex.StackTrace}. " +
+                            $"ACTION REQUIRED: Review error - report submission failed. Expert may need to retry.",
+                    userId: expertId,
+                    source: "AppointmentService.SubmitExpertReportAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId,
+                    additionalData: new { 
+                        AppointmentId = appointmentId,
+                        ExpertId = expertId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
                 throw;
             }
         }

@@ -483,7 +483,10 @@ namespace newApi.Services
                 StripeStatusDetails = expertProfile.StripeStatusDetails,
                 OnboardingCompleted = expertProfile.OnboardingCompleted,
                 IsOnVacation = expertProfile.IsOnVacation,
-                CurrentAvailability = availabilityDto
+                CurrentAvailability = availabilityDto,
+                // ✅ FUTURE REQUIREMENTS
+                StripeFutureRequirements = expertProfile.StripeFutureRequirements,
+                StripeFutureDueAt = expertProfile.StripeFutureDueAt
             };
         }
 
@@ -705,6 +708,9 @@ namespace newApi.Services
                     StripeStatus = expertProfile.StripeStatus,
                     StripeStatusDetails = expertProfile.StripeStatusDetails,
                     OnboardingCompleted = expertProfile.OnboardingCompleted,
+                    // ✅ FUTURE REQUIREMENTS
+                    StripeFutureRequirements = expertProfile.StripeFutureRequirements,
+                    StripeFutureDueAt = expertProfile.StripeFutureDueAt,
                     IsOnVacation = expertProfile.IsOnVacation
                 };
 

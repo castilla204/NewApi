@@ -325,6 +325,16 @@ namespace newApi.Controllers
                     }
                 }
 
+                // 🚨 VALIDACIÓN CRÍTICA: Verificar que el experto no se contrate a sí mismo
+                // ✅ IMPORTANTE: Esta validación DEBE hacerse ANTES de crear el checkout session
+                // para evitar perder comisiones de Stripe al hacer refunds
+                if (service.ExpertProfile != null && service.ExpertProfile.UserId == userId)
+                {
+                    _logger.LogError("Expert cannot hire themselves: expertUserId={ExpertUserId}, userId={UserId}", 
+                        service.ExpertProfile.UserId, userId);
+                    return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
+                }
+
                 var strategy = _context.Database.CreateExecutionStrategy();
                 return await strategy.ExecuteAsync(async () =>
                 {
@@ -345,7 +355,7 @@ namespace newApi.Controllers
                                     PriceData = new SessionLineItemPriceDataOptions
                                     {
                                         Currency = "eur",
-                                        UnitAmount = (long)(amountToCharge * 100),
+                                        UnitAmount = checked((long)Math.Round(amountToCharge * 100)),
                                         ProductData = new SessionLineItemPriceDataProductDataOptions
                                         {
                                             Name = $"Payment for Service {service.Id}"
@@ -355,7 +365,7 @@ namespace newApi.Controllers
                                 }
                             },
                             Mode = "payment",
-                            SuccessUrl = $"{domain}/success?userId={userId}&serviceId={service.Id}",
+                            SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}&serviceId={service.Id}",
                             CancelUrl = $"{domain}/cancel",
                             CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "unknown@example.com",
                             Metadata = new Dictionary<string, string>
@@ -366,6 +376,12 @@ namespace newApi.Controllers
                                 { "pendingHire", "true" },
                                 { "searchData", JsonSerializer.Serialize(searchDto) },
                                 { "parameters", JsonSerializer.Serialize(parameterDto) }
+                            },
+                            // ✅ CAPTURA MANUAL: Autoriza el pago pero no lo captura hasta validar todo en el webhook
+                            // Esto evita perder comisiones si algo falla después del pago
+                            PaymentIntentData = new SessionPaymentIntentDataOptions
+                            {
+                                CaptureMethod = "manual"
                             }
                         };
 
@@ -1082,7 +1098,10 @@ namespace newApi.Controllers
                         StripeStatusDetails = expertProfile.StripeStatusDetails,
                         OnboardingCompleted = expertProfile.OnboardingCompleted,
                         IsOnVacation = expertProfile.IsOnVacation,
-                        CurrentAvailability = availabilityDto // ✅ NUEVO: Horarios de disponibilidad
+                        CurrentAvailability = availabilityDto, // ✅ NUEVO: Horarios de disponibilidad
+                        // ✅ FUTURE REQUIREMENTS
+                        StripeFutureRequirements = expertProfile.StripeFutureRequirements,
+                        StripeFutureDueAt = expertProfile.StripeFutureDueAt
                     };
                 }
 

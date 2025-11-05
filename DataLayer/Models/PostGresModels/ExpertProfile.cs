@@ -21,6 +21,8 @@
         public bool OnboardingCompleted { get; set; } = false; // Estado del onboarding
         public StripeStatus StripeStatus { get; set; } = StripeStatus.NotRequested; // Estado de la solicitud Stripe
         public string? StripeStatusDetails { get; set; } // Detalles específicos del estado para el frontend
+        public string? StripeFutureRequirements { get; set; } // ✅ FUTURE REQUIREMENTS: Requirements que se deben completar en el futuro (eventually_due, past_due)
+        public DateTime? StripeFutureDueAt { get; set; } // ✅ FUTURE REQUIREMENTS: Fecha estimada de vencimiento de future requirements
         public bool IsOnVacation { get; set; } = false; // Modo vacaciones - oculta servicios del experto
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public string Latitude { get; set; }

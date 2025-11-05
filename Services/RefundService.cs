@@ -5,6 +5,7 @@ using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.enums;
 using newApi.DataLayer.Models;
 using newApi.Common;
+using System;
 
 namespace newApi.Services
 {
@@ -42,7 +43,7 @@ namespace newApi.Services
             {
                 // Bloqueo a nivel de fila para consistencia
                 var searchHire = await _context.SearchHires
-                    .FromSqlRaw("SELECT * FROM \"SearchHires\" WHERE \"Id\" = {0} FOR UPDATE", searchHireId)
+                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {searchHireId} FOR UPDATE")
                     .Include(sh => sh.Status)
                     .Include(sh => sh.Client)
                     .Include(sh => sh.Expert)
@@ -138,9 +139,35 @@ namespace newApi.Services
                     }
                 }
 
+                // MODIFICACIÓN: Validar que los porcentajes sumen 100% para evitar distribuciones incorrectas (best practice para configs financieras)
+                if (Math.Abs(config.ClientPercentage + config.ExpertPercentage + config.PlatformPercentage - 100m) > 0.01m)
+                {
+                    _logger.LogError("❌ INVALID CONFIG - Percentages do not sum to 100: Client={ClientPct}%, Expert={ExpertPct}%, Platform={PlatformPct}%",
+                        config.ClientPercentage, config.ExpertPercentage, config.PlatformPercentage);
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Invalid money distribution config",
+                        details: $"Percentages do not sum to 100 for status {statusValue}",
+                        userId: initiatedByUserId ?? searchHire.ClientId,
+                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { Status = statusValue, Config = config }
+                    );
+                    return false;
+                }
+
                 var clientRefundAmount = searchHire.Amount * (config.ClientPercentage / 100);
                 var expertAmount = searchHire.Amount * (config.ExpertPercentage / 100);
                 var platformAmount = searchHire.Amount * (config.PlatformPercentage / 100);
+
+                // MODIFICACIÓN: Estimar fees de Stripe y warning si platformAmount no cubre (para evitar pérdidas, según guías 2025)
+                var stripeFeeEstimate = searchHire.Amount * 0.029m + 0.30m; // 2.9% + 0.30€ estándar para EUR
+                if (platformAmount < stripeFeeEstimate)
+                {
+                    _logger.LogWarning("⚠️ LOW PLATFORM AMOUNT - PlatformAmount={Platform}€ may not cover estimated Stripe fees ({Fee}€)",
+                        platformAmount, stripeFeeEstimate);
+                    // Opcional: Fallar si es crítico, pero por ahora warning
+                }
 
                 _logger.LogInformation("💰 DISTRIBUTION - SH={SearchHireId} Client={Client}€({ClientPct}%) Expert={Expert}€({ExpertPct}%) Platform={Platform}€({PlatformPct}%)",
                     searchHireId, clientRefundAmount, config.ClientPercentage, expertAmount, config.ExpertPercentage, platformAmount, config.PlatformPercentage);
@@ -157,78 +184,184 @@ namespace newApi.Services
                 if (servicePayment == null)
                 {
                     _logger.LogError("❌ ORIGINAL PAYMENT NOT FOUND - SearchHireId={SearchHireId}", searchHireId);
+                    
+                    // 🚨 LOG CRÍTICO: Pago original no encontrado (una sola vez, con toda la información)
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Original payment not found - money distribution failed",
+                        details: $"SearchHire {searchHireId} finalization failed because the original payment (ServicePayment) transaction was not found in the database. " +
+                                $"This indicates a data consistency issue. " +
+                                $"Status: {statusValue}, Reason: {reason}, ClientId: {searchHire.ClientId}, ExpertId: {searchHire.ExpertId}, Amount: {searchHire.Amount}€. " +
+                                $"ACTION REQUIRED: Verify FinancialTransactions table for SearchHire {searchHireId} and ServicePayment transaction.",
+                        userId: initiatedByUserId ?? searchHire.ClientId,
+                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { 
+                            Status = statusValue,
+                            Reason = reason,
+                            ClientId = searchHire.ClientId,
+                            ExpertId = searchHire.ExpertId,
+                            Amount = searchHire.Amount,
+                            ClientRefundAmount = clientRefundAmount,
+                            ExpertTransferAmount = expertAmount,
+                            PlatformAmount = platformAmount
+                        }
+                    );
                     return false;
                 }
 
-                // Pre-check: si habrá transferencia al experto, validar saldo disponible en Stripe para evitar estados parciales
-                if (expertAmount > 0)
+                // MODIFICACIÓN: Verificar balance disponible antes de cualquier outflow (best practice Stripe 2025 para evitar negativos)
+                try
                 {
-                    try
+                    var balanceService = new BalanceService();
+                    var balance = await balanceService.GetAsync();
+                    var availableEur = balance.Available?.FirstOrDefault(b => b.Currency == "eur")?.Amount / 100.0m ?? 0;
+                    var totalOutflow = clientRefundAmount + expertAmount;
+                    if (availableEur < totalOutflow)
                     {
-                        var balanceSvc = new BalanceService();
-                        var balance = await balanceSvc.GetAsync();
-                        var availableInEur = balance.Available?.Where(b => b.Currency == "eur").Sum(b => b.Amount) ?? 0;
-                        var requiredCents = (long)(expertAmount * 100);
-                        if (availableInEur < requiredCents)
-                        {
-                            _logger.LogError("❌ INSUFFICIENT PLATFORM BALANCE - Required={Required}¢, Available={Available}¢", requiredCents, availableInEur);
-                            
-                            // 🚨 LOG CRÍTICO: Especificar transacciones pendientes
-                            await _loggingService.LogCriticalAsync(
-                                message: "CRITICAL: Money distribution failed - insufficient platform balance",
-                                details: $"SearchHire {searchHireId} finalization failed due to insufficient Stripe balance. " +
-                                        $"Required: {expertAmount:F2}€ for expert transfer, Available: {availableInEur/100:F2}€. " +
-                                        $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
-                                        $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) " +
-                                        $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) " +
-                                        $"3) Platform retains {platformAmount:F2}€. " +
-                                        $"Configuration: Client {config.ClientPercentage}%, Expert {config.ExpertPercentage}%, Platform {config.PlatformPercentage}%",
-                                userId: initiatedByUserId ?? searchHire.ClientId,
-                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
-                                relatedEntityType: "SearchHire",
-                                relatedEntityId: searchHireId,
-                                additionalData: new { 
-                                    Status = statusValue,
-                                    RequiredAmount = expertAmount,
-                                    AvailableAmount = availableInEur/100,
-                                    ClientRefundAmount = clientRefundAmount,
-                                    ExpertTransferAmount = expertAmount,
-                                    PlatformAmount = platformAmount,
-                                    ClientId = searchHire.ClientId,
-                                    ExpertId = searchHire.ExpertId,
-                                    ClientName = searchHire.Client?.Name,
-                                    ExpertName = searchHire.Expert?.Name
-                                }
-                            );
-                            
-                            return false;
-                        }
-                    }
-                    catch (Exception balEx)
-                    {
-                        _logger.LogError(balEx, "❌ Error checking Stripe balance before transfer");
-                        
-                        // 🚨 LOG CRÍTICO: Error al verificar saldo
+                        _logger.LogError("❌ INSUFFICIENT BALANCE - Available={Available}€, Required={Required}€ for SH={SearchHireId}",
+                            availableEur, totalOutflow, searchHireId);
+                        // 🚨 LOG CRÍTICO: Balance insuficiente (una sola vez, con información completa)
+                        // IMPORTANTE: Este log se crea ANTES de entrar en la transacción, así que debe estar disponible inmediatamente
                         await _loggingService.LogCriticalAsync(
-                            message: "CRITICAL: Error checking Stripe balance for money distribution",
-                            details: $"SearchHire {searchHireId} finalization failed due to error checking Stripe balance. " +
-                                    $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
-                                    $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) " +
-                                    $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) " +
-                                    $"3) Platform retains {platformAmount:F2}€. " +
-                                    $"Error: {balEx.Message}",
+                            message: "CRITICAL: Insufficient Stripe platform balance for money distribution",
+                            details: $"SearchHire {searchHireId} finalization failed due to insufficient Stripe platform balance. " +
+                                    $"Available Balance: {availableEur}€, Required Outflow: {totalOutflow}€ (Client Refund: {clientRefundAmount}€, Expert Transfer: {expertAmount}€). " +
+                                    $"Distribution Plan: Client={config.ClientPercentage}%, Expert={config.ExpertPercentage}%, Platform={config.PlatformPercentage}%. " +
+                                    $"Status: {statusValue}, Reason: {reason}, PaymentIntentId: {servicePayment.StripePaymentIntentId}. " +
+                                    $"ACTION REQUIRED: Wait for balance to be available (from PaymentIntent capture) or manually verify Stripe balance and retry distribution.",
                             userId: initiatedByUserId ?? searchHire.ClientId,
                             source: "StripeRefundService.ProcessMoneyDistributionAsync",
                             relatedEntityType: "SearchHire",
                             relatedEntityId: searchHireId,
                             additionalData: new { 
                                 Status = statusValue,
-                                Error = balEx.Message,
+                                Reason = reason,
+                                AvailableBalance = availableEur,
+                                TotalOutflow = totalOutflow,
                                 ClientRefundAmount = clientRefundAmount,
                                 ExpertTransferAmount = expertAmount,
                                 PlatformAmount = platformAmount,
-                                ClientId = searchHire.ClientId,
-                                ExpertId = searchHire.ExpertId
+                                PaymentIntentId = servicePayment.StripePaymentIntentId
+                            }
+                        );
+                        
+                        // ✅ NO necesitamos delay - LoggingService usa su propio DbContext scoped
+                        // que se commitea independientemente de la transacción de RefundService
+                        // Esto asegura que el log sea visible inmediatamente post-commit sin interferencia
+                        return false;
+                    }
+                    _logger.LogInformation("✅ BALANCE VERIFIED - Available={Available}€ >= Required={Required}€", availableEur, totalOutflow);
+                }
+                catch (StripeException balanceEx)
+                {
+                    _logger.LogError(balanceEx, "❌ Error checking platform balance before distribution");
+                    
+                    // 🚨 LOG CRÍTICO: Error al verificar balance (una sola vez, con toda la información)
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Error checking Stripe balance - money distribution failed",
+                        details: $"SearchHire {searchHireId} finalization failed due to error checking Stripe platform balance. " +
+                                $"Stripe Error: {balanceEx.Message}, Type: {balanceEx.StripeError?.Type}, Code: {balanceEx.StripeError?.Code}. " +
+                                $"Required outflow: {clientRefundAmount + expertAmount}€ (Client: {clientRefundAmount}€, Expert: {expertAmount}€). " +
+                                $"ACTION REQUIRED: Verify Stripe balance manually and retry distribution if balance is sufficient.",
+                        userId: initiatedByUserId ?? searchHire.ClientId,
+                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { 
+                            Status = statusValue,
+                            StripeError = balanceEx.Message,
+                            StripeErrorType = balanceEx.StripeError?.Type,
+                            StripeErrorCode = balanceEx.StripeError?.Code,
+                            RequiredOutflow = clientRefundAmount + expertAmount,
+                            ClientRefundAmount = clientRefundAmount,
+                            ExpertTransferAmount = expertAmount
+                        }
+                    );
+                    return false;
+                }
+
+                // ✅ Verificar que el PaymentIntent esté capturado antes de intentar Transfer
+                if (expertAmount > 0)
+                {
+                    try
+                    {
+                        // ✅ Verificar que el PaymentIntent esté capturado antes de intentar Transfer
+                        var paymentIntentService = new PaymentIntentService();
+                        var paymentIntent = await paymentIntentService.GetAsync(servicePayment.StripePaymentIntentId);
+                        
+                        if (paymentIntent.Status != "succeeded")
+                        {
+                            _logger.LogError("❌ PAYMENT INTENT NOT CAPTURED - PaymentIntentId={PaymentIntentId}, Status={Status}, Cannot transfer to expert",
+                                servicePayment.StripePaymentIntentId, paymentIntent.Status);
+                            
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Money distribution failed - PaymentIntent not captured",
+                                details: $"SearchHire {searchHireId} finalization failed because PaymentIntent {servicePayment.StripePaymentIntentId} is not in 'succeeded' status. " +
+                                        $"Current status: {paymentIntent.Status}. " +
+                                        $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
+                                        $"1) Ensure PaymentIntent is captured " +
+                                        $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) " +
+                                        $"3) Platform retains {platformAmount:F2}€.",
+                                userId: initiatedByUserId ?? searchHire.ClientId,
+                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                additionalData: new { 
+                                    Status = statusValue,
+                                    PaymentIntentId = servicePayment.StripePaymentIntentId,
+                                    PaymentIntentStatus = paymentIntent.Status,
+                                    ExpertTransferAmount = expertAmount,
+                                    PlatformAmount = platformAmount,
+                                    ExpertId = searchHire.ExpertId
+                                }
+                            );
+                            
+                            return false;
+                        }
+                        
+                        _logger.LogInformation("✅ PAYMENT INTENT VERIFIED - PaymentIntentId={PaymentIntentId}, Status={Status}, Ready for transfer",
+                            servicePayment.StripePaymentIntentId, paymentIntent.Status);
+                    }
+                    catch (StripeException stripeEx)
+                    {
+                        _logger.LogError(stripeEx, "❌ Error verifying PaymentIntent before transfer - PaymentIntentId={PaymentIntentId}",
+                            servicePayment.StripePaymentIntentId);
+                        
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Error verifying PaymentIntent for money distribution",
+                            details: $"SearchHire {searchHireId} finalization failed due to error verifying PaymentIntent. " +
+                                    $"PaymentIntentId: {servicePayment.StripePaymentIntentId}, Error: {stripeEx.Message}",
+                            userId: initiatedByUserId ?? searchHire.ClientId,
+                            source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId,
+                            additionalData: new { 
+                                Status = statusValue,
+                                PaymentIntentId = servicePayment.StripePaymentIntentId,
+                                Error = stripeEx.Message
+                            }
+                        );
+                        
+                        return false;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "❌ Error verifying PaymentIntent before transfer - PaymentIntentId={PaymentIntentId}",
+                            servicePayment.StripePaymentIntentId);
+                        
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Error verifying PaymentIntent for money distribution",
+                            details: $"SearchHire {searchHireId} finalization failed due to error verifying PaymentIntent. " +
+                                    $"PaymentIntentId: {servicePayment.StripePaymentIntentId}, Error: {ex.Message}",
+                            userId: initiatedByUserId ?? searchHire.ClientId,
+                            source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId,
+                            additionalData: new { 
+                                Status = statusValue,
+                                PaymentIntentId = servicePayment.StripePaymentIntentId,
+                                Error = ex.Message
                             }
                         );
                         
@@ -247,11 +380,15 @@ namespace newApi.Services
                     {
                         transaction = await _context.Database.BeginTransactionAsync();
                     }
+                    // MODIFICACIÓN: Declarar variables fuera del try para acceso en catch blocks
+                    string createdTransferId = null;
+                    string createdRefundId = null;
+                    
                     try
                     {
-                        var idempotencyKey = $"sh:{searchHireId}:status:{statusValue}";
+                        // MODIFICACIÓN: Usar UUID para idempotency key (mejor que string custom, según docs 2025)
+                        var idempotencyKey = Guid.NewGuid().ToString();
 
-                        string createdTransferId = null;
                         // Si hay refund y transfer, ejecutar primero la transferencia y después el refund; si el refund falla, revertir la transferencia
                         var needsRefund = clientRefundAmount > 0;
                         var needsTransfer = expertAmount > 0 && searchHire.ExpertId.HasValue;
@@ -297,6 +434,29 @@ namespace newApi.Services
                                 return false;
                             }
 
+                            // MODIFICACIÓN: Chequear status de connected account (best practice 2025 para cumplimiento)
+                            var accountService = new AccountService();
+                            var expertAccount = await accountService.GetAsync(expertStripeAccountId);
+                            if (expertAccount.ChargesEnabled == false || expertAccount.PayoutsEnabled == false)
+                            {
+                                _logger.LogError("❌ EXPERT ACCOUNT NOT ENABLED - AccountId={AccountId}, ChargesEnabled={Charges}, PayoutsEnabled={Payouts}",
+                                    expertStripeAccountId, expertAccount.ChargesEnabled, expertAccount.PayoutsEnabled);
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Expert account not enabled for transfers",
+                                    details: $"Expert {searchHire.ExpertId} account {expertStripeAccountId} is not fully verified.",
+                                    userId: searchHire.ExpertId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                    relatedEntityType: "Account",
+                                    relatedEntityId: (int)searchHire.ExpertId,
+                                    additionalData: new { AccountId = expertStripeAccountId, ChargesEnabled = expertAccount.ChargesEnabled, PayoutsEnabled = expertAccount.PayoutsEnabled }
+                                );
+                                if (transaction != null)
+                                {
+                                await transaction.RollbackAsync();
+                                }
+                                return false;
+                            }
+
                             var transferOptions = new TransferCreateOptions
                             {
                                 Amount = (long)(expertAmount * 100),
@@ -304,23 +464,47 @@ namespace newApi.Services
                                 Destination = expertStripeAccountId,
                                 Metadata = new Dictionary<string, string>
                                 {
-                                    { "idempotencyKey", idempotencyKey },
                                     { "searchHireId", searchHireId.ToString() },
                                     { "statusValue", statusValue },
                                     { "clientPercentage", config.ClientPercentage.ToString() },
                                     { "expertPercentage", config.ExpertPercentage.ToString() },
                                     { "platformPercentage", config.PlatformPercentage.ToString() },
-                                    { "reason", reason }
+                                    { "reason", reason },
+                                    { "clientId", searchHire.ClientId.ToString() }, // MODIFICACIÓN: Más metadata para trazabilidad
+                                    { "expertId", searchHire.ExpertId?.ToString() ?? "N/A" }
                                 }
                             };
 
+                            // MODIFICACIÓN: Idempotency correcta con RequestOptions (antes estaba en metadata, lo cual no funciona)
+                            var transferRequestOptions = new RequestOptions
+                            {
+                                IdempotencyKey = idempotencyKey
+                            };
+
                             var transferSvc = new TransferService();
-                            var transfer = await transferSvc.CreateAsync(transferOptions);
+
+                            // MODIFICACIÓN: Reintento simple para transients (hasta 3 veces, sin Polly)
+                            Transfer transfer = null;
+                            const int maxRetries = 3;
+                            for (int attempt = 1; attempt <= maxRetries; attempt++)
+                            {
+                                try
+                                {
+                                    transfer = await transferSvc.CreateAsync(transferOptions, transferRequestOptions);
+                                    break;
+                                }
+                                catch (StripeException ex) when ((int)ex.HttpStatusCode >= 500 || (int)ex.HttpStatusCode == 429) // Server errors or rate limits
+                                {
+                                    if (attempt == maxRetries)
+                                        throw;
+                                    _logger.LogWarning(ex, "Retry {Attempt}/{Max} for transfer - Transient error", attempt, maxRetries);
+                                    await Task.Delay(1000 * attempt); // Exponential backoff simple
+                                }
+                            }
                             createdTransferId = transfer.Id;
                         }
 
                         // Refund después (si aplica)
-                        string createdRefundId = null;
                         if (needsRefund)
                         {
                             var refundOptions = new RefundCreateOptions
@@ -330,21 +514,45 @@ namespace newApi.Services
                                 Reason = RefundReasons.RequestedByCustomer,
                                 Metadata = new Dictionary<string, string>
                                 {
-                                    { "idempotencyKey", idempotencyKey },
                                     { "searchHireId", searchHireId.ToString() },
                                     { "statusValue", statusValue },
                                     { "clientPercentage", config.ClientPercentage.ToString() },
                                     { "expertPercentage", config.ExpertPercentage.ToString() },
                                     { "platformPercentage", config.PlatformPercentage.ToString() },
                                     { "reason", reason },
-                                    { "originalTransactionId", servicePayment.Id.ToString() }
+                                    { "originalTransactionId", servicePayment.Id.ToString() },
+                                    { "clientId", searchHire.ClientId.ToString() } // MODIFICACIÓN: Más metadata
                                 }
+                            };
+
+                            // MODIFICACIÓN: Idempotency correcta con RequestOptions
+                            var refundRequestOptions = new RequestOptions
+                            {
+                                IdempotencyKey = idempotencyKey + "-refund" // Unique por operación para evitar colisiones
                             };
 
                             try
                             {
                                 var refundSvc = new RefundService();
-                                var refund = await refundSvc.CreateAsync(refundOptions);
+
+                                // MODIFICACIÓN: Reintento simple similar
+                                Refund refund = null;
+                                const int maxRetries = 3;
+                                for (int attempt = 1; attempt <= maxRetries; attempt++)
+                                {
+                                    try
+                                    {
+                                        refund = await refundSvc.CreateAsync(refundOptions, refundRequestOptions);
+                                        break;
+                                    }
+                                    catch (StripeException ex) when ((int)ex.HttpStatusCode >= 500 || (int)ex.HttpStatusCode == 429)
+                                    {
+                                        if (attempt == maxRetries)
+                                            throw;
+                                        _logger.LogWarning(ex, "Retry {Attempt}/{Max} for refund - Transient error", attempt, maxRetries);
+                                        await Task.Delay(1000 * attempt);
+                                    }
+                                }
                                 createdRefundId = refund.Id;
                             }
                             catch (StripeException refundEx)
@@ -355,10 +563,10 @@ namespace newApi.Services
                                     try
                                     {
                                         var reversalSvc = new TransferReversalService();
-                                        await reversalSvc.CreateAsync(createdTransferId, new TransferReversalCreateOptions
-                                        {
-                                            // Revertir el total transferido
-                                        });
+                                        // MODIFICACIÓN: Agregar idempotency a reversal también
+                                        var reversalOptions = new TransferReversalCreateOptions { Amount = (long)(expertAmount * 100) }; // Revertir total
+                                        var reversalRequestOptions = new RequestOptions { IdempotencyKey = idempotencyKey + "-reversal" };
+                                        await reversalSvc.CreateAsync(createdTransferId, reversalOptions, reversalRequestOptions);
                                         _logger.LogInformation("✅ TRANSFER REVERSED - TransferId={TransferId} after refund failure", createdTransferId);
                                     }
                                     catch (Exception revEx)
@@ -483,14 +691,36 @@ namespace newApi.Services
                         await transaction.RollbackAsync();
                         }
                         _logger.LogError(ex, "Stripe error processing money distribution for SH={SearchHireId}: {Error}", searchHireId, ex.Message);
+                        
+                        // 🚨 LOG CRÍTICO: Error de Stripe durante distribución (una sola vez, con información completa)
                         await _loggingService.LogCriticalAsync(
-                            message: "CRITICAL: Stripe error in money distribution",
-                            details: ex.ToString(),
+                            message: "CRITICAL: Stripe exception during money distribution transaction",
+                            details: $"Stripe exception occurred during money distribution transaction for SearchHire {searchHireId}. " +
+                                    $"Distribution Plan: Client={clientRefundAmount}€ ({config.ClientPercentage}%), Expert={expertAmount}€ ({config.ExpertPercentage}%), Platform={platformAmount}€ ({config.PlatformPercentage}%). " +
+                                    $"Stripe Error: {ex.Message}, Type: {ex.StripeError?.Type}, Code: {ex.StripeError?.Code}, DeclineCode: {ex.StripeError?.DeclineCode}, Param: {ex.StripeError?.Param}. " +
+                                    $"PaymentIntentId: {servicePayment.StripePaymentIntentId}, ExpertAccountId: {searchHire.Expert?.ExpertProfile?.StripeAccountId}. " +
+                                    $"Transaction Status: Transfer={(createdTransferId != null ? $"Created ({createdTransferId})" : "Not attempted")}, Refund={(createdRefundId != null ? $"Created ({createdRefundId})" : "Not attempted")}. " +
+                                    $"ACTION REQUIRED: Review Stripe error details and retry distribution if applicable. If transfer was created, verify if reversal is needed.",
                             userId: initiatedByUserId ?? searchHire.ClientId,
                             source: "StripeRefundService.ProcessMoneyDistributionAsync",
                             relatedEntityType: "SearchHire",
                             relatedEntityId: searchHireId,
-                            additionalData: new { Status = statusValue, Error = ex.Message, StripeType = ex.StripeError?.Type, StripeCode = ex.StripeError?.Code }
+                            additionalData: new { 
+                                Status = statusValue,
+                                Reason = reason,
+                                ClientRefundAmount = clientRefundAmount,
+                                ExpertTransferAmount = expertAmount,
+                                PlatformAmount = platformAmount,
+                                PaymentIntentId = servicePayment.StripePaymentIntentId,
+                                ExpertAccountId = searchHire.Expert?.ExpertProfile?.StripeAccountId,
+                                CreatedTransferId = createdTransferId,
+                                CreatedRefundId = createdRefundId,
+                                StripeError = ex.Message,
+                                StripeErrorType = ex.StripeError?.Type,
+                                StripeErrorCode = ex.StripeError?.Code,
+                                StripeDeclineCode = ex.StripeError?.DeclineCode,
+                                StripeParam = ex.StripeError?.Param
+                            }
                         );
                         return false;
                     }
@@ -502,14 +732,36 @@ namespace newApi.Services
                         await transaction.RollbackAsync();
                         }
                         _logger.LogError(ex, "Error processing money distribution for SH={SearchHireId}: {Error}", searchHireId, ex.Message);
+                        
+                        // 🚨 LOG CRÍTICO: Error general durante distribución (una sola vez, con información completa)
                         await _loggingService.LogCriticalAsync(
-                            message: "CRITICAL: Error in money distribution",
-                            details: ex.ToString(),
+                            message: "CRITICAL: Unexpected exception during money distribution transaction",
+                            details: $"An unexpected exception occurred during money distribution transaction for SearchHire {searchHireId}. " +
+                                    $"Distribution Plan: Client={clientRefundAmount}€ ({config.ClientPercentage}%), Expert={expertAmount}€ ({config.ExpertPercentage}%), Platform={platformAmount}€ ({config.PlatformPercentage}%). " +
+                                    $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                                    $"PaymentIntentId: {servicePayment.StripePaymentIntentId}, ExpertAccountId: {searchHire.Expert?.ExpertProfile?.StripeAccountId}. " +
+                                    $"Transaction Status: Transfer={(createdTransferId != null ? $"Created ({createdTransferId})" : "Not attempted")}, Refund={(createdRefundId != null ? $"Created ({createdRefundId})" : "Not attempted")}. " +
+                                    $"Stack Trace: {ex.StackTrace}. " +
+                                    $"ACTION REQUIRED: Review exception details. If transfer/refund were created, verify if reversal is needed.",
                             userId: initiatedByUserId ?? searchHire.ClientId,
                             source: "StripeRefundService.ProcessMoneyDistributionAsync",
                             relatedEntityType: "SearchHire",
                             relatedEntityId: searchHireId,
-                            additionalData: new { Status = statusValue, Error = ex.Message }
+                            additionalData: new { 
+                                Status = statusValue,
+                                Reason = reason,
+                                ClientRefundAmount = clientRefundAmount,
+                                ExpertTransferAmount = expertAmount,
+                                PlatformAmount = platformAmount,
+                                PaymentIntentId = servicePayment.StripePaymentIntentId,
+                                ExpertAccountId = searchHire.Expert?.ExpertProfile?.StripeAccountId,
+                                CreatedTransferId = createdTransferId,
+                                CreatedRefundId = createdRefundId,
+                                ErrorType = ex.GetType().Name,
+                                ErrorMessage = ex.Message,
+                                StackTrace = ex.StackTrace,
+                                InnerException = ex.InnerException?.Message
+                            }
                         );
                         return false;
                     }
@@ -518,14 +770,29 @@ namespace newApi.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in ProcessMoneyDistributionAsync for SH={SearchHireId}: {Error}", searchHireId, ex.Message);
+                
+                // 🚨 LOG CRÍTICO: Error general fuera de la transacción (una sola vez, con información completa)
+                // Este error ocurre ANTES de entrar en la transacción, por lo que no hay datos de distribución calculados
                 await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: ProcessMoneyDistributionAsync failed",
-                    details: ex.ToString(),
+                    message: "CRITICAL: ProcessMoneyDistributionAsync failed - outer catch",
+                    details: $"An unexpected exception occurred in ProcessMoneyDistributionAsync before entering transaction for SearchHire {searchHireId}. " +
+                            $"Status: {statusValue}, Reason: {reason}, InitiatedByUserId: {initiatedByUserId}. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"Stack Trace: {ex.StackTrace}. " +
+                            $"ACTION REQUIRED: Review error - this indicates a pre-transaction validation, data loading, or configuration issue.",
                     userId: initiatedByUserId,
                     source: "StripeRefundService.ProcessMoneyDistributionAsync",
                     relatedEntityType: "SearchHire",
                     relatedEntityId: searchHireId,
-                    additionalData: new { Status = statusValue, Error = ex.Message }
+                    additionalData: new { 
+                        Status = statusValue,
+                        Reason = reason,
+                        InitiatedByUserId = initiatedByUserId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
                 );
                 return false;
             }

@@ -54,6 +54,10 @@ namespace newApi.Services
 
         private async Task LogAsync(string logLevel, string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null)
         {
+            // ✅ TIMING: Capturar timestamp preciso al inicio (ISO 8601 con milisegundos)
+            var logStartTime = DateTime.UtcNow;
+            var logStartTimeUnix = ((DateTimeOffset)logStartTime).ToUnixTimeMilliseconds();
+            
             try
             {
                 // Obtener o crear el tipo de log
@@ -64,14 +68,38 @@ namespace newApi.Services
                     logType = await CreateDefaultLogTypeAsync(logLevel);
                 }
 
-                // Serializar datos adicionales si existen
-                string? additionalDataJson = null;
+                // ✅ TIMING: Agregar información de timing automáticamente al additionalData
+                // Serializar additionalData original si existe
+                string? originalAdditionalDataJson = null;
                 if (additionalData != null)
                 {
-                    additionalDataJson = JsonSerializer.Serialize(additionalData);
+                    originalAdditionalDataJson = JsonSerializer.Serialize(additionalData);
                 }
 
-                // Crear el log
+                // Combinar additionalData original con timing info en un diccionario
+                var enhancedAdditionalData = new Dictionary<string, object>();
+                
+                // Si hay additionalData original, deserializarlo y agregarlo al diccionario
+                if (!string.IsNullOrEmpty(originalAdditionalDataJson))
+                {
+                    var originalDict = JsonSerializer.Deserialize<Dictionary<string, object>>(originalAdditionalDataJson);
+                    if (originalDict != null)
+                    {
+                        foreach (var kvp in originalDict)
+                        {
+                            enhancedAdditionalData[kvp.Key] = kvp.Value;
+                        }
+                    }
+                }
+
+                // ✅ TIMING: Agregar información de timing (siempre presente en todos los logs)
+                enhancedAdditionalData["LogStartTime"] = logStartTime.ToString("O"); // ISO 8601
+                enhancedAdditionalData["LogStartTimeUnix"] = logStartTimeUnix;
+                
+                // Serializar el diccionario completo con timing incluido
+                var additionalDataJson = JsonSerializer.Serialize(enhancedAdditionalData);
+
+                // Crear el log con timestamp preciso
                 var log = new Log
                 {
                     Message = message,
@@ -82,11 +110,28 @@ namespace newApi.Services
                     RelatedEntityType = relatedEntityType,
                     RelatedEntityId = relatedEntityId,
                     AdditionalData = additionalDataJson,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = logStartTime // ✅ TIMING: Usar timestamp capturado al inicio
                 };
 
                 _context.Logs.Add(log);
+                
+                // ✅ TIMING: Medir tiempo de ejecución de SaveChangesAsync
+                var saveStartTime = DateTime.UtcNow;
                 await _context.SaveChangesAsync();
+                var saveElapsedMs = (DateTime.UtcNow - saveStartTime).TotalMilliseconds;
+                var logEndTime = DateTime.UtcNow;
+                var totalLogElapsedMs = (logEndTime - logStartTime).TotalMilliseconds;
+                
+                // ✅ TIMING: Actualizar log con información de timing completa (SaveElapsedMs, LogEndTime, TotalLogElapsedMs)
+                var finalAdditionalDataDict = JsonSerializer.Deserialize<Dictionary<string, object>>(additionalDataJson);
+                if (finalAdditionalDataDict != null)
+                {
+                    finalAdditionalDataDict["SaveElapsedMs"] = saveElapsedMs;
+                    finalAdditionalDataDict["LogEndTime"] = logEndTime.ToString("O");
+                    finalAdditionalDataDict["TotalLogElapsedMs"] = totalLogElapsedMs;
+                    log.AdditionalData = JsonSerializer.Serialize(finalAdditionalDataDict);
+                    await _context.SaveChangesAsync(); // Actualizar con timing completo
+                }
 
                 // Si requiere notificación de administrador, procesar
                 if (logType.RequiresAdminNotification)

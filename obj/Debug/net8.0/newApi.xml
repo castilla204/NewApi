@@ -434,12 +434,6 @@
             Crea un enlace de cuenta de Stripe Connect para que el experto pueda actualizar sus datos bancarios
             </summary>
         </member>
-        <member name="M:newApi.Controllers.SubscriptionController.ProcessAutomaticRefundOnError(System.String,System.Exception,System.Int32,System.Int32)">
-            <summary>
-            Procesa refund automático cuando falla la creación de búsqueda después del pago
-            Siempre devuelve 100% porque no se creó nada
-            </summary>
-        </member>
         <member name="M:newApi.Controllers.SubscriptionController.LogCriticalRefundFailure(System.String,System.Int32,System.Int32,System.Exception)">
             <summary>
             Registra fallos críticos de refund para alertar a administradores
@@ -2405,6 +2399,18 @@
             <inheritdoc />
         </member>
         <member name="M:newApi.Migrations.RemoveUnusedAppointmentFields.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.AddStripeFutureRequirementsToExpertProfile">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddStripeFutureRequirementsToExpertProfile.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddStripeFutureRequirementsToExpertProfile.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddStripeFutureRequirementsToExpertProfile.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
         <member name="M:newApi.Services.AccountDeletionService.GetStatusIdByValueAsync(System.String)">

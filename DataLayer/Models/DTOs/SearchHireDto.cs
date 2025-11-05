@@ -111,6 +111,9 @@ namespace newApi.DataLayer.Models.DTOs
         public bool OnboardingCompleted { get; set; }
         public bool IsOnVacation { get; set; }
         public CurrentExpertAvailabilityDto? CurrentAvailability { get; set; }
+        // ✅ FUTURE REQUIREMENTS: Requirements que se deben completar en el futuro según Stripe
+        public string? StripeFutureRequirements { get; set; }
+        public DateTime? StripeFutureDueAt { get; set; }
     }
 
     public class UserDto

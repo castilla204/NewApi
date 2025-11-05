@@ -14,6 +14,9 @@ namespace newApi.DataLayer.Models.DTOs
         public string StripeStatus { get; set; }
         public string? StripeStatusDetails { get; set; }
         public bool CanAccessStripe { get; set; }
+        // ✅ FUTURE REQUIREMENTS: Requirements que se deben completar en el futuro según Stripe
+        public string? StripeFutureRequirements { get; set; }
+        public DateTime? StripeFutureDueAt { get; set; }
     }
 
     /// <summary>
@@ -33,6 +36,9 @@ namespace newApi.DataLayer.Models.DTOs
         public string StatusMessage { get; set; }
         public bool CanRetryOnboarding { get; set; }
         public string? RejectionReason { get; set; }
+        // ✅ FUTURE REQUIREMENTS: Requirements que se deben completar en el futuro según Stripe
+        public string? StripeFutureRequirements { get; set; }
+        public DateTime? StripeFutureDueAt { get; set; }
     }
 
     /// <summary>

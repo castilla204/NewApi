@@ -14,7 +14,6 @@ const client = new Client({
 async function populateColorsIfNeeded() {
     try {
         await client.connect();
-        console.log('🔌 Conectado a PostgreSQL');
 
         // Verificar si ya hay colores poblados
         const checkResult = await client.query(`
@@ -24,14 +23,11 @@ async function populateColorsIfNeeded() {
         `);
         
         const coloredCount = parseInt(checkResult.rows[0].count);
-        console.log(`📊 Estados con color: ${coloredCount}`);
 
         if (coloredCount > 0) {
-            console.log('✅ Los colores ya están poblados. No es necesario poblar de nuevo.');
             return;
         }
 
-        console.log('🎨 Poblando colores en SystemStatuses...');
 
         // Poblar colores para SearchHireStatus
         const searchHireColors = [
@@ -52,7 +48,6 @@ async function populateColorsIfNeeded() {
                 WHERE "StatusValue" = $4 AND "StatusType" = 'SearchHireStatus'
             `, [status.color, status.displayName, status.description, status.statusValue]);
             
-            console.log(`   ✅ ${status.statusValue}: ${status.color} - ${status.displayName}`);
         }
 
         // Poblar colores para AppointmentStatus
@@ -74,7 +69,6 @@ async function populateColorsIfNeeded() {
                 WHERE "StatusValue" = $4 AND "StatusType" = 'AppointmentStatus'
             `, [status.color, status.displayName, status.description, status.statusValue]);
             
-            console.log(`   ✅ ${status.statusValue}: ${status.color} - ${status.displayName}`);
         }
 
         // Verificar el resultado final
@@ -85,7 +79,6 @@ async function populateColorsIfNeeded() {
         `);
         
         const finalColoredCount = parseInt(finalResult.rows[0].count);
-        console.log(`\n🎉 Población completada! Estados con color: ${finalColoredCount}`);
 
         // Mostrar resumen de colores
         const summaryResult = await client.query(`
@@ -95,21 +88,17 @@ async function populateColorsIfNeeded() {
             ORDER BY "StatusType", "SortOrder"
         `);
 
-        console.log('\n📋 RESUMEN DE COLORES POBLADOS:');
         let currentType = '';
         summaryResult.rows.forEach(row => {
             if (row.StatusType !== currentType) {
                 currentType = row.StatusType;
-                console.log(`\n${currentType}:`);
             }
-            console.log(`   ${row.Color} - ${row.DisplayName} (${row.StatusValue})`);
         });
 
     } catch (error) {
         console.error('❌ Error:', error.message);
     } finally {
         await client.end();
-        console.log('\n🔌 Desconectado de PostgreSQL');
     }
 }
 

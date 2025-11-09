@@ -19,15 +19,12 @@ namespace newApi.Controllers
     public class ExpertAvailabilityController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<ExpertAvailabilityController> _logger;
-
         /// <summary>
         /// Constructor del controlador de disponibilidad de expertos
         /// </summary>
-        public ExpertAvailabilityController(AppDbContext context, ILogger<ExpertAvailabilityController> logger)
+        public ExpertAvailabilityController(AppDbContext context)
         {
             _context = context;
-            _logger = logger;
         }
 
         /// <summary>
@@ -83,7 +80,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving current availability");
                 return StatusCode(500, new { message = "Failed to retrieve availability" });
             }
         }
@@ -133,7 +129,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving availability history");
                 return StatusCode(500, new { message = "Failed to retrieve availability history" });
             }
         }

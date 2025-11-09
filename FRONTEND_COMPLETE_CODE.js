@@ -6,8 +6,6 @@
 
 export const updateConfig = async (configId, data) => {
   try {
-    console.log('🔄 Actualizando configuración ID:', configId);
-    console.log('📊 Datos a actualizar:', data);
 
     // Validar que los porcentajes sumen 100%
     const total = data.clientPercentage + data.expertPercentage + data.platformPercentage;
@@ -26,7 +24,6 @@ export const updateConfig = async (configId, data) => {
       isActive: data.isActive
     };
 
-    console.log('📤 Enviando datos:', submitData);
 
     // OPCIÓN A: Intentar PUT primero (si el servidor se reinicia)
     try {
@@ -35,11 +32,9 @@ export const updateConfig = async (configId, data) => {
         body: JSON.stringify(submitData)
       });
       
-      console.log('✅ PUT exitoso:', putResponse);
       return putResponse;
       
     } catch (putError) {
-      console.log('⚠️ PUT falló, usando POST como fallback');
       
       // OPCIÓN B: Usar POST como fallback (eliminar y crear)
       // Primero eliminar la configuración existente
@@ -51,7 +46,6 @@ export const updateConfig = async (configId, data) => {
         body: JSON.stringify(submitData)
       });
       
-      console.log('✅ POST exitoso:', postResponse);
       return postResponse;
     }
 
@@ -64,7 +58,6 @@ export const updateConfig = async (configId, data) => {
 // Función para eliminar configuración
 export const deleteConfig = async (configId) => {
   try {
-    console.log('🗑️ Eliminando configuración ID:', configId);
     
     // OPCIÓN A: Intentar DELETE primero
     try {
@@ -72,11 +65,9 @@ export const deleteConfig = async (configId) => {
         method: 'DELETE'
       });
       
-      console.log('✅ DELETE exitoso:', deleteResponse);
       return deleteResponse;
       
     } catch (deleteError) {
-      console.log('⚠️ DELETE no disponible, usando método alternativo');
       
       // OPCIÓN B: Desactivar en lugar de eliminar
       const deactivateResponse = await fetchApi(`/api/AppointmentConfig/appointment-status/${configId}`, {
@@ -92,7 +83,6 @@ export const deleteConfig = async (configId) => {
         })
       });
       
-      console.log('✅ Desactivación exitosa:', deactivateResponse);
       return deactivateResponse;
     }
 
@@ -111,7 +101,6 @@ const handleUpdateConfig = async (configId, formData) => {
     setLoading(true);
     setError(null);
 
-    console.log('🔄 Actualizando configuración:', { configId, formData });
 
     // Validar datos
     if (!formData.statusId || formData.statusId <= 0) {
@@ -210,7 +199,6 @@ const AppointmentStatusConfigForm = ({ config, onSave, onCancel }) => {
         isActive: formData.isActive
       };
 
-      console.log('Enviando datos:', submitData);
 
       // ✅ Llamar a la función onSave (que manejará PUT o POST según corresponda)
       await onSave(config?.id, submitData);

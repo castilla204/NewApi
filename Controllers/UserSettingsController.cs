@@ -15,12 +15,9 @@
         public class UserSettingsController : ControllerBase
         {
             private readonly AppDbContext _context;
-            private readonly ILogger<UserSettingsController> _logger;
-
-            public UserSettingsController(AppDbContext context, ILogger<UserSettingsController> logger)
+            public UserSettingsController(AppDbContext context)
             {
                 _context = context;
-                _logger = logger;
             }
 
             [HttpGet]
@@ -49,7 +46,6 @@
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error retrieving user settings");
                     return StatusCode(500, new { message = "Failed to retrieve settings" });
                 }
             }
@@ -91,7 +87,6 @@
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error updating user settings");
                     return StatusCode(500, new { message = "Failed to update settings" });
                 }
             }

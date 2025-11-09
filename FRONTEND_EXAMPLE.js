@@ -6,7 +6,6 @@
 
 async function loadAppointmentStatusConfigs() {
   try {
-    console.log('🔄 Cargando configuraciones...');
     
     const response = await fetch('/api/AppointmentConfig/appointment-status-configs');
     
@@ -15,7 +14,6 @@ async function loadAppointmentStatusConfigs() {
     }
     
     const configs = await response.json();
-    console.log('✅ Configuraciones cargadas:', configs);
     
     return configs;
   } catch (error) {
@@ -29,17 +27,8 @@ async function loadAppointmentStatusConfigs() {
 // ========================================
 
 function displayConfigs(configs) {
-  console.log('📊 Procesando configuraciones...');
   
   configs.forEach((config, index) => {
-    console.log(`\n--- Configuración ${index + 1} ---`);
-    console.log(`Estado: "${config.estado}"`);
-    console.log(`Cliente: ${config.cliente}%`);
-    console.log(`Experto: ${config.experto}%`);
-    console.log(`Plataforma: ${config.plataforma}%`);
-    console.log(`Activo: "${config.activo}"`);
-    console.log(`Categoría: "${config.categoryName}"`);
-    console.log(`Tipo de Servicio: "${config.serviceTypeCategoryName}"`);
   });
 }
 
@@ -96,7 +85,6 @@ function renderConfigTable(configs) {
   `;
   
   tableContainer.innerHTML = tableHTML;
-  console.log('✅ Tabla renderizada correctamente');
 }
 
 // ========================================
@@ -105,7 +93,6 @@ function renderConfigTable(configs) {
 
 async function createNewConfig(configData) {
   try {
-    console.log('🔄 Creando nueva configuración...', configData);
     
     // Validar que los porcentajes sumen 100%
     const total = configData.clientPercentage + configData.expertPercentage + configData.platformPercentage;
@@ -127,7 +114,6 @@ async function createNewConfig(configData) {
     }
     
     const newConfig = await response.json();
-    console.log('✅ Configuración creada:', newConfig);
     
     return newConfig;
   } catch (error) {
@@ -141,12 +127,10 @@ async function createNewConfig(configData) {
 // ========================================
 
 function editConfig(configId) {
-  console.log(`✏️ Editando configuración ID: ${configId}`);
   // Implementar lógica de edición
 }
 
 function deleteConfig(configId) {
-  console.log(`🗑️ Eliminando configuración ID: ${configId}`);
   // Implementar lógica de eliminación
 }
 
@@ -156,7 +140,6 @@ function deleteConfig(configId) {
 
 async function initializeAppointmentConfigPanel() {
   try {
-    console.log('🚀 Inicializando panel de configuraciones...');
     
     // Cargar configuraciones
     const configs = await loadAppointmentStatusConfigs();
@@ -172,7 +155,6 @@ async function initializeAppointmentConfigPanel() {
     // Renderizar tabla
     renderConfigTable(configs);
     
-    console.log('✅ Panel inicializado correctamente');
     
   } catch (error) {
     console.error('❌ Error inicializando panel:', error);
@@ -291,7 +273,6 @@ export default AppointmentStatusConfigPanel;
 
 // Para usar con JavaScript vanilla:
 document.addEventListener('DOMContentLoaded', function() {
-  console.log('📄 Página cargada, inicializando panel...');
   initializeAppointmentConfigPanel();
 });
 
@@ -301,22 +282,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Función para verificar que los datos se están procesando correctamente
 function debugConfigs(configs) {
-  console.log('🔍 === DEBUG CONFIGS ===');
   
   configs.forEach((config, index) => {
-    console.log(`\nConfig ${index + 1}:`);
-    console.log(`  - ID: ${config.id}`);
-    console.log(`  - Estado: "${config.estado}" (tipo: ${typeof config.estado})`);
-    console.log(`  - Cliente: ${config.cliente}% (tipo: ${typeof config.cliente})`);
-    console.log(`  - Experto: ${config.experto}% (tipo: ${typeof config.experto})`);
-    console.log(`  - Plataforma: ${config.plataforma}% (tipo: ${typeof config.plataforma})`);
-    console.log(`  - Activo: "${config.activo}" (tipo: ${typeof config.activo})`);
-    console.log(`  - StatusValue: "${config.statusValue}"`);
-    console.log(`  - CategoryName: "${config.categoryName}"`);
-    console.log(`  - ServiceTypeCategoryName: "${config.serviceTypeCategoryName}"`);
   });
   
-  console.log('🔍 === FIN DEBUG ===');
 }
 
 // ========================================

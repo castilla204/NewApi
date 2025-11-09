@@ -15,32 +15,22 @@ namespace newApi.Services
     public class AccountDeletionNotificationService : IAccountDeletionNotificationService
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<AccountDeletionNotificationService> _logger;
-
-        public AccountDeletionNotificationService(
-            AppDbContext context,
-            ILogger<AccountDeletionNotificationService> logger)
+        public AccountDeletionNotificationService(AppDbContext context)
         {
             _context = context;
-            _logger = logger;
         }
 
         public async Task NotifyAffectedUsersAsync(List<DisputeCreatedInfo> disputesCreated)
         {
             try
             {
-                _logger.LogInformation("Sending notifications to {Count} affected users", disputesCreated.Count);
-
                 foreach (var dispute in disputesCreated)
                 {
                     await SendDisputeNotificationAsync(dispute);
                 }
-
-                _logger.LogInformation("Successfully sent notifications to all affected users");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error sending notifications to affected users");
                 throw;
             }
         }
@@ -52,7 +42,6 @@ namespace newApi.Services
                 var user = await _context.Users.FindAsync(userId);
                 if (user == null)
                 {
-                    _logger.LogWarning("User {UserId} not found for deletion notification", userId);
                     return;
                 }
 
@@ -74,12 +63,9 @@ namespace newApi.Services
                 await _context.SaveChangesAsync();
 
                 // Notificación guardada en base de datos
-
-                _logger.LogInformation("Sent account deletion notification to user {UserId}", userId);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error sending account deletion notification to user {UserId}", userId);
                 throw;
             }
         }
@@ -98,7 +84,6 @@ namespace newApi.Services
 
                 if (searchHire == null)
                 {
-                    _logger.LogWarning("SearchHire {SearchHireId} not found for dispute notification", dispute.SearchHireId);
                     return;
                 }
 
@@ -109,7 +94,6 @@ namespace newApi.Services
 
                 if (affectedUser == null)
                 {
-                    _logger.LogWarning("Affected user not found for SearchHire {SearchHireId}", dispute.SearchHireId);
                     return;
                 }
 
@@ -132,13 +116,9 @@ namespace newApi.Services
                 await _context.SaveChangesAsync();
 
                 // Notificación guardada en base de datos
-
-                _logger.LogInformation("Sent dispute notification to affected user {UserId} for SearchHire {SearchHireId}", 
-                    affectedUser.Id, dispute.SearchHireId);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error sending dispute notification for SearchHire {SearchHireId}", dispute.SearchHireId);
                 throw;
             }
         }

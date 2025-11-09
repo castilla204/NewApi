@@ -22,7 +22,6 @@ namespace newApi.Controllers
     public class SearchController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<SearchController> _logger;
         private readonly IAuthorizationServices _authService;
         private readonly IUserService _userService;
         private readonly ISubscriptionService _subscriptionService;
@@ -30,14 +29,13 @@ namespace newApi.Controllers
 
         public SearchController(
             AppDbContext context,
-            ILogger<SearchController> logger,
+
             IAuthorizationServices authService,
             IUserService userService,
             ISubscriptionService subscriptionService,
             IStripeValidationService stripeValidationService)
         {
             _context = context;
-            _logger = logger;
             _authService = authService;
             _userService = userService;
             _subscriptionService = subscriptionService;
@@ -54,7 +52,6 @@ namespace newApi.Controllers
             
             if (systemStatus == null)
             {
-                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
                 // Default to "pending" (ID = 1)
                 return 1;
             }
@@ -246,7 +243,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving all searches");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -330,8 +326,6 @@ namespace newApi.Controllers
                 // para evitar perder comisiones de Stripe al hacer refunds
                 if (service.ExpertProfile != null && service.ExpertProfile.UserId == userId)
                 {
-                    _logger.LogError("Expert cannot hire themselves: expertUserId={ExpertUserId}, userId={UserId}", 
-                        service.ExpertProfile.UserId, userId);
                     return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
                 }
 
@@ -394,20 +388,17 @@ namespace newApi.Controllers
                         catch (StripeException ex)
                         {
                             await transaction.RollbackAsync();
-                            _logger.LogError(ex, "Stripe error creating checkout session for userId={UserId}, serviceId={ServiceId}", userId, searchDto.ServiceId);
                             return StatusCode(500, new { message = ex.Message });
                         }
                         catch (Exception ex)
                         {
                             await transaction.RollbackAsync();
-                            _logger.LogError(ex, "Error creating search with hire for userId={UserId}", userId);
                             return StatusCode(500, new { message = ex.Message });
                         }
                     });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unexpected error in CreateSearchWithHire for userId={UserId}");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -435,7 +426,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error marking search as revised");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -483,7 +473,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating search");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -559,7 +548,6 @@ namespace newApi.Controllers
                 {
                     if (s.User == null)
                     {
-                        _logger.LogError("Search {SearchId} has no associated User", s.Id);
                         throw new InvalidOperationException($"Search {s.Id} has no associated user");
                     }
 
@@ -665,7 +653,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving user searches");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -746,7 +733,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error toggling search active status");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -787,7 +773,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating search");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -832,7 +817,6 @@ namespace newApi.Controllers
 
                 if (search.User == null)
                 {
-                    _logger.LogError("Search {SearchId} has no associated User", searchId);
                     return StatusCode(500, new { message = "Search has no associated user" });
                 }
 
@@ -929,7 +913,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving search");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -949,7 +932,6 @@ namespace newApi.Controllers
                     if (Request.Headers.ContainsKey("X-Development-Mode"))
                     {
                         userId = 38; // Usuario por defecto para desarrollo
-                        _logger.LogInformation("🔧 Development mode: Using default userId {UserId}", userId);
                     }
                     else
                     {
@@ -1047,11 +1029,6 @@ namespace newApi.Controllers
 
                 // ✅ DEBUG: Log para verificar datos del experto
                 var locationRange = search.SearchParameters?.FirstOrDefault()?.LocationRange;
-                _logger.LogInformation("DEBUG - ExpertProfile: {ExpertProfile}, Latitude: {Latitude}, Longitude: {Longitude}, LocationRange: {LocationRange}",
-                    search.SearchHire?.SearchService?.ExpertProfile != null ? "EXISTS" : "NULL",
-                    search.SearchHire?.SearchService?.ExpertProfile?.Latitude ?? "NULL",
-                    search.SearchHire?.SearchService?.ExpertProfile?.Longitude ?? "NULL",
-                    locationRange?.ToString() ?? "NULL");
 
                 // ✅ NUEVO: Cargar disponibilidad del experto si existe
                 ExpertProfileDto? expertProfileDto = null;
@@ -1263,7 +1240,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving complete search details for SearchId: {SearchId}", searchId);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }

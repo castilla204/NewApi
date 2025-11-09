@@ -9,13 +9,11 @@ namespace newApi.RabbitMQ
     {
         private readonly IConnection _connection;
         private readonly IModel _channel;
-        private readonly ILogger<RabbitMQService> _logger;
         private readonly Dictionary<string, TaskCompletionSource<string>> _pendingRequests;
         private const int DEFAULT_TIMEOUT = 120000; // 2 minutes default timeout
 
-        public RabbitMQService(IConnectionFactory connectionFactory, ILogger<RabbitMQService> logger)
+        public RabbitMQService(IConnectionFactory connectionFactory)
         {
-            _logger = logger;
             _pendingRequests = new Dictionary<string, TaskCompletionSource<string>>();
 
             try
@@ -31,12 +29,9 @@ namespace newApi.RabbitMQ
 
                 // Configure QoS
                 _channel.BasicQos(prefetchSize: 0, prefetchCount: 1, global: false);
-
-                _logger.LogInformation("RabbitMQ connection initialized successfully");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error initializing RabbitMQ connection");
                 throw;
             }
         }
@@ -52,12 +47,9 @@ namespace newApi.RabbitMQ
                     exclusive: false,
                     autoDelete: false,
                     arguments: null);
-
-                _logger.LogInformation($"Queue {queueName} declared/verified successfully");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error declaring queue {queueName}");
                 throw;
             }
         }
@@ -81,12 +73,9 @@ namespace newApi.RabbitMQ
                     routingKey: queueName,
                     basicProperties: properties,
                     body: body);
-
-                _logger.LogInformation($"Message published to queue {queueName}");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error publishing message to queue {queueName}");
                 throw;
             }
         }
@@ -119,12 +108,10 @@ namespace newApi.RabbitMQ
                         {
                             var response = Encoding.UTF8.GetString(ea.Body.ToArray());
                             replyEvent.TrySetResult(response);
-                            _logger.LogInformation($"Received response for correlation ID {correlationId}");
                         }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Error processing received message");
                         replyEvent.TrySetException(ex);
                     }
                 };
@@ -143,9 +130,6 @@ namespace newApi.RabbitMQ
                     routingKey: requestQueueName,
                     basicProperties: props,
                     body: body);
-
-                _logger.LogInformation($"Request sent to {requestQueueName} with correlation ID {correlationId}");
-
                 using var cts = new CancellationTokenSource(timeout);
 
                 var timeoutTask = Task.Delay(timeout, cts.Token);
@@ -155,7 +139,6 @@ namespace newApi.RabbitMQ
 
                 if (completedTask == timeoutTask)
                 {
-                    _logger.LogWarning($"Request timed out after {timeout}ms for correlation ID {correlationId}");
                     throw new TimeoutException($"The request timed out after {timeout}ms. The scrapper service is taking longer than expected. Please try reducing the number of pages to scrape.");
                 }
 
@@ -163,12 +146,10 @@ namespace newApi.RabbitMQ
 
                 var responseJson = await responseTask;
                 var result = JsonConvert.DeserializeObject<T>(responseJson);
-                _logger.LogInformation($"Response received and deserialized for correlation ID {correlationId}");
                 return result;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error in SendAndReceiveAsync for correlation ID {correlationId}");
                 throw;
             }
             finally
@@ -182,7 +163,6 @@ namespace newApi.RabbitMQ
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Error canceling consumer");
                     }
                 }
             }
@@ -206,7 +186,6 @@ namespace newApi.RabbitMQ
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error disposing RabbitMQ resources");
             }
         }
     }

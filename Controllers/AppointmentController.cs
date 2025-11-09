@@ -18,7 +18,6 @@ namespace newApi.Controllers
     public class AppointmentController : ControllerBase
     {
         private readonly IAppointmentService _appointmentService;
-        private readonly ILogger<AppointmentController> _logger;
         private readonly IAuthorizationServices _authService;
         private readonly AppDbContext _context;
         private readonly SystemStatusService _systemStatusService;
@@ -27,7 +26,7 @@ namespace newApi.Controllers
 
         public AppointmentController(
             IAppointmentService appointmentService, 
-            ILogger<AppointmentController> logger, 
+ 
             IAuthorizationServices authService,
             AppDbContext context,
             SystemStatusService systemStatusService,
@@ -35,7 +34,6 @@ namespace newApi.Controllers
             IConfiguration configuration)
         {
             _appointmentService = appointmentService;
-            _logger = logger;
             _authService = authService;
             _context = context;
             _systemStatusService = systemStatusService;
@@ -71,7 +69,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting appointment statuses");
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -122,7 +119,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting money distribution config for status: {Status}", status);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -143,7 +139,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting appointment: {AppointmentId}", id);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -164,7 +159,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting appointment by SearchHire ID: {SearchHireId}", searchHireId);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -183,7 +177,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting user appointments for user: {UserId}", GetCurrentUserId());
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -201,7 +194,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating appointment for SearchHire: {SearchHireId}", dto.SearchHireId);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -228,7 +220,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error proposing appointment for SearchHire: {SearchHireId}", searchHireId);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -255,7 +246,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error confirming appointment: {AppointmentId}", dto.AppointmentId);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -282,7 +272,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error rejecting appointment: {AppointmentId}", dto.AppointmentId);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -309,7 +298,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error cancelling appointment: {AppointmentId}", dto.AppointmentId);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -336,7 +324,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error submitting expert report for appointment: {AppointmentId}", appointmentId);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -381,7 +368,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting files for appointment: {AppointmentId}", appointmentId);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -429,7 +415,6 @@ namespace newApi.Controllers
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Could not delete file from Google Cloud Storage: {ObjectName}", deliverable.ObjectName);
                 }
 
                 // Eliminar de la base de datos
@@ -440,7 +425,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting file {DeliverableId} for appointment: {AppointmentId}", deliverableId, appointmentId);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -454,8 +438,6 @@ namespace newApi.Controllers
             try
             {
                 var userId = GetCurrentUserId();
-                _logger.LogInformation("🔍 Validating files for appointment {AppointmentId} by user {UserId}", appointmentId, userId);
-                
                 var appointment = await _context.Appointments
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.SearchService)
@@ -467,14 +449,11 @@ namespace newApi.Controllers
 
                 if (appointment == null)
                 {
-                    _logger.LogWarning("❌ Appointment {AppointmentId} not found", appointmentId);
                     return NotFound(new { message = "Cita no encontrada" });
                 }
 
                 if (appointment.SearchHire.ExpertId != userId)
                 {
-                    _logger.LogWarning("❌ User {UserId} is not the expert for appointment {AppointmentId}. ExpertId: {ExpertId}", 
-                        userId, appointmentId, appointment.SearchHire.ExpertId);
                     return Forbid();
                 }
 
@@ -488,11 +467,6 @@ namespace newApi.Controllers
                 var missingFiles = new List<string>();
                 var isValid = true;
 
-                _logger.LogInformation("📋 Required deliverable types: {RequiredTypes}", 
-                    string.Join(", ", requiredDeliverableTypes.Select(dt => dt.Name)));
-                _logger.LogInformation("📁 Uploaded deliverables count: {Count}", uploadedDeliverables.Count);
-                _logger.LogInformation("📁 Uploaded deliverables: {Deliverables}", 
-                    string.Join(", ", uploadedDeliverables.Select(d => $"{d.Type}({d.Id})")));
 
                 // Verificar PDF obligatorio
                 var pdfType = requiredDeliverableTypes.FirstOrDefault(dt => dt.Name == "PDF");
@@ -503,11 +477,9 @@ namespace newApi.Controllers
                     {
                         missingFiles.Add("PDF");
                         isValid = false;
-                        _logger.LogWarning("❌ Missing PDF file");
                     }
                     else
                     {
-                        _logger.LogInformation("✅ PDF file found");
                     }
                 }
 
@@ -520,11 +492,9 @@ namespace newApi.Controllers
                     {
                         missingFiles.Add("MP4");
                         isValid = false;
-                        _logger.LogWarning("❌ Missing MP4 file");
                     }
                     else
                     {
-                        _logger.LogInformation("✅ MP4 file found");
                     }
                 }
 
@@ -542,14 +512,11 @@ namespace newApi.Controllers
                     RequiredTypes = requiredDeliverableTypes.Select(dt => dt.Name).ToList()
                 };
 
-                _logger.LogInformation("✅ Validation result: IsValid={IsValid}, MissingFiles={MissingFiles}", 
-                    isValid, string.Join(", ", missingFiles));
 
                 return Ok(validationResult);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error validating files for appointment: {AppointmentId}", appointmentId);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -591,11 +558,9 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error submitting expert report with files for appointment: {AppointmentId}", appointmentId);
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
-
 
 
         #region Admin Endpoints
@@ -618,12 +583,9 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting appointment metrics");
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
-
-
 
 
         /// <summary>
@@ -644,7 +606,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error checking appointment timers");
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -670,9 +631,6 @@ namespace newApi.Controllers
         {
             try
             {
-                _logger.LogInformation("📤 Starting file upload for appointment {AppointmentId} by user {UserId}. Files count: {FileCount}", 
-                    appointmentId, userId, files?.Count ?? 0);
-
                 // Obtener la cita y verificar que el usuario es el experto
                 var appointment = await _context.Appointments
                     .Include(a => a.SearchHire)
@@ -680,14 +638,11 @@ namespace newApi.Controllers
 
                 if (appointment == null)
                 {
-                    _logger.LogWarning("❌ Appointment {AppointmentId} not found", appointmentId);
                     return (false, "Cita no encontrada");
                 }
 
                 if (appointment.SearchHire.ExpertId != userId)
                 {
-                    _logger.LogWarning("❌ User {UserId} is not the expert for appointment {AppointmentId}. ExpertId: {ExpertId}", 
-                        userId, appointmentId, appointment.SearchHire.ExpertId);
                     return (false, "Solo el experto puede subir archivos para esta cita");
                 }
 
@@ -696,30 +651,23 @@ namespace newApi.Controllers
                 
                 if (string.IsNullOrEmpty(bucketName))
                 {
-                    _logger.LogError("❌ Google Cloud Storage bucket name not configured");
                     return (false, "Configuración de Google Cloud Storage faltante");
                 }
-
-                _logger.LogInformation("📁 Uploading files to SearchHire {SearchHireId} with bucket {BucketName}", searchHireId, bucketName);
-
                 foreach (var file in files)
                 {
                     if (file.Length > 0)
                     {
-                        _logger.LogInformation("📄 Processing file: {FileName} ({Size} bytes)", file.FileName, file.Length);
 
                         // Validar tipo de archivo
                         var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
                         if (!new[] { ".pdf", ".mp4" }.Contains(extension))
                         {
-                            _logger.LogWarning("❌ Invalid file type: {Extension} for file {FileName}", extension, file.FileName);
                             return (false, "Solo se permiten archivos PDF y MP4");
                         }
 
                         // Validar tamaño (10MB máximo)
                         if (file.Length > 10 * 1024 * 1024)
                         {
-                            _logger.LogWarning("❌ File too large: {FileName} ({Size} bytes)", file.FileName, file.Length);
                             return (false, $"El archivo {file.FileName} excede el tamaño máximo de 10MB");
                         }
 
@@ -729,8 +677,6 @@ namespace newApi.Controllers
 
                         try
                         {
-                            _logger.LogInformation("☁️ Uploading to Google Cloud Storage: {ObjectName}", objectName);
-                            
                             using (var inputStream = file.OpenReadStream())
                             {
                                 await _storageClient.UploadObjectAsync(
@@ -742,8 +688,6 @@ namespace newApi.Controllers
                             }
 
                             var deliverableUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-                            _logger.LogInformation("✅ File uploaded successfully: {Url}", deliverableUrl);
-
                             var deliverable = new SearchHireDeliverable
                             {
                                 SearchHireId = searchHireId,
@@ -754,26 +698,18 @@ namespace newApi.Controllers
                             };
                             
                             _context.SearchHireDeliverables.Add(deliverable);
-                            _logger.LogInformation("💾 Deliverable record created for SearchHire {SearchHireId}: Type={Type}, Id={Id}", 
-                                searchHireId, deliverable.Type, deliverable.Id);
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "❌ Error uploading deliverable file: {FileName}", file.FileName);
                             return (false, $"Error al subir el archivo {file.FileName}");
                         }
                     }
                 }
-
-                _logger.LogInformation("💾 Saving changes to database...");
                 await _context.SaveChangesAsync();
-                _logger.LogInformation("✅ All files uploaded and saved successfully for appointment {AppointmentId}", appointmentId);
-                
                 return (true, string.Empty);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Error in UploadDeliverablesForAppointment for appointment {AppointmentId}", appointmentId);
                 return (false, "Error interno al subir archivos");
             }
         }

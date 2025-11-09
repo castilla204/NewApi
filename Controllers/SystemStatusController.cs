@@ -15,18 +15,16 @@ namespace newApi.Controllers
     {
         private readonly AppDbContext _context;
         private readonly SystemStatusService _systemStatusService;
-        private readonly ILogger<SystemStatusController> _logger;
         private readonly IAuthorizationServices _authService;
 
         public SystemStatusController(
             AppDbContext context, 
             SystemStatusService systemStatusService, 
-            ILogger<SystemStatusController> logger,
+
             IAuthorizationServices authService)
         {
             _context = context;
             _systemStatusService = systemStatusService;
-            _logger = logger;
             _authService = authService;
         }
 
@@ -67,7 +65,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting system statuses");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -109,7 +106,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting status mappings");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -173,7 +169,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting status configurations");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -216,10 +211,6 @@ namespace newApi.Controllers
 
                 _context.SystemStatuses.Add(newStatus);
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Created new system status: {StatusType} - {StatusValue}", 
-                    request.StatusType, request.StatusValue);
-
                 return CreatedAtAction(nameof(GetStatuses), new { id = newStatus.Id }, new
                 {
                     newStatus.Id,
@@ -234,7 +225,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating system status");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -282,10 +272,6 @@ namespace newApi.Controllers
 
                 _context.StatusMappings.Add(newMapping);
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Created new status mapping: {SourceStatus} → {TargetStatus}", 
-                    sourceStatus.StatusValue, targetStatus.StatusValue);
-
                 return CreatedAtAction(nameof(GetStatusMappings), new { id = newMapping.Id }, new
                 {
                     newMapping.Id,
@@ -297,7 +283,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating status mapping");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -354,10 +339,6 @@ namespace newApi.Controllers
 
                 _context.StatusConfigurations.Add(newConfiguration);
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Created new status configuration: {Status} - Client: {Client}%, Expert: {Expert}%, Platform: {Platform}%", 
-                    status.StatusValue, request.ClientPercentage, request.ExpertPercentage, request.PlatformPercentage);
-
                 return CreatedAtAction(nameof(GetStatusConfigurations), new { id = newConfiguration.Id }, new
                 {
                     newConfiguration.Id,
@@ -372,7 +353,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating status configuration");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -418,10 +398,6 @@ namespace newApi.Controllers
                 status.UpdatedAt = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Updated system status: {StatusType} - {StatusValue}", 
-                    request.StatusType, request.StatusValue);
-
                 return Ok(new
                 {
                     status.Id,
@@ -437,7 +413,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating system status");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -481,15 +456,10 @@ namespace newApi.Controllers
 
                 _context.SystemStatuses.Remove(status);
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Deleted system status: {StatusType} - {StatusValue}", 
-                    status.StatusType, status.StatusValue);
-
                 return Ok(new { message = "Estado eliminado exitosamente" });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting system status");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -554,10 +524,6 @@ namespace newApi.Controllers
                 mapping.IsActive = request.IsActive;
 
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Updated status mapping: {SourceStatus} → {TargetStatus}", 
-                    sourceStatus.StatusValue, targetStatus.StatusValue);
-
                 return Ok(new
                 {
                     mapping.Id,
@@ -568,7 +534,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating status mapping");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -598,15 +563,10 @@ namespace newApi.Controllers
 
                 _context.StatusMappings.Remove(mapping);
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Deleted status mapping: {SourceStatus} → {TargetStatus}", 
-                    mapping.SourceStatus.StatusValue, mapping.TargetStatus.StatusValue);
-
                 return Ok(new { message = "Mapeo eliminado exitosamente" });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting status mapping");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -657,7 +617,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting debug info");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -693,7 +652,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error testing money distribution");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }

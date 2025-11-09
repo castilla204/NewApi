@@ -11,13 +11,10 @@ namespace newApi.Controllers
     {
         private readonly AppDbContext _context;
         private readonly StripeRefundService _refundService;
-        private readonly ILogger<AdminController> _logger;
-
-        public AdminController(AppDbContext context, StripeRefundService refundService, ILogger<AdminController> logger)
+        public AdminController(AppDbContext context, StripeRefundService refundService)
         {
             _context = context;
             _refundService = refundService;
-            _logger = logger;
         }
 
     }

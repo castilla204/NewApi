@@ -30,25 +30,20 @@ namespace newApi.Controllers
     public partial class SubscriptionController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<SubscriptionController> _logger;
         private readonly ISubscriptionService _subscriptionService;
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
         private readonly string? _webhookSecret;
         private readonly string? _generalWebhookSecret;
-        private readonly IUserActionLoggingService _userActionLogging;
         private readonly SystemStatusService _systemStatusService;
         private readonly StripeRefundService _refundService;
         private readonly IAuthorizationServices _authService;
         private readonly ILoggingService _loggingService;
         private readonly IStripeValidationService _stripeValidationService;
 
-        public SubscriptionController(AppDbContext context, ILogger<SubscriptionController> logger, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, IUserActionLoggingService userActionLogging, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService)
+        public SubscriptionController(AppDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService)
         {
-            _logger = logger;
-            _logger.LogInformation("Initializing SubscriptionController");
             _context = context;
-            _userActionLogging = userActionLogging;
             _systemStatusService = systemStatusService;
             _subscriptionService = subscriptionService;
             _configuration = configuration;
@@ -60,7 +55,6 @@ namespace newApi.Controllers
             _webhookSecret = _configuration["Stripe:WebhookSecret"];
             _generalWebhookSecret = _configuration["Stripe:GeneralWebhookSecret"];
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
-            _logger.LogInformation("Stripe API Key and Webhook Secrets configured");
         }
 
         /// <summary>
@@ -73,7 +67,6 @@ namespace newApi.Controllers
             
             if (systemStatus == null)
             {
-                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
                 // Default to "pending" (ID = 1)
                 return 1;
             }
@@ -122,14 +115,11 @@ namespace newApi.Controllers
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> CreateExpertOnboarding()
         {
-            _logger.LogInformation("CreateExpertOnboarding endpoint invoked");
-
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
@@ -138,7 +128,6 @@ namespace newApi.Controllers
 
                 if (expertProfile == null)
                 {
-                    _logger.LogError("Expert profile not found for userId={UserId}", userId);
                     return NotFound(new { message = "Expert profile not found" });
                 }
 
@@ -158,7 +147,6 @@ namespace newApi.Controllers
                         }
                         catch (StripeException ex)
                         {
-                            _logger.LogWarning(ex, "Could not retrieve rejection reason from Stripe for userId={UserId}: {ErrorMessage}", userId, ex.Message);
                         }
                     }
                     
@@ -168,26 +156,18 @@ namespace newApi.Controllers
                         disabledReason = ExtractRejectionReasonFromDetails(expertProfile.StripeStatusDetails);
                         if (!string.IsNullOrEmpty(disabledReason))
                         {
-                            _logger.LogInformation("✅ Extracted rejection reason from StripeStatusDetails in restart-onboarding for userId={UserId}: {Reason}", userId, disabledReason);
                         }
                         else
                         {
-                            _logger.LogWarning("⚠️ Could not extract rejection reason from StripeStatusDetails for userId={UserId}. Details: {Details}", userId, expertProfile.StripeStatusDetails);
                         }
                     }
                     else if (string.IsNullOrEmpty(disabledReason))
                     {
-                        _logger.LogWarning("⚠️ No rejection reason available (neither from Stripe nor from StripeStatusDetails) for userId={UserId}", userId);
                     }
                     
                     // Si es un rechazo permanente, bloquear
-                    _logger.LogInformation("🔍 Checking if rejection is permanent for userId={UserId}, disabledReason={Reason}, isPermanent={IsPermanent}", 
-                        userId, disabledReason ?? "null", IsPermanentRejection(disabledReason));
                     if (IsPermanentRejection(disabledReason))
                     {
-                        _logger.LogWarning("🚫 BLOCKED: Cannot create onboarding link for permanently rejected account - userId={UserId}, accountId={AccountId}, reason={Reason}", 
-                            userId, expertProfile.StripeAccountId, disabledReason);
-                        
                         string rejectionInfo = "Tu cuenta de pagos fue rechazada por Stripe.";
                         if (!string.IsNullOrEmpty(expertProfile.StripeStatusDetails))
                         {
@@ -206,7 +186,6 @@ namespace newApi.Controllers
                     {
                         // Es un rechazo temporal (requirements.past_due, etc.), permitir reintentar
                         // Limpiar la cuenta rechazada y permitir crear una nueva
-                        _logger.LogInformation("✅ ALLOWED: Temporary rejection allows retry - userId={UserId}, reason={Reason}, cleaning up account", userId, disabledReason);
                         expertProfile.StripeAccountId = null;
                         expertProfile.PendingStripeAccountId = null;
                         expertProfile.StripeStatus = StripeStatus.NotRequested;
@@ -219,12 +198,9 @@ namespace newApi.Controllers
 
                 if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
                 {
-                    _logger.LogInformation("Expert already has a Stripe account: userId={UserId}, stripeAccountId={StripeAccountId}", userId, expertProfile.StripeAccountId);
-                    
                     // Clean up PendingStripeAccountId if it exists (shouldn't happen but just in case)
                     if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
                     {
-                        _logger.LogInformation("Clearing stale PendingStripeAccountId for expert with completed account: userId={UserId}", userId);
                         expertProfile.PendingStripeAccountId = null;
                         expertProfile.OnboardingCompleted = true;
                         await _context.SaveChangesAsync();
@@ -244,20 +220,16 @@ namespace newApi.Controllers
                     try
                     {
                         var accountLink = await linkService.CreateAsync(linkOptions);
-                        _logger.LogInformation("Stripe account link created for existing account: userId={UserId}, url={Url}", userId, accountLink.Url);
                         return Ok(new { url = accountLink.Url, isLoginLink = true });
                     }
                     catch (StripeException ex)
                     {
-                        _logger.LogError(ex, "Stripe error creating account link for userId={UserId}: {ErrorMessage}", userId, ex.Message);
                         return StatusCode(500, new { message = "Failed to create Stripe account link" });
                     }
                 }
 
                 if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
                 {
-                    _logger.LogInformation("Expert already has a pending Stripe account: userId={UserId}, pendingStripeAccountId={PendingStripeAccountId}", userId, expertProfile.PendingStripeAccountId);
-                    
                     // Si tiene cuenta pendiente pero no completó onboarding, crear nuevo link para continuar
                     var linkOptions = new AccountLinkCreateOptions
                     {
@@ -273,12 +245,10 @@ namespace newApi.Controllers
                     try
                     {
                         var accountLink = await linkService.CreateAsync(linkOptions);
-                        _logger.LogInformation("Onboarding link created for pending account: userId={UserId}, url={Url}", userId, accountLink.Url);
                         return Ok(new { url = accountLink.Url, isLoginLink = false });
                     }
                     catch (StripeException ex)
                     {
-                        _logger.LogError(ex, "Stripe error creating onboarding link for pending account userId={UserId}: {ErrorMessage}", userId, ex.Message);
                         return StatusCode(500, new { message = "Failed to create onboarding link" });
                     }
                 }
@@ -286,16 +256,12 @@ namespace newApi.Controllers
                 // Limpiar cualquier PendingStripeAccountId anterior antes de crear nueva cuenta
                 if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
                 {
-                    _logger.LogWarning("Clearing existing PendingStripeAccountId before creating new account: userId={UserId}, oldPendingId={OldPendingId}", 
-                        userId, expertProfile.PendingStripeAccountId);
                     expertProfile.PendingStripeAccountId = null;
                 }
 
                 // Marcar como pendiente antes de crear la cuenta
                 expertProfile.StripeStatus = StripeStatus.Pending;
                 await _context.SaveChangesAsync();
-                _logger.LogInformation("Set StripeStatus to Pending for new account creation: userId={UserId}", userId);
-
                 var accountOptions = new AccountCreateOptions
                 {
                     Type = "express",
@@ -317,11 +283,9 @@ namespace newApi.Controllers
                 try
                 {
                     account = await accountService.CreateAsync(accountOptions);
-                    _logger.LogInformation("Stripe account created for userId={UserId}, accountId={AccountId}", userId, account.Id);
                 }
                 catch (StripeException ex)
                 {
-                    _logger.LogError(ex, "Stripe error creating account for userId={UserId}: {ErrorMessage}", userId, ex.Message);
                     return StatusCode(500, new { message = "Failed to create Stripe account" });
                 }
 
@@ -336,13 +300,7 @@ namespace newApi.Controllers
                     expertProfile.PendingStripeAccountId = account.Id;
                     expertProfile.OnboardingCompleted = false;
                         expertProfile.StripeStatus = StripeStatus.Pending;
-                        
-                        _logger.LogInformation("Attempting to save Stripe account: userId={UserId}, accountId={AccountId}, pendingAccountId={PendingAccountId}", 
-                            userId, expertProfile.StripeAccountId, account.Id);
-                        
                     await _context.SaveChangesAsync();
-                        _logger.LogInformation("Successfully saved Stripe account to database: userId={UserId}", userId);
-
                     var linkOptions = new AccountLinkCreateOptions
                     {
                         Account = account.Id,
@@ -357,12 +315,10 @@ namespace newApi.Controllers
                     try
                     {
                         accountLink = await linkService.CreateAsync(linkOptions);
-                        _logger.LogInformation("Onboarding link created for userId={UserId}, url={Url}", userId, accountLink.Url);
                     }
                     catch (StripeException ex)
                     {
                         await transaction.RollbackAsync();
-                        _logger.LogError(ex, "Stripe error creating onboarding link for userId={UserId}: {ErrorMessage}", userId, ex.Message);
                         return StatusCode(500, new { message = "Failed to create onboarding link" });
                     }
 
@@ -372,22 +328,17 @@ namespace newApi.Controllers
                     catch (DbUpdateException dbEx)
                     {
                         await transaction.RollbackAsync();
-                        _logger.LogError(dbEx, "Database error saving Stripe account for userId={UserId}: {ErrorMessage}, InnerException={InnerException}", 
-                            userId, dbEx.Message, dbEx.InnerException?.Message);
                         return StatusCode(500, new { message = "Failed to save Stripe account", details = dbEx.InnerException?.Message ?? dbEx.Message });
                 }
                 catch (Exception ex)
                 {
                     await transaction.RollbackAsync();
-                        _logger.LogError(ex, "Unexpected error saving Stripe account for userId={UserId}: {ErrorMessage}, StackTrace={StackTrace}", 
-                            userId, ex.Message, ex.StackTrace);
                         return StatusCode(500, new { message = "Failed to save Stripe account", details = ex.Message });
                 }
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating expert onboarding: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to process expert onboarding" });
             }
         }
@@ -399,14 +350,11 @@ namespace newApi.Controllers
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> CreateAccountLink()
         {
-            _logger.LogInformation("CreateAccountLink endpoint invoked");
-
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
@@ -415,19 +363,16 @@ namespace newApi.Controllers
 
                 if (expertProfile == null)
                 {
-                    _logger.LogError("Expert profile not found for userId={UserId}", userId);
                     return NotFound(new { message = "Expert profile not found" });
                 }
 
                 if (string.IsNullOrEmpty(expertProfile.StripeAccountId))
                 {
-                    _logger.LogError("Stripe account ID not found for expert userId={UserId}", userId);
                     return BadRequest(new { message = "Stripe account not found. Please complete onboarding first." });
                 }
 
                 if (expertProfile.StripeStatus == StripeStatus.Rejected)
                 {
-                    _logger.LogWarning("Cannot create account link for rejected account: userId={UserId}, accountId={AccountId}", userId, expertProfile.StripeAccountId);
                     return BadRequest(new { message = "La cuenta de pagos fue rechazada por Stripe. No se puede abrir el panel. Reinicia el onboarding para crear una cuenta nueva." });
                 }
 
@@ -442,10 +387,6 @@ namespace newApi.Controllers
                 };
 
                 var accountLink = await accountLinkService.CreateAsync(accountLinkOptions);
-
-                _logger.LogInformation("Account link created successfully for expert userId={UserId}, accountLinkUrl={AccountLinkUrl}", 
-                    userId, accountLink.Url);
-
                 return Ok(new { 
                     message = "Enlace de cuenta creado exitosamente",
                     accountLinkUrl = accountLink.Url 
@@ -453,12 +394,10 @@ namespace newApi.Controllers
             }
             catch (StripeException stripeEx)
             {
-                _logger.LogError(stripeEx, "Stripe error creating account link: {StripeError}", stripeEx.Message);
                 return StatusCode(500, new { message = "Error de Stripe al crear el enlace de cuenta", error = stripeEx.Message });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating account link: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -467,14 +406,11 @@ namespace newApi.Controllers
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> GetOnboardingStatus()
         {
-            _logger.LogInformation("GetOnboardingStatus endpoint invoked");
-
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
@@ -483,7 +419,6 @@ namespace newApi.Controllers
 
                 if (expertProfile == null)
                 {
-                    _logger.LogError("Expert profile not found for userId={UserId}", userId);
                     return NotFound(new { message = "Expert profile not found" });
                 }
 
@@ -508,12 +443,10 @@ namespace newApi.Controllers
                     StripeFutureDueAt = expertProfile.StripeFutureDueAt
                 };
 
-                _logger.LogInformation("Onboarding status for userId={UserId}: {Status}", userId, System.Text.Json.JsonSerializer.Serialize(status));
                 return Ok(status);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting onboarding status: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to get onboarding status" });
             }
         }
@@ -522,14 +455,11 @@ namespace newApi.Controllers
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> GetExpertStatus()
         {
-            _logger.LogInformation("GetExpertStatus endpoint invoked");
-
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
@@ -538,7 +468,6 @@ namespace newApi.Controllers
 
                 if (expertProfile == null)
                 {
-                    _logger.LogError("Expert profile not found for userId={UserId}", userId);
                     return NotFound(new { message = "Expert profile not found" });
                 }
 
@@ -557,7 +486,6 @@ namespace newApi.Controllers
                         }
                         catch (StripeException ex)
                         {
-                            _logger.LogWarning(ex, "Could not retrieve rejection reason from Stripe for userId={UserId}: {ErrorMessage}", userId, ex.Message);
                         }
                     }
                     
@@ -567,7 +495,6 @@ namespace newApi.Controllers
                         rejectionReason = ExtractRejectionReasonFromDetails(expertProfile.StripeStatusDetails);
                         if (!string.IsNullOrEmpty(rejectionReason))
                         {
-                            _logger.LogInformation("Extracted rejection reason from StripeStatusDetails for userId={UserId}: {Reason}", userId, rejectionReason);
                         }
                     }
                 }
@@ -602,30 +529,24 @@ namespace newApi.Controllers
                     RejectionReason = rejectionReason
                 };
 
-                _logger.LogInformation("Expert status for userId={UserId}: {Status}", userId, System.Text.Json.JsonSerializer.Serialize(status));
                 return Ok(status);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting expert status: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to get expert status" });
             }
         }
-
 
 
         [HttpPost("sync-stripe-status")]
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> SyncStripeStatus()
         {
-            _logger.LogInformation("SyncStripeStatus endpoint invoked");
-
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
@@ -634,13 +555,11 @@ namespace newApi.Controllers
 
                 if (expertProfile == null)
                 {
-                    _logger.LogError("Expert profile not found for userId={UserId}", userId);
                     return NotFound(new { message = "Expert profile not found" });
                 }
 
                 if (string.IsNullOrEmpty(expertProfile.StripeAccountId))
                 {
-                    _logger.LogInformation("Expert has no Stripe account to sync: userId={UserId}", userId);
                     return BadRequest(new { message = "No Stripe account found to sync" });
                 }
 
@@ -650,11 +569,9 @@ namespace newApi.Controllers
                 try
                 {
                     account = await accountService.GetAsync(expertProfile.StripeAccountId);
-                    _logger.LogInformation("Retrieved Stripe account status for userId={UserId}, accountId={AccountId}", userId, account.Id);
                 }
                 catch (StripeException ex)
                 {
-                    _logger.LogError(ex, "Stripe error retrieving account for userId={UserId}: {ErrorMessage}", userId, ex.Message);
                     return StatusCode(500, new { message = "Failed to retrieve Stripe account status" });
                 }
 
@@ -667,10 +584,6 @@ namespace newApi.Controllers
                 string disabledReason = account.Requirements?.DisabledReason;
                 bool isAccountRejected = !string.IsNullOrEmpty(disabledReason) && disabledReason.StartsWith("rejected");
                 bool isAccountDisabled = !account.ChargesEnabled || !account.PayoutsEnabled;
-
-                _logger.LogInformation("🔍 DEBUG: Syncing Stripe account status for userId={UserId}, isApproved={IsApproved}, canReceivePayments={CanReceivePayments}, disabledReason={DisabledReason}, isRejected={IsRejected}",
-                    userId, isAccountApproved, canReceivePayments, disabledReason, isAccountRejected);
-
                 // Actualizar el StripeStatus basado en el estado real
                 // PRIORIDAD 1: Verificar si la cuenta está aprobada y puede recibir pagos
                 if (onboardingCompleted)
@@ -678,7 +591,6 @@ namespace newApi.Controllers
                     var previousStatus = expertProfile.StripeStatus;
                     expertProfile.StripeStatus = StripeStatus.Approved;
                     expertProfile.OnboardingCompleted = true;
-                    _logger.LogInformation("✅ DEBUG: Account approved and ready for payments for userId={UserId}, previousStatus={PreviousStatus}", userId, previousStatus);
                 }
                 // PRIORIDAD 2: Verificar si la cuenta ha sido rechazada o desactivada
                 else if (isAccountRejected || (isAccountDisabled && !string.IsNullOrEmpty(disabledReason)))
@@ -687,7 +599,6 @@ namespace newApi.Controllers
                     var previousStatus = expertProfile.StripeStatus;
                     expertProfile.StripeStatus = StripeStatus.Rejected;
                     expertProfile.OnboardingCompleted = false;
-                    _logger.LogWarning("❌ DEBUG: Account rejected by Stripe for userId={UserId}, reason={DisabledReason}, previousStatus={PreviousStatus}", userId, disabledReason, previousStatus);
                 }
                 // PRIORIDAD 3: La cuenta aún está pendiente de verificación
                 else if (!isAccountApproved)
@@ -695,7 +606,6 @@ namespace newApi.Controllers
                     var previousStatus = expertProfile.StripeStatus;
                     expertProfile.StripeStatus = StripeStatus.Pending;
                     expertProfile.OnboardingCompleted = false;
-                    _logger.LogInformation("⏳ DEBUG: Account still pending verification for userId={UserId}, previousStatus={PreviousStatus}", userId, previousStatus);
                 }
                 else
                 {
@@ -703,13 +613,11 @@ namespace newApi.Controllers
                     var previousStatus = expertProfile.StripeStatus;
                     expertProfile.StripeStatus = StripeStatus.Pending;
                     expertProfile.OnboardingCompleted = false;
-                    _logger.LogWarning("⚠️ DEBUG: Account approved but cannot receive payments for userId={UserId}, previousStatus={PreviousStatus}", userId, previousStatus);
                 }
                 
                 // Limpiar PendingStripeAccountId si existe
                 if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
                 {
-                    _logger.LogInformation("Clearing PendingStripeAccountId for synced account: userId={UserId}", userId);
                     expertProfile.PendingStripeAccountId = null;
                 }
 
@@ -732,12 +640,10 @@ namespace newApi.Controllers
                     }
                 };
 
-                _logger.LogInformation("Stripe status synced for userId={UserId}: {Status}", userId, System.Text.Json.JsonSerializer.Serialize(status));
                 return Ok(status);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error syncing Stripe status: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to sync Stripe status" });
             }
         }
@@ -746,14 +652,11 @@ namespace newApi.Controllers
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> RestartOnboarding()
         {
-            _logger.LogInformation("RestartOnboarding endpoint invoked");
-
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
@@ -762,7 +665,6 @@ namespace newApi.Controllers
 
                 if (expertProfile == null)
                 {
-                    _logger.LogError("Expert profile not found for userId={UserId}", userId);
                     return NotFound(new { message = "Expert profile not found" });
                 }
 
@@ -782,7 +684,6 @@ namespace newApi.Controllers
                         }
                         catch (StripeException ex)
                         {
-                            _logger.LogWarning(ex, "Could not retrieve rejection reason from Stripe for userId={UserId}: {ErrorMessage}", userId, ex.Message);
                         }
                     }
                     
@@ -792,26 +693,18 @@ namespace newApi.Controllers
                         disabledReason = ExtractRejectionReasonFromDetails(expertProfile.StripeStatusDetails);
                         if (!string.IsNullOrEmpty(disabledReason))
                         {
-                            _logger.LogInformation("✅ Extracted rejection reason from StripeStatusDetails in restart-onboarding for userId={UserId}: {Reason}", userId, disabledReason);
                         }
                         else
                         {
-                            _logger.LogWarning("⚠️ Could not extract rejection reason from StripeStatusDetails for userId={UserId}. Details: {Details}", userId, expertProfile.StripeStatusDetails);
                         }
                     }
                     else if (string.IsNullOrEmpty(disabledReason))
                     {
-                        _logger.LogWarning("⚠️ No rejection reason available (neither from Stripe nor from StripeStatusDetails) for userId={UserId}", userId);
                     }
                     
                     // Si es un rechazo permanente, bloquear
-                    _logger.LogInformation("🔍 Checking if rejection is permanent for userId={UserId}, disabledReason={Reason}, isPermanent={IsPermanent}", 
-                        userId, disabledReason ?? "null", IsPermanentRejection(disabledReason));
                     if (IsPermanentRejection(disabledReason))
                     {
-                        _logger.LogWarning("🚫 BLOCKED: Cannot restart onboarding for permanently rejected account - userId={UserId}, accountId={AccountId}, reason={Reason}", 
-                            userId, expertProfile.StripeAccountId, disabledReason);
-                        
                         string rejectionInfo = "Tu cuenta de pagos fue rechazada por Stripe.";
                         if (!string.IsNullOrEmpty(expertProfile.StripeStatusDetails))
                         {
@@ -830,7 +723,6 @@ namespace newApi.Controllers
                     {
                         // Es un rechazo temporal (requirements.past_due, etc.), permitir reintentar
                         // Limpiar la cuenta rechazada y permitir crear una nueva
-                        _logger.LogInformation("✅ ALLOWED: Temporary rejection allows retry - userId={UserId}, reason={Reason}, cleaning up and resetting", userId, disabledReason);
                         expertProfile.StripeAccountId = null;
                         expertProfile.PendingStripeAccountId = null;
                         expertProfile.StripeStatus = StripeStatus.NotRequested;
@@ -844,8 +736,6 @@ namespace newApi.Controllers
                 // Si ya tiene cuenta completada y NO está rechazada, crear login link en lugar de reiniciar
                 if (!string.IsNullOrEmpty(expertProfile.StripeAccountId) && expertProfile.OnboardingCompleted)
                 {
-                    _logger.LogInformation("Expert already has completed onboarding: userId={UserId}, creating account link", userId);
-                    
                     var restartLinkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.StripeAccountId,
@@ -859,12 +749,10 @@ namespace newApi.Controllers
                     try
                     {
                         var restartAccountLink = await restartLinkService.CreateAsync(restartLinkOptions);
-                        _logger.LogInformation("Stripe account link created for completed account: userId={UserId}, url={Url}", userId, restartAccountLink.Url);
                         return Ok(new { url = restartAccountLink.Url, isLoginLink = true });
                     }
                     catch (StripeException ex)
                     {
-                        _logger.LogError(ex, "Stripe error creating account link for userId={UserId}: {ErrorMessage}", userId, ex.Message);
                         return StatusCode(500, new { message = "Failed to create Stripe account link" });
                     }
                 }
@@ -890,11 +778,9 @@ namespace newApi.Controllers
                 try
                 {
                     pendingAccountLink = await pendingLinkService.CreateAsync(pendingLinkOptions);
-                    _logger.LogInformation("New onboarding link created for userId={UserId}, url={Url}", userId, pendingAccountLink.Url);
                 }
                 catch (StripeException ex)
                 {
-                    _logger.LogError(ex, "Stripe error creating new onboarding link for userId={UserId}: {ErrorMessage}", userId, ex.Message);
                     return StatusCode(500, new { message = "Failed to create new onboarding link" });
                 }
 
@@ -902,7 +788,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error restarting onboarding: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to restart onboarding" });
             }
         }
@@ -910,20 +795,16 @@ namespace newApi.Controllers
         [HttpPost("load-money")]
         public async Task<IActionResult> LoadMoney([FromBody] LoadMoneyDto request)
         {
-            _logger.LogInformation("LoadMoney endpoint invoked with amount: {Amount}", request.Amount);
-
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
                 if (request.Amount <= 0 || request.Amount > 1000)
                 {
-                    _logger.LogError("Invalid amount: {Amount}", request.Amount);
                     return BadRequest(new { message = "Amount must be between 0.01 and 1000" });
                 }
 
@@ -933,7 +814,6 @@ namespace newApi.Controllers
                     .FirstOrDefaultAsync();
                 if (user == null)
                 {
-                    _logger.LogError("User not found for userId={UserId}", userId);
                     return NotFound(new { message = "User not found" });
                 }
 
@@ -973,11 +853,26 @@ namespace newApi.Controllers
                 try
                 {
                     session = await service.CreateAsync(options);
-                    _logger.LogInformation("Stripe Checkout session created: sessionId={SessionId}, url={SessionUrl}", session.Id, session.Url);
                 }
                 catch (StripeException e)
                 {
-                    _logger.LogError(e, "Stripe error creating checkout session: {ErrorMessage}", e.Message);
+                    // 🚨 LOG CRÍTICO: Error de Stripe al crear sesión de pago (afecta dinero)
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Stripe error creating checkout session for load money",
+                        details: $"Failed to create Stripe checkout session for user {userId} to load {request.Amount}€. Stripe Error: {e.Message}, Type: {e.StripeError?.Type}, Code: {e.StripeError?.Code}",
+                        userId: userId,
+                        source: "SubscriptionController.LoadMoney",
+                        relatedEntityType: "Payment",
+                        additionalData: new { 
+                            Action = "LoadMoney",
+                            Amount = request.Amount,
+                            UserId = userId,
+                            StripeError = e.Message,
+                            StripeErrorType = e.StripeError?.Type,
+                            StripeErrorCode = e.StripeError?.Code
+                        }
+                    );
+                    
                     return StatusCode(500, new { message = e.Message });
                 }
 
@@ -985,11 +880,24 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating load money session: {ErrorMessage}", ex.Message);
+                // 🚨 LOG CRÍTICO: Error general al crear sesión de carga de dinero
+                var userIdForLog = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userIdValue) ? userIdValue : (int?)null;
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error creating load money session",
+                    details: $"Failed to create load money session: {ex.Message}",
+                    userId: userIdForLog,
+                    source: "SubscriptionController.LoadMoney",
+                    relatedEntityType: "Payment",
+                    additionalData: new { 
+                        Action = "LoadMoney",
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+                
                 return StatusCode(500, new { message = "Failed to create load money session" });
             }
         }
-
 
 
         [HttpPost("load-money-service")]
@@ -998,30 +906,23 @@ namespace newApi.Controllers
             // 🚨 VALIDACIÓN DE ENTRADA
             if (request == null)
             {
-                _logger.LogError("Request is null");
                 return BadRequest(new { message = "Request cannot be null" });
             }
 
             if (request.ServiceId <= 0)
             {
-                _logger.LogError("Invalid ServiceId: {ServiceId}", request.ServiceId);
                 return BadRequest(new { message = "Invalid service ID" });
             }
 
             if (request.Amount <= 0)
             {
-                _logger.LogError("Invalid Amount: {Amount}", request.Amount);
                 return BadRequest(new { message = "Amount must be greater than 0" });
             }
-
-            _logger.LogInformation("LoadMoneyService endpoint invoked with serviceId: {ServiceId}, amount: {Amount}", request.ServiceId, request.Amount);
-
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim ?? "null");
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
@@ -1030,13 +931,11 @@ namespace newApi.Controllers
                     .FirstOrDefaultAsync(ss => ss.Id == request.ServiceId);
                 if (service == null)
                 {
-                    _logger.LogError("Service not found for serviceId={ServiceId}", request.ServiceId);
                     return NotFound(new { message = "Service not found" });
                 }
 
                 if (service.Price != request.Amount || service.Price <= 0 || service.Price > 1000)
                 {
-                    _logger.LogError("Invalid service price: expected={Expected}, received={Received} for serviceId={ServiceId}", service.Price, request.Amount, request.ServiceId);
                     return BadRequest(new { message = "Service price mismatch or invalid amount (must be between 0.01 and 1000.00)" });
                 }
 
@@ -1045,8 +944,6 @@ namespace newApi.Controllers
                 // para evitar perder comisiones de Stripe al hacer refunds
                 if (service.ExpertProfile != null && service.ExpertProfile.UserId == userId)
                 {
-                    _logger.LogError("Expert cannot hire themselves: expertUserId={ExpertUserId}, userId={UserId}", 
-                        service.ExpertProfile.UserId, userId);
                     return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
                 }
 
@@ -1056,7 +953,6 @@ namespace newApi.Controllers
                     .FirstOrDefaultAsync();
                 if (user == null)
                 {
-                    _logger.LogError("User not found for userId={UserId}", userId);
                     return NotFound(new { message = "User not found" });
                 }
 
@@ -1080,8 +976,6 @@ namespace newApi.Controllers
                 
                 if (existingHire != null)
                 {
-                    _logger.LogError("User already has an active hire for this service: userId={UserId}, serviceId={ServiceId}, existingHireId={ExistingHireId}", 
-                        userId, service.Id, existingHire.Id);
                     return BadRequest(new { message = "Ya tienes una contratación activa para este servicio" });
                 }
 
@@ -1132,11 +1026,27 @@ namespace newApi.Controllers
                 try
                 {
                     session = await stripeService.CreateAsync(options);
-                    _logger.LogInformation("Stripe Checkout session created: sessionId={SessionId}, url={SessionUrl}", session.Id, session.Url);
                 }
                 catch (StripeException ex)
                 {
-                    _logger.LogError(ex, "Stripe error creating checkout session for userId={UserId}, serviceId={ServiceId}: {ErrorMessage}", userId, request.ServiceId, ex.Message);
+                    // 🚨 LOG CRÍTICO: Error de Stripe al crear sesión de pago para servicio (afecta dinero)
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Stripe error creating checkout session for service payment",
+                        details: $"Failed to create Stripe checkout session for user {userId} to pay for service {request.ServiceId}. Stripe Error: {ex.Message}, Type: {ex.StripeError?.Type}, Code: {ex.StripeError?.Code}",
+                        userId: userId,
+                        source: "SubscriptionController.LoadMoneyService",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: request.ServiceId,
+                        additionalData: new { 
+                            Action = "LoadMoneyService",
+                            ServiceId = request.ServiceId,
+                            UserId = userId,
+                            StripeError = ex.Message,
+                            StripeErrorType = ex.StripeError?.Type,
+                            StripeErrorCode = ex.StripeError?.Code
+                        }
+                    );
+                    
                     return StatusCode(500, new { message = ex.Message });
                 }
 
@@ -1144,7 +1054,23 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating load money session for serviceId={ServiceId}: {ErrorMessage}", request.ServiceId, ex.Message);
+                // 🚨 LOG CRÍTICO: Error general al crear sesión de pago para servicio
+                var userIdForLog = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userIdValue) ? userIdValue : (int?)null;
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error creating load money session for service",
+                    details: $"Failed to create load money session for service {request.ServiceId}: {ex.Message}",
+                    userId: userIdForLog,
+                    source: "SubscriptionController.LoadMoneyService",
+                    relatedEntityType: "Payment",
+                    relatedEntityId: request.ServiceId,
+                    additionalData: new { 
+                        Action = "LoadMoneyService",
+                        ServiceId = request.ServiceId,
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+                
                 return StatusCode(500, new { message = "Failed to create load money session" });
             }
         }
@@ -1159,8 +1085,6 @@ namespace newApi.Controllers
             Request.Body.Position = 0; // ✅ CORRECCIÓN: Reposicionar DESPUÉS de leer
             // ✅ SEGURIDAD: Convertir StringValues a string (puede venir como array)
             var signatureHeader = Request.Headers["Stripe-Signature"].ToString();
-            _logger.LogInformation("🔔 WEBHOOK RECEIVED: signature={SignatureHeader}, payload={Payload}", signatureHeader, json);
-
             try
             {
                 // ✅ SEGURIDAD CRÍTICA: Validar signature antes de procesar
@@ -1168,24 +1092,18 @@ namespace newApi.Controllers
                 // Esto previene ataques de replay e inyección de eventos falsos
                 if (string.IsNullOrEmpty(_webhookSecret))
                 {
-                    _logger.LogError("❌ WEBHOOK SECRET IS NULL OR EMPTY!");
                     return BadRequest(new { error = "Webhook secret not configured" });
                 }
                 
                 if (string.IsNullOrEmpty(signatureHeader))
                 {
-                    _logger.LogError("❌ STRIPE SIGNATURE HEADER IS NULL OR EMPTY!");
                     return BadRequest(new { error = "Stripe signature header missing" });
                 }
                 
-                _logger.LogInformation("🔐 DEBUG: Validating webhook signature with secret: {WebhookSecret}", _webhookSecret?.Substring(0, 10) + "...");
                 var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, _webhookSecret);
-                _logger.LogInformation("✅ WEBHOOK EVENT CONSTRUCTED: type={EventType}, id={EventId}", stripeEvent.Type, stripeEvent.Id);
-
                 // 🔒 IDEMPOTENCIA COMPLETA: Verificar si el evento ya fue procesado
                 if (await IsEventProcessedAsync(stripeEvent.Id))
                 {
-                    _logger.LogInformation("🔄 DEBUG: Evento principal ya procesado (eventId={EventId}), ignorando", stripeEvent.Id);
                     return Ok(new { message = "Event already processed" });
                 }
 
@@ -1203,8 +1121,6 @@ namespace newApi.Controllers
                         var authorizedApp = stripeEvent.Data.Object as Application;
                         if (authorizedApp != null)
                         {
-                            _logger.LogInformation("🔗 DEBUG: Application authorized: appId={AppId}, accountId={AccountId}", authorizedApp.Id, stripeEvent.Account);
-                            
                             // ✅ CORRECCIÓN: Solo actualizar PendingStripeAccountId → StripeAccountId
                             // NO cambiar el estado, esperar a account.updated para verificación real
                             var authorizedExpertProfile = await _context.ExpertProfiles
@@ -1217,8 +1133,6 @@ namespace newApi.Controllers
                                 // ✅ IMPORTANTE: NO cambiar StripeStatus aquí, mantener como Pending
                                 // El estado se actualizará en account.updated cuando Stripe realmente apruebe
                                 await _context.SaveChangesAsync();
-                                _logger.LogInformation("✅ Updated account ID after authorization (status remains Pending): userId={UserId}, stripeStatus={StripeStatus}", 
-                                    authorizedExpertProfile.UserId, authorizedExpertProfile.StripeStatus);
                             }
                         }
                         break;
@@ -1231,16 +1145,12 @@ namespace newApi.Controllers
                         
                         if (deauthorizedApp != null && !string.IsNullOrEmpty(accountId))
                         {
-                            _logger.LogInformation("❌ DEBUG: Account application deauthorized: appId={AppId}, accountId={AccountId}", deauthorizedApp.Id, accountId);
-                            
                             // ✅ CORRECCIÓN: Buscar por StripeAccountId o PendingStripeAccountId usando stripeEvent.Account
                             var deauthorizedExpertProfile = await _context.ExpertProfiles
                                 .FirstOrDefaultAsync(ep => ep.StripeAccountId == accountId || ep.PendingStripeAccountId == accountId);
                             
                             if (deauthorizedExpertProfile != null)
                             {
-                                _logger.LogInformation("⚠️ DEBUG: Found expert profile for account.application.deauthorized: userId={UserId}, accountId={AccountId}", deauthorizedExpertProfile.UserId, accountId);
-                                
                                 // Marcar como rechazado cuando la aplicación es desautorizada
                                 deauthorizedExpertProfile.StripeStatus = StripeStatus.Rejected;
                                 deauthorizedExpertProfile.OnboardingCompleted = false;
@@ -1253,11 +1163,9 @@ namespace newApi.Controllers
                                 await HandleAccountDeauthorization(deauthorizedExpertProfile.UserId, "Account deauthorized by Stripe");
                                 
                                 await _context.SaveChangesAsync();
-                                _logger.LogInformation("❌ DEBUG: Account application deauthorized - status set to Rejected and IDs cleared for userId={UserId}", deauthorizedExpertProfile.UserId);
                             }
                             else
                             {
-                                _logger.LogWarning("❌ DEBUG: No expert profile found for account.application.deauthorized accountId={AccountId}", accountId);
                             }
                         }
                         break;
@@ -1266,86 +1174,61 @@ namespace newApi.Controllers
                         var account = stripeEvent.Data.Object as Account;
                         if (account == null)
                         {
-                            _logger.LogWarning("account.updated webhook received but account data is null");
                             break;
                         }
 
                         // 🔒 IDEMPOTENCIA COMPLETA: Verificar tanto idempotency_key como stripeEvent.Id
                         var idempotencyKey = stripeEvent.Request?.IdempotencyKey;
-                        _logger.LogInformation("🔑 DEBUG: Idempotency key: {IdempotencyKey} (exists: {Exists}), EventId: {EventId}", 
-                            idempotencyKey ?? "null", idempotencyKey != null ? "Yes" : "No", stripeEvent.Id);
                         
                         // 🚨 VERIFICAR IDEMPOTENCIA COMPLETA: Usar idempotency_key si existe, sino usar stripeEvent.Id
                         var eventIdToCheck = !string.IsNullOrEmpty(idempotencyKey) ? idempotencyKey : stripeEvent.Id;
                         if (await IsEventProcessedAsync(eventIdToCheck))
                         {
-                            _logger.LogInformation("🔄 DEBUG: Evento ya procesado (eventId={EventId}), ignorando", eventIdToCheck);
                             break;
                         }
-
-                            _logger.LogInformation("🔍 DEBUG: Processing account.updated webhook for accountId={AccountId}, ChargesEnabled={ChargesEnabled}, PayoutsEnabled={PayoutsEnabled}, DetailsSubmitted={DetailsSubmitted}, RequirementsCurrentlyDue={RequirementsCurrentlyDue}", 
-                                account.Id, account.ChargesEnabled, account.PayoutsEnabled, account.DetailsSubmitted, 
-                                account.Requirements?.CurrentlyDue?.Count ?? 0);
-                            
                             // Log metadata para debugging
                             if (account.Metadata != null)
                             {
-                                _logger.LogInformation("📋 DEBUG: Account metadata: {Metadata}", string.Join(", ", account.Metadata.Select(kv => $"{kv.Key}={kv.Value}")));
                             }
                             else
                             {
-                                _logger.LogWarning("⚠️ DEBUG: No metadata found in account");
                             }
                             
                             // Buscar por StripeAccountId, PendingStripeAccountId, o por userId en metadata
-                            _logger.LogInformation("🔍 DEBUG: Searching for expert profile with accountId={AccountId}", account.Id);
                             var expertProfile = await _context.ExpertProfiles
                                 .FirstOrDefaultAsync(ep => ep.StripeAccountId == account.Id || ep.PendingStripeAccountId == account.Id);
                             
                             if (expertProfile != null)
                             {
-                                _logger.LogInformation("✅ DEBUG: Found expert profile by account ID: userId={UserId}, stripeAccountId={StripeAccountId}, pendingStripeAccountId={PendingStripeAccountId}", 
-                                    expertProfile.UserId, expertProfile.StripeAccountId, expertProfile.PendingStripeAccountId);
                             }
                             else
                             {
-                                _logger.LogWarning("❌ DEBUG: No expert profile found by account ID, trying metadata search...");
-                                
                                 // Si no se encuentra por account ID, buscar por userId en metadata
                                 if (account.Metadata != null && account.Metadata.ContainsKey("userId"))
                                 {
                                     if (int.TryParse(account.Metadata["userId"], out int userIdFromMetadata))
                                     {
-                                        _logger.LogInformation("🔍 DEBUG: Searching by userId from metadata: {UserId}", userIdFromMetadata);
                                         expertProfile = await _context.ExpertProfiles
                                             .FirstOrDefaultAsync(ep => ep.UserId == userIdFromMetadata);
                                         
                                         if (expertProfile != null)
                                         {
-                                            _logger.LogInformation("✅ DEBUG: Found expert profile by userId from metadata: userId={UserId}, accountId={AccountId}, stripeAccountId={StripeAccountId}, pendingStripeAccountId={PendingStripeAccountId}", 
-                                                userIdFromMetadata, account.Id, expertProfile.StripeAccountId, expertProfile.PendingStripeAccountId);
                                         }
                                         else
                                         {
-                                            _logger.LogError("❌ DEBUG: No expert profile found even by userId from metadata: {UserId}", userIdFromMetadata);
                                         }
                                     }
                                     else
                                     {
-                                        _logger.LogError("❌ DEBUG: Could not parse userId from metadata: {UserId}", account.Metadata["userId"]);
                                     }
                                 }
                                 else
                                 {
-                                    _logger.LogError("❌ DEBUG: No metadata or userId in metadata found");
                                 }
                             }
                             
                             if (expertProfile != null)
                             {
-                                _logger.LogInformation("✅ DEBUG: Expert profile found: userId={UserId}, stripeAccountId={StripeAccountId}, pendingStripeAccountId={PendingStripeAccountId}", 
-                                    expertProfile.UserId, expertProfile.StripeAccountId, expertProfile.PendingStripeAccountId);
-                                
                                 // CORRECCIÓN: Try-catch interno para capturar errores en lógica de verificación
                                 try
                                 {
@@ -1372,15 +1255,10 @@ namespace newApi.Controllers
                                 bool paymentsEnabled = chargesEnabled && payoutsEnabled && transfersActive;
                                 
                                 // ✅ MEJORA: Logging de capabilities para debugging
-                                _logger.LogInformation("🔍 DEBUG: Capabilities - Transfers={Transfers}, Charges={Charges}, Payouts={Payouts}", 
-                                    account.Capabilities?.Transfers, chargesEnabled, payoutsEnabled);
-
                                 bool detailsSubmitted = account.DetailsSubmitted;
                                 
                                 // Log para debug ToS IP
                                 string tosIp = account.TosAcceptance?.Ip ?? "null";
-                                _logger.LogInformation("🔍 DEBUG: ToS Acceptance - Date: {Date}, IP: {Ip}", 
-                                    account.TosAcceptance?.Date, tosIp);
                                 bool tosAccepted = account.TosAcceptance?.Date != null && !string.IsNullOrEmpty(tosIp);
                                 
                                 string disabledReason = account.Requirements?.DisabledReason ?? "";
@@ -1397,7 +1275,6 @@ namespace newApi.Controllers
                                     {
                                         errorDetails.Add($"Code: {error.Code}, Reason: {error.Reason}, Requirement: {error.Requirement}");
                                     }
-                                    _logger.LogWarning("⚠️ DEBUG: Requirements errors for accountId={AccountId}: {Errors}", account.Id, string.Join("; ", errorDetails));
                                 }
                                 
                                 // Rejected: Si disabled_reason indica rechazo (docs: startsWith "rejected.", etc.)
@@ -1407,16 +1284,6 @@ namespace newApi.Controllers
                                                    disabledReason == "other" || disabledReason == "action_required.requested_capabilities");
                                 
                                 // Logging Detallado (agregado para debug)
-                                _logger.LogInformation("📊 DEBUG: Requirements - currentlyDue={CurrentlyDue}, pastDue={PastDue}, eventuallyDue={EventuallyDue}, errors={Errors}, pendingVerification={PendingVerification}",
-                                    account.Requirements?.CurrentlyDue?.Count ?? 0, account.Requirements?.PastDue?.Count ?? 0,
-                                    account.Requirements?.EventuallyDue?.Count ?? 0, account.Requirements?.Errors?.Count ?? 0,
-                                    account.Requirements?.PendingVerification?.Count ?? 0);
-                                _logger.LogInformation("🔍 DEBUG: Payments - chargesEnabled={ChargesEnabled}, payoutsEnabled={PayoutsEnabled}, paymentsEnabled={PaymentsEnabled}",
-                                    chargesEnabled, payoutsEnabled, paymentsEnabled);
-                                _logger.LogInformation("📋 DEBUG: Verification - allCriticalRequirementsMet={AllCritical}, detailsSubmitted={Details}, tosAccepted={Tos}, notDisabled={NotDisabled}, isVerified={IsVerified}, hasFutureIssues={FutureIssues}",
-                                    allCriticalRequirementsMet, detailsSubmitted, tosAccepted, notDisabled, isAccountVerified, hasFutureIssues);
-                                _logger.LogInformation("✅ DEBUG: Final - verified={Verified}, rejected={Rejected}, disabledReason={DisabledReason}, errorDetails={Errors}",
-                                    isAccountVerified, isRejected, disabledReason, string.Join("; ", errorDetails));
                                 
                                 // MEJORA: Usar transacción para actualizaciones atómicas con ExecutionStrategy (NpgsqlRetryingExecutionStrategy)
                                 var previousStatus = expertProfile.StripeStatus;
@@ -1438,7 +1305,20 @@ namespace newApi.Controllers
                                                 details += " Nota: Verifica requirements futuros para mantener el estado.";
                                             }
                                             expertProfile.StripeStatusDetails = details;
-                                            _logger.LogInformation("🎉 DEBUG: Account verified and approved for userId={UserId} (prev: {PreviousStatus})", expertProfile.UserId, previousStatus);
+                                            
+                                            // ✅ Notificar al experto cuando su cuenta es aprobada
+                                            if (previousStatus != StripeStatus.Approved)
+                                            {
+                                                await _loggingService.LogInfoAsync(
+                                                    message: "Cuenta de Stripe aprobada",
+                                                    details: details,
+                                                    userId: expertProfile.UserId,
+                                                    source: "SubscriptionController.account.updated",
+                                                    relatedEntityType: "ExpertProfile",
+                                                    relatedEntityId: expertProfile.Id,
+                                                    notifyUser: true
+                                                );
+                                            }
                                         }
                                         else if (isRejected)
                                         {
@@ -1450,9 +1330,18 @@ namespace newApi.Controllers
                                             if (previousStatus != StripeStatus.Rejected)
                                             {
                                                 await NotifyExpertOnly(expertProfile.UserId, disabledReason);
+                                                
+                                                // ✅ Notificar al experto con el nuevo sistema de logging
+                                                await _loggingService.LogErrorAsync(
+                                                    message: "Cuenta de Stripe rechazada",
+                                                    details: GetRejectionMessage(disabledReason, errorDetails),
+                                                    userId: expertProfile.UserId,
+                                                    source: "SubscriptionController.account.updated",
+                                                    relatedEntityType: "ExpertProfile",
+                                                    relatedEntityId: expertProfile.Id,
+                                                    notifyUser: true
+                                                );
                                             }
-                                            
-                                            _logger.LogWarning("❌ DEBUG: Account rejected for userId={UserId}, reason={Reason}", expertProfile.UserId, disabledReason);
                                         }
                                         else
                                         {
@@ -1463,8 +1352,21 @@ namespace newApi.Controllers
                                             if (!noPendingVerification) pendingMsg += " En revisión asíncrona por Stripe (pending_verification).";
                                             if (hasFutureIssues) pendingMsg += " Prepara para requirements futuros.";
                                             expertProfile.StripeStatusDetails = pendingMsg;
-                                            _logger.LogWarning("⏳ DEBUG: Account pending for userId={UserId} (prev: {PreviousStatus}), pendingVerification={PendingVerif}", 
-                                                expertProfile.UserId, previousStatus, account.Requirements?.PendingVerification?.Count ?? 0);
+                                            
+                                            // ✅ Notificar al experto solo si hay cambios importantes o requirements pendientes
+                                            if (previousStatus != StripeStatus.Pending && 
+                                                (!allCriticalRequirementsMet || !paymentsEnabled || !detailsSubmitted || !tosAccepted))
+                                            {
+                                                await _loggingService.LogWarningAsync(
+                                                    message: "Cuenta de Stripe pendiente de verificación",
+                                                    details: pendingMsg,
+                                                    userId: expertProfile.UserId,
+                                                    source: "SubscriptionController.account.updated",
+                                                    relatedEntityType: "ExpertProfile",
+                                                    relatedEntityId: expertProfile.Id,
+                                                    notifyUser: true
+                                                );
+                                            }
                                         }
 
                                         // ✅ FUTURE REQUIREMENTS: Monitorear y notificar proactivamente (Stripe Docs recomendación)
@@ -1478,8 +1380,6 @@ namespace newApi.Controllers
                                             var requirements = futurePastDue.Any() ? futurePastDue : futureDue;
                                             var requirementsStr = string.Join(", ", requirements);
 
-                                            _logger.LogWarning("⚠️ FUTURE REQUIREMENTS ({ReqType}) for userId={UserId}, accountId={AccountId}: {Requirements}",
-                                                reqType, expertProfile.UserId, account.Id, requirementsStr);
 
                                             // Guardar en BD para mostrar en UI
                                             expertProfile.StripeFutureRequirements = requirementsStr;
@@ -1500,14 +1400,10 @@ namespace newApi.Controllers
 
                                         // 🚨 MARCAR EVENTO COMO PROCESADO usando el mismo ID que se verificó
                                         await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, expertProfile.UserId);
-
-                                        _logger.LogInformation("✅ DEBUG: Updated profile: userId={UserId}, status={Status}, completed={Completed}", 
-                                            expertProfile.UserId, expertProfile.StripeStatus, expertProfile.OnboardingCompleted);
                                     }
                                     catch (Exception ex)
                                     {
                                         await transaction.RollbackAsync();
-                                        _logger.LogError(ex, "❌ ERROR: Processing account.updated for {AccountId}", account.Id);
                                         // 🚨 MARCAR EVENTO COMO PROCESADO (FALLIDO) usando el mismo ID que se verificó
                                         await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, expertProfile.UserId, "Failed", ex.Message);
                                         throw;  // Retry por Stripe
@@ -1516,8 +1412,6 @@ namespace newApi.Controllers
                                 }
                                 catch (Exception logicEx)
                                 {
-                                    _logger.LogError(logicEx, "❌ ERROR: En lógica de verificación para account.updated accountId={AccountId}. Verificar Capabilities o ToS.", account.Id);
-                                    
                                     // ✅ MEJORA: Marcar evento como procesado con error
                                     await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, null, "Error", logicEx.Message);
                                     
@@ -1527,16 +1421,10 @@ namespace newApi.Controllers
                             }
                             else
                             {
-                                _logger.LogWarning("❌ DEBUG: No expert profile found for account.updated accountId={AccountId}", account.Id);
-                                
                                 // Log all expert profiles for debugging
                                 var allProfiles = await _context.ExpertProfiles.ToListAsync();
-                                _logger.LogWarning("❌ DEBUG: Total expert profiles in database: {Count}", allProfiles.Count);
-                                
                                 foreach (var profile in allProfiles)
                                 {
-                                    _logger.LogInformation("📋 DEBUG: Expert profile: userId={UserId}, StripeAccountId={StripeAccountId}, PendingStripeAccountId={PendingStripeAccountId}", 
-                                        profile.UserId, profile.StripeAccountId, profile.PendingStripeAccountId);
                                 }
                                 
                                 // Intentar encontrar por userId en metadata si existe
@@ -1544,14 +1432,11 @@ namespace newApi.Controllers
                                 {
                                     if (int.TryParse(account.Metadata["userId"], out int userIdFromMetadata))
                                     {
-                                        _logger.LogWarning("🔍 DEBUG: Trying to find expert profile by userId from metadata: {UserId}", userIdFromMetadata);
                                         var profileByUserId = await _context.ExpertProfiles
                                             .FirstOrDefaultAsync(ep => ep.UserId == userIdFromMetadata);
                                         
                                         if (profileByUserId != null)
                                         {
-                                            _logger.LogInformation("✅ DEBUG: Found expert profile by userId! Updating with new account info...");
-                                            
                                             // ✅ CORRECCIÓN CRÍTICA: Usar transacción para consistencia
                                             using (var fallbackTransaction = await _context.Database.BeginTransactionAsync())
                                             {
@@ -1589,26 +1474,67 @@ namespace newApi.Controllers
                                                                        disabledReason == "requirements.past_due" || disabledReason == "requirements.pending_verification" ||
                                                                        disabledReason == "other" || disabledReason == "action_required.requested_capabilities");
                                             
+                                            var previousStatusFallback = profileByUserId.StripeStatus;
+                                            
                                             if (isAccountApproved)
                                             {
                                                 profileByUserId.StripeStatus = StripeStatus.Approved;
                                                 profileByUserId.OnboardingCompleted = true;
                                                 profileByUserId.StripeStatusDetails = "✅ **Cuenta Aprobada**: ¡Excelente! Tu cuenta de pagos está completamente verificada y lista para recibir pagos. Ya puedes crear servicios y comenzar a ganar dinero.";
-                                                _logger.LogInformation("🎉 DEBUG: Account approved and profile updated for userId={UserId}", userIdFromMetadata);
+                                                
+                                                // ✅ Notificar al experto cuando su cuenta es aprobada
+                                                if (previousStatusFallback != StripeStatus.Approved)
+                                                {
+                                                    await _loggingService.LogInfoAsync(
+                                                        message: "Cuenta de Stripe aprobada",
+                                                        details: profileByUserId.StripeStatusDetails,
+                                                        userId: userIdFromMetadata,
+                                                        source: "SubscriptionController.account.updated",
+                                                        relatedEntityType: "ExpertProfile",
+                                                        relatedEntityId: profileByUserId.Id,
+                                                        notifyUser: true
+                                                    );
+                                                }
                                             }
                                                     else if (isRejected)
                                                     {
                                                         profileByUserId.StripeStatus = StripeStatus.Rejected;
                                                         profileByUserId.OnboardingCompleted = false;
                                                         profileByUserId.StripeStatusDetails = GetRejectionMessage(disabledReason, new List<string>());
-                                                        _logger.LogWarning("❌ DEBUG: Account rejected for userId={UserId}, reason={Reason}", userIdFromMetadata, disabledReason);
+                                                        
+                                                        // ✅ Notificar al experto cuando su cuenta es rechazada
+                                                        if (previousStatusFallback != StripeStatus.Rejected)
+                                                        {
+                                                            await _loggingService.LogErrorAsync(
+                                                                message: "Cuenta de Stripe rechazada",
+                                                                details: profileByUserId.StripeStatusDetails,
+                                                                userId: userIdFromMetadata,
+                                                                source: "SubscriptionController.account.updated",
+                                                                relatedEntityType: "ExpertProfile",
+                                                                relatedEntityId: profileByUserId.Id,
+                                                                notifyUser: true
+                                                            );
+                                                        }
                                                     }
                                                     else
                                                     {
                                                         profileByUserId.StripeStatus = StripeStatus.Pending;
                                                         profileByUserId.OnboardingCompleted = false;
                                                         profileByUserId.StripeStatusDetails = "⏳ **Cuenta Pendiente**: Tu cuenta está siendo procesada. Completa todos los requisitos para continuar.";
-                                                        _logger.LogWarning("⏳ DEBUG: Account pending for userId={UserId}", userIdFromMetadata);
+                                                        
+                                                        // ✅ Notificar al experto si cambia a pendiente desde otro estado
+                                                        if (previousStatusFallback != StripeStatus.Pending)
+                                                        {
+                                                            await _loggingService.LogWarningAsync(
+                                                                message: "Cuenta de Stripe pendiente de verificación",
+                                                                details: profileByUserId.StripeStatusDetails,
+                                                                userId: userIdFromMetadata,
+                                                                source: "SubscriptionController.account.updated",
+                                                                relatedEntityType: "ExpertProfile",
+                                                                relatedEntityId: profileByUserId.Id,
+                                                                notifyUser: true
+                                                            );
+                                                        }
                                             }
                                             
                                             await _context.SaveChangesAsync();
@@ -1616,13 +1542,10 @@ namespace newApi.Controllers
                                                     
                                             // 🚨 MARCAR EVENTO COMO PROCESADO usando el mismo ID que se verificó
                                             await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, userIdFromMetadata);
-                                                    
-                                                    _logger.LogInformation("✅ DEBUG: Fallback profile updated successfully: userId={UserId}, status={Status}", userIdFromMetadata, profileByUserId.StripeStatus);
                                                 }
                                                 catch (Exception fallbackEx)
                                                 {
                                                     await fallbackTransaction.RollbackAsync();
-                                                    _logger.LogError(fallbackEx, "❌ ERROR: Fallback profile update failed for userId={UserId}", userIdFromMetadata);
                                                     // Marcar evento como procesado con error
                                                     await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, userIdFromMetadata, "Failed", fallbackEx.Message);
                                                 }
@@ -1630,7 +1553,6 @@ namespace newApi.Controllers
                                         }
                                         else
                                         {
-                                            _logger.LogError("❌ DEBUG: No expert profile found even by userId from metadata: {UserId}", userIdFromMetadata);
                                         }
                                     }
                                 }
@@ -1675,10 +1597,6 @@ namespace newApi.Controllers
                                             CreatedAt = DateTime.UtcNow
                                         };
                                         _context.FinancialTransactions.Add(failureRecord);
-                                        
-                                        _logger.LogCritical("🚨 CRITICAL TRANSFER FAILURE - SearchHireId: {SearchHireId}, TransferId: {TransferId}, ExpertId: {ExpertId}, Amount: {Amount}€", 
-                                            searchHire.Id, transfer.Id, failedTransaction.UserId, failedTransaction.Amount);
-                                        
                                         // 🚨 Registrar en sistema de logs con tipo específico
                                         await _loggingService.LogCriticalAsync(
                                             $"Transfer to expert failed - SearchHireId: {searchHire.Id}",
@@ -1697,21 +1615,15 @@ namespace newApi.Controllers
                                     
                                 await _context.SaveChangesAsync();
                                     await transaction.CommitAsync();
-                                    
-                                    _logger.LogCritical("🚨 TRANSFER FAILED BUT SERVICE COMPLETED - SearchHireId: {SearchHireId}, TransferId: {TransferId}, Status: {Status}, ExpertId: {ExpertId}, Amount: {Amount}€ - REQUIRES ADMIN INTERVENTION", 
-                                        searchHire.Id, transfer.Id, searchHire.Status?.StatusValue, failedTransaction?.UserId, failedTransaction?.Amount);
                                 }
                                 catch (Exception ex)
                                 {
                                     await transaction.RollbackAsync();
-                                    _logger.LogError(ex, "Error reverting failed transfer for searchHireId={SearchHireId}, transferId={TransferId}",
-                                        searchHire.Id, transfer.Id);
                                 }
                                 });
                             }
                             else
                             {
-                                _logger.LogWarning("No SearchHire found for transferId={TransferId}", transfer.Id);
                             }
                         }
                         break;
@@ -1719,14 +1631,11 @@ namespace newApi.Controllers
                     // Los eventos de suscripción y facturas se manejan en el webhook general
 
                     default:
-                        _logger.LogWarning("Unhandled event type: {EventType}", stripeEvent.Type);
                         break;
                 }
 
                 // 🚨 MARCAR EVENTO PRINCIPAL COMO PROCESADO
                 await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type);
-
-                _logger.LogInformation("✅ WEBHOOK PROCESSED SUCCESSFULLY: returning 200 OK");
                 return Ok();
             }
             catch (StripeException e)
@@ -1735,16 +1644,54 @@ namespace newApi.Controllers
                 // Esto previene ataques de replay e inyección de eventos falsos
                 if (e.Message?.Contains("signature") == true || e.Message?.Contains("Invalid signature") == true)
                 {
-                    _logger.LogError(e, "❌ SECURITY: Invalid webhook signature - potential attack attempt. Signature: {Signature}", signatureHeader);
+                    // 🚨 LOG CRÍTICO: Intento de ataque con signature inválida
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Invalid webhook signature - potential attack",
+                        details: $"Invalid webhook signature detected. This could be a security attack. Signature: {signatureHeader?.Substring(0, Math.Min(50, signatureHeader?.Length ?? 0))}...",
+                        source: "SubscriptionController.HandleStripeWebhook",
+                        relatedEntityType: "Security",
+                        additionalData: new { 
+                            Action = "WebhookSignatureValidation",
+                            SignatureHeader = signatureHeader?.Substring(0, Math.Min(50, signatureHeader?.Length ?? 0)),
+                            Error = e.Message
+                        }
+                    );
+                    
                     return BadRequest(new { error = "Invalid webhook signature" });
                 }
+                // 🚨 LOG CRÍTICO: Error de Stripe en webhook (puede afectar dinero)
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Stripe webhook error",
+                    details: $"Stripe exception in webhook handler: {e.Message}, Type: {e.StripeError?.Type}, Code: {e.StripeError?.Code}",
+                    source: "SubscriptionController.HandleStripeWebhook",
+                    relatedEntityType: "Webhook",
+                    additionalData: new { 
+                        Action = "StripeWebhook",
+                        StripeError = e.Message,
+                        StripeErrorType = e.StripeError?.Type,
+                        StripeErrorCode = e.StripeError?.Code,
+                        Payload = json?.Substring(0, Math.Min(500, json?.Length ?? 0))
+                    }
+                );
                 
-                _logger.LogError(e, "Stripe webhook error: {ErrorMessage}, payload: {Payload}", e.Message, json);
                 return BadRequest(new { error = e.Message });
             }
             catch (Exception e)
             {
-                _logger.LogError(e, "General webhook error: {ErrorMessage}, payload: {Payload}", e.Message, json);
+                // 🚨 LOG CRÍTICO: Error general en webhook (puede afectar dinero)
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: General webhook error",
+                    details: $"General exception in webhook handler: {e.Message}",
+                    source: "SubscriptionController.HandleStripeWebhook",
+                    relatedEntityType: "Webhook",
+                    additionalData: new { 
+                        Action = "StripeWebhook",
+                        Exception = e.Message,
+                        StackTrace = e.StackTrace,
+                        Payload = json?.Substring(0, Math.Min(500, json?.Length ?? 0))
+                    }
+                );
+                
                 return StatusCode(500, new { error = "Internal server error" });
             }
         }
@@ -1759,36 +1706,25 @@ namespace newApi.Controllers
             Request.Body.Position = 0; // ✅ CORRECCIÓN: Reposicionar DESPUÉS de leer
             // ✅ SEGURIDAD: Convertir StringValues a string (puede venir como array)
             var signatureHeader = Request.Headers["Stripe-Signature"].ToString();
-            _logger.LogInformation("🔔 GENERAL WEBHOOK RECEIVED: signature={SignatureHeader}, payload={Payload}", signatureHeader, json);
-
             try
             {
                 // ✅ SEGURIDAD CRÍTICA: Validar signature antes de procesar
                 // EventUtility.ConstructEvent valida la signature y lanza StripeException si es inválida
                 // Esto previene ataques de replay e inyección de eventos falsos
-                _logger.LogInformation("🔐 DEBUG: Validating general webhook signature with secret: {WebhookSecret}", _generalWebhookSecret?.Substring(0, 10) + "...");
-                _logger.LogInformation("🔐 DEBUG: Full signature header: {FullSignature}", signatureHeader);
-                _logger.LogInformation("🔐 DEBUG: Webhook secret length: {SecretLength}", _generalWebhookSecret?.Length ?? 0);
-                
                 if (string.IsNullOrEmpty(_generalWebhookSecret))
                 {
-                    _logger.LogError("❌ GENERAL WEBHOOK SECRET IS NULL OR EMPTY!");
                     return BadRequest(new { error = "Webhook secret not configured" });
                 }
                 
                 if (string.IsNullOrEmpty(signatureHeader))
                 {
-                    _logger.LogError("❌ STRIPE SIGNATURE HEADER IS NULL OR EMPTY!");
                     return BadRequest(new { error = "Stripe signature header missing" });
                 }
                 
                 var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, _generalWebhookSecret);
-                _logger.LogInformation("✅ GENERAL WEBHOOK EVENT CONSTRUCTED: type={EventType}, id={EventId}", stripeEvent.Type, stripeEvent.Id);
-
                 // 🔒 IDEMPOTENCIA COMPLETA: Verificar si el evento ya fue procesado
                 if (await IsEventProcessedAsync(stripeEvent.Id))
                 {
-                    _logger.LogInformation("🔄 DEBUG: Evento general ya procesado (eventId={EventId}), ignorando", stripeEvent.Id);
                     return Ok(new { message = "Event already processed" });
                 }
 
@@ -1802,7 +1738,6 @@ namespace newApi.Controllers
                         }
                         else
                         {
-                            _logger.LogWarning("No payment intent data in payment_intent.succeeded event");
                         }
                         break;
 
@@ -1814,20 +1749,16 @@ namespace newApi.Controllers
                         }
                         else
                         {
-                            _logger.LogWarning("No payment intent data in payment_intent.payment_failed event");
                         }
                         break;
 
                     case "checkout.session.completed":
                         var session = stripeEvent.Data.Object as Session;
-                        _logger.LogInformation("🔔 CHECKOUT SESSION COMPLETED: sessionId={SessionId}, mode={Mode}, metadata={Metadata}", 
-                            session?.Id, session?.Mode, JsonSerializer.Serialize(session?.Metadata));
                         if (session != null && session.Mode == "payment")
                         {
                             // ✅ VALIDACIÓN: Verificar que PaymentIntentId no sea null
                             if (string.IsNullOrEmpty(session.PaymentIntentId))
                             {
-                                _logger.LogError("PaymentIntentId is null or empty for sessionId={SessionId}", session.Id);
                                 return BadRequest(new { error = "PaymentIntentId is missing from session" });
                             }
 
@@ -1838,43 +1769,51 @@ namespace newApi.Controllers
 
                             if (existingTransaction != null)
                             {
-                                _logger.LogWarning("⚠️ WEBHOOK ALREADY PROCESSED - PaymentIntentId: {PaymentIntentId}, ExistingTransactionId: {TransactionId}", 
-                                    session.PaymentIntentId, existingTransaction.Id);
                                 return Ok(new { message = "Event already processed" }); // ✅ Idempotencia
                             }
 
-                            _logger.LogInformation("Processing payment session: sessionId={SessionId}, metadata={Metadata}", session.Id, JsonSerializer.Serialize(session.Metadata));
                             if (int.TryParse(session.Metadata.GetValueOrDefault("userId", "0"), out int userId) &&
                                 decimal.TryParse(session.Metadata.GetValueOrDefault("amount", "0"), out decimal amount) &&
                                 bool.TryParse(session.Metadata.GetValueOrDefault("pendingHire", "false"), out bool pendingHire))
                             {
                                 if (pendingHire && int.TryParse(session.Metadata.GetValueOrDefault("serviceId", "0"), out int serviceId))
                                 {
-                                    _logger.LogInformation("Processing pending hire for userId={UserId}, serviceId={ServiceId}, amount={Amount}", userId, serviceId, amount);
                                     await HandlePendingHireCompleted(userId, amount, serviceId, session.Metadata, session);
                                 }
                                 else
                                 {
                                     // ✅ VALIDACIÓN: Verificar PaymentIntentId antes de usarlo
                                     var paymentIntentId = session.PaymentIntentId ?? "unknown";
-                                    _logger.LogInformation("Processing load money for userId={UserId}, amount={Amount}, paymentIntentId={PaymentIntentId}", userId, amount, paymentIntentId);
                                     // ✅ REMOVED: Load money functionality eliminated - all payments are direct Stripe
                                 }
                             }
                             else
                             {
-                                _logger.LogError("Invalid metadata for payment session: sessionId={SessionId}, metadata={Metadata}", session.Id, JsonSerializer.Serialize(session.Metadata));
+                                
+                                // 🚨 LOG CRÍTICO: Metadata inválida en sesión de pago (afecta dinero)
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Invalid metadata in payment session",
+                                    details: $"Invalid metadata format in checkout session {session.Id}. PaymentIntentId: {session.PaymentIntentId}, Metadata: {JsonSerializer.Serialize(session.Metadata)}",
+                                    source: "SubscriptionController.HandleGeneralStripeWebhook",
+                                    relatedEntityType: "Payment",
+                                    relatedEntityId: null,
+                                    additionalData: new { 
+                                        SessionId = session.Id,
+                                        PaymentIntentId = session.PaymentIntentId,
+                                        Mode = session.Mode,
+                                        Metadata = session.Metadata
+                                    }
+                                );
+                                
                                 return BadRequest(new { error = "Invalid metadata format" });
                             }
                         }
                         else if (session != null && session.Mode == "subscription")
                         {
                             // ✅ IGNORAR: Suscripciones periódicas ya no se usan
-                            _logger.LogInformation("ℹ️ Ignoring subscription checkout session: sessionId={SessionId}, mode={Mode}", session.Id, session.Mode);
                         }
                         else
                         {
-                            _logger.LogWarning("No session data in checkout.session.completed event");
                         }
                         break;
 
@@ -1884,18 +1823,14 @@ namespace newApi.Controllers
                     case "customer.subscription.updated":
                     case "customer.subscription.deleted":
                         // ✅ IGNORAR: Suscripciones periódicas ya no se usan
-                        _logger.LogInformation("ℹ️ Ignoring subscription-related event: {EventType}", stripeEvent.Type);
                         break;
 
                     default:
-                        _logger.LogWarning("Unhandled general webhook event type: {EventType}", stripeEvent.Type);
                         break;
                 }
 
                 // 🚨 MARCAR EVENTO GENERAL COMO PROCESADO
                 await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type);
-
-                _logger.LogInformation("✅ GENERAL WEBHOOK PROCESSED SUCCESSFULLY: returning 200 OK");
                 return Ok();
             }
             catch (StripeException e)
@@ -1904,16 +1839,54 @@ namespace newApi.Controllers
                 // Esto previene ataques de replay e inyección de eventos falsos
                 if (e.Message?.Contains("signature") == true || e.Message?.Contains("Invalid signature") == true)
                 {
-                    _logger.LogError(e, "❌ SECURITY: Invalid general webhook signature - potential attack attempt. Signature: {Signature}", signatureHeader);
+                    // 🚨 LOG CRÍTICO: Intento de ataque con signature inválida en webhook general
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Invalid general webhook signature - potential attack",
+                        details: $"Invalid general webhook signature detected. This could be a security attack. Signature: {signatureHeader?.Substring(0, Math.Min(50, signatureHeader?.Length ?? 0))}...",
+                        source: "SubscriptionController.HandleGeneralStripeWebhook",
+                        relatedEntityType: "Security",
+                        additionalData: new { 
+                            Action = "GeneralWebhookSignatureValidation",
+                            SignatureHeader = signatureHeader?.Substring(0, Math.Min(50, signatureHeader?.Length ?? 0)),
+                            Error = e.Message
+                        }
+                    );
+                    
                     return BadRequest(new { error = "Invalid webhook signature" });
                 }
+                // 🚨 LOG CRÍTICO: Error de Stripe en webhook general (puede afectar dinero)
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Stripe general webhook error",
+                    details: $"Stripe exception in general webhook handler: {e.Message}, Type: {e.StripeError?.Type}, Code: {e.StripeError?.Code}",
+                    source: "SubscriptionController.HandleGeneralStripeWebhook",
+                    relatedEntityType: "Webhook",
+                    additionalData: new { 
+                        Action = "GeneralStripeWebhook",
+                        StripeError = e.Message,
+                        StripeErrorType = e.StripeError?.Type,
+                        StripeErrorCode = e.StripeError?.Code,
+                        Payload = json?.Substring(0, Math.Min(500, json?.Length ?? 0))
+                    }
+                );
                 
-                _logger.LogError(e, "Stripe general webhook error: {ErrorMessage}, payload: {Payload}", e.Message, json);
                 return BadRequest(new { error = e.Message });
             }
             catch (Exception e)
             {
-                _logger.LogError(e, "General webhook error: {ErrorMessage}, payload: {Payload}", e.Message, json);
+                // 🚨 LOG CRÍTICO: Error general en webhook general (puede afectar dinero)
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: General webhook error",
+                    details: $"General exception in general webhook handler: {e.Message}",
+                    source: "SubscriptionController.HandleGeneralStripeWebhook",
+                    relatedEntityType: "Webhook",
+                    additionalData: new { 
+                        Action = "GeneralStripeWebhook",
+                        Exception = e.Message,
+                        StackTrace = e.StackTrace,
+                        Payload = json?.Substring(0, Math.Min(500, json?.Length ?? 0))
+                    }
+                );
+                
                 return StatusCode(500, new { error = "Internal server error" });
             }
         }
@@ -1923,7 +1896,6 @@ namespace newApi.Controllers
             // ✅ VALIDACIÓN: Verificar que session y PaymentIntentId no sean null
             if (session == null)
             {
-                _logger.LogError("Session is null for userId={UserId}, serviceId={ServiceId}", userId, serviceId);
                 // ✅ No lanzar excepción aquí - retornar silenciosamente para no fallar el webhook
                 // El webhook ya respondió 200 OK, pero el procesamiento falló
                 await _loggingService.LogCriticalAsync(
@@ -1940,7 +1912,6 @@ namespace newApi.Controllers
 
             if (string.IsNullOrEmpty(session.PaymentIntentId))
             {
-                _logger.LogError("PaymentIntentId is null or empty for userId={UserId}, serviceId={ServiceId}, sessionId={SessionId}", userId, serviceId, session.Id);
                 // ✅ No lanzar excepción aquí - retornar silenciosamente para no fallar el webhook
                 await _loggingService.LogCriticalAsync(
                     $"PaymentIntentId is null or empty in HandlePendingHireCompleted",
@@ -1953,29 +1924,23 @@ namespace newApi.Controllers
                 );
                 return;
             }
-
-            _logger.LogInformation("Handling pending hire completed for userId={UserId}, serviceId={ServiceId}, amount={Amount}", userId, serviceId, amount);
-
             // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
             var user = await _context.Users
                 .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
                 .FirstOrDefaultAsync();
             if (user == null)
             {
-                _logger.LogError("User not found for userId={UserId}", userId);
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
             }
 
             var service = await _context.SearchServices.FindAsync(serviceId);
             if (service == null)
             {
-                _logger.LogError("Service not found for serviceId={ServiceId}", serviceId);
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
             }
 
             if (!metadata.TryGetValue("searchData", out var searchDataJson) || !metadata.TryGetValue("parameters", out var parametersJson))
             {
-                _logger.LogError("Missing searchData or parameters in metadata for userId={UserId}, serviceId={ServiceId}", userId, serviceId);
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
             }
 
@@ -1988,13 +1953,11 @@ namespace newApi.Controllers
             }
             catch (JsonException ex)
             {
-                _logger.LogError(ex, "Error deserializing search data or parameters for userId={UserId}", userId);
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
             }
 
             if (searchDto == null || parameterDto == null)
             {
-                _logger.LogError("Deserialized searchDto or parameterDto is null for userId={UserId}", userId);
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
             }
 
@@ -2015,7 +1978,6 @@ namespace newApi.Controllers
 
             if (!user.PhoneVerified)
             {
-                _logger.LogError("Phone verification required for userId={UserId}", userId);
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
             }
 
@@ -2094,7 +2056,6 @@ namespace newApi.Controllers
                 // Validar que el experto no se contrate a sí mismo
                 if (expertuserid == userId)
                 {
-                    _logger.LogError("Expert cannot hire themselves: expertUserId={ExpertUserId}, userId={UserId}", expertuserid, userId);
                     throw new InvalidOperationException("No puedes contratarte a ti mismo como experto");
                 }
 
@@ -2146,6 +2107,31 @@ namespace newApi.Controllers
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
 
+                // ✅ Notificar al cliente y experto cuando se confirma la contratación
+                await _loggingService.LogInfoAsync(
+                    message: "Contratación confirmada",
+                    details: $"Tu pago se procesó correctamente. La contratación #{searchHire.Id} está activa y el experto ha sido notificado.",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHire.Id,
+                    notifyUser: true
+                );
+
+                // ✅ Notificar al experto sobre la nueva contratación
+                if (expertuserid > 0)
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "Nueva contratación recibida",
+                        details: $"Has recibido una nueva contratación #{searchHire.Id} por {service.Price}€. Revisa los detalles y contacta con el cliente.",
+                        userId: expertuserid,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHire.Id,
+                        notifyUser: true
+                    );
+                }
+
                 // ✅ CAPTURA MANUAL: Capturar el PaymentIntent SOLO después de validar todo exitosamente
                 // Esto evita perder comisiones si algo falla antes de capturar
                 // ⚡ OPTIMIZACIÓN: Captura rápida y no-bloqueante para mantener respuesta <5s (Stripe Docs recomendación)
@@ -2163,21 +2149,14 @@ namespace newApi.Controllers
                         {
                             // ✅ CAPTURA RÁPIDA (no bloquea >2s) - Mantiene respuesta webhook <5s
                             await paymentIntentService.CaptureAsync(session.PaymentIntentId);
-                            
-                            _logger.LogInformation("✅ PaymentIntent captured: PaymentIntentId={PaymentIntentId}", session.PaymentIntentId);
                         }
                         else if (paymentIntent.Status == "succeeded")
                         {
                             // ✅ Ya está capturado (no debería pasar con captura manual, pero puede ser edge case)
-                            _logger.LogWarning("⚠️ PaymentIntent already captured: PaymentIntentId={PaymentIntentId}, Status={Status}",
-                                paymentIntent.Id, paymentIntent.Status);
                         }
                         else
                         {
                             // ❌ Estado inesperado: No se puede capturar
-                            _logger.LogError("❌ PaymentIntent in unexpected state: PaymentIntentId={PaymentIntentId}, Status={Status}, Cannot capture",
-                                paymentIntent.Id, paymentIntent.Status);
-                            
                             await _loggingService.LogCriticalAsync(
                                 $"PaymentIntent in unexpected state - cannot capture",
                                 $"PaymentIntentId: {session.PaymentIntentId}, Status: {paymentIntent.Status}, UserId: {userId}, ServiceId: {serviceId}, SearchHireId: {searchHire.Id}",
@@ -2193,9 +2172,6 @@ namespace newApi.Controllers
                     {
                         // Si falla la captura o la obtención, registrar crítico pero no lanzar excepción
                         // El PaymentIntent queda en estado "requires_capture" y expira en 7 días
-                        _logger.LogError(stripeEx, "❌ FAILED TO CAPTURE PaymentIntent: PaymentIntentId={PaymentIntentId}, Error={Error}",
-                            session.PaymentIntentId, stripeEx.Message);
-                        
                     await _loggingService.LogCriticalAsync(
                             $"Failed to capture PaymentIntent after successful hire creation",
                             $"PaymentIntentId: {session.PaymentIntentId}, UserId: {userId}, ServiceId: {serviceId}, SearchHireId: {searchHire.Id}, Error: {stripeEx.Message}",
@@ -2209,22 +2185,15 @@ namespace newApi.Controllers
                         // El PaymentIntent expirará en 7 días automáticamente sin comisiones perdidas
                     }
                 }
-
-                _logger.LogInformation("Pending hire completed successfully for userId={UserId}, searchId={SearchId}, searchHireId={SearchHireId}", userId, search.Id, searchHire.Id);
             }
             catch (Exception ex)
             {
                 await transaction.RollbackAsync();
-                    _logger.LogError(ex, "❌ ERROR PROCESSING PENDING HIRE for userId={UserId}, serviceId={ServiceId}", userId, serviceId);
-                    
                     // ✅ CON CAPTURA MANUAL: NO hacer refund - simplemente NO capturar el PaymentIntent
                     // El PaymentIntent queda en estado "requires_capture" y expira en 7 días automáticamente
                     // Esto evita perder comisiones porque nunca se capturó el pago
                     if (session != null && !string.IsNullOrEmpty(session.PaymentIntentId))
                     {
-                        _logger.LogWarning("⚠️ ERROR DETECTED - PaymentIntent will NOT be captured. It will expire in 7 days automatically. PaymentIntentId={PaymentIntentId}",
-                            session.PaymentIntentId);
-                        
                         await _loggingService.LogCriticalAsync(
                             $"Error processing hire - PaymentIntent not captured",
                             $"PaymentIntentId: {session.PaymentIntentId}, UserId: {userId}, ServiceId: {serviceId}, Error: {ex.Message}. The PaymentIntent will expire in 7 days without fees.",
@@ -2250,9 +2219,6 @@ namespace newApi.Controllers
         /// </summary>
         private async Task LogCriticalRefundFailure(string paymentIntentId, int userId, int serviceId, Exception error)
         {
-            _logger.LogCritical("🚨 CRITICAL REFUND FAILURE - PaymentIntentId: {PaymentIntentId}, UserId: {UserId}, ServiceId: {ServiceId}, Error: {Error}", 
-                paymentIntentId, userId, serviceId, error.Message);
-
             // 💾 Registrar fallo crítico en base de datos para seguimiento
             var criticalError = new FinancialTransaction
             {
@@ -2293,9 +2259,6 @@ namespace newApi.Controllers
                 {
                     return Unauthorized(new { message = "Admin access required" });
                 }
-
-                _logger.LogInformation("🔄 Creating LogType table and inserting data...");
-
                 // Crear tabla LogTypes
                 await _context.Database.ExecuteSqlRawAsync(@"
                     CREATE TABLE IF NOT EXISTS ""LogTypes"" (
@@ -2312,9 +2275,6 @@ namespace newApi.Controllers
                         ""UpdatedAt"" TIMESTAMP WITH TIME ZONE
                     );
                 ");
-
-                _logger.LogInformation("✅ LogTypes table created successfully");
-
                 // Agregar columnas a la tabla Logs si no existen
                 await _context.Database.ExecuteSqlRawAsync(@"
                     DO $$ 
@@ -2336,16 +2296,10 @@ namespace newApi.Controllers
                         END IF;
                     END $$;
                 ");
-
-                _logger.LogInformation("✅ Logs table columns added successfully");
-
                 // Crear índice si no existe
                 await _context.Database.ExecuteSqlRawAsync(@"
                     CREATE INDEX IF NOT EXISTS ""IX_Logs_LogTypeId"" ON ""Logs"" (""LogTypeId"");
                 ");
-
-                _logger.LogInformation("✅ Index created successfully");
-
                 // Agregar foreign key si no existe
                 await _context.Database.ExecuteSqlRawAsync(@"
                     DO $$
@@ -2360,9 +2314,6 @@ namespace newApi.Controllers
                         END IF;
                     END $$;
                 ");
-
-                _logger.LogInformation("✅ Foreign key created successfully");
-
                 // Insertar tipos de logs por defecto
                 await _context.Database.ExecuteSqlRawAsync(@"
                     INSERT INTO ""LogTypes"" (""Name"", ""Description"", ""Category"", ""Severity"", ""RequiresAdminNotification"", ""RequiresEmailAlert"", ""RequiresSmsAlert"", ""IsActive"", ""CreatedAt"")
@@ -2393,9 +2344,6 @@ namespace newApi.Controllers
                     ('EXPERT_ACCOUNT_VERIFIED', 'Expert account verified', 'Info', 'Low', false, false, false, true, NOW())
                     ON CONFLICT (""Name"") DO NOTHING;
                 ");
-
-                _logger.LogInformation("✅ Default log types inserted successfully");
-
                 return Ok(new { 
                     message = "LogType table and data created successfully!",
                     details = new {
@@ -2409,7 +2357,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Error creating LogType table");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -2431,9 +2378,6 @@ namespace newApi.Controllers
             string reason,
             Dictionary<string, string>? additionalMetadata = null)
         {
-            _logger.LogInformation("🔄 PROCESSING GENERIC REFUND - PaymentIntentId: {PaymentIntentId}, UserId: {UserId}, Type: {Type}, Percentage: {Percentage}%", 
-                paymentIntentId, userId, refundType, refundPercentage);
-
             try
             {
                 // 🔍 Verificar si ya existe un refund para este PaymentIntent (idempotencia)
@@ -2444,8 +2388,6 @@ namespace newApi.Controllers
 
                 if (existingRefund != null)
                 {
-                    _logger.LogWarning("⚠️ REFUND ALREADY EXISTS - PaymentIntentId: {PaymentIntentId}, ExistingRefundId: {RefundId}", 
-                        paymentIntentId, existingRefund.Id);
                     return true; // ✅ Idempotencia: refund ya procesado
                 }
 
@@ -2486,10 +2428,6 @@ namespace newApi.Controllers
 
                 var refundService = new RefundService();
                 var refund = await refundService.CreateAsync(refundOptions);
-
-                _logger.LogInformation("✅ STRIPE REFUND CREATED - RefundId: {RefundId}, PaymentIntentId: {PaymentIntentId}, Percentage: {Percentage}%", 
-                    refund.Id, paymentIntentId, refundPercentage);
-
                 // 💾 Registrar refund en base de datos
                 var refundAmount = (decimal)refund.Amount / 100; // Convertir de céntimos a euros
                 var refundTransaction = new FinancialTransaction
@@ -2506,22 +2444,14 @@ namespace newApi.Controllers
 
                 _context.FinancialTransactions.Add(refundTransaction);
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("✅ GENERIC REFUND COMPLETED - RefundId: {RefundId}, UserId: {UserId}, Amount: {Amount}€, Percentage: {Percentage}%", 
-                    refund.Id, userId, refundAmount, refundPercentage);
-
                 return true;
             }
             catch (StripeException stripeEx)
             {
-                _logger.LogError(stripeEx, "❌ STRIPE ERROR PROCESSING GENERIC REFUND - PaymentIntentId: {PaymentIntentId}, Error: {Error}", 
-                    paymentIntentId, stripeEx.Message);
                 return false;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ GENERAL ERROR PROCESSING GENERIC REFUND - PaymentIntentId: {PaymentIntentId}, Error: {Error}", 
-                    paymentIntentId, ex.Message);
                 return false;
             }
         }
@@ -2532,30 +2462,23 @@ namespace newApi.Controllers
             // 🚨 VALIDACIÓN DE ENTRADA
             if (request == null)
             {
-                _logger.LogError("Request is null");
                 return BadRequest(new { message = "Request cannot be null" });
             }
 
             if (request.SearchServiceId <= 0)
             {
-                _logger.LogError("Invalid SearchServiceId: {SearchServiceId}", request.SearchServiceId);
                 return BadRequest(new { message = "Invalid service ID" });
             }
 
             if (request.SearchId <= 0)
             {
-                _logger.LogError("Invalid SearchId: {SearchId}", request.SearchId);
                 return BadRequest(new { message = "Invalid search ID" });
             }
-
-            _logger.LogInformation("HireService endpoint invoked for searchServiceId={SearchServiceId}", request.SearchServiceId);
-
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
@@ -2566,7 +2489,6 @@ namespace newApi.Controllers
 
                 if (service == null)
                 {
-                    _logger.LogError("Service not found for searchServiceId={SearchServiceId}", request.SearchServiceId);
                     return NotFound(new { message = "Service not found" });
                 }
 
@@ -2578,9 +2500,6 @@ namespace newApi.Controllers
                     
                     if (!validationResult.IsValid)
                     {
-                        _logger.LogWarning("Service hire blocked due to expert Stripe status: serviceId={ServiceId}, expertId={ExpertId}, stripeStatus={StripeStatus}", 
-                            service.Id, service.ExpertProfile.UserId, validationResult.StripeStatus);
-                        
                         return BadRequest(new { 
                             message = validationResult.ErrorMessage,
                             stripeStatus = validationResult.StripeStatus,
@@ -2595,8 +2514,6 @@ namespace newApi.Controllers
                 // para evitar perder comisiones de Stripe al hacer refunds
                 if (service.ExpertProfile != null && service.ExpertProfile.UserId == userId)
                 {
-                    _logger.LogError("Expert cannot hire themselves: expertUserId={ExpertUserId}, userId={UserId}", 
-                        service.ExpertProfile.UserId, userId);
                     return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
                 }
 
@@ -2606,7 +2523,6 @@ namespace newApi.Controllers
                     .FirstOrDefaultAsync();
                 if (user == null)
                 {
-                    _logger.LogError("User not found for userId={UserId}", userId);
                     return NotFound(new { message = "User not found" });
                 }
 
@@ -2614,7 +2530,6 @@ namespace newApi.Controllers
                 // ✅ IMPORTANTE: Esta validación DEBE hacerse ANTES de crear el checkout session
                 if (!user.PhoneVerified)
                 {
-                    _logger.LogError("Phone verification required for userId={UserId}", userId);
                     return StatusCode(403, new { message = "Phone verification required to create hires" });
                 }
 
@@ -2634,8 +2549,6 @@ namespace newApi.Controllers
                 
                 if (existingHire != null)
                 {
-                    _logger.LogError("User already has an active hire for this service: userId={UserId}, serviceId={ServiceId}, existingHireId={ExistingHireId}", 
-                        userId, service.Id, existingHire.Id);
                     return BadRequest(new { message = "Ya tienes una contratación activa para este servicio" });
                 }
 
@@ -2685,11 +2598,9 @@ namespace newApi.Controllers
                 try
                 {
                     session = await stripeService.CreateAsync(options);
-                    _logger.LogInformation("Stripe Checkout session created: sessionId={SessionId}, url={SessionUrl}", session.Id, session.Url);
                 }
                 catch (StripeException ex)
                 {
-                    _logger.LogError(ex, "Stripe error creating checkout session for userId={UserId}, serviceId={ServiceId}: {ErrorMessage}", userId, service.Id, ex.Message);
                     return StatusCode(500, new { message = "Failed to create payment session" });
                 }
 
@@ -2697,7 +2608,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error hiring service: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to hire service" });
             }
         }
@@ -2706,14 +2616,11 @@ namespace newApi.Controllers
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> CancelService([FromBody] CancelServiceDto request)
         {
-            _logger.LogInformation("CancelService endpoint invoked for searchHireId={SearchHireId}", request.SearchHireId);
-
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
@@ -2730,13 +2637,11 @@ namespace newApi.Controllers
 
                 if (searchHire == null)
                 {
-                    _logger.LogError("SearchHire not found or user is not the expert for searchHireId={SearchHireId}, userId={UserId}", request.SearchHireId, userId);
                     return NotFound(new { message = "Service not found or unauthorized" });
                 }
 
                 if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue())
                 {
-                    _logger.LogError("Service is not in pending status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
                     return BadRequest(new { message = "Service is not pending" });
                 }
 
@@ -2744,7 +2649,6 @@ namespace newApi.Controllers
                 var appointment = searchHire.Appointment;
                 if (appointment == null)
                 {
-                    _logger.LogError("No appointment found for searchHireId={SearchHireId}", searchHire.Id);
                     return BadRequest(new { message = "No appointment found" });
                 }
 
@@ -2765,7 +2669,6 @@ namespace newApi.Controllers
 
                 if (cancelledStatus == null)
                 {
-                    _logger.LogError("Appointment status not found: {StatusValue}", statusValue);
                     return BadRequest(new { message = "Invalid cancellation status" });
                 }
 
@@ -2782,13 +2685,10 @@ namespace newApi.Controllers
                 }
                 else
                 {
-                    _logger.LogInformation("Skipping money distribution for non-finalization status: {StatusValue}", statusValue);
                 }
 
                 if (!refundSuccess)
                 {
-                    _logger.LogError("Failed to process money distribution for searchHireId={SearchHireId}", searchHire.Id);
-                    
                     // 🚨 Registrar fallo crítico de distribución
                     await _loggingService.LogCriticalAsync(
                         $"Failed to process money distribution - SearchHireId: {searchHire.Id}",
@@ -2809,16 +2709,18 @@ namespace newApi.Controllers
                     await _context.SaveChangesAsync();
 
                     // 📝 LOGGING: Registrar acción de cancelación
-                    await _userActionLogging.LogUserActionAsync(userId, "CANCEL_SERVICE", 
-                    $"Canceló servicio {searchHire.Id} como experto con refund real de Stripe", 
-                        "SearchHire", searchHire.Id);
-
-                _logger.LogInformation("Service cancelled with central refund for searchHireId={SearchHireId}, clientId={ClientId}", searchHire.Id, searchHire.ClientId);
+                    await _loggingService.LogInfoAsync(
+                        message: "CANCEL_SERVICE",
+                        details: $"Canceló servicio {searchHire.Id} como experto con refund real de Stripe",
+                        userId: userId,
+                        source: "UserAction",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHire.Id
+                    );
                 return Ok(new { message = "Service cancelled and refunded via Stripe" });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error cancelling service: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to cancel service" });
             }
         }
@@ -2830,13 +2732,8 @@ namespace newApi.Controllers
             // 🔐 SEGURIDAD: Verificar rol en lugar de email
             if (!_authService.IsAdmin(User))
             {
-                _logger.LogError("Unauthorized access attempt to force-finalize endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                 return Unauthorized(new { message = "Admin access required" });
             }
-
-            _logger.LogInformation("ForceFinalize endpoint invoked for searchHireId={SearchHireId}, resolveInFavorOfClient={ResolveInFavorOfClient}",
-                request.SearchHireId, request.ResolveInFavorOfClient);
-
             try
             {
                 // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
@@ -2850,13 +2747,8 @@ namespace newApi.Controllers
 
                 if (searchHire == null)
                 {
-                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", request.SearchHireId);
                     return NotFound(new { message = "Service not found" });
                 }
-
-                _logger.LogInformation("Processing force-finalize for searchHireId={SearchHireId}, current status={Status}",
-                    searchHire.Id, searchHire.Status);
-
                 if (request.ResolveInFavorOfClient)
                 {
                     var success = await _refundService.ProcessMoneyDistributionAsync(
@@ -2867,28 +2759,28 @@ namespace newApi.Controllers
 
                     if (!success)
                     {
-                        _logger.LogError("Failed to process client refund via orchestrator for force-finalize searchHireId={SearchHireId}", searchHire.Id);
                         return StatusCode(500, new { message = "Failed to process client refund" });
                     }
 
                     searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedClient.ToStringValue());
-                    _logger.LogInformation("Force-finalized in favor of client via orchestrator for searchHireId={SearchHireId}", searchHire.Id);
-
-                    await _userActionLogging.LogAdminActionAsync(int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"), "FORCE_FINALIZE_CLIENT_REFUND", 
-                        $"Finalizó forzadamente servicio {searchHire.Id} a favor del cliente con orquestador", 
-                        "SearchHire", searchHire.Id);
+                    await _loggingService.LogWarningAsync(
+                        message: "FORCE_FINALIZE_CLIENT_REFUND",
+                        details: $"Finalizó forzadamente servicio {searchHire.Id} a favor del cliente con orquestador",
+                        userId: int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"),
+                        source: "AdminAction",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHire.Id
+                    );
 
                     return Ok(new { message = "Service finalized successfully in favor of client" });
                 }
                 else
                 {
-                    _logger.LogWarning("Force finalize in favor of expert is no longer supported for searchHireId={SearchHireId}", searchHire.Id);
                     return BadRequest(new { message = "Force finalize in favor of expert is no longer supported. Use dispute resolution instead." });
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error finalizing service: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to finalize service" });
             }
         }
@@ -2899,17 +2791,12 @@ namespace newApi.Controllers
             // 🔐 SEGURIDAD: Verificar rol en lugar de email
             if (!_authService.IsAdmin(User))
             {
-                _logger.LogError("Unauthorized access attempt to resolve-dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                 return Unauthorized(new { message = "Admin access required" });
             }
-
-            _logger.LogInformation("ResolveDispute endpoint invoked for searchHireId={SearchHireId}", request.SearchHireId);
-
             try
             {
                 if (string.IsNullOrWhiteSpace(request.Resolution))
                 {
-                    _logger.LogError("Resolution reason is required for searchHireId={SearchHireId}", request.SearchHireId);
                     return BadRequest(new { message = "Resolution reason is required" });
                 }
 
@@ -2924,13 +2811,11 @@ namespace newApi.Controllers
 
                 if (searchHire == null)
                 {
-                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", request.SearchHireId);
                     return NotFound(new { message = "Service not found" });
                 }
 
                 if (searchHire.Status.StatusValue != SearchHireStatus.Disputed.ToStringValue())
                 {
-                    _logger.LogError("Service is not in disputed status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status);
                     return BadRequest(new { message = "Service is not disputed" });
                 }
 
@@ -2939,7 +2824,6 @@ namespace newApi.Controllers
 
                 if (dispute == null)
                 {
-                    _logger.LogError("No pending dispute found for searchHireId={SearchHireId}", searchHire.Id);
                     return NotFound(new { message = "No pending dispute found" });
                 }
 
@@ -2960,19 +2844,21 @@ namespace newApi.Controllers
 
                     if (!success)
                     {
-                        _logger.LogError("Failed to process client refund via orchestrator for dispute searchHireId={SearchHireId}", searchHire.Id);
                         await transaction.RollbackAsync();
                         return StatusCode(500, new { message = "Failed to process client refund" });
                     }
 
                     searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedClient.ToStringValue());
-                    _logger.LogInformation("Dispute resolved in favor of client via orchestrator for searchHireId={SearchHireId}", searchHire.Id);
-
                     // 📝 LOGGING
                     var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-                    await _userActionLogging.LogAdminActionAsync(adminUserId, "RESOLVE_DISPUTE_CLIENT_REFUND", 
-                        $"Resolvió disputa {searchHire.Id} a favor del cliente con orquestador: {request.Resolution}", 
-                        "SearchHire", searchHire.Id);
+                    await _loggingService.LogWarningAsync(
+                        message: "RESOLVE_DISPUTE_CLIENT_REFUND",
+                        details: $"Resolvió disputa {searchHire.Id} a favor del cliente con orquestador: {request.Resolution}",
+                        userId: adminUserId,
+                        source: "AdminAction",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHire.Id
+                    );
                 }
                     else
                     {
@@ -2985,19 +2871,21 @@ namespace newApi.Controllers
 
                     if (!success)
                     {
-                        _logger.LogError("Failed to process expert payout via orchestrator for dispute searchHireId={SearchHireId}", searchHire.Id);
                         await transaction.RollbackAsync();
                         return StatusCode(500, new { message = "Failed to process expert payout" });
                     }
 
                     searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedExpert.ToStringValue());
-                    _logger.LogInformation("Dispute resolved in favor of expert via orchestrator for searchHireId={SearchHireId}", searchHire.Id);
-
                     // 📝 LOGGING
                     var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-                    await _userActionLogging.LogAdminActionAsync(adminUserId, "RESOLVE_DISPUTE_EXPERT", 
-                        $"Resolvió disputa {searchHire.Id} a favor del experto con orquestador: {request.Resolution}", 
-                        "SearchHire", searchHire.Id);
+                    await _loggingService.LogWarningAsync(
+                        message: "RESOLVE_DISPUTE_EXPERT",
+                        details: $"Resolvió disputa {searchHire.Id} a favor del experto con orquestador: {request.Resolution}",
+                        userId: adminUserId,
+                        source: "AdminAction",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHire.Id
+                    );
                     }
                     searchHire.UpdatedAt = DateTime.UtcNow;
 
@@ -3009,19 +2897,16 @@ namespace newApi.Controllers
                 catch (StripeException ex)
                 {
                     await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Stripe error resolving dispute for searchHireId={SearchHireId}: {ErrorMessage}", searchHire.Id, ex.Message);
                     return StatusCode(500, new { message = "Failed to process dispute resolution" });
                 }
                 catch (Exception ex)
                 {
                     await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Database error resolving dispute for searchHireId={SearchHireId}", searchHire.Id);
                     return StatusCode(500, new { message = "Failed to resolve dispute" });
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error resolving dispute: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to resolve dispute" });
             }
         }
@@ -3033,12 +2918,8 @@ namespace newApi.Controllers
             // 🔐 SEGURIDAD: Verificar rol en lugar de email
             if (!_authService.IsAdmin(User))
             {
-                _logger.LogError("Unauthorized access attempt by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                 return Unauthorized(new { message = "Admin access required" });
             }
-
-            _logger.LogInformation("ProcessExpiredServices endpoint invoked");
-
             try
             {
                 await _subscriptionService.ProcessExpiredServicesAsync();
@@ -3046,7 +2927,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing expired services: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to process expired services" });
             }
         }
@@ -3067,8 +2947,6 @@ namespace newApi.Controllers
         /// <param name="searchHireId">ID del servicio contratado</param>
         public async Task CheckExpertResponseAsync(int searchHireId)
         {
-            _logger.LogInformation("Checking expert response for searchHireId={SearchHireId}", searchHireId);
-
             try
             {
                 // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
@@ -3081,15 +2959,12 @@ namespace newApi.Controllers
 
                 if (searchHire == null)
                 {
-                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
                     return;
                 }
 
                 // Verificar que el servicio esté activo
                 if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue())
                 {
-                    _logger.LogInformation("SearchHire is not active for searchHireId={SearchHireId}, current status={Status}", 
-                        searchHireId, searchHire.Status);
                     return;
                 }
 
@@ -3097,8 +2972,6 @@ namespace newApi.Controllers
                 var timeSinceHire = DateTime.UtcNow - searchHire.CreatedAt;
                 if (timeSinceHire.TotalHours < 24)
                 {
-                    _logger.LogInformation("Less than 24 hours have passed for searchHireId={SearchHireId}, hours={Hours}", 
-                        searchHireId, timeSinceHire.TotalHours);
                     return;
                 }
 
@@ -3110,8 +2983,6 @@ namespace newApi.Controllers
 
                 if (!hasExpertMessage)
                 {
-                    _logger.LogWarning("Expert has not responded within 24 hours for searchHireId={SearchHireId}, processing automatic refund via orchestrator", searchHireId);
-
                     var success = await _refundService.ProcessMoneyDistributionAsync(
                         searchHireId,
                         "appointment_cancelled_by_no_response",
@@ -3120,22 +2991,17 @@ namespace newApi.Controllers
 
                     if (success)
                     {
-                        _logger.LogInformation("Automatic refund (no response) processed successfully for searchHireId={SearchHireId}", searchHireId);
                     }
                     else
                     {
-                        _logger.LogError("Failed to process automatic refund (no response) for searchHireId={SearchHireId}", searchHireId);
                     }
                 }
                 else
                 {
-                    _logger.LogInformation("Expert has responded for searchHireId={SearchHireId}, no action needed", searchHireId);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in CheckExpertResponseAsync for searchHireId={SearchHireId}: {ErrorMessage}", 
-                    searchHireId, ex.Message);
             }
         }
 
@@ -3160,8 +3026,6 @@ namespace newApi.Controllers
             // Sistema anterior eliminado - solo usar el nuevo sistema centralizado
 
             // 4. NO HAY CONFIGURACIÓN - FALLAR EN LUGAR DE INVENTAR VALORES
-            _logger.LogError("No money distribution configuration found for status: {Status}, categoryId: {CategoryId}, serviceTypeCategoryId: {ServiceTypeCategoryId}. Configuration must be created by admin.", 
-                status, categoryId, serviceTypeCategoryId);
             return null;
         }
 
@@ -3352,7 +3216,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ ERROR: Fallo al verificar idempotencia para eventId={EventId}", eventId);
                 return false; // En caso de error, permitir procesamiento
             }
         }
@@ -3374,7 +3237,6 @@ namespace newApi.Controllers
                     existingEvent.Status = status;
                     existingEvent.ErrorMessage = errorMessage;
                     existingEvent.ProcessedAt = DateTime.UtcNow;
-                    _logger.LogInformation("🔄 DEBUG: Evento actualizado: eventId={EventId}, status={Status}", eventId, status);
                 }
                 else
                 {
@@ -3390,14 +3252,12 @@ namespace newApi.Controllers
                     ProcessedAt = DateTime.UtcNow
                 };
                 _context.ProcessedWebhookEvents.Add(processedEvent);
-                    _logger.LogInformation("✅ DEBUG: Evento creado: eventId={EventId}, status={Status}", eventId, status);
                 }
                 
                 await _context.SaveChangesAsync();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ ERROR: Fallo al marcar evento como procesado: eventId={EventId}", eventId);
                 // No lanzar excepción para no interrumpir el flujo principal
             }
         }
@@ -3673,9 +3533,6 @@ namespace newApi.Controllers
         // Métodos para el webhook general de pagos
         private async Task HandlePaymentIntentSucceeded(PaymentIntent paymentIntent)
         {
-            _logger.LogInformation("💳 Payment Intent Succeeded: {PaymentIntentId}, Amount: {Amount}, Currency: {Currency}", 
-                paymentIntent.Id, paymentIntent.Amount, paymentIntent.Currency);
-
             try
             {
                 // Aquí puedes agregar lógica específica para cuando un pago se completa exitosamente
@@ -3683,8 +3540,6 @@ namespace newApi.Controllers
                 
                 if (paymentIntent.Metadata != null && paymentIntent.Metadata.Count > 0)
                 {
-                    _logger.LogInformation("Payment Intent metadata: {Metadata}", 
-                        string.Join(", ", paymentIntent.Metadata.Select(kv => $"{kv.Key}={kv.Value}")));
                 }
 
                 // Si tienes un sistema de órdenes, podrías actualizar el estado aquí
@@ -3692,25 +3547,43 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error handling payment intent succeeded: {PaymentIntentId}", paymentIntent.Id);
             }
         }
 
         private async Task HandlePaymentIntentFailed(PaymentIntent paymentIntent)
         {
-            _logger.LogWarning("❌ Payment Intent Failed: {PaymentIntentId}, Amount: {Amount}, Currency: {Currency}, LastPaymentError: {LastPaymentError}", 
-                paymentIntent.Id, paymentIntent.Amount, paymentIntent.Currency, 
-                paymentIntent.LastPaymentError?.Message ?? "No error details");
-
             try
             {
-                // Aquí puedes agregar lógica para manejar pagos fallidos
-                // Por ejemplo, notificar al usuario, actualizar el estado de la orden, etc.
+                // 🚨 LOG CRÍTICO: Pago fallido - afecta dinero
+                var amount = paymentIntent.Amount / 100m; // Convertir de céntimos a euros
+                var userId = paymentIntent.Metadata?.ContainsKey("userId") == true && 
+                            int.TryParse(paymentIntent.Metadata["userId"], out int parsedUserId) 
+                            ? parsedUserId : (int?)null;
+                
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Payment intent failed",
+                    details: $"Payment intent {paymentIntent.Id} failed. Amount: {amount}€ {paymentIntent.Currency?.ToUpper()}. Error: {paymentIntent.LastPaymentError?.Message ?? "No error details"}, Code: {paymentIntent.LastPaymentError?.Code}, Type: {paymentIntent.LastPaymentError?.Type}, DeclineCode: {paymentIntent.LastPaymentError?.DeclineCode}",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePaymentIntentFailed",
+                    relatedEntityType: "Payment",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        PaymentIntentId = paymentIntent.Id,
+                        Amount = amount,
+                        Currency = paymentIntent.Currency,
+                        Status = paymentIntent.Status,
+                        LastPaymentError = paymentIntent.LastPaymentError != null ? new {
+                            Message = paymentIntent.LastPaymentError.Message,
+                            Code = paymentIntent.LastPaymentError.Code,
+                            Type = paymentIntent.LastPaymentError.Type,
+                            DeclineCode = paymentIntent.LastPaymentError.DeclineCode
+                        } : null,
+                        Metadata = paymentIntent.Metadata
+                    }
+                );
                 
                 if (paymentIntent.Metadata != null && paymentIntent.Metadata.Count > 0)
                 {
-                    _logger.LogInformation("Failed Payment Intent metadata: {Metadata}", 
-                        string.Join(", ", paymentIntent.Metadata.Select(kv => $"{kv.Key}={kv.Value}")));
                 }
 
                 // Si tienes un sistema de órdenes, podrías actualizar el estado aquí
@@ -3718,7 +3591,19 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error handling payment intent failed: {PaymentIntentId}", paymentIntent.Id);
+                // 🚨 LOG CRÍTICO: Error al procesar pago fallido
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error processing failed payment intent",
+                    details: $"Error processing failed payment intent {paymentIntent.Id}: {ex.Message}",
+                    source: "SubscriptionController.HandlePaymentIntentFailed",
+                    relatedEntityType: "Payment",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        PaymentIntentId = paymentIntent.Id,
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
             }
         }
 
@@ -3730,7 +3615,6 @@ namespace newApi.Controllers
                 // 🔐 SEGURIDAD: Verificar rol en lugar de email
                 if (!_authService.IsAdmin(User))
                 {
-                    _logger.LogError("Unauthorized access attempt to money distribution configs by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
@@ -3768,7 +3652,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting all money distribution configs");
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -3778,8 +3661,6 @@ namespace newApi.Controllers
         /// </summary>
         private async Task HandleAccountRejection(int expertId, string rejectionReason)
         {
-            _logger.LogWarning("🚨 CRITICAL: Account rejected for expertId={ExpertId}, reason={Reason}", expertId, rejectionReason);
-            
             try
             {
                 // 1. Verificar si el experto tiene contrataciones activas
@@ -3788,9 +3669,6 @@ namespace newApi.Controllers
                     .Where(sh => sh.ExpertId == expertId && 
                                 sh.Status.StatusValue == "pending")
                     .CountAsync();
-                
-                _logger.LogInformation("Found {Count} active hires for rejected expert {ExpertId}", activeHires, expertId);
-                
                 // 2. Crear log crítico (esto automáticamente notifica al admin)
                 await _loggingService.LogCriticalAsync(
                     $"Expert account rejected - ExpertId: {expertId}",
@@ -3809,12 +3687,9 @@ namespace newApi.Controllers
                 
                 // 3. Crear notificación para el experto
                 await NotifyExpertOfAccountRejection(expertId, rejectionReason, activeHires);
-                
-                _logger.LogInformation("✅ Account rejection handled for expert {ExpertId} with {Count} active hires", expertId, activeHires);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to handle account rejection for expert {ExpertId}", expertId);
             }
         }
 
@@ -3828,7 +3703,6 @@ namespace newApi.Controllers
                 var expert = await _context.Users.FindAsync(expertId);
                 if (expert == null) 
                 {
-                    _logger.LogWarning("Expert not found for notification - ExpertId: {ExpertId}", expertId);
                     return;
                 }
                 
@@ -3846,12 +3720,9 @@ namespace newApi.Controllers
                 
                 _context.Notifications.Add(notification);
                 await _context.SaveChangesAsync();
-                
-                _logger.LogInformation("✅ Expert notification created for account rejection - ExpertId: {ExpertId}", expertId);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to create expert notification for account rejection - ExpertId: {ExpertId}", expertId);
             }
         }
 
@@ -3861,8 +3732,6 @@ namespace newApi.Controllers
         /// </summary>
         private async Task HandleAccountDeauthorization(int expertId, string deauthorizationReason)
         {
-            _logger.LogWarning("🚨 CRITICAL: Account deauthorized for expertId={ExpertId}, reason={Reason}", expertId, deauthorizationReason);
-            
             try
             {
                 // 1. Verificar si el experto tiene contrataciones activas
@@ -3871,9 +3740,6 @@ namespace newApi.Controllers
                     .Where(sh => sh.ExpertId == expertId && 
                                 sh.Status.StatusValue == "pending")
                     .CountAsync();
-                
-                _logger.LogInformation("Found {Count} active hires for deauthorized expert {ExpertId}", activeHires, expertId);
-                
                 // 2. Crear log crítico (esto automáticamente notifica al admin)
                 await _loggingService.LogCriticalAsync(
                     $"Expert account deauthorized - ExpertId: {expertId}",
@@ -3892,12 +3758,9 @@ namespace newApi.Controllers
                 
                 // 3. Crear notificación para el experto
                 await NotifyExpertOfAccountDeauthorization(expertId, deauthorizationReason, activeHires);
-                
-                _logger.LogInformation("✅ Account deauthorization handled for expert {ExpertId} with {Count} active hires", expertId, activeHires);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to handle account deauthorization for expert {ExpertId}", expertId);
             }
         }
 
@@ -3906,14 +3769,11 @@ namespace newApi.Controllers
         /// </summary>
         private async Task NotifyExpertOnly(int expertId, string rejectionReason)
         {
-            _logger.LogInformation("📧 Notifying expert only for account rejection - ExpertId: {ExpertId}, reason: {Reason}", expertId, rejectionReason);
-            
             try
             {
                 var expert = await _context.Users.FindAsync(expertId);
                 if (expert == null) 
                 {
-                    _logger.LogWarning("Expert not found for notification - ExpertId: {ExpertId}", expertId);
                     return;
                 }
                 
@@ -3931,12 +3791,9 @@ namespace newApi.Controllers
                 
                 _context.Notifications.Add(notification);
                 await _context.SaveChangesAsync();
-                
-                _logger.LogInformation("✅ Expert-only notification created for account rejection - ExpertId: {ExpertId}", expertId);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to create expert-only notification for account rejection - ExpertId: {ExpertId}", expertId);
             }
         }
 
@@ -3950,7 +3807,6 @@ namespace newApi.Controllers
                 var expert = await _context.Users.FindAsync(expertId);
                 if (expert == null) 
                 {
-                    _logger.LogWarning("Expert not found for notification - ExpertId: {ExpertId}", expertId);
                     return;
                 }
                 
@@ -3968,12 +3824,9 @@ namespace newApi.Controllers
                 
                 _context.Notifications.Add(notification);
                 await _context.SaveChangesAsync();
-                
-                _logger.LogInformation("✅ Expert notification created for account deauthorization - ExpertId: {ExpertId}", expertId);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to create expert notification for account deauthorization - ExpertId: {ExpertId}", expertId);
             }
         }
 

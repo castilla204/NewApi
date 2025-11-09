@@ -14,14 +14,12 @@ namespace newApi.Controllers
     public class LogController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<LogController> _logger;
         private readonly ILoggingService _loggingService;
         private readonly IAuthorizationServices _authService;
 
-        public LogController(AppDbContext context, ILogger<LogController> logger, ILoggingService loggingService, IAuthorizationServices authService)
+        public LogController(AppDbContext context, ILoggingService loggingService, IAuthorizationServices authService)
         {
             _context = context;
-            _logger = logger;
             _loggingService = loggingService;
             _authService = authService;
         }
@@ -41,7 +39,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving log types");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -69,7 +66,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving critical logs");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -100,7 +96,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error testing critical log");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -131,7 +126,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error testing error log");
                 return StatusCode(500, new { message = ex.Message });
             }
         }

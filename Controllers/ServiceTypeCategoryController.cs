@@ -17,13 +17,11 @@ namespace newApi.Controllers
     public class ServiceTypeCategoryController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<ServiceTypeCategoryController> _logger;
         private readonly IAuthorizationServices _authService;
 
-        public ServiceTypeCategoryController(AppDbContext context, ILogger<ServiceTypeCategoryController> logger, IAuthorizationServices authService)
+        public ServiceTypeCategoryController(AppDbContext context, IAuthorizationServices authService)
         {
             _context = context;
-            _logger = logger;
             _authService = authService;
         }
 
@@ -51,9 +49,6 @@ namespace newApi.Controllers
                         UpdatedAt = stc.UpdatedAt
                     })
                     .ToListAsync();
-
-                _logger.LogInformation("Retrieved {Count} active service type categories", categories.Count);
-                
                 return Ok(new 
                 { 
                     success = true,
@@ -64,7 +59,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving service type categories");
                 return StatusCode(500, new 
                 { 
                     success = false,
@@ -97,7 +91,6 @@ namespace newApi.Controllers
                     })
                     .ToListAsync();
 
-                _logger.LogInformation("Retrieved {Count} active service type categories (public endpoint)", categories.Count);
                 
                 return Ok(new 
                 { 
@@ -109,7 +102,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving service type categories (public endpoint)");
                 return StatusCode(500, new 
                 { 
                     success = false,
@@ -145,16 +137,12 @@ namespace newApi.Controllers
 
                 if (category == null)
                 {
-                    _logger.LogWarning("Service type category not found: {CategoryId}", id);
                     return NotFound(new 
                     { 
                         success = false,
                         message = "Service type category not found" 
                     });
                 }
-
-                _logger.LogInformation("Retrieved service type category: {CategoryId} - {CategoryName}", id, category.Name);
-                
                 return Ok(new 
                 { 
                     success = true,
@@ -164,7 +152,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving service type category: {CategoryId}", id);
                 return StatusCode(500, new 
                 { 
                     success = false,
@@ -222,7 +209,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating service type category");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -282,7 +268,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating service type category");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -326,13 +311,9 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting service type category");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
     }
 }
-
-
-
 

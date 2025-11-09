@@ -11,10 +11,8 @@ const client = new Client({
 async function testExpertReportTimeout() {
   try {
     await client.connect();
-    console.log('🔌 Conectado a la base de datos');
     
     // 1. Verificar que el nuevo estado existe
-    console.log('\n📋 Verificando nuevo estado...');
     const statusResult = await client.query(`
       SELECT "StatusValue", "DisplayName", "Description"
       FROM "SystemStatuses" 
@@ -22,13 +20,10 @@ async function testExpertReportTimeout() {
     `);
     
     if (statusResult.rows.length > 0) {
-      console.log('✅ Estado encontrado:', statusResult.rows[0]);
     } else {
-      console.log('❌ Estado no encontrado');
     }
     
     // 2. Buscar citas en awaiting_report
-    console.log('\n🔍 Buscando citas en awaiting_report...');
     const appointmentsResult = await client.query(`
       SELECT 
         a."Id" as appointment_id,
@@ -43,13 +38,10 @@ async function testExpertReportTimeout() {
       LIMIT 3
     `);
     
-    console.log(`📊 Citas en awaiting_report: ${appointmentsResult.rows.length}`);
     appointmentsResult.rows.forEach(row => {
-      console.log(`  - Cita ${row.appointment_id}: ${row.proposed_date} ${row.proposed_time}`);
     });
     
     // 3. Verificar timers de expert_report
-    console.log('\n⏰ Verificando timers de expert_report...');
     const timersResult = await client.query(`
       SELECT 
         at."Id" as timer_id,
@@ -64,14 +56,11 @@ async function testExpertReportTimeout() {
       LIMIT 5
     `);
     
-    console.log(`📊 Timers de expert_report: ${timersResult.rows.length}`);
     timersResult.rows.forEach(row => {
       const status = row.is_expired ? '❌ Expirado' : '⏳ Activo';
-      console.log(`  - Timer ${row.timer_id} (Cita ${row.appointment_id}): ${status}`);
     });
     
     // 4. Estadísticas generales
-    console.log('\n📈 Estadísticas generales...');
     const statsResult = await client.query(`
       SELECT 
         'Citas en awaiting_report' as metric,
@@ -100,14 +89,12 @@ async function testExpertReportTimeout() {
     `);
     
     statsResult.rows.forEach(row => {
-      console.log(`  - ${row.metric}: ${row.count}`);
     });
     
   } catch (err) {
     console.error('❌ Error:', err.message);
   } finally {
     await client.end();
-    console.log('\n🔌 Conexión cerrada');
   }
 }
 

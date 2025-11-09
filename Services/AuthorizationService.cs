@@ -8,12 +8,9 @@ namespace newApi.Services
     public class AuthorizationServices : IAuthorizationServices
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<AuthorizationServices> _logger;
-
-        public AuthorizationServices(AppDbContext context, ILogger<AuthorizationServices> logger)
+        public AuthorizationServices(AppDbContext context)
         {
             _context = context;
-            _logger = logger;
         }
 
         public bool IsAdmin(ClaimsPrincipal user)
@@ -24,9 +21,6 @@ namespace newApi.Services
             var emailClaim = user.FindFirst(ClaimTypes.Email)?.Value;
             
             // 🔍 DEBUG: Log para ver qué claims está recibiendo
-            _logger.LogInformation("IsAdmin check - Email: '{Email}', Role: '{Role}', UserId: '{UserId}'", 
-                emailClaim, roleClaim, userIdClaim);
-            
             // Verificar por rol (método principal - JWT firmado es confiable)
             var isAdmin = roleClaim == "Admin" || roleClaim == "2";
             
@@ -37,13 +31,9 @@ namespace newApi.Services
                 var userFromDb = _context.Users.Find(userId);
                 if ((int)(userFromDb?.Role ?? 0) != 2)
                 {
-                    _logger.LogWarning("User {UserId} has admin claim but is not admin in database", userId);
                     isAdmin = false;
                 }
             }
-            
-            _logger.LogInformation("IsAdmin result: {IsAdmin}", isAdmin);
-            
             return isAdmin;
         }
 

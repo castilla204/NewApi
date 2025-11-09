@@ -20,14 +20,7 @@ using newApi.Services;
 
 namespace newApi.Controllers
 {
-    public class ChatHub : Hub
-    {
-        public async Task JoinConversation(int conversationId, int userId)
-        {
-            await Groups.AddToGroupAsync(Context.ConnectionId, $"conversation-{conversationId}");
-            Console.WriteLine($"[13:42 CEST] User {userId} joined conversation {conversationId} via JoinConversation, Connection ID: {Context.ConnectionId}");
-        }
-    }
+    // ✅ REMOVED: Duplicate ChatHub class - using the one in ChatHub.cs file
 
     [Route("api/[controller]")]
     [ApiController]
@@ -39,14 +32,16 @@ namespace newApi.Controllers
         private readonly StorageClient _storageClient;
         private readonly IConfiguration _configuration;
         private readonly IAuthorizationServices _authService;
+        private readonly ILoggingService _loggingService;
 
-        public ChatController(AppDbContext context, IHubContext<ChatHub> hubContext, StorageClient storageClient, IConfiguration configuration, IAuthorizationServices authService)
+        public ChatController(AppDbContext context, IHubContext<ChatHub> hubContext, StorageClient storageClient, IConfiguration configuration, IAuthorizationServices authService, ILoggingService loggingService)
         {
             _context = context;
             _hubContext = hubContext;
             _storageClient = storageClient;
             _configuration = configuration;
             _authService = authService;
+            _loggingService = loggingService;
         }
 
         [HttpGet("conversation")]
@@ -55,14 +50,11 @@ namespace newApi.Controllers
             try
             {
                 var claims = User.Claims.Select(c => new { c.Type, c.Value }).ToList();
-                Console.WriteLine("[13:42 CEST] Claims received: " + string.Join(", ", claims.Select(c => $"{c.Type}: {c.Value}")));
 
                 if (!int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
                 {
                     return Unauthorized(new { message = "Invalid or missing user ID in token" });
                 }
-                Console.WriteLine($"[13:42 CEST] Parsed userId: {userId}");
-
                 // Admin puede ver cualquier conversación, usuarios normales solo las suyas
                 var conversation = await _context.Conversations
                     .Include(c => c.Messages)
@@ -73,15 +65,11 @@ namespace newApi.Controllers
                     .Include(c => c.Expert)
                     .FirstOrDefaultAsync(c => c.SearchHire.SearchId == searchId &&
                                              (c.ClientId == userId || c.ExpertId == userId || _authService.IsAdmin(User)));
-                Console.WriteLine($"[13:42 CEST] Existing conversation found: {conversation != null}");
-
                 if (conversation == null)
                 {
                     var searchHire = await _context.SearchHires
                         .Include(sh => sh.Search)
                         .FirstOrDefaultAsync(sh => sh.SearchId == searchId);
-                    Console.WriteLine($"[13:42 CEST] SearchHire found for searchId {searchId}: {searchHire != null}");
-
                     if (searchHire == null)
                     {
                         return NotFound(new { message = "Search hire not found" });
@@ -99,7 +87,6 @@ namespace newApi.Controllers
                     
                     if (!isClient && !isExpert && !isAdmin)
                     {
-                        Console.WriteLine($"[13:42 CEST] Authorization check failed - ClientId: {searchHire.ClientId}, ExpertId: {searchHire.ExpertId}, UserId: {userId}, IsAdmin: {isAdmin}");
                         return Unauthorized(new { message = "You are not authorized to create a conversation for this search" });
                     }
 
@@ -116,7 +103,23 @@ namespace newApi.Controllers
 
                     _context.Conversations.Add(conversation);
                     await _context.SaveChangesAsync();
-                    Console.WriteLine($"[13:42 CEST] New conversation created with Id: {conversation.Id}");
+                    
+                    // ✅ LOG INFORMATIVO: Nueva conversación creada
+                    await _loggingService.LogInfoAsync(
+                        message: "New conversation created",
+                        details: $"New conversation created for searchId {searchId}. ConversationId: {conversation.Id}, ClientId: {conversation.ClientId}, ExpertId: {conversation.ExpertId}",
+                        userId: userId,
+                        source: "ChatController.GetConversation",
+                        relatedEntityType: "Conversation",
+                        relatedEntityId: conversation.Id,
+                        additionalData: new { 
+                            Action = "CreateConversation",
+                            SearchId = searchId,
+                            ConversationId = conversation.Id,
+                            ClientId = conversation.ClientId,
+                            ExpertId = conversation.ExpertId
+                        }
+                    );
                 }
 
                 var conversationDto = ConversationDto.FromConversation(conversation);
@@ -124,7 +127,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[13:42 CEST] Error in GetConversation: {ex.Message}");
                 throw;
             }
         }
@@ -159,7 +161,18 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[13:42 CEST] Error getting all conversations: {ex.Message}");
+                // ✅ LOG EN BD: Error al obtener conversaciones
+                await _loggingService.LogErrorAsync(
+                    message: "Error getting all conversations",
+                    details: $"Error retrieving all conversations: {ex.Message}",
+                    source: "ChatController.GetAllConversations",
+                    relatedEntityType: "Conversation",
+                    additionalData: new { 
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+                
                 return StatusCode(500, new { message = "An error occurred while retrieving conversations" });
             }
         }
@@ -198,7 +211,20 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[13:42 CEST] Error getting conversation {conversationId}: {ex.Message}");
+                // ✅ LOG EN BD: Error al obtener conversación
+                await _loggingService.LogErrorAsync(
+                    message: "Error getting conversation by ID",
+                    details: $"Error retrieving conversation {conversationId}: {ex.Message}",
+                    source: "ChatController.GetConversationById",
+                    relatedEntityType: "Conversation",
+                    relatedEntityId: conversationId,
+                    additionalData: new { 
+                        ConversationId = conversationId,
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+                
                 return StatusCode(500, new { message = "An error occurred while retrieving conversation" });
             }
         }
@@ -237,12 +263,10 @@ namespace newApi.Controllers
                     if (!double.TryParse(dto.LocationLatitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var lat) ||
                         !double.TryParse(dto.LocationLongitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var lon))
                     {
-                        Console.WriteLine($"[20:34 CEST] Invalid latitude or longitude format: Latitude={dto.LocationLatitude}, Longitude={dto.LocationLongitude}");
                         return BadRequest(new { message = "Invalid latitude or longitude format" });
                     }
                     if (lat < -90 || lat > 90 || lon < -180 || lon > 180)
                     {
-                        Console.WriteLine($"[20:34 CEST] Latitude or longitude out of range: Latitude={lat}, Longitude={lon}");
                         return BadRequest(new { message = "Latitude must be between -90 and 90, and longitude between -180 and 180" });
                     }
                 }
@@ -337,7 +361,23 @@ namespace newApi.Controllers
                         }
                         catch (Exception ex)
                         {
-                            Console.WriteLine($"[20:34 CEST] Error uploading file {file.FileName}: {ex.Message}");
+                            // ✅ LOG EN BD: Error al subir archivo
+                            await _loggingService.LogErrorAsync(
+                                message: "Error uploading file for message",
+                                details: $"Error uploading file {file.FileName} for message. UserId: {userId}, ConversationId: {dto.ConversationId}, Error: {ex.Message}",
+                                userId: userId,
+                                source: "ChatController.SendMessage",
+                                relatedEntityType: "Message",
+                                relatedEntityId: dto.ConversationId,
+                                additionalData: new { 
+                                    FileName = file.FileName,
+                                    FileSize = file.Length,
+                                    ConversationId = dto.ConversationId,
+                                    Exception = ex.Message,
+                                    StackTrace = ex.StackTrace
+                                }
+                            );
+                            
                             return StatusCode(500, new { message = $"Failed to upload file {file.FileName}: {ex.Message}" });
                         }
                     }
@@ -364,24 +404,35 @@ namespace newApi.Controllers
                     MaxDepth = 64
                 };
                 var serializedMessage = JsonSerializer.Serialize(messageDto, options);
-                Console.WriteLine($"[20:34 CEST] Serialized message: {serializedMessage}");
-
                 try
                 {
                     await _hubContext.Clients.Group($"conversation-{dto.ConversationId}")
                         .SendAsync("ReceiveMessage", messageDto);
-                    Console.WriteLine($"[20:34 CEST] Successfully broadcasted message {message.Id} to group conversation-{dto.ConversationId}");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[20:34 CEST] Failed to broadcast message {message.Id}: {ex.Message}");
                 }
 
                 return Ok(messageDto);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[20:34 CEST] Error in SendMessage: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                // ✅ LOG EN BD: Error al enviar mensaje
+                var userIdForLog = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userIdValue) ? userIdValue : (int?)null;
+                await _loggingService.LogErrorAsync(
+                    message: "Error sending message",
+                    details: $"Error sending message in conversation {dto.ConversationId}: {ex.Message}",
+                    userId: userIdForLog,
+                    source: "ChatController.SendMessage",
+                    relatedEntityType: "Message",
+                    relatedEntityId: dto.ConversationId,
+                    additionalData: new { 
+                        ConversationId = dto.ConversationId,
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+                
                 return StatusCode(500, new { message = "An error occurred while sending the message" });
             }
         }
@@ -418,18 +469,31 @@ namespace newApi.Controllers
                 {
                     await _hubContext.Clients.Group($"conversation-{message.ConversationId}")
                         .SendAsync("MessageRead", messageId);
-                    Console.WriteLine($"[20:08 CEST] Successfully broadcasted MessageRead for message {messageId} to group conversation-{message.ConversationId}");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[20:08 CEST] Failed to broadcast MessageRead for message {messageId}: {ex.Message}");
                 }
 
                 return Ok();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[20:08 CEST] Error in MarkMessageAsRead for message {messageId}: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                // ✅ LOG EN BD: Error al marcar mensaje como leído
+                var userIdForLog = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userIdValue) ? userIdValue : (int?)null;
+                await _loggingService.LogErrorAsync(
+                    message: "Error marking message as read",
+                    details: $"Error marking message {messageId} as read: {ex.Message}",
+                    userId: userIdForLog,
+                    source: "ChatController.MarkMessageAsRead",
+                    relatedEntityType: "Message",
+                    relatedEntityId: messageId,
+                    additionalData: new { 
+                        MessageId = messageId,
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+                
                 return StatusCode(500, new { message = "An error occurred while marking the message as read" });
             }
         }
@@ -508,19 +572,32 @@ namespace newApi.Controllers
                     {
                         await _hubContext.Clients.Group($"conversation-{conversation.Id}")
                             .SendAsync("ReceiveDeliverable", response);
-                        Console.WriteLine($"[13:42 CEST] Successfully broadcasted deliverable for SearchHire {searchHireId} to group conversation-{conversation.Id}");
                     }
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[13:42 CEST] Failed to broadcast deliverable for SearchHire {searchHireId}: {ex.Message}");
                 }
 
                 return Ok(new { message = "Deliverable uploaded successfully", deliverable = response });
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[13:42 CEST] Error uploading deliverable for SearchHire {searchHireId}: {ex.Message}");
+                // ✅ LOG EN BD: Error al subir entregable
+                var userIdForLog = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userIdValue) ? userIdValue : (int?)null;
+                await _loggingService.LogErrorAsync(
+                    message: "Error uploading deliverable",
+                    details: $"Error uploading deliverable for SearchHire {searchHireId}: {ex.Message}",
+                    userId: userIdForLog,
+                    source: "ChatController.UploadDeliverable",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+                
                 return StatusCode(500, new { message = "An error occurred while uploading the deliverable" });
             }
         }
@@ -568,7 +645,22 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[13:42 CEST] Error retrieving deliverables for SearchHire {searchHireId}: {ex.Message}");
+                // ✅ LOG EN BD: Error al obtener entregables
+                var userIdForLog = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userIdValue) ? userIdValue : (int?)null;
+                await _loggingService.LogErrorAsync(
+                    message: "Error retrieving deliverables",
+                    details: $"Error retrieving deliverables for SearchHire {searchHireId}: {ex.Message}",
+                    userId: userIdForLog,
+                    source: "ChatController.GetDeliverables",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+                
                 return StatusCode(500, new { message = "An error occurred while retrieving deliverables" });
             }
         }

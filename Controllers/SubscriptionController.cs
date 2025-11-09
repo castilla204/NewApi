@@ -1976,10 +1976,13 @@ namespace newApi.Controllers
             //    throw new Exception($"Minimum search interval is {subscriptionLimits.MinSearchInterval} hours");
             //}
 
+            // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
+            /*
             if (!user.PhoneVerified)
             {
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
             }
+            */
 
             var strategy = _context.Database.CreateExecutionStrategy();
             await strategy.ExecuteAsync(async () =>
@@ -2526,12 +2529,15 @@ namespace newApi.Controllers
                     return NotFound(new { message = "User not found" });
                 }
 
+                // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
                 // 🚨 VALIDACIÓN CRÍTICA: Verificar teléfono antes del pago
                 // ✅ IMPORTANTE: Esta validación DEBE hacerse ANTES de crear el checkout session
+                /*
                 if (!user.PhoneVerified)
                 {
                     return StatusCode(403, new { message = "Phone verification required to create hires" });
                 }
+                */
 
                 // 💳 NO SE NECESITA VERIFICAR BALANCE - SIEMPRE SE PAGA CON STRIPE
 

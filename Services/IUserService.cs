@@ -11,6 +11,7 @@ namespace newApi.Services
         Task<IEnumerable<object>> GetAllUsers();
         Task<bool> BlockUser(int userId);
         Task<bool> DeleteUser(int userId);
+        // ✅ COMENTADO: Verificación de teléfono ya no es necesaria - métodos stub devuelven false/null
         Task<bool> SendVerification(int userId, string phoneNumber);
         Task<(bool success, string token, User user)> VerifyCode(int userId, string phoneNumber, string code);
         Task<(bool success, string token, User user)> GoogleAuth(GoogleAuthDto request);

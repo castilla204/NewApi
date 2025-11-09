@@ -22,7 +22,6 @@ namespace newApi.Controllers
     {
         private readonly SearchHireService _searchHireService;
         private readonly AppDbContext _context;
-        private readonly ILogger<SearchHireController> _logger;
         private readonly IConfiguration _configuration;
         private readonly IAuthorizationServices _authService;
         private readonly StripeRefundService _refundService;
@@ -31,7 +30,7 @@ namespace newApi.Controllers
         public SearchHireController(
             SearchHireService searchHireService,
             AppDbContext context,
-            ILogger<SearchHireController> logger,
+
             IConfiguration configuration,
             IAuthorizationServices authService,
             StripeRefundService refundService,
@@ -39,7 +38,6 @@ namespace newApi.Controllers
         {
             _searchHireService = searchHireService;
             _context = context;
-            _logger = logger;
             _configuration = configuration;
             _authService = authService;
             _refundService = refundService;
@@ -57,7 +55,6 @@ namespace newApi.Controllers
             
             if (systemStatus == null)
             {
-                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
                 // Default to "pending" (ID = 1)
                 return 1;
             }
@@ -176,15 +173,10 @@ namespace newApi.Controllers
                     () => CheckExpertResponseAsync(searchHire.Id),
                     scheduledTime - DateTime.UtcNow
                 );
-
-                _logger.LogInformation("SearchHire created and expert response check scheduled for searchHireId={SearchHireId}, scheduledTime={ScheduledTime}", 
-                    searchHire.Id, scheduledTime);
-
                 return CreatedAtAction(nameof(GetSearchHire), new { id = searchHire.Id }, searchHire);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating search hire");
                 return StatusCode(500, new { message = "Failed to create search hire" });
             }
         }
@@ -195,8 +187,6 @@ namespace newApi.Controllers
         /// <param name="searchHireId">ID del servicio contratado</param>
         public async Task CheckExpertResponseAsync(int searchHireId)
         {
-            _logger.LogInformation("Checking expert response for searchHireId={SearchHireId}", searchHireId);
-
             try
             {
                 var searchHire = await _context.SearchHires
@@ -207,15 +197,12 @@ namespace newApi.Controllers
 
                 if (searchHire == null)
                 {
-                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", searchHireId);
                     return;
                 }
 
                 // Verificar que el servicio esté activo
                 if (searchHire.Status.StatusValue != "active")
                 {
-                    _logger.LogInformation("SearchHire is not active for searchHireId={SearchHireId}, current status={Status}", 
-                        searchHireId, searchHire.Status.StatusValue);
                     return;
                 }
 
@@ -223,8 +210,6 @@ namespace newApi.Controllers
                 var timeSinceHire = DateTime.UtcNow - searchHire.CreatedAt;
                 if (timeSinceHire.TotalHours < 24)
                 {
-                    _logger.LogInformation("Less than 24 hours have passed for searchHireId={SearchHireId}, hours={Hours}", 
-                        searchHireId, timeSinceHire.TotalHours);
                     return;
                 }
 
@@ -236,8 +221,6 @@ namespace newApi.Controllers
 
                 if (!hasExpertMessage)
                 {
-                    _logger.LogWarning("Expert has not responded within 24 hours for searchHireId={SearchHireId}, processing automatic refund", searchHireId);
-                    
                     // Orquestar distribución de dinero por estado final 'cancelled'
                     var refundReason = "Expert did not respond within 24 hours - automatic refund";
                     var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
@@ -246,8 +229,6 @@ namespace newApi.Controllers
                         refundReason);
                     if (!refundSuccess)
                     {
-                        _logger.LogError("Failed to process Stripe refund for automatic refund searchHireId={SearchHireId}", searchHireId);
-                        
                         // 🚨 LOG CRÍTICO: Fallo en refund automático
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Automatic refund failed",
@@ -275,10 +256,6 @@ namespace newApi.Controllers
                     searchHire.UpdatedAt = DateTime.UtcNow;
                     
                     await _context.SaveChangesAsync();
-
-                    _logger.LogInformation("Real Stripe automatic refund processed successfully for searchHireId={SearchHireId}, reason={Reason}", 
-                        searchHireId, refundReason);
-                    
                     // 🚨 LOG CRÍTICO: Refund automático exitoso
                     await _loggingService.LogCriticalAsync(
                         message: "CRITICAL: Automatic refund processed successfully",
@@ -301,13 +278,10 @@ namespace newApi.Controllers
                 }
                 else
                 {
-                    _logger.LogInformation("Expert has responded for searchHireId={SearchHireId}, no action needed", searchHireId);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in CheckExpertResponseAsync for searchHireId={SearchHireId}: {ErrorMessage}", 
-                    searchHireId, ex.Message);
             }
         }
 
@@ -332,7 +306,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving search hire");
                 return StatusCode(500, new { message = "Failed to retrieve search hire" });
             }
         }
@@ -354,7 +327,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving client hires");
                 return StatusCode(500, new { message = "Failed to retrieve hires" });
             }
         }
@@ -376,7 +348,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving expert hires");
                 return StatusCode(500, new { message = "Failed to retrieve hires" });
             }
         }
@@ -403,7 +374,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating hire status");
                 return StatusCode(500, new { message = "Failed to update status" });
             }
         }
@@ -411,14 +381,11 @@ namespace newApi.Controllers
         [HttpPost("complete-service")]
         public async Task<IActionResult> CompleteService([FromBody] CompleteServiceDto request)
         {
-            _logger.LogInformation("CompleteService endpoint invoked for searchHireId={SearchHireId}", request.SearchHireId);
-
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
@@ -433,26 +400,22 @@ namespace newApi.Controllers
 
                 if (searchHire == null)
                 {
-                    _logger.LogError("SearchHire not found for searchHireId={SearchHireId}", request.SearchHireId);
                     return NotFound(new { message = "Service not found" });
                 }
 
                 if (searchHire.ClientId != userId)
                 {
-                    _logger.LogError("User is not the client for searchHireId={SearchHireId}, userId={UserId}", searchHire.Id, userId);
                     return Unauthorized(new { message = "Unauthorized to complete this service" });
                 }
 
                 if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue() && 
                     searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
                 {
-                    _logger.LogError("Service cannot be approved in status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status.StatusValue);
                     return BadRequest(new { message = "Service cannot be approved in current state" });
                 }
 
                 if (request.ClientApproved == null)
                 {
-                    _logger.LogError("ClientApproved is required for client action: searchHireId={SearchHireId}", searchHire.Id);
                     return BadRequest(new { error = "ClientApproved is required" });
                 }
 
@@ -470,7 +433,6 @@ namespace newApi.Controllers
                             var disputedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
                             searchHire.StatusId = disputedStatusId;
                             searchHire.UpdatedAt = DateTime.UtcNow;
-                            _logger.LogInformation("Client opened dispute for searchHireId={SearchHireId}", searchHire.Id);
                         }
                         else
                         {
@@ -482,8 +444,6 @@ namespace newApi.Controllers
                             if (!ok)
                             {
                                 await transaction.RollbackAsync();
-                                _logger.LogError("Money distribution failed for searchHireId={SearchHireId}", searchHire.Id);
-                                
                                 // ✅ MEJORA: NO duplicar log crítico - ProcessMoneyDistributionAsync ya lo registró
                                 // 🔍 Buscar el último log crítico relacionado DESPUÉS del rollback
                                 // IMPORTANTE: El log se crea ANTES de la transacción del controller
@@ -503,17 +463,11 @@ namespace newApi.Controllers
                                 
                                 if (lastCriticalLog != null)
                                 {
-                                    _logger.LogWarning("Money distribution failed. See critical log ID {LogId} for details: {Message}", 
-                                        lastCriticalLog.Id, lastCriticalLog.Message);
                                 }
                                 else
                                 {
                                     // Si no encontramos el log, puede ser un problema de timing o el log no se creó
                                     // En este caso, logueamos un warning pero no duplicamos el log crítico
-                                    _logger.LogWarning("Money distribution failed for searchHireId={SearchHireId}. " +
-                                        "ProcessMoneyDistributionAsync should have logged the error. " +
-                                        "Check logs table for recent entries from StripeRefundService.ProcessMoneyDistributionAsync.", 
-                                        searchHire.Id);
                                 }
                                 
                                 return StatusCode(500, new { 
@@ -527,19 +481,70 @@ namespace newApi.Controllers
                             var completedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Completed.ToStringValue());
                             searchHire.StatusId = completedStatusId;
                             searchHire.UpdatedAt = DateTime.UtcNow;
-                            _logger.LogInformation("Client approved service, distribution completed for searchHireId={SearchHireId}", searchHire.Id);
                         }
 
                         await _context.SaveChangesAsync();
                         await transaction.CommitAsync();
+
+                        // ✅ Notificar a cliente y experto según el resultado
+                        if (searchHire.ClientApproved.Value)
+                        {
+                            // Cliente aprobó - notificar a ambos
+                            await _loggingService.LogInfoAsync(
+                                message: "Servicio completado",
+                                details: $"Has aprobado el servicio #{searchHire.Id}. El experto recibirá el pago.",
+                                userId: searchHire.ClientId,
+                                source: "SearchHireController.CompleteService",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHire.Id,
+                                notifyUser: true
+                            );
+
+                            if (searchHire.ExpertId.HasValue)
+                            {
+                                await _loggingService.LogInfoAsync(
+                                    message: "Servicio aprobado por el cliente",
+                                    details: $"El cliente ha aprobado tu servicio #{searchHire.Id}. Has recibido {searchHire.Amount:F2}€.",
+                                    userId: searchHire.ExpertId.Value,
+                                    source: "SearchHireController.CompleteService",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHire.Id,
+                                    notifyUser: true
+                                );
+                            }
+                        }
+                        else
+                        {
+                            // Cliente rechazó - abrir disputa - notificar a ambos
+                            await _loggingService.LogWarningAsync(
+                                message: "Disputa abierta",
+                                details: $"Has rechazado el servicio #{searchHire.Id}. Se ha abierto una disputa para revisión.",
+                                userId: searchHire.ClientId,
+                                source: "SearchHireController.CompleteService",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHire.Id,
+                                notifyUser: true
+                            );
+
+                            if (searchHire.ExpertId.HasValue)
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "Disputa abierta por el cliente",
+                                    details: $"El cliente ha rechazado el servicio #{searchHire.Id} y se ha abierto una disputa. Un administrador la revisará.",
+                                    userId: searchHire.ExpertId.Value,
+                                    source: "SearchHireController.CompleteService",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHire.Id,
+                                    notifyUser: true
+                                );
+                            }
+                        }
 
                         return Ok(new { message = searchHire.ClientApproved.Value ? "Service completed" : "Dispute opened" });
                     }
                     catch (StripeException ex)
                     {
                         await transaction.RollbackAsync();
-                        _logger.LogError(ex, "Stripe error processing transfer for searchHireId={SearchHireId}: {ErrorMessage}", searchHire.Id, ex.Message);
-                        
                         // 🚨 LOG CRÍTICO: Error de Stripe durante completado de servicio (una sola vez, antes de ProcessMoneyDistributionAsync)
                         // Este error ocurre ANTES de llamar a ProcessMoneyDistributionAsync, por lo que debe loguearse aquí
                         await _loggingService.LogCriticalAsync(
@@ -571,8 +576,6 @@ namespace newApi.Controllers
                     catch (Exception ex)
                     {
                         await transaction.RollbackAsync();
-                        _logger.LogError(ex, "Database error completing service for searchHireId={SearchHireId}", searchHire.Id);
-                        
                         // 🚨 LOG CRÍTICO: Error general durante completado de servicio (una sola vez, con información completa)
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Unexpected error completing service",
@@ -606,8 +609,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error completing service: {ErrorMessage}", ex.Message);
-                
                 // 🚨 LOG CRÍTICO: Error general fuera de la transacción (una sola vez, con información completa)
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 int? userId = null;

@@ -14,16 +14,14 @@ namespace newApi.Controllers
     public class SearchServiceController : ControllerBase
     {
         private readonly SearchServiceService _searchServiceService;
-        private readonly ILogger<SearchServiceController> _logger;
         private readonly AppDbContext _context;
 
         public SearchServiceController(
             SearchServiceService searchServiceService,
-            ILogger<SearchServiceController> logger,
+
             AppDbContext context)
         {
             _searchServiceService = searchServiceService;
-            _logger = logger;
             _context = context;
         }
 
@@ -70,8 +68,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving services with CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}, Latitude: {Latitude}, Longitude: {Longitude}, LocationRange: {LocationRange}",
-                    categoryId, serviceTypeId, latitude, longitude, locationRange);
                 return StatusCode(500, new { message = "Failed to retrieve services", detail = ex.Message });
             }
         }
@@ -101,8 +97,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving map experts with CategoryId: {CategoryId}, ServiceTypeId: {ServiceTypeId}",
-                    categoryId, serviceTypeId);
                 return StatusCode(500, new { message = "Failed to retrieve map experts", detail = ex.Message });
             }
         }
@@ -117,8 +111,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving expert services for ExpertId: {ExpertId}, ServiceTypeId: {ServiceTypeId}",
-                    expertId, serviceTypeId);
                 return StatusCode(500, new { message = "Failed to retrieve expert services", detail = ex.Message });
             }
         }
@@ -137,7 +129,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving service with Id: {Id}", id);
                 return StatusCode(500, new { message = "Failed to retrieve service", detail = ex.Message });
             }
         }
@@ -157,12 +148,9 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving service with Id: {Id}", id);
                 return StatusCode(500, new { message = "Failed to retrieve service", detail = ex.Message });
             }
         }
-
-
 
 
         [Authorize(Roles = "Expert")] // 🔐 SEGURIDAD: Solo expertos pueden crear servicios
@@ -176,32 +164,14 @@ namespace newApi.Controllers
                     var values = Request.Form[key];
                     if (key == "Images")
                     {
-                        _logger.LogInformation("FormData key: {Key}, Files: {FileCount}", key, Request.Form.Files.Count);
                         foreach (var file in Request.Form.Files)
                         {
-                            _logger.LogInformation("Received file: {FileName}, {ContentType}, {FileSize} bytes",
-                                file.FileName, file.ContentType, file.Length);
                         }
                     }
                     else
                     {
-                        _logger.LogInformation("FormData key: {Key}, Value: {Value}", key, values);
                     }
                 }
-
-                _logger.LogInformation("Received request to create service with data: {RequestData}",
-                    new
-                    {
-                        request.ExpertProfileId,
-                        request.CategoryId,
-                        request.ServiceTypeId,
-                        request.Price,
-                        request.Conditions,
-                        request.DurationInHours,
-                        ImageCount = request.Images?.Count ?? 0,
-                        SelectedDeliverableTypes = request.SelectedDeliverableTypes
-                    });
-
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
@@ -251,6 +221,64 @@ namespace newApi.Controllers
                 var (success, service, imageUrls) = await _searchServiceService.CreateSearchService(userId, request);
                 if (!success)
                 {
+                    // ✅ MEJORAR: Verificar el motivo específico del fallo para dar un mensaje más claro
+                    // Verificar que el ExpertProfileId del request coincide con el del experto autenticado
+                    if (expertProfile.Id != request.ExpertProfileId)
+                    {
+                        return BadRequest(new { message = "Expert profile ID does not match your profile" });
+                    }
+
+                    // Verificar si ya existe un servicio activo con la misma categoría PADRE Y el mismo tipo de servicio
+                    // Permite múltiples servicios de la misma categoría padre si el ServiceTypeId es diferente
+                    var selectedCategory = await _context.Categories
+                        .Include(c => c.Parent)
+                        .FirstOrDefaultAsync(c => c.Id == request.CategoryId);
+
+                    if (selectedCategory == null)
+                    {
+                        return BadRequest(new { message = "La categoría seleccionada no existe" });
+                    }
+
+                    // Determinar la categoría padre: si es subcategoría usar ParentId, si es categoría padre usar su Id
+                    int parentCategoryId = selectedCategory.ParentId ?? selectedCategory.Id;
+                    string parentCategoryName = selectedCategory.Parent?.Name ?? selectedCategory.Name;
+
+                    // Buscar servicios activos del experto con el mismo tipo de servicio
+                    var existingServices = await _context.SearchServices
+                        .Where(ss => ss.ExpertProfileId == request.ExpertProfileId 
+                                && ss.ServiceTypeId == request.ServiceTypeId
+                                && ss.IsActive == true)
+                        .Include(ss => ss.Category)
+                            .ThenInclude(c => c.Parent)
+                        .Include(ss => ss.ServiceType)
+                        .ToListAsync();
+
+                    // Verificar si algún servicio existente tiene la misma categoría padre
+                    var existingService = existingServices
+                        .Where(ss =>
+                        {
+                            var existingCategory = ss.Category;
+                            if (existingCategory == null) return false;
+                            int existingParentCategoryId = existingCategory.ParentId ?? existingCategory.Id;
+                            return existingParentCategoryId == parentCategoryId;
+                        })
+                        .FirstOrDefault();
+
+                    if (existingService != null)
+                    {
+                        var existingCategoryName = existingService.Category?.Name ?? "desconocida";
+                        var existingServiceTypeName = existingService.ServiceType?.Name ?? "desconocido";
+                        return BadRequest(new { 
+                            message = $"Ya tienes un servicio activo en la categoría '{parentCategoryName}' (subcategoría: '{existingCategoryName}') con el tipo de servicio '{existingServiceTypeName}'. " +
+                                     "Solo puedes tener un servicio por combinación de categoría padre y tipo de servicio. " +
+                                     "Puedes actualizar tu servicio existente, crear uno con otro tipo de servicio en la misma categoría padre, o crear uno en otra categoría padre.",
+                            existingServiceId = existingService.Id,
+                            parentCategoryName = parentCategoryName,
+                            existingCategoryName = existingCategoryName,
+                            serviceTypeName = existingServiceTypeName
+                        });
+                    }
+
                     return BadRequest(new { message = "Failed to create service, possibly due to invalid ServiceTypeId, ExpertProfileId, or CategoryId" });
                 }
 
@@ -295,7 +323,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating search service with ServiceTypeId: {ServiceTypeId}", request.ServiceTypeId);
                 return StatusCode(500, new { message = "Failed to create search service", detail = ex.Message });
             }
         }
@@ -311,33 +338,14 @@ namespace newApi.Controllers
                     var values = Request.Form[key];
                     if (key == "Images")
                     {
-                        _logger.LogInformation("FormData key: {Key}, Files: {FileCount}", key, Request.Form.Files.Count);
                         foreach (var file in Request.Form.Files)
                         {
-                            _logger.LogInformation("Received file: {FileName}, {ContentType}, {FileSize} bytes",
-                                file.FileName, file.ContentType, file.Length);
                         }
                     }
                     else
                     {
-                        _logger.LogInformation("FormData key: {Key}, Value: {Value}", key, values);
                     }
                 }
-
-                _logger.LogInformation("Received request to update service with data: {RequestData}",
-                    new
-                    {
-                        request.ServiceId,
-                        request.CategoryId,
-                        request.ServiceTypeId,
-                        request.Price,
-                        request.Conditions,
-                        request.DurationInHours,
-                        ImageCount = request.Images?.Count ?? 0,
-                        SelectedDeliverableTypes = request.SelectedDeliverableTypes
-                    });
-
-
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
@@ -437,7 +445,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating search service with Id: {ServiceId}", request.ServiceId);
                 return StatusCode(500, new { message = "Failed to update search service", detail = ex.Message });
             }
         }
@@ -453,9 +460,6 @@ namespace newApi.Controllers
                 {
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
-
-                _logger.LogInformation("User {UserId} attempting to delete SearchService with Id: {ServiceId}", userId, id);
-
                 var success = await _searchServiceService.DeleteSearchService(id, userId);
                 
                 if (!success)
@@ -467,7 +471,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting search service with Id: {ServiceId}", id);
                 return StatusCode(500, new { message = "Failed to delete search service", detail = ex.Message });
             }
         }

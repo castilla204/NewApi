@@ -10,13 +10,10 @@ namespace newApi.Services
     {
         private readonly HttpClient _httpClient;
         private readonly string _openAiApiKey;
-        private readonly ILogger<GPTService> _logger;
-
-        public GPTService(IConfiguration configuration, IHttpClientFactory httpClientFactory, ILogger<GPTService> logger)
+        public GPTService(IConfiguration configuration, IHttpClientFactory httpClientFactory)
         {
             _httpClient = httpClientFactory.CreateClient();
             _openAiApiKey = configuration["OpenAI:ApiKey"] ?? throw new InvalidOperationException("OpenAI API key not found");
-            _logger = logger;
         }
 
         public async Task<SearchParamsResult> AnalyzeSearchInput(string userInput)
@@ -87,8 +84,6 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
                 }
 
                 var gptResponse = completionResponse.Choices[0].Message.Content;
-                _logger.LogInformation("GPT Response: {Response}", gptResponse);
-
                 return JsonSerializer.Deserialize<SearchParamsResult>(gptResponse, new JsonSerializerOptions
                 {
                     PropertyNameCaseInsensitive = true
@@ -96,7 +91,6 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error analyzing search input with GPT");
                 throw;
             }
         }

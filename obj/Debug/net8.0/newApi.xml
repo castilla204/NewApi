@@ -223,6 +223,12 @@
             Método auxiliar para subir deliverables para una cita
             </summary>
         </member>
+        <member name="M:newApi.Controllers.CategoriesController.GetParentCategories">
+            <summary>
+            Obtiene solo las categorías padre (sin subcategorías) para seleccionar al crear subcategorías
+            IMPORTANTE: Esta ruta debe estar antes de las rutas con parámetros para evitar conflictos
+            </summary>
+        </member>
         <member name="M:newApi.Controllers.ChatController.GetAllConversations">
             <summary>
             Obtener todas las conversaciones (solo para Admin)
@@ -238,7 +244,7 @@
             Controlador para la gestión de disputas por parte de administradores
             </summary>
         </member>
-        <member name="M:newApi.Controllers.DisputeController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Logging.ILogger{newApi.Controllers.DisputeController},Microsoft.Extensions.Configuration.IConfiguration,Google.Cloud.Storage.V1.StorageClient,newApi.Services.IAuthorizationServices,newApi.Services.SystemStatusService,newApi.Services.StripeRefundService)">
+        <member name="M:newApi.Controllers.DisputeController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Configuration.IConfiguration,Google.Cloud.Storage.V1.StorageClient,newApi.Services.IAuthorizationServices,newApi.Services.SystemStatusService,newApi.Services.StripeRefundService,newApi.Services.ILoggingService)">
             <summary>
             Constructor del controlador de disputas
             </summary>
@@ -313,7 +319,7 @@
             La creación y actualización de disponibilidad se realiza a través del perfil de experto
             </summary>
         </member>
-        <member name="M:newApi.Controllers.ExpertAvailabilityController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Logging.ILogger{newApi.Controllers.ExpertAvailabilityController})">
+        <member name="M:newApi.Controllers.ExpertAvailabilityController.#ctor(newApi.DataLayer.Models.AppDbContext)">
             <summary>
             Constructor del controlador de disponibilidad de expertos
             </summary>
@@ -2471,6 +2477,16 @@
             <param name="expertProfile">Perfil del experto a validar</param>
             <returns>Resultado de la validación con mensaje de error si aplica</returns>
         </member>
+        <member name="M:newApi.Services.LoggingService.ProcessUserNotificationAsync(System.Int32,System.String,System.String,System.String)">
+            <summary>
+            Crea una notificación para el usuario cuando se solicita explícitamente
+            </summary>
+        </member>
+        <member name="M:newApi.Services.LoggingService.GetNotificationTitleAndType(System.String)">
+            <summary>
+            Obtiene el título y tipo de notificación según el nivel de log
+            </summary>
+        </member>
         <member name="M:newApi.Services.StripeRefundService.ProcessMoneyDistributionAsync(System.Int32,System.String,System.String,System.Nullable{System.Int32})">
             <summary>
             Orquesta la distribución de dinero según un estado concreto: realiza refund al cliente y transferencia al experto.
@@ -2550,31 +2566,6 @@
         <member name="M:newApi.Services.SystemStatusService.GetDefaultMapping(newApi.DataLayer.Models.enums.AppointmentStatus)">
             <summary>
             Mapeo por defecto (fallback) para AppointmentStatus → SearchHireStatus
-            </summary>
-        </member>
-        <member name="T:newApi.Services.IUserActionLoggingService">
-            <summary>
-            Servicio centralizado para logging de acciones de usuario
-            </summary>
-        </member>
-        <member name="M:newApi.Services.UserActionLoggingService.LogUserActionAsync(System.Int32,System.String,System.String,System.String,System.Nullable{System.Int32})">
-            <summary>
-            Registra una acción de usuario en la base de datos y en los logs
-            </summary>
-        </member>
-        <member name="M:newApi.Services.UserActionLoggingService.LogUserActionAsync(System.Int32,System.String,System.Object,System.String,System.Nullable{System.Int32})">
-            <summary>
-            Registra una acción de usuario con objeto de detalles
-            </summary>
-        </member>
-        <member name="M:newApi.Services.UserActionLoggingService.LogAdminActionAsync(System.Int32,System.String,System.String,System.String,System.Nullable{System.Int32})">
-            <summary>
-            Registra una acción de administrador
-            </summary>
-        </member>
-        <member name="M:newApi.Services.UserActionLoggingService.LogSystemActionAsync(System.String,System.String,System.String,System.Nullable{System.Int32})">
-            <summary>
-            Registra una acción del sistema
             </summary>
         </member>
     </members>

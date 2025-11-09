@@ -3,14 +3,17 @@ using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using newApi.Services;
 
 public class ChatHub : Hub
 {
     private readonly IConfiguration _configuration;
+    private readonly IServiceScopeFactory _serviceScopeFactory;
 
-    public ChatHub(IConfiguration configuration)
+    public ChatHub(IConfiguration configuration, IServiceScopeFactory serviceScopeFactory)
     {
         _configuration = configuration;
+        _serviceScopeFactory = serviceScopeFactory;
     }
 
     public override async Task OnConnectedAsync()
@@ -18,7 +21,19 @@ public class ChatHub : Hub
         var token = Context.GetHttpContext()?.Request.Query["access_token"].ToString();
         if (string.IsNullOrEmpty(token))
         {
-            Console.WriteLine("[13:40 CEST] Connection failed: Missing authentication token");
+            // ✅ LOG EN BD: Error de autenticación en SignalR
+            using (var scope = _serviceScopeFactory.CreateScope())
+            {
+                var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+                await loggingService.LogWarningAsync(
+                    message: "SignalR connection failed: Missing authentication token",
+                    details: $"SignalR connection attempt without authentication token. ConnectionId: {Context.ConnectionId}",
+                    source: "ChatHub.OnConnectedAsync",
+                    relatedEntityType: "SignalR",
+                    additionalData: new { ConnectionId = Context.ConnectionId }
+                );
+            }
+            
             throw new HubException("Missing authentication token");
         }
 
@@ -44,17 +59,62 @@ public class ChatHub : Hub
             if (userId != null && conversationId != null)
             {
                 await Groups.AddToGroupAsync(Context.ConnectionId, $"conversation-{conversationId}");
-                Console.WriteLine($"[13:40 CEST] User {userId} joined conversation {conversationId} on connect, Connection ID: {Context.ConnectionId}");
+                // ✅ LOG EN BD: Usuario conectado a conversación
+                if (int.TryParse(userId, out int userIdInt) && int.TryParse(conversationId, out int conversationIdInt))
+                {
+                    using (var scope = _serviceScopeFactory.CreateScope())
+                    {
+                        var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+                        await loggingService.LogInfoAsync(
+                            message: "User joined conversation via SignalR",
+                            details: $"User {userId} joined conversation {conversationId} on SignalR connect. ConnectionId: {Context.ConnectionId}",
+                            userId: userIdInt,
+                            source: "ChatHub.OnConnectedAsync",
+                            relatedEntityType: "Conversation",
+                            relatedEntityId: conversationIdInt,
+                            additionalData: new { ConnectionId = Context.ConnectionId, ConversationId = conversationIdInt }
+                        );
+                    }
+                }
             }
             else
             {
-                Console.WriteLine($"[13:40 CEST] Connection failed: Invalid user ID ({userId}) or conversation ID ({conversationId})");
+                
+                // ✅ LOG EN BD: Error de conexión SignalR
+                using (var scope = _serviceScopeFactory.CreateScope())
+                {
+                    var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+                    await loggingService.LogWarningAsync(
+                        message: "SignalR connection failed: Invalid user ID or conversation ID",
+                        details: $"SignalR connection failed. UserId: {userId}, ConversationId: {conversationId}, ConnectionId: {Context.ConnectionId}",
+                        source: "ChatHub.OnConnectedAsync",
+                        relatedEntityType: "SignalR",
+                        additionalData: new { UserId = userId, ConversationId = conversationId, ConnectionId = Context.ConnectionId }
+                    );
+                }
+                
                 throw new HubException("Invalid user ID or conversation ID");
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[13:40 CEST] Connection failed: Invalid token: {ex.Message}");
+            // ✅ LOG EN BD: Error crítico de autenticación SignalR
+            using (var scope = _serviceScopeFactory.CreateScope())
+            {
+                var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+                await loggingService.LogErrorAsync(
+                    message: "SignalR connection failed: Invalid token",
+                    details: $"SignalR connection failed due to invalid token. Error: {ex.Message}, ConnectionId: {Context.ConnectionId}",
+                    source: "ChatHub.OnConnectedAsync",
+                    relatedEntityType: "SignalR",
+                    additionalData: new { 
+                        ConnectionId = Context.ConnectionId,
+                        Error = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+            }
+            
             throw new HubException($"Invalid token: {ex.Message}");
         }
 
@@ -64,6 +124,19 @@ public class ChatHub : Hub
     public async Task JoinConversation(int conversationId, int userId)
     {
         await Groups.AddToGroupAsync(Context.ConnectionId, $"conversation-{conversationId}");
-        Console.WriteLine($"[13:40 CEST] User {userId} joined conversation {conversationId} via JoinConversation, Connection ID: {Context.ConnectionId}");
+        // ✅ LOG EN BD: Usuario se unió a conversación
+        using (var scope = _serviceScopeFactory.CreateScope())
+        {
+            var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+            await loggingService.LogInfoAsync(
+                message: "User joined conversation via JoinConversation",
+                details: $"User {userId} joined conversation {conversationId} via JoinConversation method. ConnectionId: {Context.ConnectionId}",
+                userId: userId,
+                source: "ChatHub.JoinConversation",
+                relatedEntityType: "Conversation",
+                relatedEntityId: conversationId,
+                additionalData: new { ConnectionId = Context.ConnectionId, ConversationId = conversationId }
+            );
+        }
     }
 }

@@ -37,3 +37,7 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Kubernetes secrets (contienen información sensible)
+k8s/*-secrets.yaml
+!k8s/regcred-secret.yaml  # Mantener regcred si es necesario

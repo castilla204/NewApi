@@ -86,10 +86,6 @@ namespace newApi.DataLayer
         }
 
 
-
-
-
-
         public async Task<string> SearchWallapop(string keywords, int pagestoscrap, int? category, string? latitude, string? longitude, int? minprice, int? maxprice, bool shippingAviable, bool isProgrammed)
         {
 
@@ -102,13 +98,8 @@ namespace newApi.DataLayer
             string shipping = shippingAviable ? "true" : "";
 
 
-
-
-
             //TEMPORAL 
             isProgrammed = false;
-
-
 
 
             List<AdModel> anuncios = new List<AdModel>();
@@ -144,7 +135,6 @@ namespace newApi.DataLayer
                     // Verificar el estado de la respuesta
                     if (!response.IsSuccessStatusCode)
                     {
-                        Console.WriteLine($"Error en la petición: {response.StatusCode}");
                         continue;
                     }
 
@@ -155,24 +145,20 @@ namespace newApi.DataLayer
                     var pageAnuncios = JsonConvert.DeserializeObject<List<Root>>(data["search_objects"].ToString());
 
 
-
                     //mapear el objeto original al grup
                     var mappedAnuncios = _mapper.Map<List<AdModel>>(pageAnuncios);
                     var hola = mappedAnuncios;
                     anuncios.AddRange(mappedAnuncios);
 
 
-
                     if (page < 1) await Task.Delay(TimeSpan.FromSeconds(1));
                 }
-
 
 
                 return JsonConvert.SerializeObject(anuncios);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error en la petición: {ex.Message}");
                 return JsonConvert.SerializeObject(new List<AdModel>());
             }
         }

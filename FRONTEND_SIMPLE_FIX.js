@@ -6,7 +6,6 @@
 
 export const updateConfig = async (configId, data) => {
   try {
-    console.log('🔄 Creando nueva configuración con datos:', data);
 
     // Validar que los porcentajes sumen 100%
     const total = data.clientPercentage + data.expertPercentage + data.platformPercentage;
@@ -25,7 +24,6 @@ export const updateConfig = async (configId, data) => {
       isActive: data.isActive
     };
 
-    console.log('📤 Creando nueva configuración:', submitData);
 
     // SOLUCIÓN SIMPLE: Solo crear nueva configuración
     const response = await fetch('/api/AppointmentConfig/appointment-status-configs', {
@@ -40,7 +38,6 @@ export const updateConfig = async (configId, data) => {
     }
 
     const newConfig = await response.json();
-    console.log('✅ Nueva configuración creada:', newConfig);
     return newConfig;
 
   } catch (error) {
@@ -52,7 +49,6 @@ export const updateConfig = async (configId, data) => {
 // Función para eliminar configuración (SOLUCIÓN SIMPLE)
 export const deleteConfig = async (configId) => {
   try {
-    console.log('🗑️ Desactivando configuración ID:', configId);
     
     // SOLUCIÓN SIMPLE: Crear una configuración inactiva
     // Esto simula la eliminación sin usar el endpoint DELETE
@@ -88,7 +84,6 @@ export const deleteConfig = async (configId) => {
       throw new Error('No se pudo desactivar la configuración');
     }
     
-    console.log('✅ Configuración desactivada correctamente');
     return { message: 'Configuración desactivada correctamente' };
     
   } catch (error) {

@@ -13,12 +13,9 @@ const client = new Client({
 
 async function populateColors() {
     try {
-        console.log('🔌 Conectando a la base de datos...');
         await client.connect();
-        console.log('✅ Conectado a PostgreSQL');
 
         // Actualizar colores para estados existentes
-        console.log('🎨 Actualizando colores...');
         const updateResult = await client.query(`
             UPDATE "SystemStatuses" 
             SET "Color" = CASE 
@@ -38,10 +35,8 @@ async function populateColors() {
             END
             WHERE "Color" IS NULL;
         `);
-        console.log(`✅ Colores actualizados para ${updateResult.rowCount} registros`);
 
         // Verificar resultados
-        console.log('\n📋 Estados con colores:');
         const result = await client.query(`
             SELECT "StatusValue", "DisplayName", "Color" 
             FROM "SystemStatuses" 
@@ -50,16 +45,11 @@ async function populateColors() {
         `);
 
         result.rows.forEach(row => {
-            console.log(`  ${row.StatusValue} - ${row.DisplayName} - ${row.Color}`);
         });
 
-        console.log('\n✅ Colores poblados exitosamente');
-        console.log('\n🎯 PRÓXIMO PASO:');
-        console.log('Probar el endpoint: GET /api/Search/243/details-complete');
         
     } catch (error) {
         console.error('❌ Error:', error.message);
-        console.log('Asegúrate de que PostgreSQL esté ejecutándose y las credenciales sean correctas');
     } finally {
         await client.end();
     }

@@ -11,12 +11,9 @@ namespace newApi.Controllers;
 public class LikesController : ControllerBase
 {
     private readonly ILikeService _likeService;
-    private readonly ILogger<LikesController> _logger;
-
-    public LikesController(ILikeService likeService, ILogger<LikesController> logger)
+    public LikesController(ILikeService likeService)
     {
         _likeService = likeService;
-        _logger = logger;
     }
 
     [HttpPost("{adId}")]

@@ -1,20 +1,28 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using newApi.DataLayer.Models;
 
 namespace newApi.Scripts
 {
     public class CreateLogTypeTable
     {
-        public static async Task CreateTableAndDataAsync()
+        public static async Task CreateTableAndDataAsync(ILogger<CreateLogTypeTable>? logger = null)
         {
             var optionsBuilder = new DbContextOptionsBuilder<AppDbContext>();
             optionsBuilder.UseNpgsql("Host=localhost;Database=newapi;Username=postgres;Password=postgres");
             
             using var context = new AppDbContext(optionsBuilder.Options);
             
+            // Crear logger si no se proporciona
+            if (logger == null)
+            {
+                var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+                logger = loggerFactory.CreateLogger<CreateLogTypeTable>();
+            }
+            
             try
             {
-                Console.WriteLine("🔄 Creating LogType table and inserting data...");
+                logger.LogInformation("🔄 Creating LogType table and inserting data...");
                 
                 // Crear tabla LogTypes
                 await context.Database.ExecuteSqlRawAsync(@"
@@ -33,7 +41,7 @@ namespace newApi.Scripts
                     );
                 ");
                 
-                Console.WriteLine("✅ LogTypes table created successfully");
+                logger.LogInformation("✅ LogTypes table created successfully");
                 
                 // Agregar columnas a la tabla Logs si no existen
                 await context.Database.ExecuteSqlRawAsync(@"
@@ -57,14 +65,14 @@ namespace newApi.Scripts
                     END $$;
                 ");
                 
-                Console.WriteLine("✅ Logs table columns added successfully");
+                logger.LogInformation("✅ Logs table columns added successfully");
                 
                 // Crear índice si no existe
                 await context.Database.ExecuteSqlRawAsync(@"
                     CREATE INDEX IF NOT EXISTS ""IX_Logs_LogTypeId"" ON ""Logs"" (""LogTypeId"");
                 ");
                 
-                Console.WriteLine("✅ Index created successfully");
+                logger.LogInformation("✅ Index created successfully");
                 
                 // Agregar foreign key si no existe
                 await context.Database.ExecuteSqlRawAsync(@"
@@ -81,7 +89,7 @@ namespace newApi.Scripts
                     END $$;
                 ");
                 
-                Console.WriteLine("✅ Foreign key created successfully");
+                logger.LogInformation("✅ Foreign key created successfully");
                 
                 // Insertar tipos de logs por defecto
                 await context.Database.ExecuteSqlRawAsync(@"
@@ -114,13 +122,13 @@ namespace newApi.Scripts
                     ON CONFLICT (""Name"") DO NOTHING;
                 ");
                 
-                Console.WriteLine("✅ Default log types inserted successfully");
-                Console.WriteLine("🎉 LogType table and data creation completed successfully!");
+                logger.LogInformation("✅ Default log types inserted successfully");
+                logger.LogInformation("🎉 LogType table and data creation completed successfully!");
                 
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Error creating LogType table: {ex.Message}");
+                logger.LogError(ex, "❌ Error creating LogType table: {Message}", ex.Message);
                 throw;
             }
         }

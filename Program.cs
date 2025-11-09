@@ -68,23 +68,79 @@ builder.Configuration["Jwt:Issuer"] = GetSecretValue("jwt-issuer");
 builder.Configuration["Jwt:Audience"] = GetSecretValue("jwt-audience");
 builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password");
 builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key");
-builder.Configuration["Stripe:SecretKey"] = "sk_test_51RDr9QR7PVKiStYueTMBRCFZGySidpx1f07iqqJYt9K4KqvAmgZHi6V1GDVpRyQxU3U08OcgGZDcHuqg7MpZaf0l004FRtdQym";
-builder.Configuration["Stripe:WebhookSecret"] = "whsec_YMCdzRPhKbpE0xke1L1YP3TPQnkO2UHt";
-builder.Configuration["Stripe:GeneralWebhookSecret"] = "whsec_6rVBKKefl9hkihHD82LIA828KF5usVxJ";
+
+// Configurar Stripe según el entorno (desarrollo vs producción)
+var isDevelopment = builder.Environment.IsDevelopment();
+if (isDevelopment)
+{
+    // En desarrollo: valores hardcodeados (no van al Secret Manager)
+    builder.Configuration["Stripe:SecretKey"] = "sk_test_51RDr9QR7PVKiStYueTMBRCFZGySidpx1f07iqqJYt9K4KqvAmgZHi6V1GDVpRyQxU3U08OcgGZDcHuqg7MpZaf0l004FRtdQym";
+    builder.Configuration["Stripe:WebhookSecret"] = "whsec_YMCdzRPhKbpE0xke1L1YP3TPQnkO2UHt";
+    builder.Configuration["Stripe:GeneralWebhookSecret"] = "whsec_6rVBKKefl9hkihHD82LIA828KF5usVxJ";
+}
+else
+{
+    // En producción: valores desde Google Cloud Secret Manager
+    builder.Configuration["Stripe:SecretKey"] = GetSecretValue("stripe-secret-key");
+    builder.Configuration["Stripe:WebhookSecret"] = GetSecretValue("stripe-webhook-secret");
+    builder.Configuration["Stripe:GeneralWebhookSecret"] = GetSecretValue("stripe-general-webhook-secret");
+}
+
 builder.Configuration["Twilio:AccountSid"] = GetSecretValue("twilio-account-sid");
 builder.Configuration["Twilio:AuthToken"] = GetSecretValue("twilio-auth-token");
 builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-verification-service-sid");
 builder.Configuration["GoogleCloud:BucketName"] = "atrapobucket";
 
-// Configurar la cadena de conexi�n seg�n el entorno
-if (builder.Environment.IsDevelopment())
+// Configuración de Email (opcional - si no está configurado, no se enviarán emails)
+// Puede usar SMTP de hosting propio, Gmail, SendGrid, etc.
+try
 {
-    builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=185.166.39.4;Port=30000;Username=admin;Password=Pedrohabo1//;Database=atrapo;Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
+    builder.Configuration["Email:SmtpHost"] = GetSecretValue("email-smtp-host") ?? "";
+    builder.Configuration["Email:SmtpPort"] = GetSecretValue("email-smtp-port") ?? "587";
+    builder.Configuration["Email:SmtpUsername"] = GetSecretValue("email-smtp-username") ?? "";
+    builder.Configuration["Email:SmtpPassword"] = GetSecretValue("email-smtp-password") ?? "";
+    builder.Configuration["Email:FromEmail"] = GetSecretValue("email-from-email") ?? "info@inspecciono.com";
+    builder.Configuration["Email:FromName"] = GetSecretValue("email-from-name") ?? "Inspecciono";
+}
+catch
+{
+    // Si no hay configuración de email en Secret Manager, usar valores vacíos (no enviará emails)
+    builder.Configuration["Email:SmtpHost"] = "";
+    builder.Configuration["Email:SmtpPort"] = "587";
+    builder.Configuration["Email:SmtpUsername"] = "";
+    builder.Configuration["Email:SmtpPassword"] = "";
+    builder.Configuration["Email:FromEmail"] = "info@inspecciono.com";
+    builder.Configuration["Email:FromName"] = "Inspecciono";
+}
+
+// Configurar la cadena de conexi�n seg�n el entorno
+// Configurar la cadena de conexión desde Secret Manager
+string connectionString;
+
+if (isDevelopment)
+{
+    // En desarrollo: usar valores de desarrollo o desde Secret Manager
+    var dbHost = GetSecretValue("postgres-host") ?? "localhost";
+    var dbPort = GetSecretValue("postgres-port") ?? "5432";
+    var dbUsername = GetSecretValue("postgres-username") ?? "postgres";
+    var dbPassword = GetSecretValue("postgres-password") ?? "postgres";
+    var dbName = GetSecretValue("postgres-database") ?? "newapi";
+    
+    connectionString = $"Host={dbHost};Port={dbPort};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
 }
 else
 {
-    builder.Configuration["ConnectionStrings:PostgresConnection"] = "Host=185.166.39.4;Port=30000;Username=admin;Password=Pedrohabo1//;Database=atrapo;Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
+    // En producción: OBLIGATORIO desde Secret Manager (sin fallbacks de producción)
+    var dbHost = GetSecretValue("postgres-host") ?? throw new InvalidOperationException("postgres-host secret is required in production");
+    var dbPort = GetSecretValue("postgres-port") ?? throw new InvalidOperationException("postgres-port secret is required in production");
+    var dbUsername = GetSecretValue("postgres-username") ?? throw new InvalidOperationException("postgres-username secret is required in production");
+    var dbPassword = GetSecretValue("postgres-password") ?? throw new InvalidOperationException("postgres-password secret is required in production");
+    var dbName = GetSecretValue("postgres-database") ?? throw new InvalidOperationException("postgres-database secret is required in production");
+    
+    connectionString = $"Host={dbHost};Port={dbPort};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
 }
+
+builder.Configuration["ConnectionStrings:PostgresConnection"] = connectionString;
 
 // Add services to the container
 builder.Services.AddControllers();
@@ -190,12 +246,25 @@ builder.Services.AddSingleton<RabbitMQ.Client.IConnectionFactory>(sp =>
 {
     var config = builder.Configuration;
     var isDevelopment = builder.Environment.IsDevelopment();
+    
+    string password;
+    if (isDevelopment)
+    {
+        // En desarrollo: usar valor de desarrollo o desde configuración
+        password = config["RABBITMQ_PASSWORD"] ?? "guest";
+    }
+    else
+    {
+        // En producción: OBLIGATORIO desde configuración (sin fallback hardcodeado)
+        password = config["RABBITMQ_PASSWORD"] ?? throw new InvalidOperationException("RABBITMQ_PASSWORD is required in production");
+    }
+    
     return new ConnectionFactory
     {
         HostName = isDevelopment ? "localhost" : config["RABBITMQ_HOSTNAME"] ?? "rabbitmq-svc",
         Port = int.Parse(config["RABBITMQ_PORT"] ?? "5672"),
         UserName = config["RABBITMQ_USERNAME"] ?? "admin",
-        Password = config["RABBITMQ_PASSWORD"] ?? "Pedrohabo1//"
+        Password = password
     };
 });
 
@@ -248,11 +317,11 @@ builder.Services.AddScoped<IAppointmentService, AppointmentService>();
 // Servicios redundantes eliminados - reemplazados por SystemStatusService
 // builder.Services.AddScoped<IAppointmentConfigService, AppointmentConfigService>();
 // builder.Services.AddScoped<ICategoryServiceTypeConfigService, CategoryServiceTypeConfigService>();
-builder.Services.AddScoped<IUserActionLoggingService, UserActionLoggingService>();
 builder.Services.AddScoped<SystemStatusService>();
 builder.Services.AddScoped<IAccountDeletionService, AccountDeletionService>();
 builder.Services.AddScoped<IAccountDeletionNotificationService, AccountDeletionNotificationService>();
 builder.Services.AddScoped<StripeRefundService>();
+builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<ILoggingService, LoggingService>();
 builder.Services.AddScoped<IStripeValidationService, StripeValidationService>();
 

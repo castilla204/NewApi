@@ -13,12 +13,9 @@ namespace newApi.Services
     public class SystemStatusService
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<SystemStatusService> _logger;
-
-        public SystemStatusService(AppDbContext context, ILogger<SystemStatusService> logger)
+        public SystemStatusService(AppDbContext context)
         {
             _context = context;
-            _logger = logger;
         }
 
         /// <summary>
@@ -31,13 +28,7 @@ namespace newApi.Services
         {
             try
             {
-                _logger.LogInformation("🔍 SEARCHING MONEY DISTRIBUTION - Status: {StatusValue}, CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}", 
-                    statusValue, categoryId, serviceTypeCategoryId);
-                
                 // 1. Buscar configuración específica (categoría + tipo)
-                _logger.LogInformation("🔍 SEARCHING SPECIFIC CONFIG - CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}", 
-                    categoryId, serviceTypeCategoryId);
-                
                 var config = await _context.StatusConfigurations
                     .Include(sc => sc.Status)
                     .Where(sc => sc.Status.StatusValue == statusValue &&
@@ -48,21 +39,12 @@ namespace newApi.Services
 
                 if (config != null)
                 {
-                    _logger.LogInformation("✅ FOUND SPECIFIC CONFIG - Status: {Status}, Category: {Category}, Type: {Type}, Client: {Client}%, Expert: {Expert}%, Platform: {Platform}%", 
-                        statusValue, categoryId, serviceTypeCategoryId, config.ClientPercentage, config.ExpertPercentage, config.PlatformPercentage);
                     return config;
                 }
                 else
                 {
-                    _logger.LogInformation("🔍 NO SPECIFIC CONFIG FOUND - Status: {Status}, Category: {Category}, Type: {Type}", 
-                        statusValue, categoryId, serviceTypeCategoryId);
                 }
-
-                _logger.LogInformation("🔍 CONTINUING TO CATEGORY SEARCH...");
-
                 // 2. Buscar configuración por categoría (tipo = NULL)
-                _logger.LogInformation("🔍 SEARCHING CATEGORY CONFIG - CategoryId: {CategoryId}", categoryId);
-                
                 config = await _context.StatusConfigurations
                     .Include(sc => sc.Status)
                     .Where(sc => sc.Status.StatusValue == statusValue &&
@@ -73,21 +55,12 @@ namespace newApi.Services
 
                 if (config != null)
                 {
-                    _logger.LogInformation("✅ FOUND CATEGORY CONFIG - Status: {Status}, Category: {Category}, Client: {Client}%, Expert: {Expert}%, Platform: {Platform}%", 
-                        statusValue, categoryId, config.ClientPercentage, config.ExpertPercentage, config.PlatformPercentage);
                     return config;
                 }
                 else
                 {
-                    _logger.LogInformation("🔍 NO CATEGORY CONFIG FOUND - Status: {Status}, Category: {Category}", 
-                        statusValue, categoryId);
                 }
-
-                _logger.LogInformation("🔍 CONTINUING TO GLOBAL SEARCH...");
-
                 // 3. Buscar configuración global (categoría = NULL, tipo = NULL)
-                _logger.LogInformation("🔍 SEARCHING GLOBAL CONFIG");
-                
                 config = await _context.StatusConfigurations
                     .Include(sc => sc.Status)
                     .Where(sc => sc.Status.StatusValue == statusValue &&
@@ -98,23 +71,15 @@ namespace newApi.Services
 
                 if (config != null)
                 {
-                    _logger.LogInformation("✅ FOUND GLOBAL CONFIG - Status: {Status}, Client: {Client}%, Expert: {Expert}%, Platform: {Platform}%", 
-                        statusValue, config.ClientPercentage, config.ExpertPercentage, config.PlatformPercentage);
                     return config;
                 }
                 else
                 {
-                    _logger.LogInformation("🔍 NO GLOBAL CONFIG FOUND - Status: {Status}", statusValue);
                 }
-
-                _logger.LogWarning("❌ NO CONFIGURATION FOUND - Status: {Status}, Category: {Category}, Type: {Type}", 
-                    statusValue, categoryId, serviceTypeCategoryId);
                 return null;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting money distribution for status={Status}, category={Category}, type={Type}", 
-                    statusValue, categoryId, serviceTypeCategoryId);
                 return null;
             }
         }
@@ -129,9 +94,6 @@ namespace newApi.Services
         {
             try
             {
-                _logger.LogInformation("🔍 GETTING MONEY DISTRIBUTION CONFIG - Status: {StatusValue}, CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}", 
-                    statusValue, categoryId, serviceTypeCategoryId);
-                
                 var config = await GetMoneyDistributionAsync(statusValue, categoryId, serviceTypeCategoryId);
                 
                 if (config != null)
@@ -144,15 +106,10 @@ namespace newApi.Services
                         Source = "centralized_system"
                     };
                 }
-
-                _logger.LogWarning("🔍 NO MONEY DISTRIBUTION CONFIG FOUND - Status: {Status}, CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}", 
-                    statusValue, categoryId, serviceTypeCategoryId);
                 return null;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting money distribution config for status={Status}, categoryId={CategoryId}, serviceTypeCategoryId={ServiceTypeCategoryId}", 
-                    statusValue, categoryId, serviceTypeCategoryId);
                 return null;
             }
         }
@@ -165,7 +122,6 @@ namespace newApi.Services
             try
             {
                 var appointmentStatusValue = appointmentStatus.ToStringValue();
-                _logger.LogInformation("🔍 Looking for mapping: {SourceStatus} (AppointmentStatus) → SearchHireStatus", appointmentStatusValue);
                 
                 var mapping = await _context.StatusMappings
                     .Include(sm => sm.SourceStatus)
@@ -175,42 +131,27 @@ namespace newApi.Services
                                 sm.TargetStatus.StatusType == "SearchHireStatus" &&
                                 sm.IsActive)
                     .FirstOrDefaultAsync();
-
-                _logger.LogInformation("🔍 Database query result: {MappingFound}", mapping != null ? "Found" : "Not found");
-
                 if (mapping?.TargetStatus?.StatusValue != null)
                 {
-                    _logger.LogInformation("✅ Found database mapping: {SourceStatus} → {TargetStatus}", 
-                        appointmentStatusValue, mapping.TargetStatus.StatusValue);
-                    
                     // Convertir string a enum usando el método personalizado
-                    _logger.LogInformation("🔄 Attempting enum conversion: '{StatusValue}'", mapping.TargetStatus.StatusValue);
-                    
                     try
                     {
                         var result = SearchHireStatusExtensions.FromStringValue(mapping.TargetStatus.StatusValue);
-                        _logger.LogInformation("🔄 Enum conversion result: {StatusValue} → Success: True → Result: {Result}", 
-                            mapping.TargetStatus.StatusValue, result);
                         return result;
                     }
                     catch (ArgumentException ex)
                     {
-                        _logger.LogError("❌ Failed to parse SearchHireStatus: '{StatusValue}'. Error: {Error}. Available values: {AvailableValues}", 
-                            mapping.TargetStatus.StatusValue, ex.Message, string.Join(", ", Enum.GetNames<SearchHireStatus>()));
                         return null;
                     }
                 }
 
                 // Fallback a mapeo por defecto si no existe en BD
                 var defaultMapping = GetDefaultMapping(appointmentStatus);
-                _logger.LogInformation("⚠️ Using fallback mapping: {SourceStatus} → {TargetStatus}", 
-                    appointmentStatusValue, defaultMapping?.ToString());
                 
                 return defaultMapping;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Error getting target SearchHire status for appointment status={Status}", appointmentStatus);
                 return GetDefaultMapping(appointmentStatus);
             }
         }
@@ -229,7 +170,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting statuses for type={Type}", statusType);
                 return new List<SystemStatus>();
             }
         }
@@ -249,7 +189,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting status by value={Value}, type={Type}", statusValue, statusType);
                 return null;
             }
         }
@@ -271,7 +210,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting status mappings");
                 return new List<StatusMapping>();
             }
         }

@@ -11,15 +11,11 @@ namespace newApi.Services
     public class SearchHireService : ISearchHireService
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<SearchHireService> _logger;
         private readonly string _domain = "https://atrapo.io";
 
-        public SearchHireService(
-    AppDbContext context,
-    ILogger<SearchHireService> logger)
+        public SearchHireService(AppDbContext context)
         {
             _context = context;
-            _logger = logger;
         }
 
         public async Task<IEnumerable<SearchHireResponseDto>> GetClientHires(int userId)
@@ -84,7 +80,6 @@ namespace newApi.Services
                 var validationResult = await ValidateRequiredDeliverables(hire);
                 if (!validationResult.IsValid)
                 {
-                    _logger.LogWarning("Cannot complete SearchHire {HireId}: {ValidationError}", hireId, validationResult.ErrorMessage);
                     return (false, validationResult.ErrorMessage);
                 }
                 
@@ -135,13 +130,10 @@ namespace newApi.Services
                         return (false, "Es obligatorio subir un archivo de video antes de completar el servicio");
                     }
                 }
-
-                _logger.LogInformation("All required deliverables validated for SearchHire {HireId}", hire.Id);
                 return (true, string.Empty);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error validating required deliverables for SearchHire {HireId}", hire.Id);
                 return (false, "Error interno al validar los archivos obligatorios");
             }
         }
@@ -156,7 +148,6 @@ namespace newApi.Services
             
             if (systemStatus == null)
             {
-                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
                 // Default to "pending" (ID = 1)
                 return 1;
             }

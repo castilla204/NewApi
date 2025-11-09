@@ -14,13 +14,11 @@ namespace newApi.Controllers
     public class ServiceTypeController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<ServiceTypeController> _logger;
         private readonly IAuthorizationServices _authService;
 
-        public ServiceTypeController(AppDbContext context, ILogger<ServiceTypeController> logger, IAuthorizationServices authService)
+        public ServiceTypeController(AppDbContext context, IAuthorizationServices authService)
         {
             _context = context;
-            _logger = logger;
             _authService = authService;
         }
 
@@ -52,9 +50,6 @@ namespace newApi.Controllers
                         UpdatedAt = st.UpdatedAt
                     })
                     .ToListAsync();
-
-                _logger.LogInformation("Retrieved {Count} active service types", serviceTypes.Count);
-                
                 return Ok(new 
                 { 
                     success = true,
@@ -65,7 +60,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving service types");
                 return StatusCode(500, new 
                 { 
                     success = false,
@@ -102,7 +96,6 @@ namespace newApi.Controllers
                     })
                     .ToListAsync();
 
-                _logger.LogInformation("Retrieved {Count} active service types (public endpoint)", serviceTypes.Count);
                 
                 return Ok(new 
                 { 
@@ -114,7 +107,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving service types (public endpoint)");
                 return StatusCode(500, new 
                 { 
                     success = false,
@@ -154,16 +146,12 @@ namespace newApi.Controllers
 
                 if (serviceType == null)
                 {
-                    _logger.LogWarning("Service type not found: {ServiceTypeId}", id);
                     return NotFound(new 
                     { 
                         success = false,
                         message = "Service type not found" 
                     });
                 }
-
-                _logger.LogInformation("Retrieved service type: {ServiceTypeId} - {ServiceTypeName}", id, serviceType.Name);
-                
                 return Ok(new 
                 { 
                     success = true,
@@ -173,7 +161,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving service type: {ServiceTypeId}", id);
                 return StatusCode(500, new 
                 { 
                     success = false,
@@ -226,7 +213,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating service type");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -280,7 +266,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating service type");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -315,7 +300,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting service type");
                 return StatusCode(500, new { message = ex.Message });
             }
         }

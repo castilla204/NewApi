@@ -22,7 +22,6 @@ namespace newApi.Services
     {
         private readonly AppDbContext _context;
         private readonly IConfiguration _configuration;
-        private readonly ILogger<UserService> _logger;
         private readonly StorageClient _storageClient;
         private readonly ILoggingService _loggingService;
         private readonly string _twilioVerificationServiceSid;
@@ -31,13 +30,12 @@ namespace newApi.Services
         public UserService(
      AppDbContext context,
      IConfiguration configuration,
-     ILogger<UserService> logger,
+
      StorageClient storageClient,
      ILoggingService loggingService)
         {
             _context = context;
             _configuration = configuration;
-            _logger = logger;
             _storageClient = storageClient;
             _loggingService = loggingService;
             _twilioVerificationServiceSid = configuration["Twilio:VerificationServiceSid"];
@@ -107,6 +105,21 @@ namespace newApi.Services
 
                 user.PhoneNumber = phoneNumber;
                 await _context.SaveChangesAsync();
+                
+                // ✅ LOG INFORMATIVO: Código de verificación enviado
+                await _loggingService.LogInfoAsync(
+                    message: "Verification code sent",
+                    details: $"Verification code sent via SMS to {phoneNumber} for user {userId}",
+                    userId: userId,
+                    source: "UserService.SendVerification",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "SendVerificationCode",
+                        PhoneNumber = phoneNumber
+                    }
+                );
+                
                 return true;
             }catch(Exception ex)
             {
@@ -127,10 +140,41 @@ namespace newApi.Services
             );
 
             if (verificationCheck.Status != "approved")
+            {
+                // ✅ LOG INFORMATIVO: Verificación de teléfono fallida
+                await _loggingService.LogInfoAsync(
+                    message: "Phone verification failed",
+                    details: $"Phone verification failed for user {userId}. Phone: {phoneNumber}, Status: {verificationCheck.Status}",
+                    userId: userId,
+                    source: "UserService.VerifyCode",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "PhoneVerification",
+                        PhoneNumber = phoneNumber,
+                        Status = verificationCheck.Status
+                    }
+                );
                 return (false, null, null);
+            }
 
             user.PhoneVerified = true;
             await _context.SaveChangesAsync();
+            
+            // ✅ LOG INFORMATIVO: Verificación de teléfono exitosa
+            await _loggingService.LogInfoAsync(
+                message: "Phone verification successful",
+                details: $"Phone number verified successfully for user {userId}. Phone: {phoneNumber}",
+                userId: userId,
+                source: "UserService.VerifyCode",
+                relatedEntityType: "User",
+                relatedEntityId: userId,
+                additionalData: new { 
+                    Action = "PhoneVerification",
+                    PhoneNumber = phoneNumber,
+                    Status = "approved"
+                }
+            );
 
             var token = GenerateJwtToken(user);
             return (true, token, user);
@@ -152,9 +196,6 @@ namespace newApi.Services
                 var userRole = isAdminEmail ? UserRole.Admin : UserRole.Client;
                 
                 // 🔍 DEBUG: Log para ver qué está pasando
-                _logger.LogInformation("Creating new user - Email: '{Email}', IsAdminEmail: {IsAdminEmail}, AssignedRole: {UserRole}", 
-                    emailToCheck, isAdminEmail, userRole);
-
                 user = new User
                 {
                     Name = payload.Name?.Trim(),
@@ -178,12 +219,43 @@ namespace newApi.Services
                 };
                 _context.UserSettings.Add(userSettings);
                 await _context.SaveChangesAsync();
+                
+                // ✅ LOG INFORMATIVO: Usuario creado exitosamente
+                await _loggingService.LogInfoAsync(
+                    message: "User created successfully",
+                    details: $"New user created via Google Auth. Email: {user.Email}, Role: {userRole}, UserId: {user.Id}",
+                    userId: user.Id,
+                    source: "UserService.GoogleAuth",
+                    relatedEntityType: "User",
+                    relatedEntityId: user.Id,
+                    additionalData: new { 
+                        Action = "UserCreation",
+                        Email = user.Email,
+                        Name = user.Name,
+                        Role = userRole.ToString(),
+                        GoogleId = user.GoogleId,
+                        IsAdminEmail = isAdminEmail
+                    }
+                );
             }
             else
             {
                 // 🔍 DEBUG: Log para usuarios existentes
-                _logger.LogInformation("Existing user login - Email: '{Email}', CurrentRole: {Role}", 
-                    user.Email, user.Role);
+                // ✅ LOG INFORMATIVO: Usuario inició sesión
+                await _loggingService.LogInfoAsync(
+                    message: "User login successful",
+                    details: $"User logged in via Google Auth. Email: {user.Email}, Role: {user.Role}, UserId: {user.Id}",
+                    userId: user.Id,
+                    source: "UserService.GoogleAuth",
+                    relatedEntityType: "User",
+                    relatedEntityId: user.Id,
+                    additionalData: new { 
+                        Action = "UserLogin",
+                        Email = user.Email,
+                        Role = user.Role.ToString(),
+                        GoogleId = user.GoogleId
+                    }
+                );
             }
 
             var token = GenerateJwtToken(user);
@@ -194,65 +266,54 @@ namespace newApi.Services
             int userId,
             BecomeExpertRequestDto request)
         {
-            _logger.LogInformation("Attempting to make user with ID {UserId} an expert", userId);
-
             var user = await _context.Users
                 .Include(u => u.ExpertProfile)
                 .FirstOrDefaultAsync(u => u.Id == userId);
 
             if (user == null)
             {
-                _logger.LogWarning("User with ID {UserId} not found", userId);
                 return (false, null, null, null);
             }
 
             if (user.Role == UserRole.Expert)
             {
-                _logger.LogWarning("User with ID {UserId} is already an expert", userId);
                 return (false, null, null, null);
             }
 
             if (user.ExpertProfile != null)
             {
-                _logger.LogWarning("User with ID {UserId} already has an expert profile", userId);
                 return (false, null, null, null);
             }
 
             // Validar Latitude y Longitude
             if (string.IsNullOrEmpty(request.Latitude) || string.IsNullOrEmpty(request.Longitude))
             {
-                _logger.LogWarning("Latitude or Longitude is empty for user ID {UserId}", userId);
                 return (false, null, null, null);
             }
 
             if (!decimal.TryParse(request.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var latitude))
             {
-                _logger.LogWarning("Invalid Latitude format for user ID {UserId}: {Latitude}", userId, request.Latitude);
                 return (false, null, null, null);
             }
 
             if (!decimal.TryParse(request.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var longitude))
             {
-                _logger.LogWarning("Invalid Longitude format for user ID {UserId}: {Longitude}", userId, request.Longitude);
                 return (false, null, null, null);
             }
 
             if (latitude < -90m || latitude > 90m)
             {
-                _logger.LogWarning("Latitude {Latitude} out of range for user ID {UserId}", latitude, userId);
                 return (false, null, null, null);
             }
 
             if (longitude < -180m || longitude > 180m)
             {
-                _logger.LogWarning("Longitude {Longitude} out of range for user ID {UserId}", longitude, userId);
                 return (false, null, null, null);
             }
 
             // Validar tamaño del archivo (5MB límite para imágenes de perfil)
             if (request.ProfilePicture.Length > 5 * 1024 * 1024)
             {
-                _logger.LogWarning("Profile picture file size {FileSize} exceeds 5MB limit for user ID {UserId}", request.ProfilePicture.Length, userId);
                 return (false, null, null, null);
             }
 
@@ -260,11 +321,8 @@ namespace newApi.Services
             var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
             if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
             {
-                _logger.LogWarning("Invalid profile picture file type {Extension} for user ID {UserId}", extension, userId);
                 return (false, null, null, null);
             }
-
-            _logger.LogInformation("Processing profile picture upload for user ID {UserId}", userId);
             var bucketName = _configuration["GoogleCloud:BucketName"];
             var uniqueFileName = $"{Guid.NewGuid()}{extension}";
             var objectName = $"experts/{uniqueFileName}";
@@ -313,8 +371,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error uploading profile picture for user ID {UserId}", userId);
-                
                 // 🚨 LOG CRÍTICO: Error en subida de imagen
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Profile picture upload failed",
@@ -336,8 +392,6 @@ namespace newApi.Services
             }
 
             var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-
-            _logger.LogInformation("Updating user role and creating expert profile for user ID {UserId}", userId);
             user.Role = UserRole.Expert;
 
             var expertProfile = new ExpertProfile
@@ -359,7 +413,6 @@ namespace newApi.Services
             if (request.AvailabilityDaysOfWeek == null || request.AvailabilityDaysOfWeek.Count == 0 ||
                 string.IsNullOrEmpty(request.AvailabilityStartTime) || string.IsNullOrEmpty(request.AvailabilityEndTime))
             {
-                _logger.LogWarning("Availability is required but not provided for user ID {UserId}", userId);
                 // Eliminar el perfil creado si falta la disponibilidad
                 _context.ExpertProfiles.Remove(expertProfile);
                 await _context.SaveChangesAsync();
@@ -370,8 +423,6 @@ namespace newApi.Services
             if (!TimeSpan.TryParse(request.AvailabilityStartTime, out var startTime) ||
                 !TimeSpan.TryParse(request.AvailabilityEndTime, out var endTime))
             {
-                _logger.LogWarning("Invalid time format in availability for user ID {UserId}: StartTime={StartTime}, EndTime={EndTime}", 
-                    userId, request.AvailabilityStartTime, request.AvailabilityEndTime);
                 // Eliminar el perfil creado si los tiempos son inválidos
                 _context.ExpertProfiles.Remove(expertProfile);
                 await _context.SaveChangesAsync();
@@ -384,7 +435,6 @@ namespace newApi.Services
             
             if (invalidDays.Any())
             {
-                _logger.LogWarning("Invalid availability days provided for user ID {UserId}: {InvalidDays}", userId, string.Join(", ", invalidDays));
                 // Eliminar el perfil creado si los días son inválidos
                 _context.ExpertProfiles.Remove(expertProfile);
                 await _context.SaveChangesAsync();
@@ -393,7 +443,6 @@ namespace newApi.Services
 
             if (startTime >= endTime)
             {
-                _logger.LogWarning("Invalid time range for user ID {UserId}: StartTime must be before EndTime", userId);
                 // Eliminar el perfil creado si el rango de tiempo es inválido
                 _context.ExpertProfiles.Remove(expertProfile);
                 await _context.SaveChangesAsync();
@@ -419,11 +468,9 @@ namespace newApi.Services
 
                 _context.ExpertAvailabilities.Add(availability);
                 await _context.SaveChangesAsync();
-                _logger.LogInformation("Created initial availability for expert profile ID {ExpertProfileId}", expertProfile.Id);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating initial availability for user ID {UserId}", userId);
                 // Si falla la creación de disponibilidad, eliminar el perfil
                 _context.ExpertProfiles.Remove(expertProfile);
                 await _context.SaveChangesAsync();
@@ -431,7 +478,22 @@ namespace newApi.Services
             }
 
             var token = GenerateJwtToken(user);
-            _logger.LogInformation("Successfully created expert profile for user ID {UserId}", userId);
+            // ✅ LOG INFORMATIVO: Usuario se convirtió en experto exitosamente (ya existe en UserController, pero también aquí para consistencia)
+            await _loggingService.LogInfoAsync(
+                message: "User became expert successfully",
+                details: $"User {userId} successfully became expert with profile {expertProfile.Id}",
+                userId: userId,
+                source: "UserService.BecomeExpert",
+                relatedEntityType: "User",
+                relatedEntityId: userId,
+                additionalData: new { 
+                    Action = "BecomeExpert",
+                    ExpertProfileId = expertProfile.Id,
+                    StripeAccountId = expertProfile.StripeAccountId,
+                    StripeStatus = expertProfile.StripeStatus
+                }
+            );
+            
             return (true, token, user, expertProfile);
         }
 
@@ -495,8 +557,6 @@ namespace newApi.Services
         {
             try
             {
-                _logger.LogInformation("Updating expert profile for user ID {UserId}", userId);
-
                 // Buscar el perfil de experto existente
                 var expertProfile = await _context.ExpertProfiles
                     .Include(ep => ep.User)
@@ -504,7 +564,6 @@ namespace newApi.Services
 
                 if (expertProfile == null)
                 {
-                    _logger.LogWarning("Expert profile not found for user ID {UserId}", userId);
                     return (false, null);
                 }
 
@@ -512,14 +571,12 @@ namespace newApi.Services
                 if (!decimal.TryParse(request.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var latitude) ||
                     latitude < -90m || latitude > 90m)
                 {
-                    _logger.LogWarning("Invalid latitude provided: {Latitude}", request.Latitude);
                     return (false, null);
                 }
 
                 if (!decimal.TryParse(request.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var longitude) ||
                     longitude < -180m || longitude > 180m)
                 {
-                    _logger.LogWarning("Invalid longitude provided: {Longitude}", request.Longitude);
                     return (false, null);
                 }
 
@@ -534,7 +591,6 @@ namespace newApi.Services
                     // Validar tamaño del archivo (5MB límite para imágenes de perfil)
                     if (request.ProfilePicture.Length > 5 * 1024 * 1024)
                     {
-                        _logger.LogWarning("Profile picture file size {FileSize} exceeds 5MB limit for user ID {UserId}", request.ProfilePicture.Length, userId);
                         return (false, null);
                     }
 
@@ -542,7 +598,6 @@ namespace newApi.Services
                     var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
                     if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
                     {
-                        _logger.LogWarning("Invalid profile picture file type {Extension} for user ID {UserId}", extension, userId);
                         return (false, null);
                     }
 
@@ -580,11 +635,9 @@ namespace newApi.Services
                             try
                             {
                                 await _storageClient.DeleteObjectAsync(bucketName, expertProfile.ProfilePictureObjectName);
-                                _logger.LogInformation("Deleted old profile picture: {ObjectName}", expertProfile.ProfilePictureObjectName);
                             }
                             catch (Exception ex)
                             {
-                                _logger.LogWarning(ex, "Could not delete old profile picture: {ObjectName}", expertProfile.ProfilePictureObjectName);
                             }
                         }
 
@@ -592,12 +645,9 @@ namespace newApi.Services
                         var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
                         expertProfile.ProfilePictureUrl = imageUrl;
                         expertProfile.ProfilePictureObjectName = objectName;
-
-                        _logger.LogInformation("Successfully uploaded new profile picture for user ID {UserId}", userId);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Error uploading new profile picture for user ID {UserId}", userId);
                         return (false, null);
                     }
                 }
@@ -617,13 +667,11 @@ namespace newApi.Services
 
                 if (currentAvailability != null && !hasAvailabilityProvided)
                 {
-                    _logger.LogWarning("Expert with ID {ExpertProfileId} has active availability but no new availability provided in update", expertProfile.Id);
                     return (false, null);
                 }
 
                 if (!hasAvailabilityProvided)
                 {
-                    _logger.LogWarning("Availability is required for expert profile update but not provided for user ID {UserId}", userId);
                     return (false, null);
                 }
 
@@ -631,8 +679,6 @@ namespace newApi.Services
                 if (!TimeSpan.TryParse(request.AvailabilityStartTime, out var startTime) ||
                     !TimeSpan.TryParse(request.AvailabilityEndTime, out var endTime))
                 {
-                    _logger.LogWarning("Invalid time format in availability for user ID {UserId}: StartTime={StartTime}, EndTime={EndTime}", 
-                        userId, request.AvailabilityStartTime, request.AvailabilityEndTime);
                     return (false, null);
                 }
 
@@ -642,13 +688,11 @@ namespace newApi.Services
                 
                 if (invalidDays.Any())
                 {
-                    _logger.LogWarning("Invalid availability days provided for user ID {UserId}: {InvalidDays}", userId, string.Join(", ", invalidDays));
                     return (false, null);
                 }
 
                 if (startTime >= endTime)
                 {
-                    _logger.LogWarning("Invalid time range for user ID {UserId}: StartTime must be before EndTime", userId);
                     return (false, null);
                 }
 
@@ -680,11 +724,9 @@ namespace newApi.Services
                     };
 
                     _context.ExpertAvailabilities.Add(newAvailability);
-                    _logger.LogInformation("Updated availability for expert profile ID {ExpertProfileId}", expertProfile.Id);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error updating availability for user ID {UserId}", userId);
                     return (false, null);
                 }
 
@@ -713,13 +755,10 @@ namespace newApi.Services
                     StripeFutureDueAt = expertProfile.StripeFutureDueAt,
                     IsOnVacation = expertProfile.IsOnVacation
                 };
-
-                _logger.LogInformation("Successfully updated expert profile for user ID {UserId}", userId);
                 return (true, updatedProfileDto);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating expert profile for user ID {UserId}", userId);
                 return (false, null);
             }
         }
@@ -730,33 +769,24 @@ namespace newApi.Services
         {
             try
             {
-                _logger.LogInformation("Toggling vacation mode for user ID {UserId}", userId);
-
                 var expertProfile = await _context.ExpertProfiles
                     .FirstOrDefaultAsync(ep => ep.UserId == userId);
 
                 if (expertProfile == null)
                 {
-                    _logger.LogError("Expert profile not found for user ID {UserId}", userId);
                     return (false, false);
                 }
 
                 // Cambiar el estado de vacaciones
                 expertProfile.IsOnVacation = !expertProfile.IsOnVacation;
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Successfully toggled vacation mode for user ID {UserId}. New status: {IsOnVacation}", 
-                    userId, expertProfile.IsOnVacation);
-
                 return (true, expertProfile.IsOnVacation);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error toggling vacation mode for user ID {UserId}", userId);
                 return (false, false);
             }
         }
-
 
 
         private string GenerateJwtToken(User user)
@@ -771,8 +801,6 @@ namespace newApi.Services
             };
 
             // 🔍 DEBUG: Log para ver qué rol se está generando
-            _logger.LogInformation("Generating JWT for user {UserId} ({Email}) with Role: {UserRole} -> {RoleName}", 
-                user.Id, user.Email, user.Role, roleName);
 
             var claims = new[]
             {

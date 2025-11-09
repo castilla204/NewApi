@@ -11,16 +11,14 @@ namespace newApi.Services
     public class AppointmentService : IAppointmentService
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<AppointmentService> _logger;
         private readonly SystemStatusService _systemStatusService;
         private readonly StripeRefundService _refundService;
         private readonly ILoggingService _loggingService;
         private readonly IStripeValidationService _stripeValidationService;
 
-        public AppointmentService(AppDbContext context, ILogger<AppointmentService> logger, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService)
+        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService)
         {
             _context = context;
-            _logger = logger;
             _systemStatusService = systemStatusService;
             _refundService = refundService;
             _loggingService = loggingService;
@@ -37,7 +35,6 @@ namespace newApi.Services
             
             if (systemStatus == null)
             {
-                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
                 // Default to "pending" (ID = 1)
                 return 1;
             }
@@ -67,7 +64,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting appointment with ID {AppointmentId}", id);
                 throw;
             }
         }
@@ -94,7 +90,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting appointment for SearchHire ID {SearchHireId}", searchHireId);
                 throw;
             }
         }
@@ -120,7 +115,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting appointments for user ID {UserId}", userId);
                 throw;
             }
         }
@@ -202,7 +196,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating appointment for SearchHire ID {SearchHireId}", dto.SearchHireId);
                 throw;
             }
         }
@@ -286,8 +279,6 @@ namespace newApi.Services
                         
                         if (!validStatesForPropose.Contains(currentStatus))
                         {
-                            _logger.LogWarning("🔍 INVALID STATE FOR PROPOSAL - AppointmentId: {AppointmentId}, CurrentStatus: {CurrentStatus}, ValidStates: {ValidStates}", 
-                                appointment.Id, currentStatus, string.Join(", ", validStatesForPropose));
                             throw new InvalidOperationException(
                                 $"No se puede proponer una cita en estado '{currentStatus}'. " +
                                 $"Solo se pueden proponer citas en estados: {string.Join(", ", validStatesForPropose)}."
@@ -350,8 +341,6 @@ namespace newApi.Services
 
                         // ✅ COMMIT: Confirmar la transacción
                         await transaction.CommitAsync();
-                        _logger.LogInformation("🔍 TRANSACTION COMMITTED - AppointmentId: {AppointmentId}", appointment.Id);
-
                 // Cargar la cita actualizada con todas las relaciones
                 var updatedAppointment = await _context.Appointments
                     .Include(a => a.SearchHire)
@@ -377,16 +366,12 @@ namespace newApi.Services
                     {
                         // ✅ ROLLBACK: Revertir la transacción en caso de error
                         await transaction.RollbackAsync();
-                        _logger.LogError(innerEx, "🔍 TRANSACTION ROLLED BACK - SearchHireId: {SearchHireId}, Error: {Error}", 
-                            searchHireId, innerEx.Message);
                         throw;
                     }
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error proposing appointment for SearchHire ID {SearchHireId}", searchHireId);
-                
                 // 🚨 LOG CRÍTICO: Error general proponiendo cita (una sola vez, con información completa)
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Error proposing appointment",
@@ -436,9 +421,6 @@ namespace newApi.Services
                     throw new ArgumentException("Appointment not found");
 
                         var currentStatus = appointment.Status?.StatusValue ?? string.Empty;
-                        _logger.LogInformation("🔍 CONFIRM APPOINTMENT STARTED - AppointmentId: {AppointmentId}, UserId: {UserId}, CurrentStatus: {CurrentStatus}", 
-                            dto.AppointmentId, userId, currentStatus);
-
                         // ✅ VALIDACIÓN: Verificar que el usuario es el experto
                 if (appointment.SearchHire.ExpertId != userId)
                     throw new UnauthorizedAccessException("Only the expert can confirm appointments");
@@ -446,8 +428,6 @@ namespace newApi.Services
                         // ✅ VALIDACIÓN CRÍTICA: Solo se puede confirmar si la cita está en estado "appointment_proposed"
                         if (currentStatus != "appointment_proposed")
                         {
-                            _logger.LogWarning("🔍 INVALID STATE FOR CONFIRMATION - AppointmentId: {AppointmentId}, CurrentStatus: {CurrentStatus}, RequiredStatus: appointment_proposed", 
-                                appointment.Id, currentStatus);
                             throw new InvalidOperationException(
                                 $"No se puede confirmar una cita en estado '{currentStatus}'. " +
                                 $"Solo se pueden confirmar citas en estado 'appointment_proposed' (cita propuesta por el cliente)."
@@ -467,8 +447,6 @@ namespace newApi.Services
                         
                         if (invalidStatesForConfirm.Contains(currentStatus))
                         {
-                            _logger.LogWarning("🔍 APPOINTMENT ALREADY PROCESSED - AppointmentId: {AppointmentId}, CurrentStatus: {CurrentStatus}", 
-                                appointment.Id, currentStatus);
                             throw new InvalidOperationException(
                                 $"La cita ya ha sido procesada (estado: '{currentStatus}'). " +
                                 $"No se puede confirmar nuevamente."
@@ -505,8 +483,6 @@ namespace newApi.Services
 
                         // ✅ COMMIT: Confirmar la transacción
                         await transaction.CommitAsync();
-                        _logger.LogInformation("🔍 TRANSACTION COMMITTED - AppointmentId: {AppointmentId}", appointment.Id);
-
                 // Cargar la cita actualizada con todas las relaciones
                 var updatedAppointment = await _context.Appointments
                     .Include(a => a.SearchHire)
@@ -532,16 +508,12 @@ namespace newApi.Services
                     {
                         // ✅ ROLLBACK: Revertir la transacción en caso de error
                         await transaction.RollbackAsync();
-                        _logger.LogError(innerEx, "🔍 TRANSACTION ROLLED BACK - AppointmentId: {AppointmentId}, Error: {Error}", 
-                            dto.AppointmentId, innerEx.Message);
                         throw;
                     }
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error confirming appointment {AppointmentId}", dto.AppointmentId);
-                
                 // 🚨 LOG CRÍTICO: Error general confirmando cita (una sola vez, con información completa)
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Error confirming appointment",
@@ -571,8 +543,6 @@ namespace newApi.Services
         {
             try
             {
-                _logger.LogInformation("🔍 REJECT APPOINTMENT STARTED - AppointmentId: {AppointmentId}, UserId: {UserId}", dto.AppointmentId, userId);
-                
                 // ✅ CORRECCIÓN: Usar la estrategia de ejecución para manejar transacciones con reintentos (NpgsqlRetryingExecutionStrategy)
                 var strategy = _context.Database.CreateExecutionStrategy();
                 return await strategy.ExecuteAsync(async () =>
@@ -591,17 +561,11 @@ namespace newApi.Services
 
                 if (appointment == null)
                 {
-                    _logger.LogError("🔍 APPOINTMENT NOT FOUND - AppointmentId: {AppointmentId}", dto.AppointmentId);
                     throw new ArgumentException("Appointment not found");
                 }
-
-                        _logger.LogInformation("🔍 APPOINTMENT FOUND - Id: {Id}, SearchHireId: {SearchHireId}, ExpertId: {ExpertId}, CurrentStatus: {CurrentStatus}, RejectionCount: {RejectionCount}", 
-                            appointment.Id, appointment.SearchHireId, appointment.SearchHire.ExpertId, appointment.Status?.StatusValue, appointment.RejectionCount);
-
                         // ✅ VALIDACIÓN: Verificar que el usuario es el experto
                 if (appointment.SearchHire.ExpertId != userId)
                 {
-                    _logger.LogError("🔍 UNAUTHORIZED ACCESS - UserId: {UserId} is not the expert (ExpertId: {ExpertId})", userId, appointment.SearchHire.ExpertId);
                     throw new UnauthorizedAccessException("Only the expert can reject appointments");
                 }
 
@@ -610,8 +574,6 @@ namespace newApi.Services
                         var currentStatus = appointment.Status?.StatusValue ?? string.Empty;
                         if (currentStatus != "appointment_proposed")
                         {
-                            _logger.LogWarning("🔍 INVALID STATE FOR REJECTION - AppointmentId: {AppointmentId}, CurrentStatus: {CurrentStatus}, RequiredStatus: appointment_proposed", 
-                                appointment.Id, currentStatus);
                             throw new InvalidOperationException(
                                 $"No se puede rechazar una cita en estado '{currentStatus}'. " +
                                 $"Solo se pueden rechazar citas en estado 'appointment_proposed' (cita propuesta por el cliente)."
@@ -632,38 +594,27 @@ namespace newApi.Services
                         
                         if (invalidStatesForReject.Contains(currentStatus))
                         {
-                            _logger.LogWarning("🔍 APPOINTMENT ALREADY PROCESSED - AppointmentId: {AppointmentId}, CurrentStatus: {CurrentStatus}", 
-                                appointment.Id, currentStatus);
                             throw new InvalidOperationException(
                                 $"La cita ya ha sido procesada (estado: '{currentStatus}'). " +
                                 $"No se puede rechazar nuevamente."
                             );
                         }
-
-                        _logger.LogInformation("🔍 AUTHORIZATION AND STATE VALIDATION OK - UserId: {UserId} is the expert, Status: {Status} is valid", userId, currentStatus);
                 // 🔍 LOGS DETALLADOS: Analizar el estado actual
-                _logger.LogInformation("🔍 REJECT APPOINTMENT ANALYSIS - AppointmentId: {AppointmentId}, Current RejectionCount: {RejectionCount}, ClientCancellationCount: {ClientCancellationCount}, ExpertCancellationCount: {ExpertCancellationCount}", 
-                    appointment.Id, appointment.RejectionCount, appointment.ClientCancellationCount, appointment.ExpertCancellationCount);
-
                 // Determinar el estado según el número de rechazos
                 string statusValue;
                 bool isSecondRejection = appointment.RejectionCount >= 1;
                 
-                _logger.LogInformation("🔍 REJECTION ANALYSIS - isSecondRejection: {IsSecondRejection} (RejectionCount >= 1: {RejectionCount} >= 1)", 
-                    isSecondRejection, appointment.RejectionCount);
                 
                 if (isSecondRejection)
                 {
                     // Segundo rechazo o más - cancelar por rechazos múltiples
                     // ✅ CORRECCIÓN: Usar el estado correcto para rechazo (no cancelación)
                     statusValue = "appointment_cancelled_by_expert_rejection";
-                    _logger.LogInformation("🔍 SECOND REJECTION DETECTED - Using status: {StatusValue}", statusValue);
                 }
                 else
                 {
                     // Primer rechazo
                     statusValue = "appointment_rejected";
-                    _logger.LogInformation("🔍 FIRST REJECTION - Using status: {StatusValue}", statusValue);
                 }
 
                 var newStatus = await _context.SystemStatuses
@@ -681,16 +632,11 @@ namespace newApi.Services
                 if (isSecondRejection)
                 {
                     appointment.ExpertCancellationCount++;
-                    _logger.LogInformation("🔍 EXPERT CANCELLATION COUNT INCREMENTED - New ExpertCancellationCount: {ExpertCancellationCount}", appointment.ExpertCancellationCount);
                 }
                 
                 appointment.LastRejectionAt = DateTime.UtcNow;
                 appointment.LastResponseAt = DateTime.UtcNow;
                 appointment.UpdatedAt = DateTime.UtcNow;
-
-                _logger.LogInformation("🔍 APPOINTMENT UPDATED - StatusId: {StatusId}, RejectionCount: {RejectionCount}, ClientCancellationCount: {ClientCancellationCount}, ExpertCancellationCount: {ExpertCancellationCount}", 
-                    appointment.StatusId, appointment.RejectionCount, appointment.ClientCancellationCount, appointment.ExpertCancellationCount);
-
                 // Actualizar el SearchHire según el mapeo de estados
                 var appointmentStatusEnum = statusValue switch
                 {
@@ -698,23 +644,15 @@ namespace newApi.Services
                     "appointment_cancelled_by_expert_rejection" => AppointmentStatus.AppointmentCancelledByExpertRejection,
                     _ => throw new InvalidOperationException($"Unknown appointment status: {statusValue}")
                 };
-
-                _logger.LogInformation("🔍 MAPPING APPOINTMENT STATUS - appointmentStatusEnum: {AppointmentStatusEnum}", appointmentStatusEnum);
-                
                 var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatusEnum);
-                _logger.LogInformation("🔍 TARGET SEARCH HIRE STATUS - targetSearchHireStatus: {TargetSearchHireStatus}", targetSearchHireStatus);
-                
                 if (targetSearchHireStatus.HasValue)
                 {
                     var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
                     appointment.SearchHire.StatusId = statusId;
                     appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
-                    _logger.LogInformation("🔍 SEARCH HIRE STATUS UPDATED - StatusId: {StatusId}, StatusValue: {StatusValue}", 
-                        statusId, targetSearchHireStatus.Value.ToStringValue());
                 }
                 else
                 {
-                    _logger.LogWarning("🔍 NO TARGET SEARCH HIRE STATUS FOUND - appointmentStatusEnum: {AppointmentStatusEnum}", appointmentStatusEnum);
                 }
 
                 // Marcar timers de respuesta como expirados
@@ -737,20 +675,11 @@ namespace newApi.Services
                 {
                     try
                     {
-                        _logger.LogInformation("🔍 PROCESSING AUTOMATIC REFUND - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}, Amount: {Amount}", 
-                            appointment.Id, appointment.SearchHireId, appointment.SearchHire.Amount);
-                        
                         // 🔍 LOG: Verificar configuración de dinero antes del refund
                         var moneyConfig = await _systemStatusService.GetMoneyDistributionConfigAsync(
                             "appointment_cancelled_by_expert_rejection", 
                             appointment.SearchHire.SearchService?.CategoryId, 
                             appointment.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
-                        
-                        _logger.LogInformation("🔍 MONEY DISTRIBUTION CONFIG - Status: appointment_cancelled_by_expert_rejection, CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}, Config: {Config}", 
-                            appointment.SearchHire.SearchService?.CategoryId, 
-                            appointment.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId,
-                            moneyConfig != null ? $"Client: {moneyConfig.ClientPercentage}%, Expert: {moneyConfig.ExpertPercentage}%, Platform: {moneyConfig.PlatformPercentage}%" : "NULL");
-                        
                         // Orquestar refund+transfer según configuración del subestado de finalización
                         var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
                             appointment.SearchHireId,
@@ -760,14 +689,9 @@ namespace newApi.Services
                         
                         if (refundSuccess)
                         {
-                            _logger.LogInformation("✅ AUTOMATIC REFUND SUCCESS - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
-                                appointment.Id, appointment.SearchHireId);
                         }
                         else
                         {
-                            _logger.LogError("❌ AUTOMATIC REFUND FAILED - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
-                                appointment.Id, appointment.SearchHireId);
-                            
                             // Log critical error for money transaction failure
                             await _loggingService.LogCriticalAsync(
                                 message: "CRITICAL: Automatic refund failed",
@@ -788,9 +712,6 @@ namespace newApi.Services
                     }
                     catch (Exception refundEx)
                     {
-                        _logger.LogError(refundEx, "❌ ERROR PROCESSING AUTOMATIC REFUND - AppointmentId: {AppointmentId}, SearchHireId: {SearchHireId}", 
-                            appointment.Id, appointment.SearchHireId);
-                        
                         // 🚨 LOG CRÍTICO: Error procesando refund automático (una sola vez, con información completa)
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Error processing automatic refund during appointment rejection",
@@ -823,13 +744,10 @@ namespace newApi.Services
                 }
                 else
                 {
-                    _logger.LogInformation("🔍 NO REFUND PROCESSING - First rejection, isSecondRejection: {IsSecondRejection}", isSecondRejection);
                 }
 
                         // ✅ COMMIT: Confirmar la transacción
                         await transaction.CommitAsync();
-                        _logger.LogInformation("🔍 TRANSACTION COMMITTED - AppointmentId: {AppointmentId}", appointment.Id);
-
                 // Cargar la cita actualizada con todas las relaciones
                 var updatedAppointment = await _context.Appointments
                     .Include(a => a.SearchHire)
@@ -854,23 +772,46 @@ namespace newApi.Services
                     userId
                 );
 
+                // ✅ Notificar al cliente sobre el rechazo
+                if (isSecondRejection)
+                {
+                    // Segunda cancelación - notificar sobre refund automático
+                    await _loggingService.LogWarningAsync(
+                        message: "Cita rechazada por segunda vez",
+                        details: $"El experto rechazó la propuesta de cita por segunda vez. Se procesará tu reembolso automáticamente.",
+                        userId: appointment.SearchHire.ClientId,
+                        source: "AppointmentService.RejectAppointmentAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointment.Id,
+                        notifyUser: true
+                    );
+                }
+                else
+                {
+                    // Primera cancelación - notificar que puede proponer otra
+                    await _loggingService.LogInfoAsync(
+                        message: "Cita rechazada",
+                        details: $"El experto rechazó la propuesta de cita. Puedes proponer otra fecha y hora.",
+                        userId: appointment.SearchHire.ClientId,
+                        source: "AppointmentService.RejectAppointmentAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointment.Id,
+                        notifyUser: true
+                    );
+                }
+
                 return MapToDto(updatedAppointment);
                     }
                     catch (Exception innerEx)
                     {
                         // ✅ ROLLBACK: Revertir la transacción en caso de error
                         await transaction.RollbackAsync();
-                        _logger.LogError(innerEx, "🔍 TRANSACTION ROLLED BACK - AppointmentId: {AppointmentId}, Error: {Error}", 
-                            dto.AppointmentId, innerEx.Message);
                         throw;
                     }
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "🔍 ERROR REJECTING APPOINTMENT - AppointmentId: {AppointmentId}, UserId: {UserId}, Error: {Error}", 
-                    dto.AppointmentId, userId, ex.Message);
-                
                 // 🚨 LOG CRÍTICO: Error general rechazando cita (una sola vez, con información completa)
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Error rejecting appointment",
@@ -920,9 +861,6 @@ namespace newApi.Services
                     throw new ArgumentException("Appointment not found");
 
                         var currentStatus = appointment.Status?.StatusValue ?? string.Empty;
-                        _logger.LogInformation("🔍 CANCEL APPOINTMENT STARTED - AppointmentId: {AppointmentId}, UserId: {UserId}, CurrentStatus: {CurrentStatus}", 
-                            dto.AppointmentId, userId, currentStatus);
-
                         // ✅ VALIDACIÓN: Verificar que el usuario es el cliente o el experto
                 if (appointment.SearchHire.ClientId != userId && appointment.SearchHire.ExpertId != userId)
                     throw new UnauthorizedAccessException("Only the client or expert can cancel appointments");
@@ -931,8 +869,6 @@ namespace newApi.Services
                         // Solo se puede cancelar si hay una propuesta o cita confirmada
                         if (currentStatus == "awaiting_appointment")
                         {
-                            _logger.LogWarning("🔍 INVALID STATE FOR CANCELLATION - AppointmentId: {AppointmentId}, CurrentStatus: {CurrentStatus}", 
-                                appointment.Id, currentStatus);
                             throw new InvalidOperationException(
                                 "No se puede cancelar una cita en estado 'awaiting_appointment'. " +
                                 "En este estado no hay ninguna propuesta de cita vigente. " +
@@ -954,8 +890,6 @@ namespace newApi.Services
                         
                         if (finalStates.Contains(currentStatus))
                         {
-                            _logger.LogWarning("🔍 APPOINTMENT ALREADY CANCELLED/FINALIZED - AppointmentId: {AppointmentId}, CurrentStatus: {CurrentStatus}", 
-                                appointment.Id, currentStatus);
                             throw new InvalidOperationException(
                                 $"La cita ya está cancelada o finalizada (estado: '{currentStatus}'). " +
                                 $"No se puede cancelar nuevamente."
@@ -972,8 +906,6 @@ namespace newApi.Services
                         
                         if (!validStatesForCancel.Contains(currentStatus))
                         {
-                            _logger.LogWarning("🔍 INVALID STATE FOR CANCELLATION - AppointmentId: {AppointmentId}, CurrentStatus: {CurrentStatus}, ValidStates: {ValidStates}", 
-                                appointment.Id, currentStatus, string.Join(", ", validStatesForCancel));
                             throw new InvalidOperationException(
                                 $"No se puede cancelar una cita en estado '{currentStatus}'. " +
                                 $"Solo se pueden cancelar citas en estados: {string.Join(", ", validStatesForCancel)}."
@@ -1062,13 +994,10 @@ namespace newApi.Services
                             userId);
                         if (!distributionOk)
                         {
-                            _logger.LogWarning("Money distribution not applied for AppointmentId={AppointmentId}, SearchHireId={SearchHireId}, Status={Status}",
-                                appointment.Id, appointment.SearchHireId, statusValue);
                         }
                     }
                     catch (Exception distEx)
                     {
-                        _logger.LogError(distEx, "Error orchestrating money distribution for AppointmentId={AppointmentId}, SearchHireId={SearchHireId}", appointment.Id, appointment.SearchHireId);
                     }
                 }
 
@@ -1087,8 +1016,6 @@ namespace newApi.Services
 
                         // ✅ COMMIT: Confirmar la transacción
                         await transaction.CommitAsync();
-                        _logger.LogInformation("🔍 TRANSACTION COMMITTED - AppointmentId: {AppointmentId}", appointment.Id);
-
                 // Cargar la cita actualizada con todas las relaciones
                 var updatedAppointment = await _context.Appointments
                     .Include(a => a.SearchHire)
@@ -1108,22 +1035,55 @@ namespace newApi.Services
                     userId
                 );
 
+                // ✅ Notificar a la otra parte sobre la cancelación
+                if (appointment.SearchHire.ClientId == userId)
+                {
+                    // Cliente canceló - notificar al experto
+                    if (appointment.SearchHire.ExpertId.HasValue)
+                    {
+                        var refundMessage = cancelledStatus.IsFinalizationStatus 
+                            ? " Se procesará el reembolso al cliente." 
+                            : "";
+                        await _loggingService.LogWarningAsync(
+                            message: "Cita cancelada por el cliente",
+                            details: $"El cliente canceló la cita #{appointment.Id}.{refundMessage}",
+                            userId: appointment.SearchHire.ExpertId.Value,
+                            source: "AppointmentService.CancelAppointmentAsync",
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: appointment.Id,
+                            notifyUser: true
+                        );
+                    }
+                }
+                else
+                {
+                    // Experto canceló - notificar al cliente
+                    var refundMessage = cancelledStatus.IsFinalizationStatus 
+                        ? " Se procesará tu reembolso." 
+                        : "";
+                    await _loggingService.LogWarningAsync(
+                        message: "Cita cancelada por el experto",
+                        details: $"El experto canceló la cita #{appointment.Id}.{refundMessage}",
+                        userId: appointment.SearchHire.ClientId,
+                        source: "AppointmentService.CancelAppointmentAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointment.Id,
+                        notifyUser: true
+                    );
+                }
+
                 return MapToDto(updatedAppointment);
                     }
                     catch (Exception innerEx)
                     {
                         // ✅ ROLLBACK: Revertir la transacción en caso de error
                         await transaction.RollbackAsync();
-                        _logger.LogError(innerEx, "🔍 TRANSACTION ROLLED BACK - AppointmentId: {AppointmentId}, Error: {Error}", 
-                            dto.AppointmentId, innerEx.Message);
                         throw;
                     }
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error cancelling appointment {AppointmentId}", dto.AppointmentId);
-                
                 // 🚨 LOG CRÍTICO: Error general cancelando cita (una sola vez, con información completa)
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Error cancelling appointment",
@@ -1187,7 +1147,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting appointment metrics");
                 throw;
             }
         }
@@ -1233,8 +1192,6 @@ namespace newApi.Services
                                     
                                     if (moneySuccess)
                                     {
-                                        _logger.LogInformation("✅ Money distribution processed for appointment {AppointmentId} due to no response", timer.Appointment.Id);
-                                        
                                         // 🚨 LOG CRÍTICO: Timer expirado - cliente no respondió
                                         await _loggingService.LogCriticalAsync(
                                             message: "CRITICAL: Appointment timer expired - client no response",
@@ -1254,11 +1211,36 @@ namespace newApi.Services
                                                 MoneyDistributionSuccess = true
                                             }
                                         );
+
+                                        // ✅ Notificar a cliente y experto sobre cancelación automática
+                                        if (timer.Appointment.SearchHire?.ClientId > 0)
+                                        {
+                                            await _loggingService.LogWarningAsync(
+                                                message: "Cita cancelada automáticamente",
+                                                details: $"No respondiste a la propuesta de cita en 24 horas. La cita fue cancelada automáticamente. Se procesará tu reembolso.",
+                                                userId: timer.Appointment.SearchHire.ClientId,
+                                                source: "AppointmentService.CheckAppointmentTimersAsync",
+                                                relatedEntityType: "Appointment",
+                                                relatedEntityId: timer.Appointment.Id,
+                                                notifyUser: true
+                                            );
+                                        }
+
+                                        if (timer.Appointment.SearchHire?.ExpertId.HasValue == true)
+                                        {
+                                            await _loggingService.LogInfoAsync(
+                                                message: "Cita cancelada - cliente no respondió",
+                                                details: $"El cliente no respondió a tu propuesta de cita en 24 horas. La cita fue cancelada automáticamente.",
+                                                userId: timer.Appointment.SearchHire.ExpertId.Value,
+                                                source: "AppointmentService.CheckAppointmentTimersAsync",
+                                                relatedEntityType: "Appointment",
+                                                relatedEntityId: timer.Appointment.Id,
+                                                notifyUser: true
+                                            );
+                                        }
                                     }
                                     else
                                     {
-                                        _logger.LogError("❌ Failed to process money distribution for appointment {AppointmentId} due to no response", timer.Appointment.Id);
-                                        
                                         // 🚨 LOG CRÍTICO: Fallo en distribución de dinero por timer expirado
                                         await _loggingService.LogCriticalAsync(
                                             message: "CRITICAL: Money distribution failed for expired timer",
@@ -1282,8 +1264,6 @@ namespace newApi.Services
                                 }
                                 catch (Exception ex)
                                 {
-                                    _logger.LogError(ex, "❌ Error processing money distribution for appointment {AppointmentId} due to no response", timer.Appointment.Id);
-                                    
                                     // 🚨 LOG CRÍTICO: Excepción en timer expirado
                                     await _loggingService.LogCriticalAsync(
                                         message: "CRITICAL: Exception during timer expiration processing",
@@ -1347,9 +1327,6 @@ namespace newApi.Services
                                     var awaitingStatusId = await GetStatusIdByValueAsync(SearchHireStatus.AwaitingClientDecision.ToStringValue());
                                     timer.Appointment.SearchHire.StatusId = awaitingStatusId;
                                     timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
-                                    
-                                    _logger.LogInformation("Appointment {AppointmentId} automatically completed and SearchHire moved to awaiting_client_decision - all required files were uploaded", timer.Appointment.Id);
-                                    
                                     // ✅ Enviar mensaje al chat con el cambio de estado automático
                                     // Para cambios automáticos, el senderId es el ExpertId del SearchHire
                                     var expertIdForMessage = timer.Appointment.SearchHire?.ExpertId ?? 0;
@@ -1391,12 +1368,35 @@ namespace newApi.Services
                                         
                                         if (moneySuccess)
                                         {
-                                            _logger.LogInformation("✅ Money distribution processed for appointment {AppointmentId} due to no report", timer.Appointment.Id);
+                                            // ✅ Notificar a cliente y experto sobre cancelación por falta de reporte
+                                            if (timer.Appointment.SearchHire?.ClientId > 0)
+                                            {
+                                                await _loggingService.LogWarningAsync(
+                                                    message: "Cita cancelada - experto no envió reporte",
+                                                    details: $"El experto no envió el reporte a tiempo. La cita fue cancelada automáticamente. Se procesará tu reembolso.",
+                                                    userId: timer.Appointment.SearchHire.ClientId,
+                                                    source: "AppointmentService.CheckAppointmentTimersAsync",
+                                                    relatedEntityType: "Appointment",
+                                                    relatedEntityId: timer.Appointment.Id,
+                                                    notifyUser: true
+                                                );
+                                            }
+
+                                            if (timer.Appointment.SearchHire?.ExpertId.HasValue == true)
+                                            {
+                                                await _loggingService.LogWarningAsync(
+                                                    message: "Cita cancelada - no enviaste el reporte",
+                                                    details: $"No enviaste el reporte de la cita #{timer.Appointment.Id} en 24 horas. La cita fue cancelada automáticamente.",
+                                                    userId: timer.Appointment.SearchHire.ExpertId.Value,
+                                                    source: "AppointmentService.CheckAppointmentTimersAsync",
+                                                    relatedEntityType: "Appointment",
+                                                    relatedEntityId: timer.Appointment.Id,
+                                                    notifyUser: true
+                                                );
+                                            }
                                         }
                                         else
                                         {
-                                            _logger.LogError("❌ Failed to process money distribution for appointment {AppointmentId} due to no report", timer.Appointment.Id);
-                                            
                                             // 🚨 LOG CRÍTICO: Fallo en distribución de dinero por falta de reporte (una sola vez, con información completa)
                                             await _loggingService.LogCriticalAsync(
                                                 message: "CRITICAL: Money distribution failed for expired report timer",
@@ -1424,8 +1424,6 @@ namespace newApi.Services
                                     }
                                     catch (Exception ex)
                                     {
-                                        _logger.LogError(ex, "❌ Error processing money distribution for appointment {AppointmentId} due to no report", timer.Appointment.Id);
-                                        
                                         // 🚨 LOG CRÍTICO: Excepción procesando distribución por falta de reporte (una sola vez, con información completa)
                                         await _loggingService.LogCriticalAsync(
                                             message: "CRITICAL: Exception during money distribution for expired report timer",
@@ -1455,10 +1453,6 @@ namespace newApi.Services
                                             }
                                         );
                                     }
-                                    
-                                    _logger.LogInformation("Appointment {AppointmentId} cancelled due to expert not submitting report within 24h - missing files: {MissingFiles}", 
-                                        timer.Appointment.Id, validationResult.ErrorMessage);
-                                    
                                     // ✅ Enviar mensaje al chat con el cambio de estado automático
                                     // Para cambios automáticos, el senderId es el ExpertId del SearchHire
                                     var expertIdForMessage = timer.Appointment.SearchHire?.ExpertId ?? 0;
@@ -1511,9 +1505,6 @@ namespace newApi.Services
                         };
 
                         _context.AppointmentTimers.Add(expertReportTimer);
-                        
-                        _logger.LogInformation("Appointment {AppointmentId} changed from confirmed to awaiting_report with 24h timer for expert report", appointment.Id);
-                        
                         // ✅ Enviar mensaje al chat con el cambio de estado automático
                         // Para cambios automáticos, el senderId es el ExpertId del SearchHire
                         var appointmentWithHire = await _context.Appointments
@@ -1534,13 +1525,10 @@ namespace newApi.Services
                 if (expiredTimers.Any() || confirmedAppointments.Any())
                 {
                     await _context.SaveChangesAsync();
-                    _logger.LogInformation("Processed {TimerCount} expired timers and {AppointmentCount} appointments moved to awaiting_report", 
-                        expiredTimers.Count, confirmedAppointments.Count);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error checking appointment timers");
                 throw;
             }
         }
@@ -1569,9 +1557,6 @@ namespace newApi.Services
                     throw new ArgumentException("Appointment not found");
 
                         var currentStatus = appointment.Status?.StatusValue ?? string.Empty;
-                        _logger.LogInformation("🔍 SUBMIT EXPERT REPORT STARTED - AppointmentId: {AppointmentId}, ExpertId: {ExpertId}, CurrentStatus: {CurrentStatus}", 
-                            appointmentId, expertId, currentStatus);
-
                         // ✅ VALIDACIÓN: Verificar que el usuario es el experto
                 if (appointment.SearchHire.ExpertId != expertId)
                     throw new UnauthorizedAccessException("Only the expert can submit reports");
@@ -1579,8 +1564,6 @@ namespace newApi.Services
                         // ✅ VALIDACIÓN CRÍTICA: Solo se puede enviar reporte si está en estado "appointment_awaiting_report"
                         if (currentStatus != "appointment_awaiting_report")
                         {
-                            _logger.LogWarning("🔍 INVALID STATE FOR REPORT SUBMISSION - AppointmentId: {AppointmentId}, CurrentStatus: {CurrentStatus}, RequiredStatus: appointment_awaiting_report", 
-                                appointment.Id, currentStatus);
                             throw new InvalidOperationException(
                                 $"No se puede enviar el reporte en estado '{currentStatus}'. " +
                                 $"Solo se pueden enviar reportes cuando la cita está en estado 'appointment_awaiting_report'."
@@ -1600,8 +1583,6 @@ namespace newApi.Services
                         
                         if (invalidStatesForReport.Contains(currentStatus))
                         {
-                            _logger.LogWarning("🔍 APPOINTMENT ALREADY PROCESSED - AppointmentId: {AppointmentId}, CurrentStatus: {CurrentStatus}", 
-                                appointment.Id, currentStatus);
                             throw new InvalidOperationException(
                                 $"La cita ya ha sido procesada (estado: '{currentStatus}'). " +
                                 $"No se puede enviar el reporte nuevamente."
@@ -1636,28 +1617,18 @@ namespace newApi.Services
                 appointment.UpdatedAt = DateTime.UtcNow;
 
                 // Actualizar el SearchHire según el mapeo de estados
-                _logger.LogInformation("=== STARTING STATUS MAPPING ===");
                 var appointmentStatusEnum = AppointmentStatus.AppointmentReportSent;
-                _logger.LogInformation("🔍 Getting target SearchHire status for appointment status: {AppointmentStatus}", appointmentStatusEnum);
-                
                 var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatusEnum);
-                _logger.LogInformation("🎯 Target SearchHire status result: {TargetStatus}", targetSearchHireStatus);
-                
                 if (targetSearchHireStatus.HasValue)
                 {
                     var oldStatusValue = appointment.SearchHire.Status?.StatusValue ?? "unknown";
                     var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
                     appointment.SearchHire.StatusId = statusId;
                     appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
-                    _logger.LogInformation("✅ Updated SearchHire {SearchHireId} status: {OldStatus} → {NewStatus}", 
-                        appointment.SearchHire.Id, oldStatusValue, targetSearchHireStatus.Value.ToStringValue());
                 }
                 else
                 {
-                    _logger.LogWarning("⚠️ No target SearchHire status found for appointment status: {AppointmentStatus}", appointmentStatusEnum);
                 }
-                _logger.LogInformation("=== STATUS MAPPING COMPLETED ===");
-
                 // Marcar timers de expert_report como expirados
                 var expertReportTimers = await _context.AppointmentTimers
                     .Where(t => t.AppointmentId == appointment.Id && 
@@ -1670,15 +1641,9 @@ namespace newApi.Services
                     timer.IsExpired = true;
                     timer.ExpiredAt = DateTime.UtcNow;
                 }
-
-                _logger.LogInformation("=== SAVING CHANGES TO DATABASE ===");
                 await _context.SaveChangesAsync();
-                _logger.LogInformation("=== DATABASE CHANGES SAVED ===");
-
                         // ✅ COMMIT: Confirmar la transacción
                         await transaction.CommitAsync();
-                        _logger.LogInformation("🔍 TRANSACTION COMMITTED - AppointmentId: {AppointmentId}", appointment.Id);
-
                 // Cargar la cita actualizada con todas las relaciones
                 var updatedAppointment = await _context.Appointments
                     .Include(a => a.SearchHire)
@@ -1690,9 +1655,6 @@ namespace newApi.Services
                     .Include(a => a.Status)
                     .Include(a => a.Timers)
                     .FirstAsync(a => a.Id == appointment.Id);
-
-                _logger.LogInformation("Expert {ExpertId} submitted report for appointment {AppointmentId}", expertId, appointmentId);
-
                 // ✅ Enviar mensaje al chat con el cambio de estado (después del commit)
                 await SendAppointmentStatusChangeMessageAsync(
                     appointment.SearchHireId, 
@@ -1706,16 +1668,12 @@ namespace newApi.Services
                     {
                         // ✅ ROLLBACK: Revertir la transacción en caso de error
                         await transaction.RollbackAsync();
-                        _logger.LogError(innerEx, "🔍 TRANSACTION ROLLED BACK - AppointmentId: {AppointmentId}, Error: {Error}", 
-                            appointmentId, innerEx.Message);
                         throw;
                     }
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error submitting expert report for appointment {AppointmentId}", appointmentId);
-                
                 // 🚨 LOG CRÍTICO: Error general enviando reporte de experto (una sola vez, con información completa)
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Error submitting expert report",
@@ -1802,13 +1760,10 @@ namespace newApi.Services
                     var missingFilesText = string.Join(" y ", missingFiles);
                     return (false, $"Faltan archivos obligatorios: {missingFilesText}. Debes subir estos archivos antes de enviar el reporte.");
                 }
-
-                _logger.LogInformation("All required deliverables validated for SearchHire {HireId}", hire.Id);
                 return (true, string.Empty);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error validating required deliverables for SearchHire {HireId}", searchHire.Id);
                 return (false, "Error validating required deliverables");
             }
         }
@@ -1838,7 +1793,6 @@ namespace newApi.Services
                 // Si no se proporcionan coordenadas para la cita, no validar
                 if (!appointmentLatitude.HasValue || !appointmentLongitude.HasValue)
                 {
-                    _logger.LogWarning("No appointment coordinates provided for SearchHire {SearchHireId}, skipping location validation", hire.Id);
                     return;
                 }
 
@@ -1863,15 +1817,12 @@ namespace newApi.Services
                 var searchLocationRange = hire.Search.SearchParameters?.FirstOrDefault()?.LocationRange;
                 if (searchLocationRange == null || searchLocationRange <= 0)
                 {
-                    _logger.LogWarning("No location range defined for Search {SearchId}, using default range of 50km", hire.SearchId);
                     searchLocationRange = 50; // Rango por defecto
                 }
 
                 // Calcular la distancia entre la ubicación del experto y la ubicación propuesta para la cita
                 var distance = CalculateDistance(expertLatitude, expertLongitude, appointmentLatitude.Value, appointmentLongitude.Value);
 
-                _logger.LogInformation("Validating appointment location for SearchHire {SearchHireId}: Expert at ({ExpertLat}, {ExpertLon}), Appointment at ({AppointmentLat}, {AppointmentLon}), Distance: {Distance}km, MaxRange: {MaxRange}km",
-                    hire.Id, expertLatitude, expertLongitude, appointmentLatitude.Value, appointmentLongitude.Value, distance, searchLocationRange);
 
                 // Verificar que la distancia esté dentro del rango permitido
                 if (distance > searchLocationRange)
@@ -1882,12 +1833,9 @@ namespace newApi.Services
                         $"El experto solo puede realizar citas dentro de su rango de servicio original."
                     );
                 }
-
-                _logger.LogInformation("Appointment location validation passed for SearchHire {SearchHireId}", hire.Id);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error validating appointment location for SearchHire {SearchHireId}", searchHire.Id);
                 throw;
             }
         }
@@ -2000,16 +1948,9 @@ namespace newApi.Services
                         $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm}"
                     );
                 }
-
-                _logger.LogInformation(
-                    "Appointment availability validation passed for SearchHire {SearchHireId}. " +
-                    "Day: {DayOfWeek}, Time: {ProposedTime}, Available: {StartTime}-{EndTime}",
-                    hire.Id, dayOfWeek, proposedTimeOnly, availability.StartTime, availability.EndTime
-                );
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error validating appointment availability for SearchHire {SearchHireId}", searchHire.Id);
                 throw;
             }
         }
@@ -2031,7 +1972,6 @@ namespace newApi.Services
 
                 if (conversation == null)
                 {
-                    _logger.LogWarning("No active conversation found for SearchHireId {SearchHireId}, skipping status change message", searchHireId);
                     return;
                 }
 
@@ -2048,14 +1988,10 @@ namespace newApi.Services
                 _context.Messages.Add(message);
                 conversation.UpdatedAt = DateTime.UtcNow;
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Sent appointment status change message to conversation {ConversationId}: {StatusValue}", conversation.Id, statusValue);
             }
             catch (Exception ex)
             {
                 // No lanzar excepción - el envío del mensaje no debe afectar el flujo principal
-                _logger.LogError(ex, "Error sending appointment status change message for SearchHireId {SearchHireId}, StatusValue: {StatusValue}", 
-                    searchHireId, statusValue);
             }
         }
 

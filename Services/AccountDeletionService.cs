@@ -19,7 +19,6 @@ namespace newApi.Services
     public class AccountDeletionService : IAccountDeletionService
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<AccountDeletionService> _logger;
         private readonly IConfiguration _configuration;
         private readonly IAccountDeletionNotificationService _notificationService;
         private readonly SystemStatusService _systemStatusService;
@@ -31,7 +30,7 @@ namespace newApi.Services
 
         public AccountDeletionService(
             AppDbContext context,
-            ILogger<AccountDeletionService> logger,
+
             IConfiguration configuration,
             IAccountDeletionNotificationService notificationService,
             SystemStatusService systemStatusService,
@@ -39,7 +38,6 @@ namespace newApi.Services
             ILoggingService loggingService)
         {
             _context = context;
-            _logger = logger;
             _configuration = configuration;
             _notificationService = notificationService;
             _systemStatusService = systemStatusService;
@@ -57,7 +55,6 @@ namespace newApi.Services
             
             if (systemStatus == null)
             {
-                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
                 // Default to "pending" (ID = 1)
                 return 1;
             }
@@ -69,8 +66,6 @@ namespace newApi.Services
         {
             try
             {
-                _logger.LogInformation("Checking deletion status for user {UserId}", userId);
-
                 var user = await _context.Users
                     .Include(u => u.SearchHiresAsClient)
                     .Include(u => u.SearchHiresAsExpert)
@@ -106,7 +101,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error checking deletion status for user {UserId}", userId);
                 throw;
             }
         }
@@ -119,8 +113,6 @@ namespace newApi.Services
                 using var transaction = await _context.Database.BeginTransactionAsync();
                 try
             {
-                _logger.LogInformation("Starting account deletion process for user {UserId}", userId);
-
                 // 1. Verificar usuario y contraseña
                 var user = await _context.Users
                     .Include(u => u.ExpertProfile)
@@ -161,9 +153,6 @@ namespace newApi.Services
 
                 // 7. Confirmar transacción
                 await transaction.CommitAsync();
-
-                _logger.LogInformation("Successfully deleted account for user {UserId}", userId);
-
                 return new AccountDeletionResponseDto
                 {
                     Success = true,
@@ -178,7 +167,6 @@ namespace newApi.Services
                 catch (Exception ex)
                 {
                     await transaction.RollbackAsync();
-                    _logger.LogError(ex, "Error deleting account for user {UserId}", userId);
                     throw;
                 }
             });
@@ -277,9 +265,6 @@ namespace newApi.Services
                      // 🚨 VERIFICACIÓN CRÍTICA: No tocar nada si ya está finalizado
                      if (searchHire.Status.IsFinalizationStatus)
                      {
-                         _logger.LogInformation("SearchHire {SearchHireId} already finalized with status {Status}, skipping all processing for account deletion", 
-                             searchHire.Id, searchHire.Status.StatusValue);
-                         
                          continue; // Saltar al siguiente SearchHire - NO tocar nada
                      }
 
@@ -290,9 +275,6 @@ namespace newApi.Services
                      
                      if (existingAppointment?.Status != null && existingAppointment.Status.IsFinalizationStatus)
                      {
-                         _logger.LogInformation("SearchHire {SearchHireId} has appointment with finalization sub-status {Status}, skipping all processing for account deletion", 
-                             searchHire.Id, existingAppointment.Status.StatusValue);
-                         
                          continue; // Saltar al siguiente SearchHire - NO tocar nada
                      }
 
@@ -306,13 +288,9 @@ namespace newApi.Services
                          // Usar el estado apropiado según quién elimina la cuenta
                          appointment.StatusId = isClientDeleting ? 13 : 15; // appointment_cancelled_by_client : appointment_cancelled_by_expert
                          appointment.UpdatedAt = DateTime.UtcNow;
-                         _logger.LogInformation("Cancelled appointment {AppointmentId} due to account deletion", appointment.Id);
                      }
 
                      // 🎯 PROCESAR DINERO SOLO PARA SEARCHHIRES NO FINALIZADOS
-                     _logger.LogInformation("Processing money distribution for non-finalized SearchHire {SearchHireId} with status {Status}", 
-                         searchHire.Id, searchHire.Status.StatusValue);
-
                      if (isClientDeleting)
                      {
                          // Si el cliente elimina su cuenta, dar el dinero al experto
@@ -323,8 +301,6 @@ namespace newApi.Services
                         
                         if (!transferSuccess)
                         {
-                            _logger.LogError("Failed to process transfer to expert for account deletion searchHireId={SearchHireId}", searchHire.Id);
-                            
                             await _loggingService.LogCriticalAsync(
                                 message: "CRITICAL: Failed to process transfer to expert for account deletion",
                                 details: $"Transfer to expert failed for account deletion SearchHire {searchHire.Id}",
@@ -344,9 +320,6 @@ namespace newApi.Services
                         
                          searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
                          searchHire.UpdatedAt = DateTime.UtcNow;
-                         
-                        _logger.LogInformation("Processed transfer to expert for SearchHire {SearchHireId} due to client account deletion", 
-                            searchHire.Id);
                      }
                      else
                      {
@@ -358,8 +331,6 @@ namespace newApi.Services
                         
                         if (!refundSuccess)
                         {
-                            _logger.LogError("Failed to process Stripe refund for account deletion searchHireId={SearchHireId}", searchHire.Id);
-                            
                             await _loggingService.LogCriticalAsync(
                                 message: "CRITICAL: Failed to process Stripe refund for account deletion",
                                 details: $"Stripe refund failed for account deletion SearchHire {searchHire.Id}",
@@ -380,9 +351,6 @@ namespace newApi.Services
                         
                          searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
                          searchHire.UpdatedAt = DateTime.UtcNow;
-                         
-                        _logger.LogInformation("Processed client refund for SearchHire {SearchHireId} due to expert account deletion", 
-                            searchHire.Id);
                      }
 
                     transactionsProcessed.Add(new DisputeCreatedInfo
@@ -396,9 +364,6 @@ namespace newApi.Services
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error processing contract {SearchHireId} during account deletion: {ErrorMessage}", 
-                        searchHire.Id, ex.Message);
-                    
                     // Si falla el procesamiento, crear una disputa como fallback
                     var dispute = new newApi.DataLayer.Models.PostGresModels.Dispute
                     {
@@ -431,12 +396,8 @@ namespace newApi.Services
         }
 
 
-
-
         private async Task DeleteUserDataAsync(int userId)
         {
-            _logger.LogInformation("Deleting user data for user {UserId}", userId);
-
             try
             {
                 // 1. Eliminar mensajes
@@ -566,12 +527,9 @@ namespace newApi.Services
                     _context.Users.Remove(user);
                     await _context.SaveChangesAsync();
                 }
-
-                _logger.LogInformation("Successfully deleted all user data for user {UserId}", userId);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting user data for user {UserId}", userId);
                 throw;
             }
         }

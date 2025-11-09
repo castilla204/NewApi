@@ -17,14 +17,12 @@ namespace newApi.Controllers
     public class SearchResultController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<SearchResultController> _logger;
         private readonly IMapper _mapper;
         private readonly IAuthorizationServices _authService;
 
-        public SearchResultController(AppDbContext context, ILogger<SearchResultController> logger, IMapper mapper, IAuthorizationServices authService)
+        public SearchResultController(AppDbContext context, IMapper mapper, IAuthorizationServices authService)
         {
             _context = context;
-            _logger = logger;
             _mapper = mapper;
             _authService = authService;
         }
@@ -47,7 +45,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving search results");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -124,7 +121,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error adding manual ad");
                 return StatusCode(500, new { message = ex.Message });
             }
         }

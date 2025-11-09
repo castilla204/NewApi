@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using newApi.Scripts;
 
 namespace newApi.Scripts
@@ -6,13 +7,17 @@ namespace newApi.Scripts
     {
         public static async Task Main(string[] args)
         {
+            // Crear logger factory para el script
+            var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            var logger = loggerFactory.CreateLogger<CreateLogTypeTable>();
+            
             try
             {
-                await CreateLogTypeTable.CreateTableAndDataAsync();
+                await CreateLogTypeTable.CreateTableAndDataAsync(logger);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Error: {ex.Message}");
+                logger.LogError(ex, "❌ Error: {Message}", ex.Message);
                 Environment.Exit(1);
             }
         }

@@ -59,3 +59,4 @@ foreach ($file in $files) {
 Write-Host "`n✅ Búsqueda completada. Revisa los archivos encontrados arriba." -ForegroundColor Green
 Write-Host "`n💡 Para eliminar automáticamente, ejecuta: .\Scripts\remove-console-logs-auto.ps1" -ForegroundColor Cyan
 
+

@@ -112,3 +112,4 @@ if (!isDryRun && isAuto && filesWithConsole.length > 0) {
     console.log('   Ejecuta con --auto para aplicar cambios');
 }
 
+

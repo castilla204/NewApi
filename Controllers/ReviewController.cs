@@ -26,20 +26,18 @@ namespace newApi.Controllers
         private readonly AppDbContext _context;
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
-        private readonly ILogger<ReviewController> _logger;
         private readonly ILoggingService _loggingService;
 
         public ReviewController(
             AppDbContext context,
             IConfiguration configuration,
             StorageClient storageClient,
-            ILogger<ReviewController> logger,
+
             ILoggingService loggingService)
         {
             _context = context;
             _configuration = configuration;
             _storageClient = storageClient;
-            _logger = logger;
             _loggingService = loggingService;
         }
 
@@ -48,8 +46,6 @@ namespace newApi.Controllers
         {
             try
             {
-                _logger.LogInformation("📝 Starting review creation for SearchHire {SearchHireId}", searchHireId);
-                
                 // Obtener el usuario autenticado
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
@@ -114,21 +110,18 @@ namespace newApi.Controllers
                 var imageUrls = new List<string>();
                 if (reviewDto.Images != null && reviewDto.Images.Any())
                 {
-                    _logger.LogInformation("📸 Processing {ImageCount} images for review {ReviewId}", reviewDto.Images.Length, review.Id);
                     var bucketName = _configuration["GoogleCloud:BucketName"];
                     foreach (var imageFile in reviewDto.Images)
                     {
                         var extension = Path.GetExtension(imageFile.FileName).ToLowerInvariant();
                         if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
                         {
-                            _logger.LogWarning("❌ Invalid image format: {Extension} for file {FileName}", extension, imageFile.FileName);
                             return BadRequest(new { message = "Only JPG and PNG images are allowed" });
                         }
 
                         var uniqueFileName = $"{Guid.NewGuid()}{extension}";
                         var objectName = $"reviews/{uniqueFileName}";
 
-                        _logger.LogInformation("📤 Uploading image {FileName} ({Size} bytes) to Google Cloud Storage", imageFile.FileName, imageFile.Length);
                         using (var inputStream = imageFile.OpenReadStream())
                         using (var image = Image.Load(inputStream))
                         {
@@ -148,7 +141,6 @@ namespace newApi.Controllers
                                     contentType: "image/jpeg",
                                     source: outputStream
                                 );
-                                _logger.LogInformation("✅ Image {FileName} uploaded successfully to {ObjectName}", imageFile.FileName, objectName);
                             }
                         }
 
@@ -184,8 +176,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Error creating review for SearchHire {SearchHireId}: {ErrorMessage}", searchHireId, ex.Message);
-                
                 // 🚨 LOG CRÍTICO: Guardar en tabla Logs
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Review creation failed",
@@ -255,7 +245,6 @@ namespace newApi.Controllers
 
                 if (!reviews.Any())
                 {
-                    _logger.LogInformation("No reviews found for expert {ExpertId}", expertId);
                     return Ok(new { message = "No reviews found for this expert", reviews = new List<ReviewResponseDto>() });
                 }
 
@@ -263,7 +252,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving reviews for expert {ExpertId}", expertId);
                 return StatusCode(500, new { message = "An error occurred while retrieving reviews" });
             }
         }

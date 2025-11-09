@@ -8,12 +8,9 @@ namespace newApi.Services;
 public class LikeService : ILikeService
 {
     private readonly AppDbContext _context;
-    private readonly ILogger<LikeService> _logger;
-
-    public LikeService(AppDbContext context, ILogger<LikeService> logger)
+    public LikeService(AppDbContext context)
     {
         _context = context;
-        _logger = logger;
     }
 
     public async Task<bool> ToggleLikeAsync(int userId, string adId)
@@ -23,7 +20,6 @@ public class LikeService : ILikeService
             var ad = await _context.Ads.FirstOrDefaultAsync(a => a.Id == adId);
             if (ad == null)
             {
-                _logger.LogWarning($"Ad not found with ID: {adId}");
                 return false;
             }
 
@@ -33,7 +29,6 @@ public class LikeService : ILikeService
             {
                 _context.Likes.Remove(existingLike);
                 await _context.SaveChangesAsync();
-                _logger.LogInformation($"Like removed for ad {adId} by user {userId}");
                 return false;
             }
 
@@ -46,13 +41,10 @@ public class LikeService : ILikeService
 
             _context.Likes.Add(like);
             await _context.SaveChangesAsync();
-
-            _logger.LogInformation($"Like added for ad {adId} by user {userId}");
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error toggling like for ad {adId}");
             return false;
         }
     }
@@ -65,7 +57,6 @@ public class LikeService : ILikeService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error checking like status for ad {adId}");
             return false;
         }
     }
@@ -82,7 +73,6 @@ public class LikeService : ILikeService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error retrieving user likes");
             return new List<Ad>();
         }
     }

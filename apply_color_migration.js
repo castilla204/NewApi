@@ -13,20 +13,15 @@ const client = new Client({
 
 async function applyColorMigration() {
     try {
-        console.log('🔌 Conectando a la base de datos...');
         await client.connect();
-        console.log('✅ Conectado a PostgreSQL');
 
         // Agregar columna Color
-        console.log('📝 Agregando columna Color...');
         await client.query(`
             ALTER TABLE "SystemStatuses" 
             ADD COLUMN IF NOT EXISTS "Color" character varying(20);
         `);
-        console.log('✅ Columna Color agregada');
 
         // Actualizar colores para estados existentes
-        console.log('🎨 Actualizando colores...');
         const updateResult = await client.query(`
             UPDATE "SystemStatuses" 
             SET "Color" = CASE 
@@ -46,10 +41,8 @@ async function applyColorMigration() {
             END
             WHERE "Color" IS NULL;
         `);
-        console.log(`✅ Colores actualizados para ${updateResult.rowCount} registros`);
 
         // Verificar resultados
-        console.log('\n📋 Estados con colores:');
         const result = await client.query(`
             SELECT "StatusValue", "DisplayName", "Color" 
             FROM "SystemStatuses" 
@@ -58,14 +51,11 @@ async function applyColorMigration() {
         `);
 
         result.rows.forEach(row => {
-            console.log(`  ${row.StatusValue} - ${row.DisplayName} - ${row.Color}`);
         });
 
-        console.log('\n✅ Migración completada exitosamente');
         
     } catch (error) {
         console.error('❌ Error:', error.message);
-        console.log('Asegúrate de que PostgreSQL esté ejecutándose y las credenciales sean correctas');
     } finally {
         await client.end();
     }

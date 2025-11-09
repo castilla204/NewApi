@@ -6,8 +6,6 @@
 
 export const updateConfig = async (configId, data) => {
   try {
-    console.log('🔄 Actualizando configuración ID:', configId);
-    console.log('📊 Datos a actualizar:', data);
 
     // Validar que los porcentajes sumen 100%
     const total = data.clientPercentage + data.expertPercentage + data.platformPercentage;
@@ -26,7 +24,6 @@ export const updateConfig = async (configId, data) => {
       isActive: data.isActive
     };
 
-    console.log('📤 Enviando datos:', submitData);
 
     // SOLUCIÓN TEMPORAL: Crear nueva configuración con un StatusId diferente
     // Esto evita el error "Ya existe una configuración"
@@ -46,7 +43,6 @@ export const updateConfig = async (configId, data) => {
         body: JSON.stringify(newConfigData)
       });
       
-      console.log('✅ Nueva configuración creada:', response);
       return response;
     } else {
       throw new Error('No se pudo encontrar un estado disponible para crear la configuración');
@@ -74,7 +70,6 @@ const findAvailableStatusId = async (preferredStatusId) => {
     const availableStatuses = allStatuses.filter(status => !usedStatusIds.includes(status.id));
     
     if (availableStatuses.length > 0) {
-      console.log('📋 Estados disponibles:', availableStatuses.map(s => s.displayName));
       return availableStatuses[0].id; // Usar el primer estado disponible
     }
     
@@ -88,7 +83,6 @@ const findAvailableStatusId = async (preferredStatusId) => {
 // Función para eliminar configuración (SOLUCIÓN TEMPORAL)
 export const deleteConfig = async (configId) => {
   try {
-    console.log('🗑️ Eliminando configuración ID:', configId);
     
     // SOLUCIÓN TEMPORAL: No eliminar físicamente, solo marcar como inactiva
     // Esto evita el error de endpoint DELETE no disponible
@@ -124,7 +118,6 @@ export const deleteConfig = async (configId) => {
       throw new Error('No se pudo desactivar la configuración');
     }
     
-    console.log('✅ Configuración desactivada correctamente');
     return { message: 'Configuración desactivada correctamente' };
     
   } catch (error) {
@@ -201,7 +194,6 @@ const AppointmentStatusConfigForm = ({ config, onSave, onCancel }) => {
         isActive: formData.isActive
       };
 
-      console.log('Enviando datos:', submitData);
 
       // ✅ Llamar a la función onSave
       await onSave(config?.id, submitData);

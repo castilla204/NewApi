@@ -9,12 +9,9 @@ namespace newApi.Controllers
     public class WebMixerController : ControllerBase
     {
         private readonly IWebMixerService _webMixerService;
-        private readonly ILogger<WebMixerController> _logger;
-
-        public WebMixerController(IWebMixerService webMixerService, ILogger<WebMixerController> logger)
+        public WebMixerController(IWebMixerService webMixerService)
         {
             _webMixerService = webMixerService ?? throw new ArgumentNullException(nameof(webMixerService));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         [HttpPost("Search")]
@@ -22,8 +19,6 @@ namespace newApi.Controllers
         {
             try
             {
-                _logger.LogInformation("Received search request with keywords: {Keywords}", request.Keywords);
-
                 // Set IsProgrammed to false for direct API calls
                 request.IsProgrammed = false;
 
@@ -38,7 +33,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing search request");
                 return StatusCode(500, new { message = ex.Message });
             }
         }

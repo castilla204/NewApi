@@ -11,14 +11,12 @@ namespace newApi.Services
     public class SubscriptionService : ISubscriptionService
     {
         private readonly AppDbContext _context; 
-        private readonly ILogger _logger; 
         private readonly StripeRefundService _refundService;
         private readonly ILoggingService _loggingService;
 
-        public SubscriptionService(AppDbContext context, ILogger<SubscriptionService> logger, StripeRefundService refundService, ILoggingService loggingService)
+        public SubscriptionService(AppDbContext context, StripeRefundService refundService, ILoggingService loggingService)
         {
             _context = context;
-            _logger = logger;
             _refundService = refundService;
             _loggingService = loggingService;
         }
@@ -33,7 +31,6 @@ namespace newApi.Services
             
             if (systemStatus == null)
             {
-                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
                 // Default to "pending" (ID = 1)
                 return 1;
             }
@@ -59,7 +56,6 @@ namespace newApi.Services
 
                     if (freePlan == null)
                     {
-                        _logger.LogWarning("No free plan found in database");
                         return new SubscriptionLimits { MaxSearches = 1, MinSearchInterval = 24 };
                     }
 
@@ -78,7 +74,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting subscription limits for user {UserId}", userId);
                 throw;
             }
             */
@@ -100,9 +95,6 @@ namespace newApi.Services
                     .Where(sh => sh.Status.StatusValue == SearchHireStatus.Pending.ToStringValue()
                               && sh.CompletionDeadline <= DateTime.UtcNow)
                     .ToListAsync();
-
-                _logger.LogInformation("Found {Count} expired SearchHires to process", expiredHires.Count);
-
                 foreach (var searchHire in expiredHires)
                 {
                     // ✅ CORRECCIÓN: Usar la estrategia de ejecución para manejar transacciones con reintentos
@@ -114,7 +106,6 @@ namespace newApi.Services
                         {
                             if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue())
                             {
-                                _logger.LogWarning("SearchHireId={SearchHireId} is no longer in pending, skipping", searchHire.Id);
                                 await transaction.CommitAsync();
                                 return;
                             }
@@ -130,15 +121,23 @@ namespace newApi.Services
                             {
                                 searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
                                 searchHire.UpdatedAt = DateTime.UtcNow;
-                                _logger.LogInformation("Processed money distribution and cancelled searchHireId={SearchHireId} due to expert timeout", searchHire.Id);
+
+                                // ✅ Notificar al cliente sobre el servicio expirado y refund
+                                await _loggingService.LogWarningAsync(
+                                    message: "Servicio cancelado - experto no respondió",
+                                    details: $"El experto no respondió a tu contratación en 2 días. El servicio fue cancelado y se procesará tu reembolso de {searchHire.Amount:F2}€.",
+                                    userId: searchHire.ClientId,
+                                    source: "SubscriptionService.ProcessExpiredServicesAsync",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHire.Id,
+                                    notifyUser: true
+                                );
                             }
                             else
                             {
                                 // Si falla el reembolso, marcar como transfer_failed para revisión manual
                                 searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.TransferFailed.ToStringValue());
                                 searchHire.UpdatedAt = DateTime.UtcNow;
-                                _logger.LogError("Failed to refund client for expired searchHireId={SearchHireId}, marked as transfer_failed", searchHire.Id);
-                                
                                 // Log critical error for money transaction failure
                                 await _loggingService.LogCriticalAsync(
                                     message: "CRITICAL: Failed to refund client for expired service",
@@ -163,8 +162,6 @@ namespace newApi.Services
                         catch (Exception ex)
                         {
                             await transaction.RollbackAsync();
-                            _logger.LogError(ex, "Error processing searchHireId={SearchHireId}", searchHire.Id);
-                            
                             // Log critical error for money transaction failure
                             await _loggingService.LogCriticalAsync(
                                 message: "CRITICAL: Error processing expired service",
@@ -188,7 +185,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing expired services");
                 throw;
             }
         }
@@ -255,8 +251,6 @@ namespace newApi.Services
                                 }
                                 catch (Exception ex)
                                 {
-                                    _logger.LogError(ex, "Failed to process transfer for SearchHireId={SearchHireId}", item.Id);
-                                    
                                     // Log critical error for money transaction failure
                                     await _loggingService.LogCriticalAsync(
                                         message: "CRITICAL: Failed to process transfer to expert",
@@ -314,8 +308,6 @@ namespace newApi.Services
                         catch (Exception ex)
                         {
                             await transaction.RollbackAsync();
-                            _logger.LogError(ex, "Error processing batch of SearchHires starting at index {Index}", i);
-                            
                             // Log critical error for money transaction failure
                             await _loggingService.LogCriticalAsync(
                                 message: "CRITICAL: Error processing batch of SearchHires",
@@ -335,7 +327,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing awaiting client decision services");
                 throw;
             }
         }

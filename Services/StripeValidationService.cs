@@ -10,12 +10,9 @@ namespace newApi.Services
     public class StripeValidationService : IStripeValidationService
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<StripeValidationService> _logger;
-
-        public StripeValidationService(AppDbContext context, ILogger<StripeValidationService> logger)
+        public StripeValidationService(AppDbContext context)
         {
             _context = context;
-            _logger = logger;
         }
 
         /// <summary>
@@ -40,8 +37,6 @@ namespace newApi.Services
             // Bloquear cuentas rechazadas y desautorizadas
             if (stripeStatus == StripeStatus.Rejected)
             {
-                _logger.LogWarning("Blocking rejected account: expertId={ExpertId}, operation={Operation}", 
-                    expertProfile.UserId, operation);
                 return (false, $"No se puede realizar {operation}. La cuenta de pagos del experto ha sido rechazada.", stripeStatus.ToString(), false, true);
             }
 
@@ -56,10 +51,6 @@ namespace newApi.Services
 
             var requiresStripeSetup = stripeStatus == StripeStatus.NotRequested;
             var canRetry = stripeStatus == StripeStatus.NotRequested || stripeStatus == StripeStatus.Rejected;
-
-            _logger.LogWarning("Expert payment validation failed: expertId={ExpertId}, stripeStatus={StripeStatus}, operation={Operation}", 
-                expertProfile.UserId, stripeStatus, operation);
-
             return (false, message, stripeStatus.ToString(), requiresStripeSetup, canRetry);
         }
 
@@ -83,10 +74,6 @@ namespace newApi.Services
                     StripeStatus.Deauthorized => "Tu cuenta de pagos ha sido desautorizada. Contacta al soporte para más información.",
                     _ => "No puedes crear servicios en este momento."
                 };
-
-                _logger.LogWarning("Expert service creation blocked: expertId={ExpertId}, stripeStatus={StripeStatus}", 
-                    expertProfile.UserId, expertProfile.StripeStatus);
-
                 return (false, message);
             }
 
@@ -113,10 +100,6 @@ namespace newApi.Services
                     StripeStatus.Deauthorized => "Tu cuenta de pagos ha sido desautorizada. Contacta al soporte para más información.",
                     _ => "No puedes proponer citas en este momento."
                 };
-
-                _logger.LogWarning("Expert appointment proposal blocked: expertId={ExpertId}, stripeStatus={StripeStatus}", 
-                    expertProfile.UserId, expertProfile.StripeStatus);
-
                 return (false, message);
             }
 

@@ -12,18 +12,15 @@ namespace newApi.Services
     public class StripeRefundService
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<StripeRefundService> _logger;
         private readonly SystemStatusService _systemStatusService;
         private readonly ILoggingService _loggingService;
 
-        public StripeRefundService(AppDbContext context, ILogger<StripeRefundService> logger, SystemStatusService systemStatusService, ILoggingService loggingService)
+        public StripeRefundService(AppDbContext context, SystemStatusService systemStatusService, ILoggingService loggingService)
         {
             _context = context;
-            _logger = logger;
             _systemStatusService = systemStatusService;
             _loggingService = loggingService;
         }
-
 
 
         /// <summary>
@@ -37,8 +34,6 @@ namespace newApi.Services
         /// <returns>True si refund y (si aplica) transfer se procesan correctamente</returns>
         public async Task<bool> ProcessMoneyDistributionAsync(int searchHireId, string statusValue, string reason, int? initiatedByUserId = null)
         {
-            _logger.LogInformation("🔄 PROCESS MONEY DISTRIBUTION - SearchHireId={SearchHireId}, Status={Status}, Reason={Reason}", searchHireId, statusValue, reason);
-
             try
             {
                 // Bloqueo a nivel de fila para consistencia
@@ -54,7 +49,6 @@ namespace newApi.Services
 
                 if (searchHire == null)
                 {
-                    _logger.LogError("❌ SEARCH HIRE NOT FOUND - SearchHireId: {SearchHireId}", searchHireId);
                     return false;
                 }
 
@@ -65,13 +59,11 @@ namespace newApi.Services
                         .FirstOrDefaultAsync(s => s.StatusValue == statusValue);
                     if (statusRow != null && statusRow.StatusType == "AppointmentStatus" && statusRow.IsFinalizationStatus == false)
                     {
-                        _logger.LogInformation("⏭️ SKIP DISTRIBUTION - Non-finalization appointment status: {StatusValue}", statusValue);
                         return false;
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Warning checking IsFinalizationStatus for status={Status}", statusValue);
                 }
 
                 // Obtener configuración de distribución para el estado concreto (subestado/granularidad lo resuelve el servicio)
@@ -101,15 +93,12 @@ namespace newApi.Services
                                         .FirstOrDefaultAsync(s => s.StatusValue == finalStatusValue && s.StatusType == "SearchHireStatus");
                                     if (targetRow != null && targetRow.IsFinalizationStatus == false)
                                     {
-                                        _logger.LogInformation("⏭️ SKIP DISTRIBUTION - Mapped target is non-finalization: {FinalStatusValue}", finalStatusValue);
                                         return false;
                                     }
                                 }
                                 catch (Exception ex2)
                                 {
-                                    _logger.LogWarning(ex2, "Warning checking IsFinalizationStatus for mapped status={Status}", finalStatusValue);
                                 }
-                                _logger.LogInformation("🔁 FALLBACK TO FINAL STATUS - From {From} → {To}", statusValue, finalStatusValue);
                                 config = await _systemStatusService.GetMoneyDistributionConfigAsync(
                                     finalStatusValue,
                                     searchHire.SearchService?.CategoryId,
@@ -120,12 +109,10 @@ namespace newApi.Services
                     }
                     catch (Exception mapEx)
                     {
-                        _logger.LogWarning(mapEx, "Warning while mapping status fallback for {Status}", statusValue);
                     }
 
                     if (config == null)
                     {
-                        _logger.LogError("❌ NO MONEY CONFIG - Status={Status}, SearchHireId={SearchHireId}", statusValue, searchHireId);
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Missing money distribution config",
                             details: $"Config not found for status {statusValue}",
@@ -142,8 +129,6 @@ namespace newApi.Services
                 // MODIFICACIÓN: Validar que los porcentajes sumen 100% para evitar distribuciones incorrectas (best practice para configs financieras)
                 if (Math.Abs(config.ClientPercentage + config.ExpertPercentage + config.PlatformPercentage - 100m) > 0.01m)
                 {
-                    _logger.LogError("❌ INVALID CONFIG - Percentages do not sum to 100: Client={ClientPct}%, Expert={ExpertPct}%, Platform={PlatformPct}%",
-                        config.ClientPercentage, config.ExpertPercentage, config.PlatformPercentage);
                     await _loggingService.LogCriticalAsync(
                         message: "CRITICAL: Invalid money distribution config",
                         details: $"Percentages do not sum to 100 for status {statusValue}",
@@ -164,13 +149,9 @@ namespace newApi.Services
                 var stripeFeeEstimate = searchHire.Amount * 0.029m + 0.30m; // 2.9% + 0.30€ estándar para EUR
                 if (platformAmount < stripeFeeEstimate)
                 {
-                    _logger.LogWarning("⚠️ LOW PLATFORM AMOUNT - PlatformAmount={Platform}€ may not cover estimated Stripe fees ({Fee}€)",
-                        platformAmount, stripeFeeEstimate);
                     // Opcional: Fallar si es crítico, pero por ahora warning
                 }
 
-                _logger.LogInformation("💰 DISTRIBUTION - SH={SearchHireId} Client={Client}€({ClientPct}%) Expert={Expert}€({ExpertPct}%) Platform={Platform}€({PlatformPct}%)",
-                    searchHireId, clientRefundAmount, config.ClientPercentage, expertAmount, config.ExpertPercentage, platformAmount, config.PlatformPercentage);
 
                 // Localizar el pago original
                 var servicePayment = await _context.FinancialTransactions
@@ -183,8 +164,6 @@ namespace newApi.Services
 
                 if (servicePayment == null)
                 {
-                    _logger.LogError("❌ ORIGINAL PAYMENT NOT FOUND - SearchHireId={SearchHireId}", searchHireId);
-                    
                     // 🚨 LOG CRÍTICO: Pago original no encontrado (una sola vez, con toda la información)
                     await _loggingService.LogCriticalAsync(
                         message: "CRITICAL: Original payment not found - money distribution failed",
@@ -219,8 +198,6 @@ namespace newApi.Services
                     var totalOutflow = clientRefundAmount + expertAmount;
                     if (availableEur < totalOutflow)
                     {
-                        _logger.LogError("❌ INSUFFICIENT BALANCE - Available={Available}€, Required={Required}€ for SH={SearchHireId}",
-                            availableEur, totalOutflow, searchHireId);
                         // 🚨 LOG CRÍTICO: Balance insuficiente (una sola vez, con información completa)
                         // IMPORTANTE: Este log se crea ANTES de entrar en la transacción, así que debe estar disponible inmediatamente
                         await _loggingService.LogCriticalAsync(
@@ -251,12 +228,9 @@ namespace newApi.Services
                         // Esto asegura que el log sea visible inmediatamente post-commit sin interferencia
                         return false;
                     }
-                    _logger.LogInformation("✅ BALANCE VERIFIED - Available={Available}€ >= Required={Required}€", availableEur, totalOutflow);
                 }
                 catch (StripeException balanceEx)
                 {
-                    _logger.LogError(balanceEx, "❌ Error checking platform balance before distribution");
-                    
                     // 🚨 LOG CRÍTICO: Error al verificar balance (una sola vez, con toda la información)
                     await _loggingService.LogCriticalAsync(
                         message: "CRITICAL: Error checking Stripe balance - money distribution failed",
@@ -292,9 +266,6 @@ namespace newApi.Services
                         
                         if (paymentIntent.Status != "succeeded")
                         {
-                            _logger.LogError("❌ PAYMENT INTENT NOT CAPTURED - PaymentIntentId={PaymentIntentId}, Status={Status}, Cannot transfer to expert",
-                                servicePayment.StripePaymentIntentId, paymentIntent.Status);
-                            
                             await _loggingService.LogCriticalAsync(
                                 message: "CRITICAL: Money distribution failed - PaymentIntent not captured",
                                 details: $"SearchHire {searchHireId} finalization failed because PaymentIntent {servicePayment.StripePaymentIntentId} is not in 'succeeded' status. " +
@@ -319,15 +290,9 @@ namespace newApi.Services
                             
                             return false;
                         }
-                        
-                        _logger.LogInformation("✅ PAYMENT INTENT VERIFIED - PaymentIntentId={PaymentIntentId}, Status={Status}, Ready for transfer",
-                            servicePayment.StripePaymentIntentId, paymentIntent.Status);
                     }
                     catch (StripeException stripeEx)
                     {
-                        _logger.LogError(stripeEx, "❌ Error verifying PaymentIntent before transfer - PaymentIntentId={PaymentIntentId}",
-                            servicePayment.StripePaymentIntentId);
-                        
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Error verifying PaymentIntent for money distribution",
                             details: $"SearchHire {searchHireId} finalization failed due to error verifying PaymentIntent. " +
@@ -347,9 +312,6 @@ namespace newApi.Services
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "❌ Error verifying PaymentIntent before transfer - PaymentIntentId={PaymentIntentId}",
-                            servicePayment.StripePaymentIntentId);
-                        
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Error verifying PaymentIntent for money distribution",
                             details: $"SearchHire {searchHireId} finalization failed due to error verifying PaymentIntent. " +
@@ -399,8 +361,6 @@ namespace newApi.Services
                             var expertStripeAccountId = searchHire.Expert?.ExpertProfile?.StripeAccountId;
                             if (string.IsNullOrEmpty(expertStripeAccountId))
                             {
-                                _logger.LogError("❌ EXPERT STRIPE ACCOUNT MISSING - SearchHireId={SearchHireId}, ExpertId={ExpertId}", searchHireId, searchHire.ExpertId);
-                                
                                 // 🚨 LOG CRÍTICO: Cuenta de Stripe del experto faltante
                                 await _loggingService.LogCriticalAsync(
                                     message: "CRITICAL: Expert Stripe account missing - money distribution failed",
@@ -439,8 +399,6 @@ namespace newApi.Services
                             var expertAccount = await accountService.GetAsync(expertStripeAccountId);
                             if (expertAccount.ChargesEnabled == false || expertAccount.PayoutsEnabled == false)
                             {
-                                _logger.LogError("❌ EXPERT ACCOUNT NOT ENABLED - AccountId={AccountId}, ChargesEnabled={Charges}, PayoutsEnabled={Payouts}",
-                                    expertStripeAccountId, expertAccount.ChargesEnabled, expertAccount.PayoutsEnabled);
                                 await _loggingService.LogCriticalAsync(
                                     message: "CRITICAL: Expert account not enabled for transfers",
                                     details: $"Expert {searchHire.ExpertId} account {expertStripeAccountId} is not fully verified.",
@@ -497,7 +455,6 @@ namespace newApi.Services
                                 {
                                     if (attempt == maxRetries)
                                         throw;
-                                    _logger.LogWarning(ex, "Retry {Attempt}/{Max} for transfer - Transient error", attempt, maxRetries);
                                     await Task.Delay(1000 * attempt); // Exponential backoff simple
                                 }
                             }
@@ -549,7 +506,6 @@ namespace newApi.Services
                                     {
                                         if (attempt == maxRetries)
                                             throw;
-                                        _logger.LogWarning(ex, "Retry {Attempt}/{Max} for refund - Transient error", attempt, maxRetries);
                                         await Task.Delay(1000 * attempt);
                                     }
                                 }
@@ -567,12 +523,9 @@ namespace newApi.Services
                                         var reversalOptions = new TransferReversalCreateOptions { Amount = (long)(expertAmount * 100) }; // Revertir total
                                         var reversalRequestOptions = new RequestOptions { IdempotencyKey = idempotencyKey + "-reversal" };
                                         await reversalSvc.CreateAsync(createdTransferId, reversalOptions, reversalRequestOptions);
-                                        _logger.LogInformation("✅ TRANSFER REVERSED - TransferId={TransferId} after refund failure", createdTransferId);
                                     }
                                     catch (Exception revEx)
                                     {
-                                        _logger.LogCritical(revEx, "❌ CRITICAL: Failed to reverse transfer after refund failure - TransferId={TransferId}", createdTransferId);
-                                        
                                         // 🚨 LOG CRÍTICO: Error al revertir transferencia
                                         await _loggingService.LogCriticalAsync(
                                             message: "CRITICAL: Failed to reverse transfer after refund failure",
@@ -607,8 +560,6 @@ namespace newApi.Services
                                 {
                                     await transaction.RollbackAsync();
                                 }
-                                _logger.LogError(refundEx, "Stripe refund failed, rolled back distribution - SH={SearchHireId}", searchHireId);
-                                
                                 // 🚨 LOG CRÍTICO: Reembolso falló
                                 await _loggingService.LogCriticalAsync(
                                     message: "CRITICAL: Refund failed - money distribution rolled back",
@@ -680,7 +631,35 @@ namespace newApi.Services
                         await transaction.CommitAsync();
                         }
 
-                        _logger.LogInformation("✅ MONEY DISTRIBUTION DONE - SH={SearchHireId}", searchHireId);
+                        // ✅ Notificar a usuarios sobre movimientos de dinero exitosos
+                        if (needsRefund && !string.IsNullOrEmpty(createdRefundId))
+                        {
+                            // Refund exitoso - notificar al cliente
+                            await _loggingService.LogInfoAsync(
+                                message: "Reembolso procesado",
+                                details: $"Se procesó tu reembolso de {clientRefundAmount:F2}€ por el servicio #{searchHireId}. El dinero llegará a tu cuenta en 5-10 días hábiles.",
+                                userId: searchHire.ClientId,
+                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                notifyUser: true
+                            );
+                        }
+
+                        if (needsTransfer && !string.IsNullOrEmpty(createdTransferId) && searchHire.ExpertId.HasValue)
+                        {
+                            // Transfer exitoso - notificar al experto
+                            await _loggingService.LogInfoAsync(
+                                message: "Pago recibido",
+                                details: $"Has recibido {expertAmount:F2}€ por el servicio #{searchHireId}. El dinero está disponible en tu cuenta de Stripe.",
+                                userId: searchHire.ExpertId.Value,
+                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                notifyUser: true
+                            );
+                        }
+
                         return true;
                     }
                     catch (StripeException ex)
@@ -690,8 +669,6 @@ namespace newApi.Services
                     {
                         await transaction.RollbackAsync();
                         }
-                        _logger.LogError(ex, "Stripe error processing money distribution for SH={SearchHireId}: {Error}", searchHireId, ex.Message);
-                        
                         // 🚨 LOG CRÍTICO: Error de Stripe durante distribución (una sola vez, con información completa)
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Stripe exception during money distribution transaction",
@@ -731,8 +708,6 @@ namespace newApi.Services
                     {
                         await transaction.RollbackAsync();
                         }
-                        _logger.LogError(ex, "Error processing money distribution for SH={SearchHireId}: {Error}", searchHireId, ex.Message);
-                        
                         // 🚨 LOG CRÍTICO: Error general durante distribución (una sola vez, con información completa)
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Unexpected exception during money distribution transaction",
@@ -769,8 +744,6 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in ProcessMoneyDistributionAsync for SH={SearchHireId}: {Error}", searchHireId, ex.Message);
-                
                 // 🚨 LOG CRÍTICO: Error general fuera de la transacción (una sola vez, con información completa)
                 // Este error ocurre ANTES de entrar en la transacción, por lo que no hay datos de distribución calculados
                 await _loggingService.LogCriticalAsync(

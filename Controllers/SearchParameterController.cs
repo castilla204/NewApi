@@ -13,12 +13,9 @@ namespace newApi.Controllers
     public class SearchParameterController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<SearchParameterController> _logger;
-
-        public SearchParameterController(AppDbContext context, ILogger<SearchParameterController> logger)
+        public SearchParameterController(AppDbContext context)
         {
             _context = context;
-            _logger = logger;
         }
 
         [HttpGet("{searchId}")]
@@ -63,7 +60,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving search parameter");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -141,7 +137,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating search parameter");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -192,7 +187,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving search parameters");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -260,7 +254,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating search parameter");
                 return StatusCode(500, new { message = ex.Message });
             }
         }

@@ -22,12 +22,12 @@ namespace newApi.Controllers
     public class DisputeController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<DisputeController> _logger;
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
         private readonly IAuthorizationServices _authService;
         private readonly SystemStatusService _systemStatusService;
         private readonly StripeRefundService _refundService;
+        private readonly ILoggingService _loggingService;
 
         /// <summary>
         /// Constructor del controlador de disputas
@@ -36,15 +36,15 @@ namespace newApi.Controllers
         /// <param name="logger">Logger para registro de eventos</param>
         /// <param name="configuration">Configuración de la aplicación</param>
         /// <param name="storageClient">Cliente de Google Cloud Storage</param>
-        public DisputeController(AppDbContext context, ILogger<DisputeController> logger, IConfiguration configuration, StorageClient storageClient, IAuthorizationServices authService, SystemStatusService systemStatusService, StripeRefundService refundService)
+        public DisputeController(AppDbContext context, IConfiguration configuration, StorageClient storageClient, IAuthorizationServices authService, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService)
         {
             _context = context;
-            _logger = logger;
             _configuration = configuration;
             _storageClient = storageClient;
             _authService = authService;
             _systemStatusService = systemStatusService;
             _refundService = refundService;
+            _loggingService = loggingService;
         }
 
         /// <summary>
@@ -57,7 +57,6 @@ namespace newApi.Controllers
             
             if (systemStatus == null)
             {
-                _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
                 // Default to "pending" (ID = 1)
                 return 1;
             }
@@ -76,13 +75,11 @@ namespace newApi.Controllers
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
                 if (string.IsNullOrWhiteSpace(request.Reason))
                 {
-                    _logger.LogError("Dispute reason is required for searchHireId={SearchHireId}", request.SearchHireId);
                     return BadRequest(new { message = "Dispute reason is required" });
                 }
 
@@ -91,13 +88,11 @@ namespace newApi.Controllers
 
                 if (searchHire == null)
                 {
-                    _logger.LogError("SearchHire not found or user is not the client for searchHireId={SearchHireId}, userId={UserId}", request.SearchHireId, userId);
                     return NotFound(new { message = "Service not found or unauthorized" });
                 }
 
                 if (searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
                 {
-                    _logger.LogError("Service is not in awaiting_client_decision status: searchHireId={SearchHireId}, status={Status}", searchHire.Id, searchHire.Status.StatusValue);
                     return BadRequest(new { message = "Service is not awaiting client decision" });
                 }
 
@@ -124,21 +119,17 @@ namespace newApi.Controllers
                         _context.Disputes.Add(dispute);
                         await _context.SaveChangesAsync();
                         await transaction.CommitAsync();
-
-                        _logger.LogInformation("Dispute opened for searchHireId={SearchHireId}, disputeId={DisputeId}", searchHire.Id, dispute.Id);
                         return Ok(new { message = "Dispute opened", disputeId = dispute.Id });
                     }
                     catch (Exception ex)
                     {
                         await transaction.RollbackAsync();
-                        _logger.LogError(ex, "Database error disputing service for searchHireId={SearchHireId}", searchHire.Id);
                         return StatusCode(500, new { message = "Failed to open dispute" });
                     }
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error disputing service: {ErrorMessage}", ex.Message);
                 return StatusCode(500, new { message = "Failed to open dispute" });
             }
         }
@@ -154,7 +145,6 @@ namespace newApi.Controllers
                 // 🔐 SEGURIDAD: Verificar rol en lugar de email
                 if (!_authService.IsAdmin(User))
                 {
-                    _logger.LogError("Unauthorized access attempt to dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
@@ -325,7 +315,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving all disputes");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -341,7 +330,6 @@ namespace newApi.Controllers
                 // 🔐 SEGURIDAD: Verificar rol en lugar de email
                 if (!_authService.IsAdmin(User))
                 {
-                    _logger.LogError("Unauthorized access attempt to dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
@@ -389,7 +377,6 @@ namespace newApi.Controllers
                                         refundReason);
                                     if (!refundSuccess)
                                     {
-                                        _logger.LogError("Failed to process client refund for dispute searchHireId={SearchHireId}", dispute.SearchHire.Id);
                                         await transaction.RollbackAsync();
                                         return StatusCode(500, new { message = "Failed to process client refund" });
                                     }
@@ -406,7 +393,6 @@ namespace newApi.Controllers
                                         "Dispute resolved in favor of expert");
                                     if (!transferSuccess)
                                     {
-                                        _logger.LogError("Failed to process expert transfer for dispute searchHireId={SearchHireId}", dispute.SearchHire.Id);
                                         await transaction.RollbackAsync();
                                         return StatusCode(500, new { message = "Failed to process expert transfer" });
                                     }
@@ -422,21 +408,71 @@ namespace newApi.Controllers
                         await _context.SaveChangesAsync();
                         await transaction.CommitAsync();
 
-                        _logger.LogInformation("Dispute {DisputeId} resolved by admin with action {Action}", disputeId, request.Action);
+                        // ✅ Notificar a cliente y experto según la resolución
+                        if (request.Action.ToLower() == "refund_client")
+                        {
+                            // Disputa resuelta a favor del cliente
+                            await _loggingService.LogInfoAsync(
+                                message: "Disputa resuelta a tu favor",
+                                details: $"La disputa del servicio #{dispute.SearchHire.Id} se resolvió a tu favor. Se procesará tu reembolso de {dispute.SearchHire.Amount:F2}€.",
+                                userId: dispute.SearchHire.ClientId,
+                                source: "DisputeController.ResolveDispute",
+                                relatedEntityType: "Dispute",
+                                relatedEntityId: dispute.Id,
+                                notifyUser: true
+                            );
+
+                            if (dispute.SearchHire.ExpertId.HasValue)
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "Disputa resuelta a favor del cliente",
+                                    details: $"La disputa del servicio #{dispute.SearchHire.Id} se resolvió a favor del cliente. El reembolso se procesará.",
+                                    userId: dispute.SearchHire.ExpertId.Value,
+                                    source: "DisputeController.ResolveDispute",
+                                    relatedEntityType: "Dispute",
+                                    relatedEntityId: dispute.Id,
+                                    notifyUser: true
+                                );
+                            }
+                        }
+                        else if (request.Action.ToLower() == "pay_expert")
+                        {
+                            // Disputa resuelta a favor del experto
+                            if (dispute.SearchHire.ExpertId.HasValue)
+                            {
+                                await _loggingService.LogInfoAsync(
+                                    message: "Disputa resuelta a tu favor",
+                                    details: $"La disputa del servicio #{dispute.SearchHire.Id} se resolvió a tu favor. Has recibido {dispute.SearchHire.Amount:F2}€.",
+                                    userId: dispute.SearchHire.ExpertId.Value,
+                                    source: "DisputeController.ResolveDispute",
+                                    relatedEntityType: "Dispute",
+                                    relatedEntityId: dispute.Id,
+                                    notifyUser: true
+                                );
+                            }
+
+                            await _loggingService.LogWarningAsync(
+                                message: "Disputa resuelta a favor del experto",
+                                details: $"La disputa del servicio #{dispute.SearchHire.Id} se resolvió a favor del experto.",
+                                userId: dispute.SearchHire.ClientId,
+                                source: "DisputeController.ResolveDispute",
+                                relatedEntityType: "Dispute",
+                                relatedEntityId: dispute.Id,
+                                notifyUser: true
+                            );
+                        }
 
                         return Ok(new { message = "Dispute resolved successfully" });
                     }
                     catch (Exception ex)
                     {
                         await transaction.RollbackAsync();
-                        _logger.LogError(ex, "Error resolving dispute {DisputeId}", disputeId);
                         return StatusCode(500, new { message = "Error resolving dispute" });
                     }
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error resolving dispute {DisputeId}", disputeId);
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -452,7 +488,6 @@ namespace newApi.Controllers
                 // 🔐 SEGURIDAD: Verificar rol en lugar de email
                 if (!_authService.IsAdmin(User))
                 {
-                    _logger.LogError("Unauthorized access attempt to dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
@@ -524,7 +559,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving dispute {DisputeId}", disputeId);
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -557,7 +591,6 @@ namespace newApi.Controllers
                 // 🔐 SEGURIDAD: Verificar rol en lugar de email
                 if (!_authService.IsAdmin(User))
                 {
-                    _logger.LogError("Unauthorized access attempt to dispute endpoint by user={UserId}", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
@@ -629,7 +662,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving search from dispute {DisputeId}", disputeId);
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -669,18 +701,11 @@ namespace newApi.Controllers
         {
             try
             {
-                _logger.LogInformation("Starting dispute creation process. SearchHireId={SearchHireId}, Reason length={ReasonLength}, Files count={FilesCount}", 
-                    request?.SearchHireId, request?.Reason?.Length, request?.Files?.Count);
-
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
-                    _logger.LogError("Invalid user identification: userIdClaim={UserIdClaim}", userIdClaim);
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
-
-                _logger.LogInformation("User authenticated successfully. UserId={UserId}", userId);
-
                 if (string.IsNullOrWhiteSpace(request.Reason))
                 {
                     return BadRequest(new { message = "Reason is required" });
@@ -692,7 +717,6 @@ namespace newApi.Controllers
                 }
 
                 // Verificar que el SearchHire existe y pertenece al usuario
-                _logger.LogInformation("Looking for SearchHire with Id={SearchHireId}", request.SearchHireId);
                 var searchHire = await _context.SearchHires
                     .Include(sh => sh.Search)
                     .Include(sh => sh.Status)
@@ -700,13 +724,8 @@ namespace newApi.Controllers
 
                 if (searchHire == null)
                 {
-                    _logger.LogWarning("SearchHire not found for Id={SearchHireId}", request.SearchHireId);
                     return NotFound(new { message = "Service not found" });
                 }
-
-                _logger.LogInformation("SearchHire found. ClientId={ClientId}, ExpertId={ExpertId}, Status={Status}", 
-                    searchHire.ClientId, searchHire.ExpertId, searchHire.Status?.StatusValue);
-
                 // Verificar que el usuario es el cliente o el experto del servicio
                 if (searchHire.ClientId != userId && searchHire.ExpertId != userId)
                 {
@@ -727,9 +746,6 @@ namespace newApi.Controllers
                 {
                     return BadRequest(new { message = "Cannot dispute this service in its current status" });
                 }
-
-                _logger.LogInformation("Starting database transaction for dispute creation using execution strategy");
-                
                 // Variable para almacenar el ID de la disputa creada
                 int disputeId = 0;
                 
@@ -752,20 +768,13 @@ namespace newApi.Controllers
                             // Establecer ventana de 48h para que el experto responda
                             ExpertResponseDeadline = DateTime.UtcNow.AddHours(48)
                         };
-
-                        _logger.LogInformation("Adding dispute to context. SearchHireId={SearchHireId}, ReporterId={ReporterId}", 
-                            dispute.SearchHireId, dispute.ReporterId);
                         _context.Disputes.Add(dispute);
                         await _context.SaveChangesAsync();
-                        _logger.LogInformation("Dispute saved successfully. DisputeId={DisputeId}", dispute.Id);
-
                         // Actualizar el estado del SearchHire a Disputed
                         searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
                         await _context.SaveChangesAsync();
                         
                         await transaction.CommitAsync();
-                        _logger.LogInformation("Transaction committed successfully");
-                        
                         // Guardar el ID para uso posterior
                         disputeId = dispute.Id;
                     }
@@ -776,10 +785,40 @@ namespace newApi.Controllers
                     }
                 });
 
+                // ✅ Notificar a la otra parte sobre la disputa creada
+                if (searchHire.ClientId == userId)
+                {
+                    // Cliente creó la disputa - notificar al experto
+                    if (searchHire.ExpertId.HasValue)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Disputa abierta por el cliente",
+                            details: $"El cliente ha abierto una disputa sobre el servicio #{searchHire.Id}. Tienes 48 horas para responder. Razón: {request.Reason}",
+                            userId: searchHire.ExpertId.Value,
+                            source: "DisputeController.CreateDisputeWithFiles",
+                            relatedEntityType: "Dispute",
+                            relatedEntityId: disputeId,
+                            notifyUser: true
+                        );
+                    }
+                }
+                else if (searchHire.ExpertId == userId)
+                {
+                    // Experto creó la disputa - notificar al cliente
+                    await _loggingService.LogWarningAsync(
+                        message: "Disputa abierta por el experto",
+                        details: $"El experto ha abierto una disputa sobre el servicio #{searchHire.Id}. Un administrador la revisará. Razón: {request.Reason}",
+                        userId: searchHire.ClientId,
+                        source: "DisputeController.CreateDisputeWithFiles",
+                        relatedEntityType: "Dispute",
+                        relatedEntityId: disputeId,
+                        notifyUser: true
+                    );
+                }
+
                 // Handle file uploads if any (outside transaction for better performance)
                 if (request.Files != null && request.Files.Count > 0)
                 {
-                    _logger.LogInformation("Processing file uploads for dispute");
                     var bucketName = _configuration["GoogleCloud:BucketName"];
                     var disputeFiles = new List<DisputeFile>();
                     
@@ -832,7 +871,6 @@ namespace newApi.Controllers
                             }
                             catch (Exception ex)
                             {
-                                _logger.LogError(ex, "Error uploading dispute file: {FileName}", file.FileName);
                                 return StatusCode(500, new { message = "Failed to upload file" });
                             }
                         }
@@ -842,16 +880,12 @@ namespace newApi.Controllers
                     {
                         _context.DisputeFiles.AddRange(disputeFiles);
                         await _context.SaveChangesAsync();
-                        _logger.LogInformation("Files uploaded successfully for dispute");
                     }
                 }
-
-                _logger.LogInformation("Dispute opened for searchHireId={SearchHireId}, disputeId={DisputeId}", searchHire.Id, disputeId);
                 return Ok(new { message = "Dispute opened successfully", disputeId = disputeId });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating dispute for searchHireId={SearchHireId}", request.SearchHireId);
                 return StatusCode(500, new { message = "An error occurred while creating the dispute" });
             }
         }
@@ -1043,7 +1077,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving user disputes");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -1095,7 +1128,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in debug endpoint for dispute {DisputeId}", disputeId);
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -1124,13 +1156,8 @@ namespace newApi.Controllers
                 }
 
                 // Verificar que el usuario es el experto de esta disputa
-                _logger.LogInformation("Expert validation - UserId: {UserId}, ExpertId: {ExpertId}, HasExpertId: {HasExpertId}", 
-                    userId, dispute.SearchHire.ExpertId, dispute.SearchHire.ExpertId.HasValue);
-                
                 if (!dispute.SearchHire.ExpertId.HasValue || dispute.SearchHire.ExpertId.Value != userId)
                 {
-                    _logger.LogWarning("Expert validation failed - UserId: {UserId}, ExpertId: {ExpertId}", 
-                        userId, dispute.SearchHire.ExpertId);
                     return Forbid();
                 }
 
@@ -1151,9 +1178,6 @@ namespace newApi.Controllers
                 {
                     return BadRequest(new { message = "Expert has already responded to this dispute" });
                 }
-
-                _logger.LogInformation("Starting database transaction for expert response using execution strategy");
-                
                 // Usar la estrategia de ejecución de Entity Framework para manejar transacciones
                 var strategy = _context.Database.CreateExecutionStrategy();
                 await strategy.ExecuteAsync(async () =>
@@ -1168,8 +1192,6 @@ namespace newApi.Controllers
 
                         await _context.SaveChangesAsync();
                         await transaction.CommitAsync();
-                        
-                        _logger.LogInformation("Expert response saved successfully. DisputeId={DisputeId}", disputeId);
                     }
                     catch
                     {
@@ -1181,7 +1203,6 @@ namespace newApi.Controllers
                 // Handle file uploads if any (outside transaction for better performance)
                 if (request.Files != null && request.Files.Count > 0)
                 {
-                    _logger.LogInformation("Processing file uploads for expert response");
                     var bucketName = _configuration["GoogleCloud:BucketName"];
                     if (string.IsNullOrEmpty(bucketName))
                     {
@@ -1237,7 +1258,6 @@ namespace newApi.Controllers
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "Error uploading expert response file: {FileName}", file.FileName);
                             return StatusCode(500, new { message = "Failed to upload file" });
                         }
                     }
@@ -1246,16 +1266,12 @@ namespace newApi.Controllers
                     {
                         _context.DisputeFiles.AddRange(disputeFiles);
                         await _context.SaveChangesAsync();
-                        _logger.LogInformation("Files uploaded successfully for expert response");
                     }
                 }
-
-                _logger.LogInformation("Expert {ExpertId} responded to dispute {DisputeId}", userId, disputeId);
                 return Ok(new { message = "Expert response submitted successfully" });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing expert response for dispute {DisputeId}", disputeId);
                 return StatusCode(500, new { message = ex.Message });
             }
         }

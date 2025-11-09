@@ -14,13 +14,11 @@ namespace newApi.Controllers
     public class AISearchController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<AISearchController> _logger;
         private readonly IGPTService _gptService;
 
-        public AISearchController(AppDbContext context, ILogger<AISearchController> logger, IGPTService gptService)
+        public AISearchController(AppDbContext context, IGPTService gptService)
         {
             _context = context;
-            _logger = logger;
             _gptService = gptService;
         }
 
@@ -81,7 +79,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating AI search");
                 return StatusCode(500, new { message = ex.Message });
             }
         }

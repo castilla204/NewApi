@@ -15,13 +15,11 @@ namespace newApi.Controllers
     public class NotificationController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<NotificationController> _logger;
         private readonly IAuthorizationServices _authService;
 
-        public NotificationController(AppDbContext context, ILogger<NotificationController> logger, IAuthorizationServices authService)
+        public NotificationController(AppDbContext context, IAuthorizationServices authService)
         {
         _context = context;
-        _logger = logger;
         _authService = authService;
         }
 
@@ -45,7 +43,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving notifications");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -78,7 +75,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating notification");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -113,7 +109,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error marking notification as read");
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -143,7 +138,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting notification");
                 return StatusCode(500, new { message = ex.Message });
             }
         }

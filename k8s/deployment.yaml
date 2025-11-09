@@ -32,7 +32,10 @@ spec:
           value: "admin"
           # ... (El resto de env y mounts)
         - name: RABBITMQ_PASSWORD
-          value: "__REDACTED_CREDENTIAL__"
+          valueFrom:
+            secretKeyRef:
+              name: newapi-secrets
+              key: rabbitmq-password
         - name: GOOGLE_APPLICATION_CREDENTIALS
           value: "/etc/credentials/cloudcredential.json"
         - name: ASPNETCORE_ENVIRONMENT

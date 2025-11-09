@@ -16,12 +16,9 @@ namespace newApi.Controllers
     public class AppointmentConfigController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ILogger<AppointmentConfigController> _logger;
-
-        public AppointmentConfigController(AppDbContext context, ILogger<AppointmentConfigController> logger)
+        public AppointmentConfigController(AppDbContext context)
         {
             _context = context;
-            _logger = logger;
         }
 
         /// <summary>
@@ -54,7 +51,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting appointment status configs for compatibility");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -85,7 +81,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting service type category configs for compatibility");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -136,7 +131,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting appointment status configurations for compatibility");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -192,7 +186,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting debug status data");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -268,7 +261,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating category configurations");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -323,7 +315,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in debug database query");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -336,10 +327,6 @@ namespace newApi.Controllers
         {
             try
             {
-                _logger.LogInformation("=== DEBUG POST DATA ===");
-                _logger.LogInformation("Request Body: {RequestBody}", System.Text.Json.JsonSerializer.Serialize(request));
-                _logger.LogInformation("Content-Type: {ContentType}", Request.ContentType);
-                _logger.LogInformation("Headers: {Headers}", string.Join(", ", Request.Headers.Select(h => $"{h.Key}: {h.Value}")));
                 
                 return Ok(new
                 {
@@ -350,7 +337,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error en debug POST data");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -363,8 +349,6 @@ namespace newApi.Controllers
         {
             try
             {
-                _logger.LogInformation("=== APPOINTMENT STATUS CONFIG ACTION ===");
-                _logger.LogInformation("Action: {Action}, Request: {Request}", request.Action, System.Text.Json.JsonSerializer.Serialize(request));
 
                 // Manejar acción DELETE
                 if (request.Action == "delete" && request.ConfigId.HasValue)
@@ -383,7 +367,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in appointment status configuration action");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -392,26 +375,18 @@ namespace newApi.Controllers
         {
             try
             {
-                _logger.LogInformation("=== HANDLING DELETE ACTION ===");
-                _logger.LogInformation("Config ID: {ConfigId}", configId);
-
                 var config = await _context.StatusConfigurations.FindAsync(configId);
                 if (config == null)
                 {
-                    _logger.LogError("Configuration not found: ConfigId={ConfigId}", configId);
                     return NotFound(new { message = $"Configuración con ID {configId} no encontrada" });
                 }
 
                 _context.StatusConfigurations.Remove(config);
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Configuration deleted successfully: ConfigId={ConfigId}", configId);
-
                 return Ok(new { message = "Configuración eliminada correctamente", deletedId = configId });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in delete action");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -420,9 +395,6 @@ namespace newApi.Controllers
         {
             try
             {
-                _logger.LogInformation("=== HANDLING UPDATE ACTION ===");
-                _logger.LogInformation("Config ID: {ConfigId}", request.ConfigId);
-
                 // Buscar la configuración existente
                 var existingConfig = await _context.StatusConfigurations
                     .Include(sc => sc.Status)
@@ -430,14 +402,12 @@ namespace newApi.Controllers
 
                 if (existingConfig == null)
                 {
-                    _logger.LogError("Configuration not found: ConfigId={ConfigId}", request.ConfigId);
                     return NotFound(new { message = $"Configuración con ID {request.ConfigId} no encontrada" });
                 }
 
                 // Validar que el StatusId esté presente
                 if (request.StatusId <= 0)
                 {
-                    _logger.LogError("StatusId is invalid: {StatusId}", request.StatusId);
                     return BadRequest(new { message = "StatusId es requerido y debe ser válido" });
                 }
 
@@ -447,7 +417,6 @@ namespace newApi.Controllers
 
                 if (status == null)
                 {
-                    _logger.LogError("Status not found: StatusId={StatusId}", request.StatusId);
                     return BadRequest(new { message = $"Estado con ID {request.StatusId} no encontrado o no es un estado de finalización" });
                 }
 
@@ -455,7 +424,6 @@ namespace newApi.Controllers
                 var totalPercentage = request.ClientPercentage + request.ExpertPercentage + request.PlatformPercentage;
                 if (totalPercentage != 100)
                 {
-                    _logger.LogError("Percentages don't sum 100%: {Total}%", totalPercentage);
                     return BadRequest(new { 
                         message = $"Los porcentajes deben sumar 100%. Actual: {totalPercentage}%",
                         clientPercentage = request.ClientPercentage,
@@ -476,9 +444,6 @@ namespace newApi.Controllers
                 existingConfig.UpdatedAt = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Configuration updated successfully: ConfigId={ConfigId}", request.ConfigId);
-
                 // Devolver la configuración actualizada
                 var updatedConfig = await _context.StatusConfigurations
                     .Include(sc => sc.Status)
@@ -507,7 +472,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in update action");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -516,19 +480,15 @@ namespace newApi.Controllers
         {
             try
             {
-                _logger.LogInformation("=== HANDLING CREATE ACTION ===");
-
                 // Validar que el request no sea null
                 if (request == null)
                 {
-                    _logger.LogError("Request is null");
                     return BadRequest(new { message = "Request body is required" });
                 }
 
                 // Validar que el StatusId esté presente
                 if (request.StatusId <= 0)
                 {
-                    _logger.LogError("StatusId is invalid: {StatusId}", request.StatusId);
                     return BadRequest(new { message = "StatusId es requerido y debe ser válido" });
                 }
 
@@ -538,17 +498,14 @@ namespace newApi.Controllers
 
                 if (status == null)
                 {
-                    _logger.LogError("Status not found: StatusId={StatusId}", request.StatusId);
                     return BadRequest(new { message = $"Estado con ID {request.StatusId} no encontrado o no es un estado de finalización" });
                 }
 
-                _logger.LogInformation("Status found: {StatusName} ({StatusValue})", status.StatusName, status.StatusValue);
 
                 // Validar que los porcentajes sumen 100%
                 var totalPercentage = request.ClientPercentage + request.ExpertPercentage + request.PlatformPercentage;
                 if (totalPercentage != 100)
                 {
-                    _logger.LogError("Percentages don't sum 100%: {Total}%", totalPercentage);
                     return BadRequest(new { 
                         message = $"Los porcentajes deben sumar 100%. Actual: {totalPercentage}%",
                         clientPercentage = request.ClientPercentage,
@@ -566,8 +523,6 @@ namespace newApi.Controllers
 
                 if (existingConfig != null)
                 {
-                    _logger.LogInformation("Configuration exists, updating instead of creating. ConfigId={ConfigId}", existingConfig.Id);
-                    
                     // ACTUALIZAR configuración existente en lugar de crear nueva
                     existingConfig.ClientPercentage = request.ClientPercentage;
                     existingConfig.ExpertPercentage = request.ExpertPercentage;
@@ -576,9 +531,6 @@ namespace newApi.Controllers
                     existingConfig.UpdatedAt = DateTime.UtcNow;
 
                     await _context.SaveChangesAsync();
-
-                    _logger.LogInformation("Configuration updated successfully: ConfigId={ConfigId}", existingConfig.Id);
-
                     // Devolver la configuración actualizada
                     var updatedConfig = await _context.StatusConfigurations
                         .Include(sc => sc.Status)
@@ -622,9 +574,6 @@ namespace newApi.Controllers
 
                 _context.StatusConfigurations.Add(newConfig);
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Configuration created successfully with ID: {ConfigId}", newConfig.Id);
-
                 // Devolver la configuración creada con información del estado
                 var createdConfig = await _context.StatusConfigurations
                     .Include(sc => sc.Status)
@@ -653,7 +602,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating appointment status configuration");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -666,14 +614,10 @@ namespace newApi.Controllers
         {
             try
             {
-                _logger.LogInformation("=== UPDATING APPOINTMENT STATUS CONFIG ===");
-                _logger.LogInformation("Config ID: {ConfigId}", id);
-                _logger.LogInformation("Request: {Request}", System.Text.Json.JsonSerializer.Serialize(request));
 
                 // Validar que el request no sea null
                 if (request == null)
                 {
-                    _logger.LogError("Request is null");
                     return BadRequest(new { message = "Request body is required" });
                 }
 
@@ -684,14 +628,12 @@ namespace newApi.Controllers
 
                 if (existingConfig == null)
                 {
-                    _logger.LogError("Configuration not found: ConfigId={ConfigId}", id);
                     return NotFound(new { message = $"Configuración con ID {id} no encontrada" });
                 }
 
                 // Validar que el StatusId esté presente
                 if (request.StatusId <= 0)
                 {
-                    _logger.LogError("StatusId is invalid: {StatusId}", request.StatusId);
                     return BadRequest(new { message = "StatusId es requerido y debe ser válido" });
                 }
 
@@ -701,17 +643,14 @@ namespace newApi.Controllers
 
                 if (status == null)
                 {
-                    _logger.LogError("Status not found: StatusId={StatusId}", request.StatusId);
                     return BadRequest(new { message = $"Estado con ID {request.StatusId} no encontrado o no es un estado de finalización" });
                 }
 
-                _logger.LogInformation("Status found: {StatusName} ({StatusValue})", status.StatusName, status.StatusValue);
 
                 // Validar que los porcentajes sumen 100%
                 var totalPercentage = request.ClientPercentage + request.ExpertPercentage + request.PlatformPercentage;
                 if (totalPercentage != 100)
                 {
-                    _logger.LogError("Percentages don't sum 100%: {Total}%", totalPercentage);
                     return BadRequest(new { 
                         message = $"Los porcentajes deben sumar 100%. Actual: {totalPercentage}%",
                         clientPercentage = request.ClientPercentage,
@@ -730,8 +669,6 @@ namespace newApi.Controllers
 
                 if (duplicateConfig != null)
                 {
-                    _logger.LogError("Duplicate configuration exists for StatusId={StatusId}, CategoryId={CategoryId}, ServiceTypeCategoryId={ServiceTypeCategoryId}", 
-                        request.StatusId, request.CategoryId, request.ServiceTypeCategoryId);
                     return BadRequest(new { message = "Ya existe otra configuración para este estado, categoría y tipo de servicio" });
                 }
 
@@ -746,9 +683,6 @@ namespace newApi.Controllers
                 existingConfig.UpdatedAt = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Configuration updated successfully: ConfigId={ConfigId}", id);
-
                 // Devolver la configuración actualizada con información del estado
                 var updatedConfig = await _context.StatusConfigurations
                     .Include(sc => sc.Status)
@@ -777,7 +711,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating appointment status configuration");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -790,26 +723,18 @@ namespace newApi.Controllers
         {
             try
             {
-                _logger.LogInformation("=== DELETING APPOINTMENT STATUS CONFIG ===");
-                _logger.LogInformation("Config ID: {ConfigId}", id);
-
                 var config = await _context.StatusConfigurations.FindAsync(id);
                 if (config == null)
                 {
-                    _logger.LogError("Configuration not found: ConfigId={ConfigId}", id);
                     return NotFound(new { message = $"Configuración con ID {id} no encontrada" });
                 }
 
                 _context.StatusConfigurations.Remove(config);
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Configuration deleted successfully: ConfigId={ConfigId}", id);
-
                 return Ok(new { message = "Configuración eliminada correctamente", deletedId = id });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting appointment status configuration");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -858,7 +783,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting all granular configurations");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -906,7 +830,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting granular configurations");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -934,7 +857,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting categories");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -962,7 +884,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting service types");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -1009,7 +930,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting configurations by category");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -1055,11 +975,9 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting configurations by category");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
-
 
 
         /// <summary>
@@ -1073,17 +991,12 @@ namespace newApi.Controllers
         {
             try
             {
-                _logger.LogInformation("=== GETTING MONEY DISTRIBUTION ===");
-                _logger.LogInformation("StatusValue: {StatusValue}, CategoryId: {CategoryId}, ServiceTypeCategoryId: {ServiceTypeCategoryId}", 
-                    statusValue, categoryId, serviceTypeCategoryId);
-
                 // Buscar el SystemStatus por StatusValue
                 var systemStatus = await _context.SystemStatuses
                     .FirstOrDefaultAsync(s => s.StatusValue == statusValue && s.IsActive);
 
                 if (systemStatus == null)
                 {
-                    _logger.LogWarning("SystemStatus not found for StatusValue: {StatusValue}", statusValue);
                     return NotFound(new { message = $"Estado '{statusValue}' no encontrado" });
                 }
 
@@ -1099,8 +1012,6 @@ namespace newApi.Controllers
 
                     if (level1Config != null)
                     {
-                        _logger.LogInformation("Found Level 1 configuration: CategoryId={CategoryId}, ServiceTypeCategoryId={ServiceTypeCategoryId}", 
-                            categoryId, serviceTypeCategoryId);
                         return Ok(new
                         {
                             level = 1,
@@ -1129,8 +1040,6 @@ namespace newApi.Controllers
 
                     if (level2Config != null)
                     {
-                        _logger.LogInformation("Found Level 2 configuration: ServiceTypeCategoryId={ServiceTypeCategoryId}", 
-                            serviceTypeCategoryId);
                         return Ok(new
                         {
                             level = 2,
@@ -1159,7 +1068,6 @@ namespace newApi.Controllers
 
                     if (level3Config != null)
                     {
-                        _logger.LogInformation("Found Level 3 configuration: CategoryId={CategoryId}", categoryId);
                         return Ok(new
                         {
                             level = 3,
@@ -1186,7 +1094,6 @@ namespace newApi.Controllers
 
                 if (level4Config != null)
                 {
-                    _logger.LogInformation("Found Level 4 configuration: Status only");
                     return Ok(new
                     {
                         level = 4,
@@ -1201,13 +1108,10 @@ namespace newApi.Controllers
                         serviceTypeCategoryId = level4Config.ServiceTypeCategoryId
                     });
                 }
-
-                _logger.LogWarning("No configuration found for any level");
                 return NotFound(new { message = "No se encontró configuración para el estado especificado" });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting money distribution");
                 return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
             }
         }
@@ -1296,14 +1200,10 @@ namespace newApi.Controllers
                         UpdatedAt = s.UpdatedAt
                     })
                     .ToListAsync();
-
-                _logger.LogInformation("Retrieved {Count} statuses for admin management", allStatuses.Count);
-
                 return Ok(allStatuses);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting all statuses for admin management");
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }
@@ -1316,17 +1216,12 @@ namespace newApi.Controllers
         {
             try
             {
-                _logger.LogInformation("=== UPDATING FINALIZATION STATUS ===");
-                _logger.LogInformation("Status ID: {StatusId}", statusId);
-                _logger.LogInformation("IsFinalizationStatus: {IsFinalizationStatus}", request.IsFinalizationStatus);
-
                 // Buscar el estado
                 var status = await _context.SystemStatuses
                     .FirstOrDefaultAsync(s => s.Id == statusId);
 
                 if (status == null)
                 {
-                    _logger.LogError("Status not found: StatusId={StatusId}", statusId);
                     return NotFound(new { message = $"Estado con ID {statusId} no encontrado" });
                 }
 
@@ -1335,10 +1230,6 @@ namespace newApi.Controllers
                 status.UpdatedAt = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Finalization status updated successfully: StatusId={StatusId}, StatusValue={StatusValue}, IsFinalizationStatus={IsFinalizationStatus}", 
-                    statusId, status.StatusValue, request.IsFinalizationStatus);
-
                 return Ok(new { 
                     message = "Estado de finalización actualizado correctamente",
                     statusId = statusId,
@@ -1351,7 +1242,6 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating finalization status for StatusId={StatusId}", statusId);
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }

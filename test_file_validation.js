@@ -11,10 +11,8 @@ const client = new Client({
 async function testFileValidation() {
   try {
     await client.connect();
-    console.log('🔌 Conectado a la base de datos');
     
     // 1. Buscar un SearchHire con entregables requeridos
-    console.log('\n📋 Buscando SearchHires con entregables requeridos...');
     const searchHiresResult = await client.query(`
       SELECT 
         sh."Id" as searchhire_id,
@@ -33,14 +31,11 @@ async function testFileValidation() {
       LIMIT 3
     `);
     
-    console.log(`📊 SearchHires con entregables requeridos: ${searchHiresResult.rows.length}`);
     searchHiresResult.rows.forEach(row => {
-      console.log(`  - SearchHire ${row.searchhire_id}: ${row.required_deliverables_count} tipos requeridos (${row.required_types})`);
     });
     
     // 2. Verificar entregables subidos para cada SearchHire
     if (searchHiresResult.rows.length > 0) {
-      console.log('\n📁 Verificando entregables subidos...');
       
       for (const searchHire of searchHiresResult.rows) {
         const deliverablesResult = await client.query(`
@@ -54,19 +49,15 @@ async function testFileValidation() {
           ORDER BY shd."CreatedAt" DESC
         `, [searchHire.searchhire_id]);
         
-        console.log(`\n  📂 SearchHire ${searchHire.searchhire_id} (${searchHire.required_types}):`);
         if (deliverablesResult.rows.length > 0) {
           deliverablesResult.rows.forEach(deliverable => {
-            console.log(`    ✅ ${deliverable.file_type.toUpperCase()}: ${deliverable.url.split('/').pop()}`);
           });
         } else {
-          console.log(`    ❌ No hay entregables subidos`);
         }
       }
     }
     
     // 3. Buscar citas en awaiting_report para probar validación
-    console.log('\n🔍 Buscando citas en awaiting_report...');
     const appointmentsResult = await client.query(`
       SELECT 
         a."Id" as appointment_id,
@@ -82,13 +73,10 @@ async function testFileValidation() {
       LIMIT 3
     `);
     
-    console.log(`📊 Citas en awaiting_report: ${appointmentsResult.rows.length}`);
     appointmentsResult.rows.forEach(row => {
-      console.log(`  - Cita ${row.appointment_id} (SearchHire ${row.searchhire_id}): ${row.proposed_date} ${row.proposed_time}`);
     });
     
     // 4. Estadísticas generales
-    console.log('\n📈 Estadísticas generales...');
     const statsResult = await client.query(`
       SELECT 
         'SearchHires con entregables requeridos' as metric,
@@ -116,11 +104,9 @@ async function testFileValidation() {
     `);
     
     statsResult.rows.forEach(row => {
-      console.log(`  - ${row.metric}: ${row.count}`);
     });
     
     // 5. Ejemplo de validación manual
-    console.log('\n🧪 Ejemplo de validación manual...');
     if (searchHiresResult.rows.length > 0) {
       const testSearchHire = searchHiresResult.rows[0];
       
@@ -144,17 +130,10 @@ async function testFileValidation() {
       const requiredTypes = requiredTypesResult.rows.map(r => r.type_name.toLowerCase());
       const uploadedTypes = uploadedFilesResult.rows.map(r => r.file_type);
       
-      console.log(`  📋 SearchHire ${testSearchHire.searchhire_id}:`);
-      console.log(`    Requeridos: ${requiredTypes.join(', ')}`);
-      console.log(`    Subidos: ${uploadedTypes.join(', ')}`);
       
       const missingTypes = requiredTypes.filter(type => !uploadedTypes.includes(type));
       if (missingTypes.length > 0) {
-        console.log(`    ❌ Faltan: ${missingTypes.join(', ')}`);
-        console.log(`    🚫 Validación fallaría: "Es obligatorio subir ${missingTypes.join(' y ')} antes de enviar el reporte"`);
       } else {
-        console.log(`    ✅ Todos los archivos requeridos están subidos`);
-        console.log(`    ✅ Validación pasaría correctamente`);
       }
     }
     
@@ -162,7 +141,6 @@ async function testFileValidation() {
     console.error('❌ Error:', err.message);
   } finally {
     await client.end();
-    console.log('\n🔌 Conexión cerrada');
   }
 }
 

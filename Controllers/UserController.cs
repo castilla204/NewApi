@@ -10,18 +10,16 @@ using newApi.DataLayer.Models.DTOs;
 public class UserController : ControllerBase
 {
         private readonly UserService _userService;
-        private readonly ILogger<UserController> _logger;
         private readonly IAuthorizationServices _authService;
         private readonly ILoggingService _loggingService;
 
     public UserController(
         UserService userService,
-        ILogger<UserController> logger,
+
         IAuthorizationServices authService,
         ILoggingService loggingService)
     {
         _userService = userService;
-        _logger = logger;
         _authService = authService;
         _loggingService = loggingService;
     }
@@ -43,12 +41,9 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error retrieving users");
             return StatusCode(500, new { message = "Failed to retrieve users" });
         }
     }
-
-
 
 
     // ✅ REMOVED: GetUserBalance endpoint eliminated - balance system removed
@@ -108,8 +103,6 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error blocking/unblocking user");
-            
             // 🚨 LOG CRÍTICO: Error en bloqueo de usuario
             var adminUserId = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int adminId) ? adminId : (int?)null;
             await _loggingService.LogCriticalAsync(
@@ -187,8 +180,6 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error deleting user");
-            
             // 🚨 LOG CRÍTICO: Error en eliminación de usuario
             var adminUserId = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int adminId) ? adminId : (int?)null;
             await _loggingService.LogCriticalAsync(
@@ -233,7 +224,6 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error sending verification code");
             return StatusCode(500, new { message = "Failed to send verification code" });
         }
     }
@@ -271,7 +261,6 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error verifying code");
             return StatusCode(500, new { message = "Failed to verify code" });
         }
     }
@@ -302,7 +291,6 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error during Google authentication");
             return StatusCode(500, new { message = "An error occurred during authentication" });
         }
     }
@@ -410,8 +398,6 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error becoming expert");
-            
             // 🚨 LOG CRÍTICO: Error al convertirse en experto
             var userIdForLog = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userIdValue) ? userIdValue : (int?)null;
             await _loggingService.LogCriticalAsync(
@@ -455,7 +441,6 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error retrieving expert profile");
             return StatusCode(500, new { message = "Failed to retrieve expert profile" });
         }
     }
@@ -482,17 +467,6 @@ public class UserController : ControllerBase
             {
                 return BadRequest(new { message = "Latitud y Longitud son requeridas" });
             }
-
-            _logger.LogInformation("Received request to update expert profile for user {UserId} with data: {RequestData}",
-                userId,
-                new
-                {
-                    request.Description,
-                    request.Latitude,
-                    request.Longitude,
-                    HasProfilePicture = request.ProfilePicture != null
-                });
-
             var (success, updatedProfile) = await _userService.UpdateExpertProfile(userId, request);
             if (!success)
             {
@@ -509,7 +483,6 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error updating expert profile");
             return StatusCode(500, new { message = "Failed to update expert profile", detail = ex.Message });
         }
     }
@@ -540,7 +513,6 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error toggling vacation mode");
             return StatusCode(500, new { message = "Failed to toggle vacation mode" });
         }
     }

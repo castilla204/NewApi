@@ -202,6 +202,8 @@ public class UserController : ControllerBase
         }
     }
 
+    // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
+    /*
     [Authorize]
     [HttpPost("send-verification")]
     public async Task<IActionResult> SendVerification([FromBody] SendVerificationRequest request)
@@ -227,7 +229,10 @@ public class UserController : ControllerBase
             return StatusCode(500, new { message = "Failed to send verification code" });
         }
     }
+    */
 
+    // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
+    /*
     [Authorize]
     [HttpPost("verify-code")]
     public async Task<IActionResult> VerifyCode([FromBody] VerifyCodeRequest request)
@@ -264,6 +269,7 @@ public class UserController : ControllerBase
             return StatusCode(500, new { message = "Failed to verify code" });
         }
     }
+    */
 
     [HttpPost("google-auth")]
     public async Task<IActionResult> GoogleAuth([FromBody] GoogleAuthDto request)

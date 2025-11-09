@@ -88,6 +88,15 @@ namespace newApi.Services
             return true;
         }
 
+        // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
+        // Método stub para cumplir con la interfaz - ya no hace nada
+        public Task<bool> SendVerification(int userId, string phoneNumber)
+        {
+            // Verificación de teléfono deshabilitada
+            return Task.FromResult(false);
+        }
+        
+        /*
         public async Task<bool> SendVerification(int userId, string phoneNumber)
         {
             try
@@ -126,7 +135,17 @@ namespace newApi.Services
                 throw ex;
             }
         }
+        */
 
+        // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
+        // Método stub para cumplir con la interfaz - ya no hace nada
+        public Task<(bool success, string token, User user)> VerifyCode(int userId, string phoneNumber, string code)
+        {
+            // Verificación de teléfono deshabilitada
+            return Task.FromResult<(bool, string?, User?)>((false, null, null));
+        }
+        
+        /*
         public async Task<(bool success, string token, User user)> VerifyCode(int userId, string phoneNumber, string code)
         {
             var user = await _context.Users.FindAsync(userId);
@@ -179,6 +198,7 @@ namespace newApi.Services
             var token = GenerateJwtToken(user);
             return (true, token, user);
         }
+        */
 
         public async Task<(bool success, string token, User user)> GoogleAuth(GoogleAuthDto request)
         {

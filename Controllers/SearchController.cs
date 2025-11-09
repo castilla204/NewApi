@@ -291,10 +291,13 @@ namespace newApi.Controllers
                     return NotFound(new { message = "User not found" });
                 }
 
+                // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
+                /*
                 if (!user.PhoneVerified)
                 {
                     return StatusCode(403, new { message = "Phone verification required to create searches" });
                 }
+                */
 
                 var service = await _context.SearchServices
                     .Include(ss => ss.ExpertProfile)
@@ -449,10 +452,13 @@ namespace newApi.Controllers
                     return NotFound(new { message = "User not found" });
                 }
 
+                // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
+                /*
                 if (!user.PhoneVerified)
                 {
                     return StatusCode(403, new { message = "Phone verification required to create searches" });
                 }
+                */
 
                 var search = new Search
                 {

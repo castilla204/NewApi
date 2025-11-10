@@ -511,7 +511,22 @@ public class UserController : ControllerBase
                 return BadRequest(new { message = "Failed to toggle vacation mode" });
             }
 
+            // ✅ EMAIL DE PRUEBA: Enviar email cuando se activa/desactiva el modo vacaciones
             var message = isOnVacation ? "Modo vacaciones activado" : "Modo vacaciones desactivado";
+            var details = isOnVacation 
+                ? "Has activado el modo vacaciones. No recibirás nuevas contrataciones mientras esté activo."
+                : "Has desactivado el modo vacaciones. Ya puedes recibir nuevas contrataciones.";
+            
+            await _loggingService.LogInfoAsync(
+                message: message,
+                details: details,
+                userId: userId,
+                source: "UserController.ToggleVacationMode",
+                relatedEntityType: "ExpertProfile",
+                relatedEntityId: null,
+                notifyUser: true
+            );
+
             return Ok(new { 
                 message = message,
                 isOnVacation = isOnVacation 

@@ -96,6 +96,7 @@ builder.Configuration["GoogleCloud:BucketName"] = "atrapobucket";
 try
 {
     builder.Configuration["Email:SmtpHost"] = GetSecretValue("email-smtp-host") ?? "";
+    // ⚠️ RECOMENDACIÓN: Usar puerto 587 (STARTTLS) en lugar de 465 (SSL) para mejor compatibilidad
     builder.Configuration["Email:SmtpPort"] = GetSecretValue("email-smtp-port") ?? "587";
     builder.Configuration["Email:SmtpUsername"] = GetSecretValue("email-smtp-username") ?? "";
     builder.Configuration["Email:SmtpPassword"] = GetSecretValue("email-smtp-password") ?? "";

@@ -2482,6 +2482,19 @@
             Crea una notificación para el usuario cuando se solicita explícitamente
             </summary>
         </member>
+        <member name="M:newApi.Services.LoggingService.SendEmailBackgroundJob(System.String,System.String,System.String,System.Nullable{System.Int32})">
+            <summary>
+            Método para Hangfire: Envía un email en segundo plano
+            Este método es invocado por Hangfire y no bloquea la API
+            Hangfire maneja la inyección de dependencias automáticamente a través del IServiceScopeFactory
+            </summary>
+            <remarks>
+            IMPORTANTE: Hangfire crea una nueva instancia del servicio, así que usamos _emailService
+            que será inyectado por Hangfire a través del DI container.
+            El timeout de SMTP (60 segundos) está manejado por EmailService.
+            Hangfire tiene InvisibilityTimeout de 30 minutos, suficiente para emails que tardan hasta 60 segundos.
+            </remarks>
+        </member>
         <member name="M:newApi.Services.LoggingService.GetNotificationTitleAndType(System.String)">
             <summary>
             Obtiene el título y tipo de notificación según el nivel de log

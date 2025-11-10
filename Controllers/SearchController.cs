@@ -26,6 +26,7 @@ namespace newApi.Controllers
         private readonly IUserService _userService;
         private readonly ISubscriptionService _subscriptionService;
         private readonly IStripeValidationService _stripeValidationService;
+        private readonly ILoggingService _loggingService;
 
         public SearchController(
             AppDbContext context,
@@ -33,13 +34,15 @@ namespace newApi.Controllers
             IAuthorizationServices authService,
             IUserService userService,
             ISubscriptionService subscriptionService,
-            IStripeValidationService stripeValidationService)
+            IStripeValidationService stripeValidationService,
+            ILoggingService loggingService)
         {
             _context = context;
             _authService = authService;
             _userService = userService;
             _subscriptionService = subscriptionService;
             _stripeValidationService = stripeValidationService;
+            _loggingService = loggingService;
         }
 
         /// <summary>

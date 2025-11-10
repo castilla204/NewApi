@@ -2450,6 +2450,27 @@
             Formato: "APPointmentStatusChange:{status_value}"
             </summary>
         </member>
+        <member name="M:newApi.Services.IInvoiceService.GenerateInvoicePdfAsync(System.Int32)">
+            <summary>
+            Genera un PDF de factura para una contratación
+            </summary>
+        </member>
+        <member name="M:newApi.Services.IInvoiceService.SendInvoiceByEmailAsync(System.Int32,System.String)">
+            <summary>
+            Envía la factura por email al cliente
+            </summary>
+        </member>
+        <member name="M:newApi.Services.IInvoiceService.SendInvoiceByEmailBackgroundJob(System.Int32,System.String)">
+            <summary>
+            Método para Hangfire: Envía la factura por email en segundo plano
+            </summary>
+        </member>
+        <member name="M:newApi.Services.InvoiceService.SendInvoiceByEmailBackgroundJob(System.Int32,System.String)">
+            <summary>
+            Método para Hangfire: Envía la factura por email en segundo plano
+            Este método es invocado por Hangfire y no bloquea la API
+            </summary>
+        </member>
         <member name="T:newApi.Services.IStripeValidationService">
             <summary>
             Servicio centralizado para validaciones de Stripe y expertos

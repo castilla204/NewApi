@@ -324,6 +324,7 @@ builder.Services.AddScoped<IAccountDeletionNotificationService, AccountDeletionN
 builder.Services.AddScoped<StripeRefundService>();
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<ILoggingService, LoggingService>();
+builder.Services.AddScoped<IInvoiceService, newApi.Services.InvoiceService>();
 builder.Services.AddScoped<IStripeValidationService, StripeValidationService>();
 
 // Background services - AppointmentTimerBackgroundService migrated to Hangfire
@@ -377,12 +378,13 @@ try
     {
         logger.LogInformation("Stripe configuration successful");
         
+        // ✅ Log informativo del sistema - NO crear notificaciones para logs de configuración
         // Usar scope para ILoggingService
         using (var scope = app.Services.CreateScope())
         {
             var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
-            await loggingService.LogCriticalAsync(
-                message: "CRITICAL: Stripe configuration successful",
+            await loggingService.LogInfoAsync(
+                message: "Stripe configuration successful",
                 details: "Stripe API key configured successfully",
                 userId: null,
                 source: "Program.ConfigureStripe",
@@ -393,7 +395,8 @@ try
                     SecretKeyPresent = !string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]),
                     PublishableKeyPresent = !string.IsNullOrEmpty(builder.Configuration["Stripe:PublishableKey"]),
                     Success = true
-                }
+                },
+                notifyUser: false // ✅ NO notificar a usuarios - es solo un log de sistema
             );
         }
     }

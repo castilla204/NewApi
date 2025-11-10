@@ -1,4 +1,6 @@
+using Hangfire;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
 using System.Text.Json;
@@ -20,11 +22,13 @@ namespace newApi.Services
     {
         private readonly AppDbContext _context;
         private readonly IEmailService _emailService;
+        private readonly IServiceScopeFactory _serviceScopeFactory;
 
-        public LoggingService(AppDbContext context, IEmailService emailService)
+        public LoggingService(AppDbContext context, IEmailService emailService, IServiceScopeFactory serviceScopeFactory)
         {
             _context = context;
             _emailService = emailService;
+            _serviceScopeFactory = serviceScopeFactory;
         }
 
         public async Task LogCriticalAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false)
@@ -318,56 +322,192 @@ namespace newApi.Services
                 _context.Notifications.Add(notification);
                 await _context.SaveChangesAsync();
 
-                // ✅ Enviar email al usuario si tiene email configurado
+                // ✅ Enviar email al usuario si tiene email configurado (FIRE-AND-FORGET: no bloquea la API)
                 if (!string.IsNullOrEmpty(user.Email))
                 {
-                    try
-                    {
-                        var emailSubject = title;
-                        var emailBody = $@"
+                    // Capturar variables para el closure
+                    var userEmail = user.Email;
+                    var emailSubject = title;
+                    var emailBody = $@"
 <!DOCTYPE html>
-<html>
+<html lang='es'>
 <head>
     <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
     <style>
-        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-        .header {{ background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
-        .content {{ background-color: #f9f9f9; padding: 20px; border-radius: 0 0 5px 5px; }}
-        .message {{ background-color: white; padding: 15px; margin: 15px 0; border-left: 4px solid #4CAF50; }}
-        .footer {{ text-align: center; margin-top: 20px; color: #666; font-size: 12px; }}
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; 
+            line-height: 1.6; 
+            color: #333333; 
+            background-color: #f4f4f4;
+            padding: 20px;
+        }}
+        .email-container {{ 
+            max-width: 600px; 
+            margin: 0 auto; 
+            background-color: #ffffff;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }}
+        .header {{ 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; 
+            padding: 40px 30px; 
+            text-align: center;
+        }}
+        .header h1 {{
+            font-size: 28px;
+            font-weight: 600;
+            margin: 0;
+            letter-spacing: -0.5px;
+        }}
+        .content {{ 
+            padding: 40px 30px;
+            background-color: #ffffff;
+        }}
+        .message-box {{ 
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 25px;
+            margin: 25px 0;
+            border-radius: 8px;
+            border-left: 5px solid #667eea;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }}
+        .message-box p {{
+            font-size: 16px;
+            line-height: 1.8;
+            color: #2d3748;
+            margin: 0;
+        }}
+        .info-text {{
+            color: #718096;
+            font-size: 14px;
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #edf2f7;
+            border-radius: 6px;
+        }}
+        .footer {{ 
+            text-align: center; 
+            padding: 30px;
+            background-color: #f7fafc;
+            color: #718096;
+            font-size: 12px;
+            border-top: 1px solid #e2e8f0;
+        }}
+        .footer p {{
+            margin: 5px 0;
+        }}
+        .logo {{
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }}
+        @media only screen and (max-width: 600px) {{
+            .email-container {{
+                width: 100% !important;
+                border-radius: 0;
+            }}
+            .header, .content {{
+                padding: 25px 20px !important;
+            }}
+            .header h1 {{
+                font-size: 24px !important;
+            }}
+        }}
     </style>
 </head>
 <body>
-    <div class='container'>
+    <div class='email-container'>
         <div class='header'>
+            <div class='logo'>📧 Inspecciono</div>
             <h1>{title}</h1>
         </div>
         <div class='content'>
-            <div class='message'>
+            <div class='message-box'>
                 <p>{fullMessage}</p>
             </div>
-            <p>Puedes ver más detalles en tu panel de notificaciones.</p>
+            <div class='info-text'>
+                💡 Puedes ver más detalles en tu panel de notificaciones.
+            </div>
         </div>
         <div class='footer'>
-            <p>Este es un email automático de Inspecciono. Por favor, no respondas a este mensaje.</p>
+            <p><strong>Inspecciono</strong></p>
+            <p>Este es un email automático. Por favor, no respondas a este mensaje.</p>
+            <p style='margin-top: 15px; font-size: 11px; color: #a0aec0;'>© {DateTime.UtcNow.Year} Inspecciono. Todos los derechos reservados.</p>
         </div>
     </div>
 </body>
 </html>";
 
-                        await _emailService.SendEmailAsync(user.Email, emailSubject, emailBody, isHtml: true);
-                    }
-                    catch (Exception emailEx)
-                    {
-                        // No lanzar excepción - el fallo del email no debe interrumpir el logging
-                        // El email es opcional, la notificación en BD es lo importante
-                    }
+                    // ✅ HANGFIRE: Enviar email en segundo plano usando Hangfire (mejor práctica)
+                    // Hangfire proporciona: persistencia, reintentos automáticos, monitoreo, y no bloquea la API
+                    // Usar el tipo concreto para que Hangfire pueda invocar el método
+                    BackgroundJob.Enqueue<LoggingService>(service => 
+                        service.SendEmailBackgroundJob(userEmail, emailSubject, emailBody, userId));
+                    
+                    // ✅ LOG: Email encolado en Hangfire (no bloquea la API)
+                    Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ENQUEUED] Email encolado en Hangfire para envío en segundo plano a: {userEmail}, UserId: {userId}");
+                    System.Diagnostics.Debug.WriteLine($"[LOGGING SERVICE] HANGFIRE ENQUEUED: Email queued in Hangfire to {userEmail}");
+                }
+                else
+                {
+                    // ✅ LOG: Usuario sin email configurado
+                    Console.WriteLine($"[LOGGING SERVICE] ⚠️ Usuario {userId} no tiene email configurado, no se enviará email");
                 }
             }
             catch (Exception ex)
             {
                 // No lanzar excepción para no interrumpir el flujo principal de logging
+            }
+        }
+
+        /// <summary>
+        /// Método para Hangfire: Envía un email en segundo plano
+        /// Este método es invocado por Hangfire y no bloquea la API
+        /// Hangfire maneja la inyección de dependencias automáticamente a través del IServiceScopeFactory
+        /// </summary>
+        /// <remarks>
+        /// IMPORTANTE: Hangfire crea una nueva instancia del servicio, así que usamos _emailService
+        /// que será inyectado por Hangfire a través del DI container.
+        /// El timeout de SMTP (60 segundos) está manejado por EmailService.
+        /// Hangfire tiene InvisibilityTimeout de 30 minutos, suficiente para emails que tardan hasta 60 segundos.
+        /// </remarks>
+        [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
+        public async Task SendEmailBackgroundJob(string toEmail, string subject, string body, int? userId = null)
+        {
+            try
+            {
+                // Hangfire crea un nuevo scope e inyecta las dependencias automáticamente
+                // _emailService está disponible porque Hangfire usa el IServiceScopeFactory configurado
+                Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE] Iniciando envio de email en segundo plano a: {toEmail}, UserId: {userId}");
+                System.Diagnostics.Debug.WriteLine($"[LOGGING SERVICE] HANGFIRE: Email to {toEmail}, UserId: {userId}");
+                
+                // EmailService tiene timeout de 60 segundos configurado internamente
+                // Si Hostinger tarda más, lanzará TimeoutException y Hangfire reintentará
+                await _emailService.SendEmailAsync(toEmail, subject, body, isHtml: true);
+                
+                Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE SUCCESS] Email enviado exitosamente a: {toEmail}, UserId: {userId}");
+                System.Diagnostics.Debug.WriteLine($"[LOGGING SERVICE] HANGFIRE SUCCESS: Email sent to {toEmail}");
+            }
+            catch (Exception emailEx)
+            {
+                // ✅ LOG: Error al enviar email en Hangfire (se reintentará automáticamente)
+                Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ERROR] ERROR al enviar email a: {toEmail}, UserId: {userId}");
+                Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ERROR] Exception Type: {emailEx.GetType().FullName}");
+                Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ERROR] Error Message: {emailEx.Message}");
+                Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ERROR] StackTrace: {emailEx.StackTrace ?? "NULL"}");
+                if (emailEx.InnerException != null)
+                {
+                    Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ERROR] InnerException Type: {emailEx.InnerException.GetType().FullName}");
+                    Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ERROR] InnerException Message: {emailEx.InnerException.Message}");
+                }
+                System.Diagnostics.Debug.WriteLine($"[LOGGING SERVICE] HANGFIRE ERROR: {emailEx.Message}");
+                // Lanzar excepción para que Hangfire reintente automáticamente
+                // Hangfire reintentará 3 veces: después de 60s, 5min, y 10min
+                throw;
             }
         }
 

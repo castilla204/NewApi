@@ -7,6 +7,7 @@ namespace newApi.Services
     public interface IEmailService
     {
         Task SendEmailAsync(string toEmail, string subject, string body, bool isHtml = true);
+        Task SendEmailWithAttachmentAsync(string toEmail, string subject, string body, byte[] attachmentBytes, string attachmentFileName, string attachmentContentType = "application/pdf", bool isHtml = true);
     }
 
     public class EmailService : IEmailService
@@ -172,6 +173,81 @@ namespace newApi.Services
                 // También usar System.Diagnostics para asegurar que se vea
                 System.Diagnostics.Debug.WriteLine($"[EMAIL SERVICE] ERROR: {ex.Message}");
                 // No lanzar excepción para no interrumpir el flujo principal
+            }
+        }
+
+        public async Task SendEmailWithAttachmentAsync(string toEmail, string subject, string body, byte[] attachmentBytes, string attachmentFileName, string attachmentContentType = "application/pdf", bool isHtml = true)
+        {
+            try
+            {
+                // Si no hay configuración de email, no enviar (modo desarrollo)
+                if (string.IsNullOrEmpty(_smtpHost) || string.IsNullOrEmpty(_smtpUsername) || string.IsNullOrEmpty(_smtpPassword))
+                {
+                    Console.WriteLine($"[EMAIL SERVICE] [CONFIG MISSING] Email con adjunto no enviado - Configuracion SMTP faltante. To: {toEmail}, Subject: {subject}");
+                    return;
+                }
+
+                Console.WriteLine($"[EMAIL SERVICE] [START] Intentando enviar email con adjunto a: {toEmail}, Subject: {subject}, Attachment: {attachmentFileName}");
+
+                var useSsl = _smtpPort == 465 || _smtpPort == 587;
+                
+                using var client = new SmtpClient(_smtpHost, _smtpPort)
+                {
+                    EnableSsl = useSsl,
+                    Credentials = new NetworkCredential(_smtpUsername, _smtpPassword),
+                    DeliveryMethod = SmtpDeliveryMethod.Network,
+                    Timeout = 60000
+                };
+
+                using var message = new MailMessage
+                {
+                    From = new MailAddress(_fromEmail, _fromName),
+                    Subject = subject,
+                    Body = body,
+                    IsBodyHtml = isHtml
+                };
+
+                message.To.Add(toEmail);
+
+                // Agregar adjunto
+                using var attachmentStream = new MemoryStream(attachmentBytes);
+                var attachment = new Attachment(attachmentStream, attachmentFileName, attachmentContentType);
+                message.Attachments.Add(attachment);
+
+                Console.WriteLine($"[EMAIL SERVICE] [CONFIG] Mensaje con adjunto preparado. To: {toEmail}, Attachment: {attachmentFileName} ({attachmentBytes.Length} bytes)");
+
+                // Enviar con timeout
+                var sendTask = client.SendMailAsync(message);
+                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(60));
+                
+                var completedTask = await Task.WhenAny(sendTask, timeoutTask);
+                
+                if (completedTask == timeoutTask && !sendTask.IsCompleted)
+                {
+                    throw new TimeoutException("El envio del email con adjunto excedio el tiempo limite de 60 segundos");
+                }
+                
+                if (sendTask.IsFaulted)
+                {
+                    await sendTask; // Esto lanzará la excepción
+                }
+                else if (!sendTask.IsCompleted)
+                {
+                    await sendTask;
+                }
+                else
+                {
+                    await sendTask;
+                }
+                
+                Console.WriteLine($"[EMAIL SERVICE] [SUCCESS] Email con adjunto enviado exitosamente a: {toEmail}, Subject: {subject}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[EMAIL SERVICE] [FATAL ERROR] ERROR al enviar email con adjunto a: {toEmail}, Subject: {subject}");
+                Console.WriteLine($"[EMAIL SERVICE] [FATAL ERROR] Exception Type: {ex.GetType().FullName}");
+                Console.WriteLine($"[EMAIL SERVICE] [FATAL ERROR] Error Message: {ex.Message}");
+                throw;
             }
         }
     }

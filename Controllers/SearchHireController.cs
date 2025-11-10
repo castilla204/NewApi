@@ -26,6 +26,7 @@ namespace newApi.Controllers
         private readonly IAuthorizationServices _authService;
         private readonly StripeRefundService _refundService;
         private readonly ILoggingService _loggingService;
+        private readonly IInvoiceService _invoiceService;
 
         public SearchHireController(
             SearchHireService searchHireService,
@@ -34,7 +35,8 @@ namespace newApi.Controllers
             IConfiguration configuration,
             IAuthorizationServices authService,
             StripeRefundService refundService,
-            ILoggingService loggingService)
+            ILoggingService loggingService,
+            IInvoiceService invoiceService)
         {
             _searchHireService = searchHireService;
             _context = context;
@@ -42,6 +44,7 @@ namespace newApi.Controllers
             _authService = authService;
             _refundService = refundService;
             _loggingService = loggingService;
+            _invoiceService = invoiceService;
             StripeConfiguration.ApiKey = configuration["Stripe:SecretKey"];
         }
 
@@ -166,6 +169,43 @@ namespace newApi.Controllers
                 searchHire.Conversations.Add(conversation);
 
                 await _context.SaveChangesAsync();
+
+                // ✅ Notificar al cliente cuando se crea la contratación
+                var client = await _context.Users.FindAsync(searchHire.ClientId);
+                if (client != null)
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "Contratación creada",
+                        details: $"Tu contratación #{searchHire.Id} ha sido creada exitosamente. El experto ha sido notificado.",
+                        userId: searchHire.ClientId,
+                        source: "SearchHireController.CreateSearchHire",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHire.Id,
+                        notifyUser: true
+                    );
+
+                    // ✅ Enviar factura por email al cliente (en segundo plano con Hangfire)
+                    if (!string.IsNullOrEmpty(client.Email))
+                    {
+                        Hangfire.BackgroundJob.Enqueue<IInvoiceService>(service => 
+                            service.SendInvoiceByEmailBackgroundJob(searchHire.Id, client.Email));
+                        Console.WriteLine($"[SEARCH HIRE CONTROLLER] [INVOICE] Factura encolada para envío. SearchHireId: {searchHire.Id}, Email: {client.Email}");
+                    }
+                }
+
+                // ✅ Notificar al experto sobre la nueva contratación
+                if (searchHire.ExpertId.HasValue && searchHire.ExpertId.Value > 0)
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "Nueva contratación recibida",
+                        details: $"Has recibido una nueva contratación #{searchHire.Id} por {searchService.Price}€. Revisa los detalles y contacta con el cliente.",
+                        userId: searchHire.ExpertId.Value,
+                        source: "SearchHireController.CreateSearchHire",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHire.Id,
+                        notifyUser: true
+                    );
+                }
 
                 // Programar automáticamente la verificación de respuesta del experto para 24 horas después
                 var scheduledTime = searchHire.CreatedAt.AddHours(24);

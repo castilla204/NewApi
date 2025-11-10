@@ -39,9 +39,10 @@ namespace newApi.Controllers
         private readonly StripeRefundService _refundService;
         private readonly IAuthorizationServices _authService;
         private readonly ILoggingService _loggingService;
+        private readonly IInvoiceService _invoiceService;
         private readonly IStripeValidationService _stripeValidationService;
 
-        public SubscriptionController(AppDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService)
+        public SubscriptionController(AppDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService, IInvoiceService invoiceService)
         {
             _context = context;
             _systemStatusService = systemStatusService;
@@ -52,6 +53,7 @@ namespace newApi.Controllers
             _loggingService = loggingService;
             _refundService = refundService;
             _stripeValidationService = stripeValidationService;
+            _invoiceService = invoiceService;
             _webhookSecret = _configuration["Stripe:WebhookSecret"];
             _generalWebhookSecret = _configuration["Stripe:GeneralWebhookSecret"];
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
@@ -2120,6 +2122,14 @@ namespace newApi.Controllers
                     relatedEntityId: searchHire.Id,
                     notifyUser: true
                 );
+
+                // ✅ Enviar factura por email al cliente (en segundo plano con Hangfire)
+                if (!string.IsNullOrEmpty(user.Email))
+                {
+                    Hangfire.BackgroundJob.Enqueue<IInvoiceService>(service => 
+                        service.SendInvoiceByEmailBackgroundJob(searchHire.Id, user.Email));
+                    Console.WriteLine($"[SUBSCRIPTION CONTROLLER] [INVOICE] Factura encolada para envío. SearchHireId: {searchHire.Id}, Email: {user.Email}");
+                }
 
                 // ✅ Notificar al experto sobre la nueva contratación
                 if (expertuserid > 0)

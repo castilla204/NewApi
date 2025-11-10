@@ -34,8 +34,10 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
+                // ✅ Solo administradores pueden ver notificaciones globales (UserId == null)
+                var isAdmin = _authService.IsAdmin(User);
                 var notifications = await _context.Notifications
-                    .Where(n => n.UserId == userId || n.UserId == null)
+                    .Where(n => n.UserId == userId || (n.UserId == null && isAdmin))
                     .OrderByDescending(n => n.CreatedAt)
                     .ToListAsync();
 

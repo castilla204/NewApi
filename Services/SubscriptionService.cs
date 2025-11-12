@@ -5,6 +5,7 @@ using newApi.Common;
 using newApi.Controllers;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models.enums;
 
 namespace newApi.Services
 {
@@ -83,113 +84,10 @@ namespace newApi.Services
             return new SubscriptionLimits { MaxSearches = 9999, MinSearchInterval = 0 };
         }
 
-        public async Task ProcessExpiredServicesAsync()
-        {
-            try
-            {
-                var expiredHires = await _context.SearchHires
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Expert)
-                    .ThenInclude(e => e.ExpertProfile)
-                    .Include(sh => sh.Client)
-                    .Where(sh => sh.Status.StatusValue == SearchHireStatus.Pending.ToStringValue()
-                              && sh.CompletionDeadline <= DateTime.UtcNow)
-                    .ToListAsync();
-                foreach (var searchHire in expiredHires)
-                {
-                    // ✅ CORRECCIÓN: Usar la estrategia de ejecución para manejar transacciones con reintentos
-                    var strategy = _context.Database.CreateExecutionStrategy();
-                    await strategy.ExecuteAsync(async () =>
-                    {
-                        using var transaction = await _context.Database.BeginTransactionAsync();
-                        try
-                        {
-                            if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue())
-                            {
-                                await transaction.CommitAsync();
-                                return;
-                            }
-
-                            // Si el experto no responde en 2 días, usar orquestador central
-                            var success = await _refundService.ProcessMoneyDistributionAsync(
-                                searchHire.Id,
-                                "cancelled_by_no_response",
-                                "Expert did not respond within deadline",
-                                null);
-                            
-                            if (success)
-                            {
-                                searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
-                                searchHire.UpdatedAt = DateTime.UtcNow;
-
-                                // ✅ Notificar al cliente sobre el servicio expirado y refund
-                                await _loggingService.LogWarningAsync(
-                                    message: "Servicio cancelado - experto no respondió",
-                                    details: $"El experto no respondió a tu contratación en 2 días. El servicio fue cancelado y se procesará tu reembolso de {searchHire.Amount:F2}€.",
-                                    userId: searchHire.ClientId,
-                                    source: "SubscriptionService.ProcessExpiredServicesAsync",
-                                    relatedEntityType: "SearchHire",
-                                    relatedEntityId: searchHire.Id,
-                                    notifyUser: true
-                                );
-                            }
-                            else
-                            {
-                                // Si falla el reembolso, marcar como transfer_failed para revisión manual
-                                searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.TransferFailed.ToStringValue());
-                                searchHire.UpdatedAt = DateTime.UtcNow;
-                                // Log critical error for money transaction failure
-                                await _loggingService.LogCriticalAsync(
-                                    message: "CRITICAL: Failed to refund client for expired service",
-                                    details: $"Failed to process refund for expired SearchHire {searchHire.Id}",
-                                    userId: searchHire.ClientId,
-                                    source: "SubscriptionService.ProcessExpiredServicesAsync",
-                                    relatedEntityType: "Refund",
-                                    relatedEntityId: searchHire.Id,
-                                    additionalData: new { 
-                                        SearchHireId = searchHire.Id,
-                                        Amount = searchHire.Amount,
-                                        ClientId = searchHire.ClientId,
-                                        ExpertId = searchHire.ExpertId,
-                                        Reason = "Expert did not respond within deadline"
-                                    }
-                                );
-                            }
-
-                            await _context.SaveChangesAsync();
-                            await transaction.CommitAsync();
-                        }
-                        catch (Exception ex)
-                        {
-                            await transaction.RollbackAsync();
-                            // Log critical error for money transaction failure
-                            await _loggingService.LogCriticalAsync(
-                                message: "CRITICAL: Error processing expired service",
-                                details: ex.ToString(),
-                                userId: searchHire.ClientId,
-                                source: "SubscriptionService.ProcessExpiredServicesAsync",
-                                relatedEntityType: "SearchHire",
-                                relatedEntityId: searchHire.Id,
-                                additionalData: new { 
-                                    SearchHireId = searchHire.Id,
-                                    Amount = searchHire.Amount,
-                                    ClientId = searchHire.ClientId,
-                                    ExpertId = searchHire.ExpertId,
-                                    ErrorMessage = ex.Message
-                                }
-                            );
-                            throw; // Re-throw para que la estrategia de ejecución pueda reintentar
-                        }
-                    });
-                }
-            }
-            catch (Exception ex)
-            {
-                throw;
-            }
-        }
-
-
+        /// <summary>
+        /// Solo para uso manual/admin: Procesa todos los SearchHires en awaiting_client_decision que llevan más de 24h
+        /// Normalmente esto se hace con scheduled jobs, pero este método permite procesamiento manual si es necesario
+        /// </summary>
         public async Task ProcessAwaitingClientDecisionAsync()
         {
             try
@@ -201,8 +99,7 @@ namespace newApi.Services
                     throw new InvalidOperationException("Database context is not initialized");
                 }
 
-                // Procesar contrataciones donde el experto completó el trabajo pero el cliente no ha decidido en 24h
-                // En este caso, aprobamos automáticamente y transferimos al experto
+                // Solo para uso manual/admin: Procesar contrataciones donde el experto completó el trabajo pero el cliente no ha decidido en 24h
                 var query = _context.SearchHires
                     .Include(sh => sh.Status)
                     .Where(sh => sh.Status.StatusValue == SearchHireStatus.AwaitingClientDecision.ToStringValue()
@@ -217,113 +114,143 @@ namespace newApi.Services
                     return;
                 }
 
-                const int batchSize = 10; // Smaller batch size to reduce transaction time
-                for (int i = 0; i < awaitingDecisionHires.Count; i += batchSize)
+                // Procesar cada uno usando el método específico
+                foreach (var item in awaitingDecisionHires)
                 {
-                    var batch = awaitingDecisionHires.Skip(i).Take(batchSize).ToList();
-                    
-                    // ✅ CORRECCIÓN: Usar la estrategia de ejecución para manejar transacciones con reintentos
-                    var strategy = _context.Database.CreateExecutionStrategy();
-                    await strategy.ExecuteAsync(async () =>
+                    await ProcessAwaitingClientDecisionAsync(item.Id);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw;
+            }
+        }
+
+        public async Task ProcessAwaitingClientDecisionAsync(int searchHireId)
+        {
+            try
+            {
+                var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Status)
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+
+                if (searchHire == null)
+                {
+                    return; // SearchHire no encontrado
+                }
+
+                // Verificar que esté en awaiting_client_decision
+                if (searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                {
+                    return; // Ya no está en awaiting_client_decision, puede haber sido procesado
+                }
+
+                // Verificar que hayan pasado 24 horas desde que cambió a awaiting_client_decision
+                if (searchHire.UpdatedAt.HasValue && searchHire.UpdatedAt.Value.AddHours(24) > DateTime.UtcNow)
+                {
+                    return; // Aún no han pasado 24 horas
+                }
+
+                // ✅ CORRECCIÓN: Usar la estrategia de ejecución para manejar transacciones con reintentos
+                var strategy = _context.Database.CreateExecutionStrategy();
+                await strategy.ExecuteAsync(async () =>
+                {
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
                     {
-                        using var transaction = await _context.Database.BeginTransactionAsync();
+                        // Verificar nuevamente dentro de la transacción
+                        var currentSearchHire = await _context.SearchHires
+                            .Include(sh => sh.Status)
+                            .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+
+                        if (currentSearchHire == null || currentSearchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                        {
+                            await transaction.CommitAsync();
+                            return;
+                        }
+
+                        // Call central orchestrator directly
                         try
                         {
-                            foreach (var item in batch)
-                            {
-                                var searchHire = await _context.SearchHires
-                                    .Include(sh => sh.Status)
-                                    .FirstOrDefaultAsync(sh => sh.Id == item.Id);
-
-                                if (searchHire == null || searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
-                                {
-                                    continue;
-                                }
-
-                                // Call central orchestrator directly
-                                try
-                                {
-                                    await _refundService.ProcessMoneyDistributionAsync(
-                                        item.Id,
-                                        "completed_without_client_approval",
-                                        "Auto transfer after client timeout (24h)",
-                                        null);
-                                }
-                                catch (Exception ex)
-                                {
-                                    // Log critical error for money transaction failure
-                                    await _loggingService.LogCriticalAsync(
-                                        message: "CRITICAL: Failed to process transfer to expert",
-                                        details: ex.ToString(),
-                                        userId: item.ExpertId,
-                                        source: "SubscriptionService.ProcessAwaitingClientDecisionAsync",
-                                        relatedEntityType: "Transfer",
-                                        relatedEntityId: item.Id,
-                                        additionalData: new { 
-                                            SearchHireId = item.Id,
-                                            Amount = item.Amount,
-                                            ClientId = item.ClientId,
-                                            ExpertId = item.ExpertId,
-                                            ErrorMessage = ex.Message
-                                        }
-                                    );
-                                    
-                                    continue; // Skip to next record if transfer fails
-                                }
-
-                                // Only update status and create notifications if transfer succeeds
-                                searchHire.ClientApproved = true;
-                                searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Completed.ToStringValue());
-                                searchHire.UpdatedAt = DateTime.UtcNow;
-
-                                if (item.ExpertId.HasValue)
-                                {
-                                    _context.Notifications.Add(new Notification
-                                    {
-                                        Id = Guid.NewGuid(),
-                                        UserId = item.ExpertId.Value,
-                                        Title = "Pago Automático Recibido",
-                                        Message = $"Has recibido el pago de €{item.Amount:F2} por tu servicio. El cliente no respondió en 24h.",
-                                        Type = "payment",
-                                        Read = false,
-                                        CreatedAt = DateTime.UtcNow
-                                    });
-                                }
-
-                                _context.Notifications.Add(new Notification
-                                {
-                                    Id = Guid.NewGuid(),
-                                    UserId = item.ClientId,
-                                    Title = "Servicio Completado Automáticamente",
-                                    Message = $"Tu servicio de €{item.Amount:F2} se ha completado automáticamente.",
-                                    Type = "service_completion",
-                                    Read = false,
-                                    CreatedAt = DateTime.UtcNow
-                                });
-                            }
-
-                            await _context.SaveChangesAsync();
-                            await transaction.CommitAsync();
+                            await _refundService.ProcessMoneyDistributionAsync(
+                                searchHireId,
+                                "completed_without_client_approval",
+                                "Auto transfer after client timeout (24h)",
+                                null);
                         }
                         catch (Exception ex)
                         {
                             await transaction.RollbackAsync();
                             // Log critical error for money transaction failure
                             await _loggingService.LogCriticalAsync(
-                                message: "CRITICAL: Error processing batch of SearchHires",
+                                message: "CRITICAL: Failed to process transfer to expert",
                                 details: ex.ToString(),
+                                userId: currentSearchHire.ExpertId,
                                 source: "SubscriptionService.ProcessAwaitingClientDecisionAsync",
-                                relatedEntityType: "BatchTransfer",
+                                relatedEntityType: "Transfer",
+                                relatedEntityId: searchHireId,
                                 additionalData: new { 
-                                    BatchIndex = i,
-                                    BatchSize = batch.Count,
+                                    SearchHireId = searchHireId,
+                                    Amount = currentSearchHire.Amount,
+                                    ClientId = currentSearchHire.ClientId,
+                                    ExpertId = currentSearchHire.ExpertId,
                                     ErrorMessage = ex.Message
                                 }
                             );
-                            throw; // Re-throw para que la estrategia de ejecución pueda reintentar
+                            throw;
                         }
-                    });
-                }
+
+                        // Only update status and create notifications if transfer succeeds
+                        currentSearchHire.ClientApproved = true;
+                        currentSearchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Completed.ToStringValue());
+                        currentSearchHire.UpdatedAt = DateTime.UtcNow;
+
+                        if (currentSearchHire.ExpertId.HasValue)
+                        {
+                            _context.Notifications.Add(new Notification
+                            {
+                                Id = Guid.NewGuid(),
+                                UserId = currentSearchHire.ExpertId.Value,
+                                Title = "Pago Automático Recibido",
+                                Message = $"Has recibido el pago de €{currentSearchHire.Amount:F2} por tu servicio. El cliente no respondió en 24h.",
+                                Type = "payment",
+                                Read = false,
+                                CreatedAt = DateTime.UtcNow
+                            });
+                        }
+
+                        _context.Notifications.Add(new Notification
+                        {
+                            Id = Guid.NewGuid(),
+                            UserId = currentSearchHire.ClientId,
+                            Title = "Servicio Completado Automáticamente",
+                            Message = $"Tu servicio de €{currentSearchHire.Amount:F2} se ha completado automáticamente.",
+                            Type = "service_completion",
+                            Read = false,
+                            CreatedAt = DateTime.UtcNow
+                        });
+
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        await transaction.RollbackAsync();
+                        // Log critical error for money transaction failure
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Error processing SearchHire awaiting client decision",
+                            details: ex.ToString(),
+                            source: "SubscriptionService.ProcessAwaitingClientDecisionAsync",
+                            relatedEntityType: "Transfer",
+                            relatedEntityId: searchHireId,
+                            additionalData: new { 
+                                SearchHireId = searchHireId,
+                                ErrorMessage = ex.Message
+                            }
+                        );
+                        throw; // Re-throw para que la estrategia de ejecución pueda reintentar
+                    }
+                });
             }
             catch (Exception ex)
             {

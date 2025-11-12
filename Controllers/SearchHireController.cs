@@ -207,121 +207,11 @@ namespace newApi.Controllers
                     );
                 }
 
-                // Programar automáticamente la verificación de respuesta del experto para 24 horas después
-                var scheduledTime = searchHire.CreatedAt.AddHours(24);
-                BackgroundJob.Schedule(
-                    () => CheckExpertResponseAsync(searchHire.Id),
-                    scheduledTime - DateTime.UtcNow
-                );
                 return CreatedAtAction(nameof(GetSearchHire), new { id = searchHire.Id }, searchHire);
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new { message = "Failed to create search hire" });
-            }
-        }
-
-        /// <summary>
-        /// Verifica si el experto ha respondido en las primeras 24 horas (método para Hangfire)
-        /// </summary>
-        /// <param name="searchHireId">ID del servicio contratado</param>
-        public async Task CheckExpertResponseAsync(int searchHireId)
-        {
-            try
-            {
-                var searchHire = await _context.SearchHires
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.Expert)
-                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
-
-                if (searchHire == null)
-                {
-                    return;
-                }
-
-                // Verificar que el servicio esté activo
-                if (searchHire.Status.StatusValue != "active")
-                {
-                    return;
-                }
-
-                // Calcular si han pasado 24 horas desde la contratación
-                var timeSinceHire = DateTime.UtcNow - searchHire.CreatedAt;
-                if (timeSinceHire.TotalHours < 24)
-                {
-                    return;
-                }
-
-                // Verificar si el experto ha enviado algún mensaje
-                var hasExpertMessage = await _context.Messages
-                    .AnyAsync(m => m.Conversation.SearchHireId == searchHireId && 
-                                   m.SenderId == searchHire.ExpertId && 
-                                   m.SentAt > searchHire.CreatedAt);
-
-                if (!hasExpertMessage)
-                {
-                    // Orquestar distribución de dinero por estado final 'cancelled'
-                    var refundReason = "Expert did not respond within 24 hours - automatic refund";
-                    var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
-                        searchHireId,
-                        "cancelled",
-                        refundReason);
-                    if (!refundSuccess)
-                    {
-                        // 🚨 LOG CRÍTICO: Fallo en refund automático
-                        await _loggingService.LogCriticalAsync(
-                            message: "CRITICAL: Automatic refund failed",
-                            details: $"Automatic refund failed for SearchHire {searchHireId} - expert did not respond within 24h",
-                            userId: searchHire.ClientId,
-                            source: "SearchHireController.ProcessNoResponseRefund",
-                            relatedEntityType: "SearchHire",
-                            relatedEntityId: searchHireId,
-                            additionalData: new { 
-                                Action = "ProcessNoResponseRefund",
-                                SearchHireId = searchHireId,
-                                ClientId = searchHire.ClientId,
-                                ExpertId = searchHire.ExpertId,
-                                Amount = searchHire.Amount,
-                                Status = "cancelled",
-                                Reason = refundReason,
-                                Success = false
-                            }
-                        );
-                        return;
-                    }
-
-                    // Actualizar estado del servicio
-                    searchHire.StatusId = await GetStatusIdByValueAsync("cancelled");
-                    searchHire.UpdatedAt = DateTime.UtcNow;
-                    
-                    await _context.SaveChangesAsync();
-                    // 🚨 LOG CRÍTICO: Refund automático exitoso
-                    await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: Automatic refund processed successfully",
-                        details: $"Automatic refund processed successfully for SearchHire {searchHireId} - expert did not respond within 24h",
-                        userId: searchHire.ClientId,
-                        source: "SearchHireController.ProcessNoResponseRefund",
-                        relatedEntityType: "SearchHire",
-                        relatedEntityId: searchHireId,
-                        additionalData: new { 
-                            Action = "ProcessNoResponseRefund",
-                            SearchHireId = searchHireId,
-                            ClientId = searchHire.ClientId,
-                            ExpertId = searchHire.ExpertId,
-                            Amount = searchHire.Amount,
-                            Status = "cancelled",
-                            Reason = refundReason,
-                            Success = true
-                        }
-                    );
-                }
-                else
-                {
-                }
-            }
-            catch (Exception ex)
-            {
             }
         }
 
@@ -521,6 +411,39 @@ namespace newApi.Controllers
                             var completedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Completed.ToStringValue());
                             searchHire.StatusId = completedStatusId;
                             searchHire.UpdatedAt = DateTime.UtcNow;
+                        }
+                        
+                        // ✅ Cancelar timer de client_decision cuando el cliente aprueba o disputa
+                        var appointment = await _context.Appointments
+                            .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
+                        
+                        if (appointment != null)
+                        {
+                            var clientDecisionTimers = await _context.AppointmentTimers
+                                .Where(t => t.AppointmentId == appointment.Id && 
+                                           t.TimerType == "client_decision" && 
+                                           !t.IsExpired)
+                                .ToListAsync();
+                            
+                            foreach (var timer in clientDecisionTimers)
+                            {
+                                timer.IsExpired = true;
+                                timer.ExpiredAt = DateTime.UtcNow;
+                                
+                                // Cancelar job de Hangfire si existe
+                                if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                                {
+                                    try
+                                    {
+                                        BackgroundJob.Delete(timer.HangfireJobId);
+                                        timer.HangfireJobId = null;
+                                    }
+                                    catch
+                                    {
+                                        timer.HangfireJobId = null;
+                                    }
+                                }
+                            }
                         }
 
                         await _context.SaveChangesAsync();

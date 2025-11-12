@@ -354,12 +354,6 @@
             Helper method to get StatusId from StatusValue
             </summary>
         </member>
-        <member name="M:newApi.Controllers.SearchHireController.CheckExpertResponseAsync(System.Int32)">
-            <summary>
-            Verifica si el experto ha respondido en las primeras 24 horas (método para Hangfire)
-            </summary>
-            <param name="searchHireId">ID del servicio contratado</param>
-        </member>
         <member name="M:newApi.Controllers.SearchServiceController.GetMapExperts(System.Int32,System.Int32)">
             <summary>
             Obtiene expertos para mostrar en el mapa con información básica (sin filtros de ubicación)
@@ -461,7 +455,7 @@
             <param name="reason">Razón del refund</param>
             <param name="metadata">Metadata adicional</param>
         </member>
-        <member name="M:newApi.Controllers.SubscriptionController.CheckExpertResponseAsync(System.Int32)">
+        <member name="M:newApi.Controllers.SubscriptionController.GetMoneyDistributionConfigAsync(System.String,System.Nullable{System.Int32},System.Nullable{System.Int32})">
             <summary>
             Obtiene la configuración de distribución de dinero según el estado y categorías
             </summary>
@@ -469,10 +463,6 @@
             <param name="categoryId">ID de la categoría</param>
             <param name="serviceTypeCategoryId">ID de la categoría del tipo de servicio</param>
             <returns>Configuración de distribución de dinero</returns>
-            <summary>
-            Verifica si el experto ha respondido en las primeras 24 horas
-            </summary>
-            <param name="searchHireId">ID del servicio contratado</param>
         </member>
         <member name="M:newApi.Controllers.SubscriptionController.CalculateCanRetryOnboarding(newApi.DataLayer.Models.PostGresModels.StripeStatus,System.String,System.String)">
             <summary>
@@ -1693,6 +1683,15 @@
         <member name="M:newApi.Migrations.RemoveBalanceFieldFromUsers.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
+        <member name="T:newApi.Migrations.AddHangfireJobIdToAppointmentTimer">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddHangfireJobIdToAppointmentTimer.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddHangfireJobIdToAppointmentTimer.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
         <member name="M:newApi.Migrations.fixingerror.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
@@ -2424,32 +2423,10 @@
             Helper method to get StatusId from StatusValue
             </summary>
         </member>
-        <member name="M:newApi.Services.AppointmentService.GetStatusIdByValueAsync(System.String)">
-            <summary>
-            Helper method to get StatusId from StatusValue
-            </summary>
-        </member>
-        <member name="M:newApi.Services.AppointmentService.ValidateAppointmentLocationAsync(newApi.DataLayer.Models.PostGresModels.SearchHire,System.Nullable{System.Decimal},System.Nullable{System.Decimal})">
-            <summary>
-            Valida que la ubicación propuesta para la cita esté dentro del rango del experto
-            definido cuando se contrató el servicio. Esto asegura que el experto no pueda
-            cambiar su ubicación después de ser contratado para afectar las citas.
-            </summary>
-        </member>
-        <member name="M:newApi.Services.AppointmentService.ValidateAppointmentAvailabilityAsync(newApi.DataLayer.Models.PostGresModels.SearchHire,System.DateTime)">
-            <summary>
-            Valida que la fecha/hora propuesta para la cita esté dentro del horario de disponibilidad del experto
-            </summary>
-        </member>
-        <member name="M:newApi.Services.AppointmentService.SendAppointmentStatusChangeMessageAsync(System.Int32,System.String,System.Int32)">
-            <summary>
-            Calcula la distancia entre dos puntos geográficos usando la fórmula de Haversine
-            </summary>
-            <summary>
-            Envía un mensaje automático al chat cuando cambia el estado de una cita
-            Formato: "APPointmentStatusChange:{status_value}"
-            </summary>
-        </member>
+        <!-- Badly formed XML comment ignored for member "M:newApi.Services.AppointmentService.GetStatusIdByValueAsync(System.String)" -->
+        <!-- Badly formed XML comment ignored for member "M:newApi.Services.AppointmentService.ValidateAppointmentLocationAsync(newApi.DataLayer.Models.PostGresModels.SearchHire,System.Nullable{System.Decimal},System.Nullable{System.Decimal})" -->
+        <!-- Badly formed XML comment ignored for member "M:newApi.Services.AppointmentService.ValidateAppointmentAvailabilityAsync(newApi.DataLayer.Models.PostGresModels.SearchHire,System.DateTime)" -->
+        <!-- Badly formed XML comment ignored for member "M:newApi.Services.AppointmentService.SendAppointmentStatusChangeMessageAsync(System.Int32,System.String,System.Int32)" -->
         <member name="M:newApi.Services.IInvoiceService.GenerateInvoicePdfAsync(System.Int32)">
             <summary>
             Genera un PDF de factura para una contratación
@@ -2560,6 +2537,12 @@
         <member name="M:newApi.Services.SubscriptionService.GetStatusIdByValueAsync(System.String)">
             <summary>
             Helper method to get StatusId from StatusValue
+            </summary>
+        </member>
+        <member name="M:newApi.Services.SubscriptionService.ProcessAwaitingClientDecisionAsync">
+            <summary>
+            Solo para uso manual/admin: Procesa todos los SearchHires en awaiting_client_decision que llevan más de 24h
+            Normalmente esto se hace con scheduled jobs, pero este método permite procesamiento manual si es necesario
             </summary>
         </member>
         <member name="T:newApi.Services.SystemStatusService">

@@ -2928,26 +2928,6 @@ namespace newApi.Controllers
         }
 
 
-        [HttpPost("process-expired-services")]
-        public async Task<IActionResult> ProcessExpiredServices()
-        {
-            // 🔐 SEGURIDAD: Verificar rol en lugar de email
-            if (!_authService.IsAdmin(User))
-            {
-                return Unauthorized(new { message = "Admin access required" });
-            }
-            try
-            {
-                await _subscriptionService.ProcessExpiredServicesAsync();
-                return Ok(new { message = "Processed expired services" });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new { message = "Failed to process expired services" });
-            }
-        }
-
-
         /// <summary>
         /// Obtiene la configuración de distribución de dinero según el estado y categorías
         /// </summary>
@@ -2955,71 +2935,6 @@ namespace newApi.Controllers
         /// <param name="categoryId">ID de la categoría</param>
         /// <param name="serviceTypeCategoryId">ID de la categoría del tipo de servicio</param>
         /// <returns>Configuración de distribución de dinero</returns>
-
-
-        /// <summary>
-        /// Verifica si el experto ha respondido en las primeras 24 horas
-        /// </summary>
-        /// <param name="searchHireId">ID del servicio contratado</param>
-        public async Task CheckExpertResponseAsync(int searchHireId)
-        {
-            try
-            {
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {searchHireId} FOR UPDATE")
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.Expert)
-                    .FirstOrDefaultAsync();
-
-                if (searchHire == null)
-                {
-                    return;
-                }
-
-                // Verificar que el servicio esté activo
-                if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue())
-                {
-                    return;
-                }
-
-                // Calcular si han pasado 24 horas desde la contratación
-                var timeSinceHire = DateTime.UtcNow - searchHire.CreatedAt;
-                if (timeSinceHire.TotalHours < 24)
-                {
-                    return;
-                }
-
-                // Verificar si el experto ha enviado algún mensaje
-                var hasExpertMessage = await _context.Messages
-                    .AnyAsync(m => m.Conversation.SearchHireId == searchHireId && 
-                                   m.SenderId == searchHire.ExpertId && 
-                                   m.SentAt > searchHire.CreatedAt);
-
-                if (!hasExpertMessage)
-                {
-                    var success = await _refundService.ProcessMoneyDistributionAsync(
-                        searchHireId,
-                        "appointment_cancelled_by_no_response",
-                        "Automatic refund: expert did not respond within 24 hours",
-                        searchHire.ClientId);
-
-                    if (success)
-                    {
-                    }
-                    else
-                    {
-                    }
-                }
-                else
-                {
-                }
-            }
-            catch (Exception ex)
-            {
-            }
-        }
 
 
         private async Task<MoneyDistributionConfigDto?> GetMoneyDistributionConfigAsync(string status, int? categoryId, int? serviceTypeCategoryId)

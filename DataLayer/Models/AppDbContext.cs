@@ -558,6 +558,8 @@ namespace newApi.DataLayer.Models
                     .HasDefaultValue(false);
                 entity.Property(e => e.CreatedAt)
                     .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.HangfireJobId)
+                    .HasMaxLength(255);
 
                 // Relación con Appointment
                 entity.HasOne(at => at.Appointment)

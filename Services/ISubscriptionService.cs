@@ -3,8 +3,8 @@
     public interface ISubscriptionService
     {
         Task<SubscriptionLimits> GetUserSubscriptionLimits(int userId);
-        Task ProcessExpiredServicesAsync();
-        Task ProcessAwaitingClientDecisionAsync();
+        Task ProcessAwaitingClientDecisionAsync(); // Solo para uso manual/admin: procesa todos los que llevan más de 24h
+        Task ProcessAwaitingClientDecisionAsync(int searchHireId); // Procesa un SearchHire específico después de 24h (usado por scheduled jobs)
 
     }
 

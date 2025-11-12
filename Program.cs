@@ -412,20 +412,12 @@ app.UseHangfireDashboard("/hangfire");
 GlobalConfiguration.Configuration
     .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()));
 
-RecurringJob.AddOrUpdate<ISubscriptionService>(
-    "process-expired-services",
-    service => service.ProcessExpiredServicesAsync(),
-    Cron.Hourly);
-
-RecurringJob.AddOrUpdate<ISubscriptionService>(
-    "process-awaiting-client-decision",
-    service => service.ProcessAwaitingClientDecisionAsync(),
-    "*/5 * * * *"); // Cada 5 minutos
-
-RecurringJob.AddOrUpdate<IAppointmentService>(
-    "check-appointment-timers",
-    service => service.CheckAppointmentTimersAsync(),
-    "*/5 * * * *"); // Cada 5 minutos
+// ✅ OPTIMIZADO: Usar solo scheduled jobs para eventos específicos
+// Los recurring jobs fueron eliminados porque:
+// 1. Los scheduled jobs se programan cuando ocurre el evento (más eficiente)
+// 2. Hangfire tiene reintentos automáticos para scheduled jobs que fallan
+// 3. Evita verificar periódicamente cuando no hay nada que procesar
+// 4. Mejor práctica: programar jobs cuando ocurre el evento, no verificar periódicamente
 
 
 // Configure the HTTP request pipeline

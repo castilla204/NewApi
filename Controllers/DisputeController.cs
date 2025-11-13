@@ -370,33 +370,216 @@ namespace newApi.Controllers
                         {
                             case "refund_client":
                                 {
-                                    var refundReason = $"Dispute resolved in favor of client: {request.ResolutionComments}";
-                                    var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
-                                        dispute.SearchHire.Id,
-                                        "dispute_resolved_client",
-                                        refundReason);
-                                    if (!refundSuccess)
+                                    try
                                     {
-                                        await transaction.RollbackAsync();
-                                        return StatusCode(500, new { message = "Failed to process client refund" });
+                                        var refundReason = $"Dispute resolved in favor of client: {request.ResolutionComments}";
+                                        var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                                            dispute.SearchHire.Id,
+                                            SearchHireStatus.DisputeResolvedClient.ToStringValue(),
+                                            refundReason);
+                                        if (!refundSuccess)
+                                        {
+                                            // 🚨 LOG CRÍTICO: Error procesando reembolso al cliente
+                                            var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                                            
+                                            // Obtener el último log crítico relacionado para obtener más detalles
+                                            var lastCriticalLog = await _context.Logs
+                                                .Include(l => l.LogType)
+                                                .Where(l => l.RelatedEntityType == "SearchHire" && 
+                                                           l.RelatedEntityId == dispute.SearchHire.Id &&
+                                                           l.LogType != null &&
+                                                           l.LogType.Name == "Critical" &&
+                                                           l.Source != null &&
+                                                           l.Source.Contains("ProcessMoneyDistributionAsync"))
+                                                .OrderByDescending(l => l.CreatedAt)
+                                                .FirstOrDefaultAsync();
+                                            
+                                            var errorDetails = lastCriticalLog != null 
+                                                ? $"Last error from ProcessMoneyDistributionAsync: {lastCriticalLog.Message}. Details: {lastCriticalLog.Details}"
+                                                : "No detailed error log found. Check ProcessMoneyDistributionAsync for missing config or Stripe errors.";
+                                            
+                                            await _loggingService.LogCriticalAsync(
+                                                message: "CRITICAL: Failed to process client refund in dispute resolution",
+                                                details: $"Failed to process money distribution for dispute {disputeId} (SearchHire {dispute.SearchHire.Id}) resolved in favor of client. " +
+                                                        $"Status: {SearchHireStatus.DisputeResolvedClient.ToStringValue()}, Amount: {dispute.SearchHire.Amount}€, " +
+                                                        $"ClientId: {dispute.SearchHire.ClientId}, ExpertId: {dispute.SearchHire.ExpertId}, " +
+                                                        $"ResolutionComments: {request.ResolutionComments}. " +
+                                                        $"{errorDetails}",
+                                                userId: adminUserId,
+                                                source: "DisputeController.ResolveDispute",
+                                                relatedEntityType: "Dispute",
+                                                relatedEntityId: disputeId,
+                                                additionalData: new { 
+                                                    DisputeId = disputeId,
+                                                    SearchHireId = dispute.SearchHire.Id,
+                                                    Status = SearchHireStatus.DisputeResolvedClient.ToStringValue(),
+                                                    Amount = dispute.SearchHire.Amount,
+                                                    ClientId = dispute.SearchHire.ClientId,
+                                                    ExpertId = dispute.SearchHire.ExpertId,
+                                                    ResolutionComments = request.ResolutionComments,
+                                                    LastErrorLogId = lastCriticalLog?.Id
+                                                }
+                                            );
+                                            await transaction.RollbackAsync();
+                                            
+                                            // Devolver mensaje de error detallado
+                                            var errorMessage = lastCriticalLog != null
+                                                ? $"Failed to process client refund: {lastCriticalLog.Message}. Check logs for details (LogId: {lastCriticalLog.Id})"
+                                                : $"Failed to process client refund. Possible causes: Missing money distribution config for status '{SearchHireStatus.DisputeResolvedClient.ToStringValue()}', Stripe payment intent not found, or insufficient balance. Check logs for details.";
+                                            
+                                            return StatusCode(500, new { 
+                                                message = errorMessage,
+                                                errorCode = "CLIENT_REFUND_FAILED",
+                                                searchHireId = dispute.SearchHire.Id,
+                                                status = SearchHireStatus.DisputeResolvedClient.ToStringValue(),
+                                                amount = dispute.SearchHire.Amount,
+                                                clientId = dispute.SearchHire.ClientId,
+                                                logId = lastCriticalLog?.Id
+                                            });
+                                        }
                                     }
-                                    dispute.SearchHire.StatusId = await GetStatusIdByValueAsync("dispute_resolved_client");
+                                    catch (Exception ex)
+                                    {
+                                        // 🚨 LOG CRÍTICO: Excepción durante reembolso al cliente
+                                        var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL: Exception during client refund in dispute resolution",
+                                            details: $"Exception occurred while processing money distribution for dispute {disputeId} (SearchHire {dispute.SearchHire.Id}) resolved in favor of client. " +
+                                                    $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                                                    $"Stack Trace: {ex.StackTrace}. " +
+                                                    $"Inner Exception: {ex.InnerException?.Message}. " +
+                                                    $"Status: {SearchHireStatus.DisputeResolvedClient.ToStringValue()}, Amount: {dispute.SearchHire.Amount}€, " +
+                                                    $"ClientId: {dispute.SearchHire.ClientId}.",
+                                            userId: adminUserId,
+                                            source: "DisputeController.ResolveDispute",
+                                            relatedEntityType: "Dispute",
+                                            relatedEntityId: disputeId,
+                                            additionalData: new { 
+                                                DisputeId = disputeId,
+                                                SearchHireId = dispute.SearchHire.Id,
+                                                ErrorType = ex.GetType().Name,
+                                                ErrorMessage = ex.Message,
+                                                StackTrace = ex.StackTrace,
+                                                InnerException = ex.InnerException?.Message
+                                            }
+                                        );
+                                        await transaction.RollbackAsync();
+                                        return StatusCode(500, new { 
+                                            message = $"Failed to process client refund: {ex.Message}",
+                                            errorCode = "CLIENT_REFUND_EXCEPTION",
+                                            errorType = ex.GetType().Name,
+                                            searchHireId = dispute.SearchHire.Id
+                                        });
+                                    }
+                                    dispute.SearchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedClient.ToStringValue());
                                     dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
                                     break;
                                 }
 
                             case "pay_expert":
                                 {
-                                    var transferSuccess = await _refundService.ProcessMoneyDistributionAsync(
-                                        dispute.SearchHire.Id,
-                                        "dispute_resolved_expert",
-                                        "Dispute resolved in favor of expert");
-                                    if (!transferSuccess)
+                                    try
                                     {
-                                        await transaction.RollbackAsync();
-                                        return StatusCode(500, new { message = "Failed to process expert transfer" });
+                                        var transferSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                                            dispute.SearchHire.Id,
+                                            SearchHireStatus.DisputeResolvedExpert.ToStringValue(),
+                                            "Dispute resolved in favor of expert");
+                                        if (!transferSuccess)
+                                        {
+                                            // 🚨 LOG CRÍTICO: Error procesando transferencia al experto
+                                            var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                                            
+                                            // Obtener el último log crítico relacionado para obtener más detalles
+                                            var lastCriticalLog = await _context.Logs
+                                                .Include(l => l.LogType)
+                                                .Where(l => l.RelatedEntityType == "SearchHire" && 
+                                                           l.RelatedEntityId == dispute.SearchHire.Id &&
+                                                           l.LogType != null &&
+                                                           l.LogType.Name == "Critical" &&
+                                                           l.Source != null &&
+                                                           l.Source.Contains("ProcessMoneyDistributionAsync"))
+                                                .OrderByDescending(l => l.CreatedAt)
+                                                .FirstOrDefaultAsync();
+                                            
+                                            var errorDetails = lastCriticalLog != null 
+                                                ? $"Last error from ProcessMoneyDistributionAsync: {lastCriticalLog.Message}. Details: {lastCriticalLog.Details}"
+                                                : "No detailed error log found. Check ProcessMoneyDistributionAsync for missing config or Stripe errors.";
+                                            
+                                            await _loggingService.LogCriticalAsync(
+                                                message: "CRITICAL: Failed to process expert transfer in dispute resolution",
+                                                details: $"Failed to process money distribution for dispute {disputeId} (SearchHire {dispute.SearchHire.Id}) resolved in favor of expert. " +
+                                                        $"Status: {SearchHireStatus.DisputeResolvedExpert.ToStringValue()}, Amount: {dispute.SearchHire.Amount}€, " +
+                                                        $"ClientId: {dispute.SearchHire.ClientId}, ExpertId: {dispute.SearchHire.ExpertId}, " +
+                                                        $"ExpertStripeAccountId: {dispute.SearchHire.Expert?.ExpertProfile?.StripeAccountId ?? "NOT_SET"}, " +
+                                                        $"ResolutionComments: {request.ResolutionComments}. " +
+                                                        $"{errorDetails}",
+                                                userId: adminUserId,
+                                                source: "DisputeController.ResolveDispute",
+                                                relatedEntityType: "Dispute",
+                                                relatedEntityId: disputeId,
+                                                additionalData: new { 
+                                                    DisputeId = disputeId,
+                                                    SearchHireId = dispute.SearchHire.Id,
+                                                    Status = SearchHireStatus.DisputeResolvedExpert.ToStringValue(),
+                                                    Amount = dispute.SearchHire.Amount,
+                                                    ClientId = dispute.SearchHire.ClientId,
+                                                    ExpertId = dispute.SearchHire.ExpertId,
+                                                    ExpertStripeAccountId = dispute.SearchHire.Expert?.ExpertProfile?.StripeAccountId,
+                                                    ResolutionComments = request.ResolutionComments,
+                                                    LastErrorLogId = lastCriticalLog?.Id
+                                                }
+                                            );
+                                            await transaction.RollbackAsync();
+                                            
+                                            // Devolver mensaje de error detallado
+                                            var errorMessage = lastCriticalLog != null
+                                                ? $"Failed to process expert transfer: {lastCriticalLog.Message}. Check logs for details (LogId: {lastCriticalLog.Id})"
+                                                : $"Failed to process expert transfer. Possible causes: Missing money distribution config for status '{SearchHireStatus.DisputeResolvedExpert.ToStringValue()}', Stripe account not configured, or insufficient balance. Check logs for details.";
+                                            
+                                            return StatusCode(500, new { 
+                                                message = errorMessage,
+                                                errorCode = "EXPERT_TRANSFER_FAILED",
+                                                searchHireId = dispute.SearchHire.Id,
+                                                status = SearchHireStatus.DisputeResolvedExpert.ToStringValue(),
+                                                expertStripeAccountId = dispute.SearchHire.Expert?.ExpertProfile?.StripeAccountId ?? "NOT_SET",
+                                                logId = lastCriticalLog?.Id
+                                            });
+                                        }
                                     }
-                                    dispute.SearchHire.StatusId = await GetStatusIdByValueAsync("dispute_resolved_expert");
+                                    catch (Exception ex)
+                                    {
+                                        // 🚨 LOG CRÍTICO: Excepción durante transferencia al experto
+                                        var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL: Exception during expert transfer in dispute resolution",
+                                            details: $"Exception occurred while processing money distribution for dispute {disputeId} (SearchHire {dispute.SearchHire.Id}) resolved in favor of expert. " +
+                                                    $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                                                    $"Stack Trace: {ex.StackTrace}. " +
+                                                    $"Inner Exception: {ex.InnerException?.Message}. " +
+                                                    $"Status: {SearchHireStatus.DisputeResolvedExpert.ToStringValue()}, Amount: {dispute.SearchHire.Amount}€, " +
+                                                    $"ExpertStripeAccountId: {dispute.SearchHire.Expert?.ExpertProfile?.StripeAccountId ?? "NOT_SET"}.",
+                                            userId: adminUserId,
+                                            source: "DisputeController.ResolveDispute",
+                                            relatedEntityType: "Dispute",
+                                            relatedEntityId: disputeId,
+                                            additionalData: new { 
+                                                DisputeId = disputeId,
+                                                SearchHireId = dispute.SearchHire.Id,
+                                                ErrorType = ex.GetType().Name,
+                                                ErrorMessage = ex.Message,
+                                                StackTrace = ex.StackTrace,
+                                                InnerException = ex.InnerException?.Message
+                                            }
+                                        );
+                                        await transaction.RollbackAsync();
+                                        return StatusCode(500, new { 
+                                            message = $"Failed to process expert transfer: {ex.Message}",
+                                            errorCode = "EXPERT_TRANSFER_EXCEPTION",
+                                            errorType = ex.GetType().Name,
+                                            searchHireId = dispute.SearchHire.Id
+                                        });
+                                    }
+                                    dispute.SearchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedExpert.ToStringValue());
                                     dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
                                     break;
                                 }
@@ -467,12 +650,53 @@ namespace newApi.Controllers
                     catch (Exception ex)
                     {
                         await transaction.RollbackAsync();
+                        // 🚨 LOG CRÍTICO: Excepción durante resolución de disputa
+                        var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Exception during dispute resolution",
+                            details: $"Exception occurred while resolving dispute {disputeId}. " +
+                                    $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                                    $"Stack Trace: {ex.StackTrace}. " +
+                                    $"Inner Exception: {ex.InnerException?.Message}. " +
+                                    $"ACTION REQUIRED: Review exception details and fix the underlying issue.",
+                            userId: adminUserId,
+                            source: "DisputeController.ResolveDispute",
+                            relatedEntityType: "Dispute",
+                            relatedEntityId: disputeId,
+                            additionalData: new { 
+                                DisputeId = disputeId,
+                                ErrorType = ex.GetType().Name,
+                                ErrorMessage = ex.Message,
+                                StackTrace = ex.StackTrace,
+                                InnerException = ex.InnerException?.Message
+                            }
+                        );
                         return StatusCode(500, new { message = "Error resolving dispute" });
                     }
                 });
             }
             catch (Exception ex)
             {
+                // 🚨 LOG CRÍTICO: Excepción externa durante resolución de disputa
+                var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: External exception during dispute resolution",
+                    details: $"External exception occurred while resolving dispute. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"Stack Trace: {ex.StackTrace}. " +
+                            $"Inner Exception: {ex.InnerException?.Message}. " +
+                            $"ACTION REQUIRED: Review exception details and fix the underlying issue.",
+                    userId: adminUserId,
+                    source: "DisputeController.ResolveDispute",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
                 return StatusCode(500, new { message = ex.Message });
             }
         }

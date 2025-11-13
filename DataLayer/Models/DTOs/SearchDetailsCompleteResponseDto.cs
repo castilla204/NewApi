@@ -13,6 +13,10 @@ namespace newApi.DataLayer.Models.DTOs
         public List<DeliverableDto> Deliverables { get; set; } = new List<DeliverableDto>();
         public List<DisputeDto> Disputes { get; set; } = new List<DisputeDto>();
         /// <summary>
+        /// ✅ NUEVO: Tipos de reportes requeridos para este servicio
+        /// </summary>
+        public List<DeliverableTypeDto> RequiredDeliverableTypes { get; set; } = new List<DeliverableTypeDto>();
+        /// <summary>
         /// ✅ NUEVO: Perfil completo del experto incluyendo horarios de disponibilidad
         /// </summary>
         public ExpertProfileDto? ExpertProfile { get; set; }

@@ -24,8 +24,8 @@
                 SearchHireStatus.Completed => "completed",
                 SearchHireStatus.Cancelled => "cancelled",
                 SearchHireStatus.TransferFailed => "transfer_failed",
-                SearchHireStatus.DisputeResolvedClient => "dispute-resolved-client",
-                SearchHireStatus.DisputeResolvedExpert => "dispute-resolved-expert",
+                SearchHireStatus.DisputeResolvedClient => "dispute_resolved_client",
+                SearchHireStatus.DisputeResolvedExpert => "dispute_resolved_expert",
                 _ => throw new ArgumentException($"Unknown status: {status}")
             };
         }
@@ -56,8 +56,8 @@
                 "completed" => SearchHireStatus.Completed,
                 "cancelled" => SearchHireStatus.Cancelled,
                 "transfer_failed" => SearchHireStatus.TransferFailed,
-                "dispute-resolved-client" => SearchHireStatus.DisputeResolvedClient,
-                "dispute-resolved-expert" => SearchHireStatus.DisputeResolvedExpert,
+                "dispute_resolved_client" => SearchHireStatus.DisputeResolvedClient,
+                "dispute_resolved_expert" => SearchHireStatus.DisputeResolvedExpert,
                 _ => throw new ArgumentException($"Invalid SearchHireStatus: {value}")
             };
         }
@@ -72,8 +72,8 @@
                 "completed" => "Completado",
                 "cancelled" => "Cancelado",
                 "transfer_failed" => "Transferencia fallida",
-                "dispute-resolved-client" => "Disputa resuelta a favor del cliente",
-                "dispute-resolved-expert" => "Disputa resuelta a favor del experto",
+                "dispute_resolved_client" => "Disputa resuelta a favor del cliente",
+                "dispute_resolved_expert" => "Disputa resuelta a favor del experto",
                 _ => statusString // Si no se encuentra, devolver el original
             };
         }

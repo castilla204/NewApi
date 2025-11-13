@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.EntityFrameworkCore.Update;
 using Stripe;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.enums;
@@ -26,13 +27,19 @@ namespace newApi.Services
         /// <summary>
         /// Orquesta la distribución de dinero según un estado concreto: realiza refund al cliente y transferencia al experto.
         /// Respeta subestados de finalización y granularidad (categoría/tipo/global) mediante el statusValue recibido.
+        /// 
+        /// Estructura en 3 fases:
+        /// - Fase 1: Validaciones (sin cambiar estado)
+        /// - Fase 2: Cambio de estado (transacción BD rápida, separada)
+        /// - Fase 3: Procesamiento de dinero (Stripe, fuera de transacción de estado)
         /// </summary>
         /// <param name="searchHireId">ID del servicio contratado</param>
         /// <param name="statusValue">Estado específico, p.ej. "appointment_cancelled_by_expert_second"</param>
         /// <param name="reason">Razón del movimiento</param>
         /// <param name="initiatedByUserId">Opcional: usuario que inicia la operación (para trazas)</param>
+        /// <param name="updateState">Si true, cambia el estado de Appointment y SearchHire antes de procesar dinero (por defecto true)</param>
         /// <returns>True si refund y (si aplica) transfer se procesan correctamente</returns>
-        public async Task<bool> ProcessMoneyDistributionAsync(int searchHireId, string statusValue, string reason, int? initiatedByUserId = null)
+        public async Task<bool> ProcessMoneyDistributionAsync(int searchHireId, string statusValue, string reason, int? initiatedByUserId = null, bool updateState = true)
         {
             try
             {
@@ -49,6 +56,21 @@ namespace newApi.Services
 
                 if (searchHire == null)
                 {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: SearchHire not found - money distribution failed",
+                        details: $"SearchHire {searchHireId} not found in database. Cannot process money distribution for status {statusValue}. " +
+                                $"Reason: {reason}. " +
+                                $"ACTION REQUIRED: Verify SearchHire exists in database.",
+                        userId: initiatedByUserId ?? 0,
+                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { 
+                            SearchHireId = searchHireId,
+                            Status = statusValue,
+                            Reason = reason
+                        }
+                    );
                     return false;
                 }
 
@@ -59,11 +81,40 @@ namespace newApi.Services
                         .FirstOrDefaultAsync(s => s.StatusValue == statusValue);
                     if (statusRow != null && statusRow.StatusType == "AppointmentStatus" && statusRow.IsFinalizationStatus == false)
                     {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Invalid AppointmentStatus for money distribution",
+                            details: $"Status {statusValue} is an AppointmentStatus but is not a finalization status. " +
+                                    $"Cannot process money distribution. SearchHireId: {searchHireId}, Reason: {reason}. " +
+                                    $"ACTION REQUIRED: Use a finalization status or SearchHireStatus for money distribution.",
+                            userId: initiatedByUserId ?? searchHire.ClientId,
+                            source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId,
+                            additionalData: new { 
+                                Status = statusValue,
+                                StatusType = statusRow.StatusType,
+                                IsFinalizationStatus = statusRow.IsFinalizationStatus,
+                                Reason = reason
+                            }
+                        );
                         return false;
                     }
                 }
                 catch (Exception ex)
                 {
+                    // Log error but continue
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Error validating AppointmentStatus",
+                        details: $"Error validating status {statusValue}: {ex.Message}",
+                        userId: initiatedByUserId ?? searchHire?.ClientId ?? 0,
+                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { 
+                            Status = statusValue,
+                            Error = ex.Message
+                        }
+                    );
                 }
 
                 // Obtener configuración de distribución para el estado concreto (subestado/granularidad lo resuelve el servicio)
@@ -93,11 +144,41 @@ namespace newApi.Services
                                         .FirstOrDefaultAsync(s => s.StatusValue == finalStatusValue && s.StatusType == "SearchHireStatus");
                                     if (targetRow != null && targetRow.IsFinalizationStatus == false)
                                     {
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL: Target SearchHireStatus is not a finalization status",
+                                            details: $"Mapped status {finalStatusValue} from {statusValue} is not a finalization status. " +
+                                                    $"Cannot process money distribution. SearchHireId: {searchHireId}, Reason: {reason}. " +
+                                                    $"ACTION REQUIRED: Use a finalization status for money distribution.",
+                                            userId: initiatedByUserId ?? searchHire.ClientId,
+                                            source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                            relatedEntityType: "SearchHire",
+                                            relatedEntityId: searchHireId,
+                                            additionalData: new { 
+                                                OriginalStatus = statusValue,
+                                                MappedStatus = finalStatusValue,
+                                                IsFinalizationStatus = targetRow.IsFinalizationStatus,
+                                                Reason = reason
+                                            }
+                                        );
                                         return false;
                                     }
                                 }
                                 catch (Exception ex2)
                                 {
+                                    // Log error but continue
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL: Error validating mapped SearchHireStatus",
+                                        details: $"Error validating mapped status {finalStatusValue}: {ex2.Message}",
+                                        userId: initiatedByUserId ?? searchHire?.ClientId ?? 0,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId,
+                                        additionalData: new { 
+                                            OriginalStatus = statusValue,
+                                            MappedStatus = finalStatusValue,
+                                            Error = ex2.Message
+                                        }
+                                    );
                                 }
                                 config = await _systemStatusService.GetMoneyDistributionConfigAsync(
                                     finalStatusValue,
@@ -331,6 +412,150 @@ namespace newApi.Services
                     }
                 }
 
+                // ===== FASE 2: CAMBIAR ESTADO (transacción BD rápida, separada) =====
+                if (updateState)
+                {
+                    using var stateTransaction = await _context.Database.BeginTransactionAsync(
+                        System.Data.IsolationLevel.ReadCommitted
+                    );
+                    try
+                    {
+                        // ✅ MEJORA GROK: Cargar entidades explícitamente para evitar null references
+                        var searchHireForState = await _context.SearchHires
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.Appointment)
+                                .ThenInclude(a => a.Status)
+                            .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+                        
+                        if (searchHireForState == null)
+                        {
+                            await stateTransaction.RollbackAsync();
+                            return false;
+                        }
+                        
+                        // ✅ MEJORA GROK: Verificar estado actual (evitar dobles cancelaciones)
+                        if (searchHireForState.Status?.IsFinalizationStatus == true)
+                        {
+                            // Ya está finalizado, no cambiar estado pero continuar con dinero
+                            await stateTransaction.CommitAsync();
+                            // Continuar a Fase 3 para procesar dinero si es necesario
+                        }
+                        else
+                        {
+                            // Mapear statusValue a estados finales
+                            AppointmentStatus? appointmentStatus = MapAppointmentStatus(statusValue);
+                            
+                            // ✅ MEJORA: Verificar si el estado objetivo ya está aplicado (evitar cambios redundantes)
+                            bool stateNeedsUpdate = false;
+                            
+                            // Verificar Appointment.Status
+                            if (appointmentStatus.HasValue && searchHireForState.Appointment != null)
+                            {
+                                var appointmentStatusRow = await _context.SystemStatuses
+                                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                                             s.StatusValue == statusValue);
+                                if (appointmentStatusRow != null)
+                                {
+                                    // ✅ Verificar si el estado actual es diferente al objetivo
+                                    if (searchHireForState.Appointment.StatusId != appointmentStatusRow.Id)
+                                    {
+                                        searchHireForState.Appointment.StatusId = appointmentStatusRow.Id;
+                                        searchHireForState.Appointment.UpdatedAt = DateTime.UtcNow;
+                                        stateNeedsUpdate = true;
+                                    }
+                                }
+                            }
+                            
+                            // Verificar SearchHire.Status
+                            var targetSearchHireStatus = appointmentStatus.HasValue 
+                                ? await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatus.Value)
+                                : null;
+                            
+                            string? targetSearchHireStatusValue = null;
+                            if (!targetSearchHireStatus.HasValue)
+                            {
+                                // Si no hay mapeo de AppointmentStatus, usar statusValue directamente
+                                targetSearchHireStatusValue = statusValue;
+                            }
+                            else
+                            {
+                                targetSearchHireStatusValue = SearchHireStatusExtensions.ToStringValue(targetSearchHireStatus.Value);
+                            }
+                            
+                            if (!string.IsNullOrEmpty(targetSearchHireStatusValue))
+                            {
+                                var searchHireStatusRow = await _context.SystemStatuses
+                                    .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                             s.StatusValue == targetSearchHireStatusValue);
+                                if (searchHireStatusRow != null)
+                                {
+                                    // ✅ Verificar si el estado actual es diferente al objetivo
+                                    if (searchHireForState.StatusId != searchHireStatusRow.Id)
+                                    {
+                                        searchHireForState.StatusId = searchHireStatusRow.Id;
+                                        searchHireForState.UpdatedAt = DateTime.UtcNow;
+                                        stateNeedsUpdate = true;
+                                    }
+                                }
+                            }
+                            
+                            // Solo hacer SaveChanges si realmente hay cambios
+                            if (stateNeedsUpdate)
+                            {
+                                await _context.SaveChangesAsync();
+                            }
+                            await stateTransaction.CommitAsync();
+                            // ✅ Estado verificado/actualizado y commiteado
+                        }
+                    }
+                    catch (DbUpdateConcurrencyException ex)
+                    {
+                        // ✅ MEJORA GROK: Manejo específico de concurrencia
+                        await stateTransaction.RollbackAsync();
+                        // Cargar searchHire para obtener ClientId si no está disponible
+                        var searchHireForError = await _context.SearchHires
+                            .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Concurrency conflict updating state",
+                            details: $"Another process modified SearchHire {searchHireId} concurrently. Error: {ex.Message}",
+                            userId: initiatedByUserId ?? searchHireForError?.ClientId ?? 0,
+                            source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId,
+                            additionalData: new { 
+                                Status = statusValue,
+                                Error = ex.Message,
+                                ErrorType = ex.GetType().Name
+                            }
+                        );
+                        return false; // NO procesar dinero si no pudimos cambiar estado
+                    }
+                    catch (Exception ex)
+                    {
+                        // Error de BD al cambiar estado → Revertir
+                        await stateTransaction.RollbackAsync();
+                        // Cargar searchHire para obtener ClientId si no está disponible
+                        var searchHireForError = await _context.SearchHires
+                            .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Failed to update state before money distribution",
+                            details: $"SearchHire {searchHireId} state update failed: {ex.Message}. StackTrace: {ex.StackTrace}",
+                            userId: initiatedByUserId ?? searchHireForError?.ClientId ?? 0,
+                            source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId,
+                            additionalData: new { 
+                                Status = statusValue,
+                                Error = ex.Message,
+                                ErrorType = ex.GetType().Name,
+                                StackTrace = ex.StackTrace
+                            }
+                        );
+                        return false; // NO procesar dinero si no pudimos cambiar estado
+                    }
+                }
+
+                // ===== FASE 3: PROCESAR DINERO (fuera de transacción de estado) =====
                 // Orquestación bajo estrategia de reintento y transacción
                 var strategy = _context.Database.CreateExecutionStrategy();
                 return await strategy.ExecuteAsync(async () =>
@@ -348,12 +573,79 @@ namespace newApi.Services
                     
                     try
                     {
+                        // ✅ CRÍTICO: Verificar si el dinero ya fue procesado (prevenir duplicados)
+                        var existingRefund = await _context.FinancialTransactions
+                            .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&
+                                                       ft.RelatedEntityId == searchHireId &&
+                                                       ft.TransactionType == "Refund" &&
+                                                       ft.StripePaymentIntentId == servicePayment.StripePaymentIntentId);
+                        
+                        var existingTransfer = await _context.FinancialTransactions
+                            .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&
+                                                       ft.RelatedEntityId == searchHireId &&
+                                                       ft.TransactionType == "Payout" &&
+                                                       !string.IsNullOrEmpty(ft.StripeTransferId));
+                        
+                        // Si ya existe refund o transfer, verificar si es necesario procesar de nuevo
+                        bool refundAlreadyProcessed = existingRefund != null && !string.IsNullOrEmpty(existingRefund.StripeRefundId);
+                        bool transferAlreadyProcessed = existingTransfer != null && !string.IsNullOrEmpty(existingTransfer.StripeTransferId);
+                        
+                        // Si ambos ya están procesados, retornar true (idempotencia)
+                        if (refundAlreadyProcessed && (transferAlreadyProcessed || expertAmount == 0))
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "Money distribution already processed - idempotent call",
+                                details: $"SearchHire {searchHireId} money distribution was already processed. " +
+                                        $"Refund: {(refundAlreadyProcessed ? $"Already processed ({existingRefund.StripeRefundId})" : "Not needed")}, " +
+                                        $"Transfer: {(transferAlreadyProcessed ? $"Already processed ({existingTransfer.StripeTransferId})" : expertAmount == 0 ? "Not needed" : "Not processed")}. " +
+                                        $"Status: {statusValue}, Reason: {reason}",
+                                userId: initiatedByUserId ?? searchHire.ClientId,
+                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                additionalData: new { 
+                                    Status = statusValue,
+                                    RefundAlreadyProcessed = refundAlreadyProcessed,
+                                    TransferAlreadyProcessed = transferAlreadyProcessed,
+                                    ExistingRefundId = existingRefund?.StripeRefundId,
+                                    ExistingTransferId = existingTransfer?.StripeTransferId
+                                }
+                            );
+                            
+                            if (transaction != null)
+                            {
+                                await transaction.CommitAsync();
+                            }
+                            return true; // ✅ Ya procesado, retornar éxito
+                        }
+                        
+                        // Si solo uno está procesado, log warning pero continuar con el que falta
+                        if (refundAlreadyProcessed || transferAlreadyProcessed)
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "Partial money distribution detected - processing missing transactions",
+                                details: $"SearchHire {searchHireId} has partial money distribution. " +
+                                        $"Refund: {(refundAlreadyProcessed ? $"Already processed ({existingRefund.StripeRefundId})" : "Needs processing")}, " +
+                                        $"Transfer: {(transferAlreadyProcessed ? $"Already processed ({existingTransfer.StripeTransferId})" : "Needs processing")}. " +
+                                        $"Processing missing transactions only.",
+                                userId: initiatedByUserId ?? searchHire.ClientId,
+                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                additionalData: new { 
+                                    Status = statusValue,
+                                    RefundAlreadyProcessed = refundAlreadyProcessed,
+                                    TransferAlreadyProcessed = transferAlreadyProcessed
+                                }
+                            );
+                        }
+
                         // MODIFICACIÓN: Usar UUID para idempotency key (mejor que string custom, según docs 2025)
                         var idempotencyKey = Guid.NewGuid().ToString();
 
                         // Si hay refund y transfer, ejecutar primero la transferencia y después el refund; si el refund falla, revertir la transferencia
-                        var needsRefund = clientRefundAmount > 0;
-                        var needsTransfer = expertAmount > 0 && searchHire.ExpertId.HasValue;
+                        var needsRefund = clientRefundAmount > 0 && !refundAlreadyProcessed;
+                        var needsTransfer = expertAmount > 0 && searchHire.ExpertId.HasValue && !transferAlreadyProcessed;
 
                         // Transfer primero (si aplica)
                         if (needsTransfer)
@@ -669,6 +961,40 @@ namespace newApi.Services
                     {
                         await transaction.RollbackAsync();
                         }
+                        
+                        // ✅ MEJORA GROK: Notificar al experto si hay error de Stripe (estado ya está cambiado)
+                        if (searchHire.ExpertId.HasValue)
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Stripe error - state already updated",
+                                details: $"El estado del servicio #{searchHireId} se actualizó correctamente, pero hubo un error al procesar el pago. " +
+                                        $"Error de Stripe: {ex.Message}. " +
+                                        $"Se requiere procesamiento manual del pago. " +
+                                        $"Plan de distribución: Cliente={clientRefundAmount:F2}€ ({config.ClientPercentage}%), Experto={expertAmount:F2}€ ({config.ExpertPercentage}%), Plataforma={platformAmount:F2}€ ({config.PlatformPercentage}%). " +
+                                        $"Estado: {statusValue}, Razón: {reason}. " +
+                                        $"Transfer={(createdTransferId != null ? $"Creado ({createdTransferId})" : "No intentado")}, Refund={(createdRefundId != null ? $"Creado ({createdRefundId})" : "No intentado")}.",
+                                userId: searchHire.ExpertId.Value,
+                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                notifyUser: true, // ✅ Notificar al experto
+                                additionalData: new { 
+                                    Status = statusValue,
+                                    Reason = reason,
+                                    ClientRefundAmount = clientRefundAmount,
+                                    ExpertTransferAmount = expertAmount,
+                                    PlatformAmount = platformAmount,
+                                    PaymentIntentId = servicePayment.StripePaymentIntentId,
+                                    ExpertAccountId = searchHire.Expert?.ExpertProfile?.StripeAccountId,
+                                    CreatedTransferId = createdTransferId,
+                                    CreatedRefundId = createdRefundId,
+                                    StripeError = ex.Message,
+                                    StripeErrorType = ex.StripeError?.Type,
+                                    StripeErrorCode = ex.StripeError?.Code
+                                }
+                            );
+                        }
+                        
                         // 🚨 LOG CRÍTICO: Error de Stripe durante distribución (una sola vez, con información completa)
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Stripe exception during money distribution transaction",
@@ -677,7 +1003,7 @@ namespace newApi.Services
                                     $"Stripe Error: {ex.Message}, Type: {ex.StripeError?.Type}, Code: {ex.StripeError?.Code}, DeclineCode: {ex.StripeError?.DeclineCode}, Param: {ex.StripeError?.Param}. " +
                                     $"PaymentIntentId: {servicePayment.StripePaymentIntentId}, ExpertAccountId: {searchHire.Expert?.ExpertProfile?.StripeAccountId}. " +
                                     $"Transaction Status: Transfer={(createdTransferId != null ? $"Created ({createdTransferId})" : "Not attempted")}, Refund={(createdRefundId != null ? $"Created ({createdRefundId})" : "Not attempted")}. " +
-                                    $"ACTION REQUIRED: Review Stripe error details and retry distribution if applicable. If transfer was created, verify if reversal is needed.",
+                                    $"NOTE: State was already updated in Phase 2. ACTION REQUIRED: Review Stripe error details and retry distribution if applicable. If transfer was created, verify if reversal is needed.",
                             userId: initiatedByUserId ?? searchHire.ClientId,
                             source: "StripeRefundService.ProcessMoneyDistributionAsync",
                             relatedEntityType: "SearchHire",

@@ -1119,6 +1119,11 @@
             DTO para la respuesta completa de detalles de búsqueda
             </summary>
         </member>
+        <member name="P:newApi.DataLayer.Models.DTOs.SearchDetailsCompleteResponseDto.RequiredDeliverableTypes">
+            <summary>
+            ✅ NUEVO: Tipos de reportes requeridos para este servicio
+            </summary>
+        </member>
         <member name="P:newApi.DataLayer.Models.DTOs.SearchDetailsCompleteResponseDto.ExpertProfile">
             <summary>
             ✅ NUEVO: Perfil completo del experto incluyendo horarios de disponibilidad
@@ -1690,6 +1695,15 @@
             <inheritdoc />
         </member>
         <member name="M:newApi.Migrations.AddHangfireJobIdToAppointmentTimer.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.FixDisputeResolvedStatusConfigurations">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.FixDisputeResolvedStatusConfigurations.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.FixDisputeResolvedStatusConfigurations.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
             <inheritdoc />
         </member>
         <member name="M:newApi.Migrations.fixingerror.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">

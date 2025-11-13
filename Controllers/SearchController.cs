@@ -966,6 +966,10 @@ namespace newApi.Controllers
                         .ThenInclude(ss => ss.ServiceType)
                         .ThenInclude(st => st.ServiceTypeCategory)
                     .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.SearchService)
+                        .ThenInclude(ss => ss.SelectedDeliverableTypes)
+                        .ThenInclude(ssdt => ssdt.DeliverableType) // ✅ NUEVO: Para obtener tipos de reportes requeridos
+                    .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Appointment)
                         .ThenInclude(a => a.Status)
                     .Include(s => s.SearchHire)
@@ -1229,6 +1233,20 @@ namespace newApi.Controllers
                         Url = d.Url,
                         CreatedAt = d.CreatedAt
                     }).ToList() ?? new List<DeliverableDto>(),
+                    RequiredDeliverableTypes = search.SearchHire?.SearchService?.SelectedDeliverableTypes?
+                        .Where(ssdt => ssdt.IsSelected && ssdt.DeliverableType != null)
+                        .Select(ssdt => new DeliverableTypeDto
+                        {
+                            Id = ssdt.DeliverableType.Id,
+                            Name = ssdt.DeliverableType.Name,
+                            DisplayName = ssdt.DeliverableType.DisplayName,
+                            Description = ssdt.DeliverableType.Description,
+                            IsRequired = ssdt.DeliverableType.IsRequired,
+                            IsActive = ssdt.DeliverableType.IsActive,
+                            SortOrder = ssdt.DeliverableType.SortOrder
+                        })
+                        .OrderBy(dt => dt.SortOrder)
+                        .ToList() ?? new List<DeliverableTypeDto>(),
                     Disputes = search.SearchHire?.Disputes?.Select(d => new DisputeDto
                     {
                         Id = d.Id,

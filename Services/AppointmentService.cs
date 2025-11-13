@@ -250,145 +250,217 @@ namespace newApi.Services
 
             {
 
-                // Verificar que el SearchHire existe y no tiene ya una cita
+                // ✅ CORRECCIÓN: Usar la estrategia de ejecución para manejar transacciones con reintentos (NpgsqlRetryingExecutionStrategy)
 
-                var searchHire = await _context.SearchHires
+                var strategy = _context.Database.CreateExecutionStrategy();
 
-                    .Include(sh => sh.Appointment)
-
-                    .FirstOrDefaultAsync(sh => sh.Id == dto.SearchHireId);
-
-
-
-                if (searchHire == null)
-
-                    throw new ArgumentException("SearchHire not found");
-
-
-
-                if (searchHire.Appointment != null)
-
-                    throw new InvalidOperationException("SearchHire already has an appointment");
-
-
-
-                // Obtener el estado "awaiting_appointment"
-
-                var awaitingStatus = await _context.SystemStatuses
-
-                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-
-                                            s.StatusValue == "awaiting_appointment");
-
-
-
-                if (awaitingStatus == null)
-
-                    throw new InvalidOperationException("Awaiting appointment status not found");
-
-
-
-                // ✅ VALIDACIÓN: Verificar que la cita tenga al menos 24 horas de anticipación
-
-                var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
-
-                var timeUntilAppointment = proposedDateTime - DateTime.UtcNow;
-
-                
-
-                if (timeUntilAppointment.TotalHours < 24)
+                return await strategy.ExecuteAsync(async () =>
 
                 {
 
-                    throw new InvalidOperationException(
+                    // ✅ PROTECCIÓN: Abrir transacción ANTES de cualquier operación para evitar race conditions
 
-                        $"Las citas deben crearse con al menos 24 horas de anticipación. " +
+                    using var transaction = await _context.Database.BeginTransactionAsync();
 
-                        $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
+                    try
 
-                        $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} UTC"
+                    {
 
-                    );
+                        // ✅ PROTECCIÓN: Usar row-level locking dentro de la transacción para evitar race conditions
 
-                }
+                        // Bloquear el SearchHire con FOR UPDATE para evitar que dos usuarios creen citas simultáneamente
 
+                        var searchHire = await _context.SearchHires
 
+                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {dto.SearchHireId} FOR UPDATE")
 
-                // ✅ VALIDACIÓN: Verificar que la ubicación propuesta esté dentro del rango del experto
+                            .Include(sh => sh.Appointment)
 
-                await ValidateAppointmentLocationAsync(searchHire, dto.Latitude, dto.Longitude);
+                            .Include(sh => sh.Status)
 
+                            .Include(sh => sh.SearchService)
 
+                                .ThenInclude(ss => ss.ExpertProfile)
 
-                // ✅ VALIDACIÓN: Verificar que la fecha/hora propuesta esté dentro del horario de disponibilidad del experto
-
-                await ValidateAppointmentAvailabilityAsync(searchHire, proposedDateTime);
-
-
-
-                var appointment = new Appointment
-
-                {
-
-                    SearchHireId = dto.SearchHireId,
-
-                    StatusId = awaitingStatus.Id,
-
-                    ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc),
-
-                    ProposedTime = dto.ProposedTime,
-
-                    Location = dto.Location,
-
-                    Latitude = dto.Latitude,
-
-                    Longitude = dto.Longitude,
-
-                    DoorNumber = dto.DoorNumber,
-
-                    OwnerPhone = dto.OwnerPhone,
-
-                    SiteDetails = dto.SiteDetails,
-
-                    CreatedAt = DateTime.UtcNow,
-
-                    UpdatedAt = DateTime.UtcNow
-
-                };
+                            .FirstOrDefaultAsync();
 
 
 
-                _context.Appointments.Add(appointment);
+                        if (searchHire == null)
 
-                await _context.SaveChangesAsync();
-
-
-
-                // Cargar la cita con todas las relaciones para devolver el DTO completo
-
-                var createdAppointment = await _context.Appointments
-
-                    .Include(a => a.SearchHire)
-
-                        .ThenInclude(sh => sh.Client)
-
-                    .Include(a => a.SearchHire)
-
-                        .ThenInclude(sh => sh.Expert)
-
-                    .Include(a => a.SearchHire)
-
-                        .ThenInclude(sh => sh.Status)
-
-                    .Include(a => a.Status)
-
-                    .Include(a => a.Timers)
-
-                    .FirstAsync(a => a.Id == appointment.Id);
+                            throw new ArgumentException("SearchHire not found");
 
 
 
-                return MapToDto(createdAppointment);
+                        // ✅ VALIDACIÓN CRÍTICA: Verificar que el SearchHire NO esté finalizado
+
+                        if (searchHire.Status?.IsFinalizationStatus == true)
+
+                        {
+
+                            var searchHireStatus = searchHire.Status?.StatusValue ?? "unknown";
+
+                            throw new InvalidOperationException(
+
+                                $"No se puede crear una cita cuando el servicio está en estado de finalización '{searchHireStatus}'. " +
+
+                                $"El servicio debe estar activo para poder crear citas."
+
+                            );
+
+                        }
+
+
+
+                        // ✅ VALIDACIÓN: Verificar que no tenga ya una cita (con el bloqueo activo para evitar race conditions)
+
+                        if (searchHire.Appointment != null)
+
+                            throw new InvalidOperationException("SearchHire already has an appointment");
+
+
+
+                        // Obtener el estado "awaiting_appointment"
+
+                        var awaitingStatus = await _context.SystemStatuses
+
+                            .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+
+                                                    s.StatusValue == "awaiting_appointment");
+
+
+
+                        if (awaitingStatus == null)
+
+                            throw new InvalidOperationException("Awaiting appointment status not found");
+
+
+
+                        // ✅ VALIDACIÓN: Verificar que la cita tenga al menos 24 horas de anticipación
+
+                        var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
+
+                        var timeUntilAppointment = proposedDateTime - DateTime.UtcNow;
+
+                        
+
+                        if (timeUntilAppointment.TotalHours < 24)
+
+                        {
+
+                            throw new InvalidOperationException(
+
+                                $"Las citas deben crearse con al menos 24 horas de anticipación. " +
+
+                                $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
+
+                                $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} UTC"
+
+                            );
+
+                        }
+
+
+
+                        // ✅ VALIDACIÓN: Verificar que la ubicación propuesta esté dentro del rango del experto
+
+                        await ValidateAppointmentLocationAsync(searchHire, dto.Latitude, dto.Longitude);
+
+
+
+                        // ✅ VALIDACIÓN: Verificar que la fecha/hora propuesta esté dentro del horario de disponibilidad del experto
+
+                        await ValidateAppointmentAvailabilityAsync(searchHire, proposedDateTime);
+
+
+
+                        // Crear la cita dentro de la transacción
+
+                        var appointment = new Appointment
+
+                        {
+
+                            SearchHireId = dto.SearchHireId,
+
+                            StatusId = awaitingStatus.Id,
+
+                            ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc),
+
+                            ProposedTime = dto.ProposedTime,
+
+                            Location = dto.Location,
+
+                            Latitude = dto.Latitude,
+
+                            Longitude = dto.Longitude,
+
+                            DoorNumber = dto.DoorNumber,
+
+                            OwnerPhone = dto.OwnerPhone,
+
+                            SiteDetails = dto.SiteDetails,
+
+                            CreatedAt = DateTime.UtcNow,
+
+                            UpdatedAt = DateTime.UtcNow
+
+                        };
+
+
+
+                        _context.Appointments.Add(appointment);
+
+                        await _context.SaveChangesAsync();
+
+
+
+                        // Commit de la transacción
+
+                        await transaction.CommitAsync();
+
+
+
+                        // Cargar la cita con todas las relaciones para devolver el DTO completo
+
+                        var createdAppointment = await _context.Appointments
+
+                            .Include(a => a.SearchHire)
+
+                                .ThenInclude(sh => sh.Client)
+
+                            .Include(a => a.SearchHire)
+
+                                .ThenInclude(sh => sh.Expert)
+
+                            .Include(a => a.SearchHire)
+
+                                .ThenInclude(sh => sh.Status)
+
+                            .Include(a => a.Status)
+
+                            .Include(a => a.Timers)
+
+                            .FirstAsync(a => a.Id == appointment.Id);
+
+
+
+                        return MapToDto(createdAppointment);
+
+                    }
+
+                    catch
+
+                    {
+
+                        // Rollback en caso de error
+
+                        await transaction.RollbackAsync();
+
+                        throw;
+
+                    }
+
+                });
 
             }
 
@@ -444,7 +516,15 @@ namespace newApi.Services
 
                             .FirstOrDefaultAsync();
 
-
+                        // ✅ VALIDACIÓN CRÍTICA: Si la cita existe, verificar que el SearchHire NO esté finalizado
+                        if (appointment != null && appointment.SearchHire?.Status?.IsFinalizationStatus == true)
+                        {
+                            var searchHireStatus = appointment.SearchHire.Status?.StatusValue ?? "unknown";
+                            throw new InvalidOperationException(
+                                $"No se puede proponer una cita cuando el servicio está en estado de finalización '{searchHireStatus}'. " +
+                                $"El servicio debe estar activo para poder proponer citas."
+                            );
+                        }
 
                         // Si no existe la cita, crearla automáticamente dentro de la misma transacción
 
@@ -476,7 +556,15 @@ namespace newApi.Services
 
                         throw new UnauthorizedAccessException("Only the client can propose appointments");
 
-
+                    // ✅ VALIDACIÓN CRÍTICA: Verificar que el SearchHire NO esté finalizado
+                    if (searchHire.Status?.IsFinalizationStatus == true)
+                    {
+                        var searchHireStatus = searchHire.Status?.StatusValue ?? "unknown";
+                        throw new InvalidOperationException(
+                            $"No se puede proponer una cita cuando el servicio está en estado de finalización '{searchHireStatus}'. " +
+                            $"El servicio debe estar activo para poder proponer citas."
+                        );
+                    }
 
                     // ✅ VALIDACIÓN REMOVIDA: Permitir continuar el flujo incluso si la cuenta cambia a Deauthorized
 
@@ -914,7 +1002,15 @@ namespace newApi.Services
 
                     throw new UnauthorizedAccessException("Only the expert can confirm appointments");
 
-
+                        // ✅ VALIDACIÓN CRÍTICA: Verificar que el SearchHire NO esté finalizado
+                        if (appointment.SearchHire.Status?.IsFinalizationStatus == true)
+                        {
+                            var searchHireStatus = appointment.SearchHire.Status?.StatusValue ?? "unknown";
+                            throw new InvalidOperationException(
+                                $"No se puede confirmar una cita cuando el servicio está en estado de finalización '{searchHireStatus}'. " +
+                                $"El servicio debe estar activo para poder confirmar citas."
+                            );
+                        }
 
                         // ✅ VALIDACIÓN CRÍTICA: Solo se puede confirmar si la cita está en estado "appointment_proposed"
 
@@ -1245,7 +1341,15 @@ namespace newApi.Services
 
                 }
 
-
+                        // ✅ VALIDACIÓN CRÍTICA: Verificar que el SearchHire NO esté finalizado
+                        if (appointment.SearchHire.Status?.IsFinalizationStatus == true)
+                        {
+                            var searchHireStatus = appointment.SearchHire.Status?.StatusValue ?? "unknown";
+                            throw new InvalidOperationException(
+                                $"No se puede rechazar una cita cuando el servicio está en estado de finalización '{searchHireStatus}'. " +
+                                $"El servicio debe estar activo para poder rechazar citas."
+                            );
+                        }
 
                         // ✅ VALIDACIÓN CRÍTICA: Solo se puede rechazar si la cita está en estado "appointment_proposed"
 
@@ -1484,6 +1588,7 @@ namespace newApi.Services
                             appointment.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
 
                         // Orquestar refund+transfer según configuración del subestado de finalización
+                        // ✅ OPTIMIZACIÓN: updateState: false porque ya cambiamos el estado arriba (líneas 1466, 1512-1514)
 
                         var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
 
@@ -1493,7 +1598,8 @@ namespace newApi.Services
 
                             "Segundo rechazo del experto - penalización máxima",
 
-                            userId);
+                            userId,
+                            updateState: false);
 
                         
 
@@ -1877,7 +1983,15 @@ namespace newApi.Services
 
                     throw new UnauthorizedAccessException("Only the client or expert can cancel appointments");
 
-
+                        // ✅ VALIDACIÓN CRÍTICA: Verificar que el SearchHire NO esté finalizado
+                        if (appointment.SearchHire.Status?.IsFinalizationStatus == true)
+                        {
+                            var searchHireStatus = appointment.SearchHire.Status?.StatusValue ?? "unknown";
+                            throw new InvalidOperationException(
+                                $"No se puede cancelar una cita cuando el servicio está en estado de finalización '{searchHireStatus}'. " +
+                                $"El servicio debe estar activo para poder cancelar citas."
+                            );
+                        }
 
                         // ✅ VALIDACIÓN CRÍTICA: No se puede cancelar si está en "awaiting_appointment" (no hay propuesta aún)
 
@@ -1943,15 +2057,14 @@ namespace newApi.Services
 
                         // ✅ VALIDACIÓN: Solo se pueden cancelar citas en estados válidos
 
-                        // Estados válidos: appointment_proposed, appointment_confirmed, appointment_rejected (para reprogramar)
+                        // Estados válidos: SOLO appointment_confirmed (cuando la cita ya está confirmada)
+                        // - appointment_proposed: El experto puede rechazar/aprobar, no necesita cancelar
+                        // - appointment_rejected: El cliente puede proponer nueva cita, no necesita cancelar
+                        // - appointment_confirmed: No hay otra acción disponible, cancelar es la única opción
 
                         var validStatesForCancel = new[] { 
 
-                            "appointment_proposed", 
-
-                            "appointment_confirmed",
-
-                            "appointment_rejected" // Permitir cancelar después de rechazo para reprogramar
+                            "appointment_confirmed" // Solo cuando está confirmada
 
                         };
 
@@ -1972,8 +2085,8 @@ namespace newApi.Services
                         }
 
                         // ✅ VALIDACIÓN: No se puede cancelar si quedan menos de 12 horas antes de la cita
-                        // Solo aplicar si la cita tiene fecha/hora propuesta (appointment_proposed o appointment_confirmed)
-                        if (currentStatus == "appointment_proposed" || currentStatus == "appointment_confirmed")
+                        // Solo aplicar si la cita está confirmada (appointment_confirmed)
+                        if (currentStatus == "appointment_confirmed")
                         {
                             // Verificar que la fecha propuesta sea válida (no sea DateTime.MinValue o default)
                             if (appointment.ProposedDate != default(DateTime) && appointment.ProposedDate > DateTime.MinValue)
@@ -2151,6 +2264,7 @@ namespace newApi.Services
                 {
 
                     // Orquestar movimientos de dinero según el estado determinado (subestado → fallback final), respetando granularidad
+                    // ✅ OPTIMIZACIÓN: updateState: false porque ya cambiamos el estado arriba (líneas 2250-2252)
 
                     try
 
@@ -2164,7 +2278,8 @@ namespace newApi.Services
 
                             "Cancellation flow from CancelAppointmentAsync",
 
-                            userId);
+                            userId,
+                            updateState: false);
 
                         if (!distributionOk)
 
@@ -2615,6 +2730,7 @@ namespace newApi.Services
                                 
 
                                 // 🎯 PROCESAR DINERO AUTOMÁTICAMENTE
+                                // ✅ OPTIMIZACIÓN: updateState: false porque ya cambiamos el estado arriba
 
                                 try
 
@@ -2628,7 +2744,8 @@ namespace newApi.Services
 
                                         "Client did not respond within 24h - automatic cancellation",
 
-                                        null);
+                                        null,
+                                        updateState: false);
 
                                     
 
@@ -2967,6 +3084,7 @@ namespace newApi.Services
                                     
 
                                     // 🎯 PROCESAR DINERO AUTOMÁTICAMENTE
+                                    // ✅ OPTIMIZACIÓN: updateState: false porque ya cambiamos el estado arriba
 
                                     try
 
@@ -2980,7 +3098,8 @@ namespace newApi.Services
 
                                             "Expert did not submit report within 24h - automatic cancellation",
 
-                                            null);
+                                            null,
+                                            updateState: false);
 
                                         
 
@@ -3490,13 +3609,15 @@ namespace newApi.Services
                             timer.Appointment.UpdatedAt = DateTime.UtcNow;
 
                             // Procesar dinero automáticamente
+                            // ✅ OPTIMIZACIÓN: updateState: false porque ya cambiamos el estado arriba
                             try
                             {
                                 await _refundService.ProcessMoneyDistributionAsync(
                                     timer.Appointment.SearchHireId,
                                     "appointment_cancelled_by_no_response",
                                     "Client did not propose within 24h - automatic cancellation",
-                                    null);
+                                    null,
+                                    updateState: false);
                             }
                             catch
                             {
@@ -3517,13 +3638,15 @@ namespace newApi.Services
                             timer.Appointment.UpdatedAt = DateTime.UtcNow;
 
                             // Procesar dinero automáticamente
+                            // ✅ OPTIMIZACIÓN: updateState: false porque ya cambiamos el estado arriba
                             try
                             {
                                 await _refundService.ProcessMoneyDistributionAsync(
                                     timer.Appointment.SearchHireId,
                                     "appointment_cancelled_by_no_response",
                                     "Expert did not respond within 24h - automatic cancellation",
-                                    null);
+                                    null,
+                                    updateState: false);
                             }
                             catch
                             {
@@ -3544,13 +3667,15 @@ namespace newApi.Services
                             timer.Appointment.UpdatedAt = DateTime.UtcNow;
 
                             // Procesar dinero automáticamente
+                            // ✅ OPTIMIZACIÓN: updateState: false porque ya cambiamos el estado arriba
                             try
                             {
                                 await _refundService.ProcessMoneyDistributionAsync(
                                     timer.Appointment.SearchHireId,
                                     "appointment_cancelled_by_no_report",
                                     "Expert did not submit report within 24h - automatic cancellation",
-                                    null);
+                                    null,
+                                    updateState: false);
                             }
                             catch
                             {
@@ -3563,15 +3688,237 @@ namespace newApi.Services
                         // Si el cliente no aprueba/disputa en 24h, completar automáticamente a favor del experto
                         try
                         {
-                            await _refundService.ProcessMoneyDistributionAsync(
+                            var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
                                 timer.Appointment.SearchHireId,
                                 "completed_without_client_approval",
                                 "Client did not respond within 24h - automatic completion in favor of expert",
                                 null);
+
+                            if (!moneySuccess)
+                            {
+                                // ✅ FALLBACK: Verificar si el estado se cambió (puede haber fallado en Fase 1 o 2)
+                                // Si NO se cambió, cambiarlo manualmente para evitar que el sistema quede bloqueado
+                                var currentSearchHire = await _context.SearchHires
+                                    .Include(sh => sh.Status)
+                                    .Include(sh => sh.Appointment)
+                                        .ThenInclude(a => a.Status)
+                                    .FirstOrDefaultAsync(sh => sh.Id == timer.Appointment.SearchHireId);
+                                
+                                bool stateWasChanged = false;
+                                if (currentSearchHire != null)
+                                {
+                                    // Verificar si el estado ya está en "completed" (cambió en Fase 2)
+                                    var isCompleted = currentSearchHire.Status?.StatusValue == "completed" ||
+                                                    currentSearchHire.Status?.IsFinalizationStatus == true;
+                                    
+                                    if (!isCompleted)
+                                    {
+                                        // Estado NO cambió (falló en Fase 1 o 2) → Cambiarlo manualmente como fallback
+                                        try
+                                        {
+                                            // Cambiar SearchHire a "completed"
+                                            var completedStatus = await _context.SystemStatuses
+                                                .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                                         s.StatusValue == "completed");
+                                            if (completedStatus != null)
+                                            {
+                                                currentSearchHire.StatusId = completedStatus.Id;
+                                                currentSearchHire.UpdatedAt = DateTime.UtcNow;
+                                            }
+                                            
+                                            // Cambiar Appointment si existe
+                                            if (currentSearchHire.Appointment != null)
+                                            {
+                                                var appointmentCompletedStatus = await _context.SystemStatuses
+                                                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                                                             s.StatusValue == "appointment_completed_auto");
+                                                if (appointmentCompletedStatus == null)
+                                                {
+                                                    // Fallback: buscar cualquier estado de finalización de Appointment
+                                                    appointmentCompletedStatus = await _context.SystemStatuses
+                                                        .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                                                                 s.IsFinalizationStatus == true);
+                                                }
+                                                if (appointmentCompletedStatus != null)
+                                                {
+                                                    currentSearchHire.Appointment.StatusId = appointmentCompletedStatus.Id;
+                                                    currentSearchHire.Appointment.UpdatedAt = DateTime.UtcNow;
+                                                }
+                                            }
+                                            
+                                            await _context.SaveChangesAsync();
+                                            stateWasChanged = true;
+                                            
+                                            // Log del fallback
+                                            await _loggingService.LogWarningAsync(
+                                                message: "State updated manually after ProcessMoneyDistributionAsync failure",
+                                                details: $"SearchHire {timer.Appointment.SearchHireId} state was manually updated to 'completed' because ProcessMoneyDistributionAsync failed in Phase 1 or 2 (before state change). " +
+                                                        $"This prevents the system from being blocked. Money distribution still needs manual processing.",
+                                                userId: currentSearchHire.ClientId,
+                                                source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                                relatedEntityType: "SearchHire",
+                                                relatedEntityId: timer.Appointment.SearchHireId,
+                                                additionalData: new { 
+                                                    TimerType = "client_decision",
+                                                    TimerId = timer.Id,
+                                                    AppointmentId = timer.Appointment.Id,
+                                                    FallbackStateChange = true
+                                                }
+                                            );
+                                        }
+                                        catch (Exception fallbackEx)
+                                        {
+                                            // Si el fallback también falla, log crítico
+                                            await _loggingService.LogCriticalAsync(
+                                                message: "CRITICAL: Failed to update state in fallback after ProcessMoneyDistributionAsync failure",
+                                                details: $"SearchHire {timer.Appointment.SearchHireId} timer expired but both ProcessMoneyDistributionAsync and fallback state update failed. " +
+                                                        $"System is BLOCKED. Fallback error: {fallbackEx.Message}",
+                                                userId: currentSearchHire?.ClientId,
+                                                source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                                relatedEntityType: "SearchHire",
+                                                relatedEntityId: timer.Appointment.SearchHireId,
+                                                additionalData: new { 
+                                                    TimerType = "client_decision",
+                                                    TimerId = timer.Id,
+                                                    AppointmentId = timer.Appointment.Id,
+                                                    FallbackError = fallbackEx.Message
+                                                }
+                                            );
+                                        }
+                                    }
+                                    else
+                                    {
+                                        // Estado YA cambió (falló en Fase 3 - Stripe) → Correcto, solo falta dinero
+                                        stateWasChanged = true;
+                                    }
+                                }
+                                
+                                // 🚨 LOG CRÍTICO: Fallo en distribución de dinero por timer expirado (client_decision)
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Money distribution failed for expired client_decision timer",
+                                    details: $"Appointment {timer.Appointment.Id} timer expired (client did not respond within 24h) but money distribution failed. " +
+                                            $"Timer Type: client_decision, AppointmentId: {timer.Appointment.Id}, SearchHireId: {timer.Appointment.SearchHireId}. " +
+                                            $"ClientId: {timer.Appointment.SearchHire?.ClientId}, ExpertId: {timer.Appointment.SearchHire?.ExpertId}, Amount: {timer.Appointment.SearchHire?.Amount}€. " +
+                                            $"State was {(stateWasChanged ? "updated" : "NOT updated - system may be blocked")}. " +
+                                            $"ACTION REQUIRED: Review ProcessMoneyDistributionAsync error logs and manually process money distribution if needed.",
+                                    userId: timer.Appointment.SearchHire?.ClientId,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "Appointment",
+                                    relatedEntityId: timer.Appointment.Id,
+                                    additionalData: new { 
+                                        Action = "TimerExpired",
+                                        TimerType = "client_decision",
+                                        TimerId = timer.Id,
+                                        AppointmentId = timer.Appointment.Id,
+                                        SearchHireId = timer.Appointment.SearchHireId,
+                                        ClientId = timer.Appointment.SearchHire?.ClientId,
+                                        ExpertId = timer.Appointment.SearchHire?.ExpertId,
+                                        Status = "completed_without_client_approval",
+                                        MoneyDistributionSuccess = false,
+                                        StateWasChanged = stateWasChanged
+                                    }
+                                );
+                            }
+                            else
+                            {
+                                // ✅ LOG INFO: Timer expirado - cliente no respondió, completado automáticamente
+                                await _loggingService.LogInfoAsync(
+                                    message: "Appointment timer expired - client no response, auto-completed",
+                                    details: $"Appointment {timer.Appointment.Id} completed automatically in favor of expert due to client not responding within 24h",
+                                    userId: timer.Appointment.SearchHire?.ClientId,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "Appointment",
+                                    relatedEntityId: timer.Appointment.Id,
+                                    additionalData: new { 
+                                        Action = "TimerExpired",
+                                        TimerType = "client_decision",
+                                        TimerId = timer.Id,
+                                        AppointmentId = timer.Appointment.Id,
+                                        SearchHireId = timer.Appointment.SearchHireId,
+                                        ClientId = timer.Appointment.SearchHire?.ClientId,
+                                        ExpertId = timer.Appointment.SearchHire?.ExpertId,
+                                        Status = "completed_without_client_approval",
+                                        MoneyDistributionSuccess = true
+                                    }
+                                );
+                            }
                         }
-                        catch
+                        catch (Exception ex)
                         {
-                            // Log error pero continuar
+                            // ✅ FALLBACK: Si hay excepción, intentar cambiar estado manualmente
+                            try
+                            {
+                                var currentSearchHire = await _context.SearchHires
+                                    .Include(sh => sh.Status)
+                                    .Include(sh => sh.Appointment)
+                                        .ThenInclude(a => a.Status)
+                                    .FirstOrDefaultAsync(sh => sh.Id == timer.Appointment.SearchHireId);
+                                
+                                if (currentSearchHire != null && 
+                                    currentSearchHire.Status?.StatusValue != "completed" &&
+                                    currentSearchHire.Status?.IsFinalizationStatus != true)
+                                {
+                                    var completedStatus = await _context.SystemStatuses
+                                        .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                                 s.StatusValue == "completed");
+                                    if (completedStatus != null)
+                                    {
+                                        currentSearchHire.StatusId = completedStatus.Id;
+                                        currentSearchHire.UpdatedAt = DateTime.UtcNow;
+                                        
+                                        if (currentSearchHire.Appointment != null)
+                                        {
+                                            var appointmentCompletedStatus = await _context.SystemStatuses
+                                                .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                                                         s.StatusValue == "appointment_completed_auto");
+                                            if (appointmentCompletedStatus == null)
+                                            {
+                                                appointmentCompletedStatus = await _context.SystemStatuses
+                                                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                                                             s.IsFinalizationStatus == true);
+                                            }
+                                            if (appointmentCompletedStatus != null)
+                                            {
+                                                currentSearchHire.Appointment.StatusId = appointmentCompletedStatus.Id;
+                                                currentSearchHire.Appointment.UpdatedAt = DateTime.UtcNow;
+                                            }
+                                        }
+                                        
+                                        await _context.SaveChangesAsync();
+                                    }
+                                }
+                            }
+                            catch (Exception fallbackEx)
+                            {
+                                // Si el fallback también falla, continuar con el log crítico
+                            }
+                            
+                            // 🚨 LOG CRÍTICO: Excepción procesando distribución por falta de decisión del cliente
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Exception during money distribution for expired client_decision timer",
+                                details: $"Exception occurred while processing money distribution for Appointment {timer.Appointment.Id} due to expired client_decision timer. " +
+                                        $"Timer Type: client_decision, AppointmentId: {timer.Appointment.Id}, SearchHireId: {timer.Appointment.SearchHireId}. " +
+                                        $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                                        $"ClientId: {timer.Appointment.SearchHire?.ClientId}, ExpertId: {timer.Appointment.SearchHire?.ExpertId}, Amount: {timer.Appointment.SearchHire?.Amount}€. " +
+                                        $"Stack Trace: {ex.StackTrace}. " +
+                                        $"ACTION REQUIRED: Review exception and manually process money distribution if needed.",
+                                userId: timer.Appointment.SearchHire?.ClientId,
+                                source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                relatedEntityType: "Appointment",
+                                relatedEntityId: timer.Appointment.Id,
+                                additionalData: new { 
+                                    Action = "TimerExpired",
+                                    TimerType = "client_decision",
+                                    TimerId = timer.Id,
+                                    AppointmentId = timer.Appointment.Id,
+                                    SearchHireId = timer.Appointment.SearchHireId,
+                                    ClientId = timer.Appointment.SearchHire?.ClientId,
+                                    ExpertId = timer.Appointment.SearchHire?.ExpertId,
+                                    Status = "completed_without_client_approval",
+                                    Exception = ex.Message,
+                                    StackTrace = ex.StackTrace
+                                }
+                            );
                         }
                         break;
                 }
@@ -3580,7 +3927,49 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                // Log error pero no lanzar excepción para evitar que Hangfire reintente indefinidamente
+                // 🚨 LOG CRÍTICO: Excepción general procesando timer
+                // Intentar obtener información del timer si es posible
+                AppointmentTimer? timer = null;
+                try
+                {
+                    timer = await _context.AppointmentTimers
+                        .Include(t => t.Appointment)
+                            .ThenInclude(a => a.SearchHire)
+                        .FirstOrDefaultAsync(t => t.Id == timerId);
+                }
+                catch
+                {
+                    // Si no podemos obtener el timer, continuar sin esa información
+                }
+
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Exception during appointment timer processing",
+                    details: $"Exception occurred while processing AppointmentTimer {timerId}. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"Stack Trace: {ex.StackTrace}. " +
+                            (timer != null ? 
+                                $"Timer Type: {timer.TimerType}, AppointmentId: {timer.AppointmentId}, SearchHireId: {timer.Appointment?.SearchHireId}. " +
+                                $"ClientId: {timer.Appointment?.SearchHire?.ClientId}, ExpertId: {timer.Appointment?.SearchHire?.ExpertId}. " : 
+                                "Could not retrieve timer information. ") +
+                            $"ACTION REQUIRED: Review exception and manually process timer if needed.",
+                    userId: timer?.Appointment?.SearchHire?.ClientId,
+                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                    relatedEntityType: "AppointmentTimer",
+                    relatedEntityId: timerId,
+                    additionalData: new { 
+                        Action = "TimerProcessingException",
+                        TimerId = timerId,
+                        TimerType = timer?.TimerType,
+                        AppointmentId = timer?.AppointmentId,
+                        SearchHireId = timer?.Appointment?.SearchHireId,
+                        ClientId = timer?.Appointment?.SearchHire?.ClientId,
+                        ExpertId = timer?.Appointment?.SearchHire?.ExpertId,
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+
+                // No lanzar excepción para evitar que Hangfire reintente indefinidamente
                 // El timer se procesará en el próximo CheckAppointmentTimersAsync si es necesario
             }
         }
@@ -3752,7 +4141,15 @@ namespace newApi.Services
 
                     throw new UnauthorizedAccessException("Only the expert can submit reports");
 
-
+                        // ✅ VALIDACIÓN CRÍTICA: Verificar que el SearchHire NO esté finalizado
+                        if (appointment.SearchHire.Status?.IsFinalizationStatus == true)
+                        {
+                            var searchHireStatus = appointment.SearchHire.Status?.StatusValue ?? "unknown";
+                            throw new InvalidOperationException(
+                                $"No se puede enviar el reporte cuando el servicio está en estado de finalización '{searchHireStatus}'. " +
+                                $"El servicio debe estar activo para poder enviar reportes."
+                            );
+                        }
 
                         // ✅ VALIDACIÓN CRÍTICA: Solo se puede enviar reporte si está en estado "appointment_awaiting_report"
 

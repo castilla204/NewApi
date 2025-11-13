@@ -84,14 +84,19 @@ namespace newApi.Services
             var logStartTime = DateTime.UtcNow;
             var logStartTimeUnix = ((DateTimeOffset)logStartTime).ToUnixTimeMilliseconds();
             
+            // ✅ BEST PRACTICE: Usar scope separado para logging independiente de transacciones externas
+            // Esto asegura que los logs se guarden incluso si hay rollbacks en otras transacciones
+            using var scope = _serviceScopeFactory.CreateScope();
+            var scopedContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            
             try
             {
-                // Obtener o crear el tipo de log
-                var logType = await GetLogTypeAsync(logLevel);
+                // Obtener o crear el tipo de log usando el contexto scoped
+                var logType = await GetLogTypeAsyncInternal(scopedContext, logLevel);
                 if (logType == null)
                 {
                     // Crear tipo de log por defecto si no existe
-                    logType = await CreateDefaultLogTypeAsync(logLevel);
+                    logType = await CreateDefaultLogTypeAsyncInternal(scopedContext, logLevel);
                 }
 
                 // ✅ TIMING: Agregar información de timing automáticamente al additionalData
@@ -139,11 +144,11 @@ namespace newApi.Services
                     CreatedAt = logStartTime // ✅ TIMING: Usar timestamp capturado al inicio
                 };
 
-                _context.Logs.Add(log);
+                scopedContext.Logs.Add(log);
                 
                 // ✅ TIMING: Medir tiempo de ejecución de SaveChangesAsync
                 var saveStartTime = DateTime.UtcNow;
-                await _context.SaveChangesAsync();
+                await scopedContext.SaveChangesAsync(); // ✅ Guardar en contexto separado
                 var saveElapsedMs = (DateTime.UtcNow - saveStartTime).TotalMilliseconds;
                 var logEndTime = DateTime.UtcNow;
                 var totalLogElapsedMs = (logEndTime - logStartTime).TotalMilliseconds;
@@ -156,7 +161,7 @@ namespace newApi.Services
                     finalAdditionalDataDict["LogEndTime"] = logEndTime.ToString("O");
                     finalAdditionalDataDict["TotalLogElapsedMs"] = totalLogElapsedMs;
                     log.AdditionalData = JsonSerializer.Serialize(finalAdditionalDataDict);
-                    await _context.SaveChangesAsync(); // Actualizar con timing completo
+                    await scopedContext.SaveChangesAsync(); // ✅ Actualizar en contexto separado
                 }
 
                 // Si requiere notificación de administrador, procesar
@@ -173,7 +178,140 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
+                // ✅ BEST PRACTICE: Si falla el logging, intentar loguear el error en el contexto original
+                // pero sin lanzar excepción para no interrumpir el flujo principal
+                try
+                {
+                    // Intentar guardar el error de logging en el contexto original (si está disponible)
+                    var errorLog = new Log
+                    {
+                        Message = $"CRITICAL: Failed to save log - {ex.Message}",
+                        Details = $"Original log message: {message}. Error: {ex.StackTrace}",
+                        UserId = userId,
+                        Source = "LoggingService.LogAsync",
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    _context.Logs.Add(errorLog);
+                    await _context.SaveChangesAsync();
+                }
+                catch
+                {
+                    // Si incluso esto falla, no hacer nada para no interrumpir el flujo principal
+                }
             }
+        }
+
+        // ✅ Helper methods para usar contexto scoped
+        private async Task<LogType?> GetLogTypeAsyncInternal(AppDbContext context, string name)
+        {
+            return await context.LogTypes
+                .FirstOrDefaultAsync(lt => lt.Name == name && lt.IsActive);
+        }
+
+        private async Task<LogType> CreateDefaultLogTypeAsyncInternal(AppDbContext context, string logLevel)
+        {
+            string severityName;
+            switch (logLevel)
+            {
+                case "Critical":
+                    severityName = "Critical";
+                    break;
+                case "Error":
+                    severityName = "High";
+                    break;
+                case "Warning":
+                    severityName = "Medium";
+                    break;
+                case "Information":
+                    severityName = "Low";
+                    break;
+                case "Debug":
+                    severityName = "Low";
+                    break;
+                default:
+                    severityName = "Low";
+                    break;
+            }
+
+            var requiresAdminNotification = logLevel == "Critical";
+
+            return await CreateLogTypeAsyncInternal(context, logLevel,
+                $"Auto-generated log type for {logLevel}",
+                severityName,
+                requiresAdminNotification);
+        }
+
+        private async Task<LogType> CreateLogTypeAsyncInternal(AppDbContext context, string name, string? description = null, string? severityName = null, bool requiresAdminNotification = false, bool requiresEmailAlert = false, bool requiresSmsAlert = false)
+        {
+            var logType = new LogType
+            {
+                Name = name,
+                Description = description ?? $"Log type for {name}",
+                IsActive = true,
+                RequiresAdminNotification = requiresAdminNotification,
+                RequiresEmailAlert = requiresEmailAlert,
+                RequiresSmsAlert = requiresSmsAlert,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            // Solo asignar SeverityId si se proporciona severityName (principalmente para tipos Error)
+            if (!string.IsNullOrEmpty(severityName))
+            {
+                var severity = await GetOrCreateSeverityAsyncInternal(context, severityName);
+                logType.SeverityId = severity.Id;
+            }
+
+            context.LogTypes.Add(logType);
+            await context.SaveChangesAsync();
+
+            return logType;
+        }
+
+        private async Task<Severity> GetOrCreateSeverityAsyncInternal(AppDbContext context, string severityName)
+        {
+            var severity = await context.Severities
+                .FirstOrDefaultAsync(s => s.Name == severityName);
+
+            if (severity == null)
+            {
+                int level;
+                switch (severityName)
+                {
+                    case "Critical":
+                        level = 1;
+                        break;
+                    case "High":
+                        level = 2;
+                        break;
+                    case "Medium":
+                        level = 3;
+                        break;
+                    case "Low":
+                        level = 4;
+                        break;
+                    case "Info":
+                        level = 5;
+                        break;
+                    default:
+                        level = 5;
+                        break;
+                }
+
+                severity = new Severity
+                {
+                    Name = severityName,
+                    SortOrder = level,
+                    Description = $"Severity level: {severityName}",
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                };
+
+                context.Severities.Add(severity);
+                await context.SaveChangesAsync();
+            }
+
+            return severity;
         }
 
         public async Task<LogType?> GetLogTypeAsync(string name)

@@ -165,6 +165,11 @@ namespace newApi.DataLayer.Models
             // 🚨 RESTRICCIÓN DE BASE DE DATOS: Prevenir balances negativos
             modelBuilder.Entity<User>()
                 .HasCheckConstraint("CK_Users_Balance_NonNegative", "\"Balance\" >= 0");
+            
+            // ✅ SOFT DELETE: Query filter para excluir usuarios eliminados automáticamente
+            // NOTA: Para acceder a usuarios eliminados, usar .IgnoreQueryFilters()
+            modelBuilder.Entity<User>()
+                .HasQueryFilter(u => !u.IsDeleted);
 
             modelBuilder.Entity<UserSubscription>()
                 .HasOne(us => us.User)
@@ -253,7 +258,7 @@ namespace newApi.DataLayer.Models
                 .HasOne(sh => sh.Client)
                 .WithMany(u => u.SearchHiresAsClient)
                 .HasForeignKey(sh => sh.ClientId)
-                .OnDelete(DeleteBehavior.Restrict);
+                .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull para permitir anonimización (ClientId ahora es nullable)
 
             modelBuilder.Entity<SearchHire>()
                 .HasOne(sh => sh.Expert)
@@ -277,7 +282,7 @@ namespace newApi.DataLayer.Models
                 .HasOne(r => r.Reviewer)
                 .WithMany(u => u.ReviewsGiven)
                 .HasForeignKey(r => r.ReviewerId)
-                .OnDelete(DeleteBehavior.Restrict);
+                .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull para permitir anonimización
 
             modelBuilder.Entity<Review>()
                 .HasOne(r => r.Expert)
@@ -325,7 +330,7 @@ namespace newApi.DataLayer.Models
                 .HasOne(ft => ft.User)
                 .WithMany(u => u.FinancialTransactions)
                 .HasForeignKey(ft => ft.UserId)
-                .OnDelete(DeleteBehavior.Cascade);
+                .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull en lugar de Cascade para preservar transacciones al eliminar usuario
 
             modelBuilder.Entity<ServiceType>(entity =>
             {
@@ -359,12 +364,12 @@ namespace newApi.DataLayer.Models
                 entity.HasOne(c => c.Client)
                     .WithMany(u => u.ConversationsAsClient)
                     .HasForeignKey(c => c.ClientId)
-                    .OnDelete(DeleteBehavior.Restrict);
+                    .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull para permitir anonimización
 
                 entity.HasOne(c => c.Expert)
                     .WithMany(u => u.ConversationsAsExpert)
                     .HasForeignKey(c => c.ExpertId)
-                    .OnDelete(DeleteBehavior.Restrict);
+                    .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull para permitir anonimización
             });
 
             modelBuilder.Entity<Message>(entity =>
@@ -387,8 +392,8 @@ namespace newApi.DataLayer.Models
 
                     entity.HasOne(m => m.Sender)
                         .WithMany(u => u.MessagesSent)
-                        .HasForeignKey(m => m.SenderId)
-                        .OnDelete(DeleteBehavior.Restrict);
+                    .HasForeignKey(m => m.SenderId)
+                    .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull para permitir anonimización
                 });
 
             modelBuilder.Entity<MessageAttachment>(entity =>

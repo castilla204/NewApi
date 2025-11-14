@@ -19,6 +19,9 @@ namespace newApi.DataLayer.Models.PostGresModels
         public DateTime CreatedAt { get; set; }
         public bool IsBlocked { get; set; }
         public UserRole Role { get; set; }
+        // ✅ SOFT DELETE: Para permitir recuperación y cumplimiento legal
+        public bool IsDeleted { get; set; } = false;
+        public DateTime? DeletedAt { get; set; }
         public virtual ExpertProfile ExpertProfile { get; set; }
         public virtual ICollection<Search> Searches { get; set; }
         public virtual ICollection<Like> Likes { get; set; }

@@ -64,7 +64,9 @@ namespace newApi.Controllers
                     .Include(c => c.Client)
                     .Include(c => c.Expert)
                     .FirstOrDefaultAsync(c => c.SearchHire.SearchId == searchId &&
-                                             (c.ClientId == userId || c.ExpertId == userId || _authService.IsAdmin(User)));
+                                             ((c.ClientId.HasValue && c.ClientId.Value == userId) || 
+                                              (c.ExpertId.HasValue && c.ExpertId.Value == userId) || 
+                                              _authService.IsAdmin(User)));
                 if (conversation == null)
                 {
                     var searchHire = await _context.SearchHires
@@ -81,8 +83,9 @@ namespace newApi.Controllers
                     }
 
                     // Verificar autorización: debe ser cliente, experto o admin
-                    var isClient = searchHire.ClientId == userId;
-                    var isExpert = searchHire.ExpertId == userId;
+                    // ✅ MEJORA: Manejar nullable ClientId y ExpertId correctamente
+                    var isClient = searchHire.ClientId.HasValue && searchHire.ClientId.Value == userId;
+                    var isExpert = searchHire.ExpertId.HasValue && searchHire.ExpertId.Value == userId;
                     var isAdmin = _authService.IsAdmin(User);
                     
                     if (!isClient && !isExpert && !isAdmin)
@@ -93,8 +96,8 @@ namespace newApi.Controllers
                     conversation = new Conversation
                     {
                         SearchHireId = searchHire.Id,
-                        ClientId = searchHire.ClientId,
-                        ExpertId = searchHire.ExpertId.Value,
+                        ClientId = searchHire.ClientId, // ✅ ClientId es ahora nullable, asignación directa
+                        ExpertId = searchHire.ExpertId, // ✅ ExpertId es nullable, asignación directa
                         IsActive = true,
                         CreatedAt = DateTime.UtcNow,
                         UpdatedAt = DateTime.UtcNow,
@@ -125,7 +128,7 @@ namespace newApi.Controllers
                 var conversationDto = ConversationDto.FromConversation(conversation);
                 return Ok(conversationDto);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 throw;
             }
@@ -243,7 +246,8 @@ namespace newApi.Controllers
                 var conversation = await _context.Conversations
                     .Include(c => c.Messages)
                     .FirstOrDefaultAsync(c => c.Id == dto.ConversationId &&
-                                             (c.ClientId == userId || c.ExpertId == userId));
+                                             ((c.ClientId.HasValue && c.ClientId.Value == userId) || 
+                                              (c.ExpertId.HasValue && c.ExpertId.Value == userId)));
 
                 if (conversation == null)
                 {
@@ -384,15 +388,29 @@ namespace newApi.Controllers
                     await _context.SaveChangesAsync();
                 }
 
+                // ✅ MEJORA: Manejar SenderId nullable y obtener nombre del sender si existe
+                string? senderName = null;
+                if (message.SenderId.HasValue)
+                {
+                    var sender = await _context.Users
+                        .IgnoreQueryFilters() // Ignorar query filter para poder acceder a usuarios eliminados si es necesario
+                        .FirstOrDefaultAsync(u => u.Id == message.SenderId.Value);
+                    senderName = sender?.Name ?? "[Usuario eliminado]";
+                }
+                else
+                {
+                    senderName = "[Usuario eliminado]";
+                }
+                
                 var messageDto = new MessageDto
                 {
                     Id = message.Id,
                     ConversationId = message.ConversationId,
-                    SenderId = message.SenderId,
-                    Content = message.Content,
+                    SenderId = message.SenderId, // ✅ Ahora es nullable, asignación directa
+                    Content = message.Content ?? "[Mensaje eliminado]",
                     SentAt = message.SentAt,
                     IsRead = message.IsRead,
-                    SenderName = (await _context.Users.FindAsync(message.SenderId))?.Name,
+                    SenderName = senderName ?? "[Usuario eliminado]",
                     LocationLatitude = message.LocationLatitude,
                     LocationLongitude = message.LocationLongitude,
                     AttachmentUrls = attachmentUrls
@@ -409,8 +427,9 @@ namespace newApi.Controllers
                     await _hubContext.Clients.Group($"conversation-{dto.ConversationId}")
                         .SendAsync("ReceiveMessage", messageDto);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
+                    // Silently ignore SignalR errors - message is already saved
                 }
 
                 return Ok(messageDto);
@@ -450,7 +469,8 @@ namespace newApi.Controllers
                 var message = await _context.Messages
                     .Include(m => m.Conversation)
                     .FirstOrDefaultAsync(m => m.Id == messageId &&
-                                            (m.Conversation.ClientId == userId || m.Conversation.ExpertId == userId));
+                                            ((m.Conversation.ClientId.HasValue && m.Conversation.ClientId.Value == userId) || 
+                                             (m.Conversation.ExpertId.HasValue && m.Conversation.ExpertId.Value == userId)));
 
                 if (message == null)
                 {
@@ -470,8 +490,9 @@ namespace newApi.Controllers
                     await _hubContext.Clients.Group($"conversation-{message.ConversationId}")
                         .SendAsync("MessageRead", messageId);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
+                    // Silently ignore SignalR errors - message is already saved
                 }
 
                 return Ok();
@@ -509,7 +530,7 @@ namespace newApi.Controllers
                 }
 
                 var searchHire = await _context.SearchHires
-                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId && sh.ExpertId == userId);
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId && sh.ExpertId.HasValue && sh.ExpertId.Value == userId);
                 if (searchHire == null)
                 {
                     return NotFound(new { message = "SearchHire not found or you are not authorized to upload deliverables" });
@@ -574,8 +595,9 @@ namespace newApi.Controllers
                             .SendAsync("ReceiveDeliverable", response);
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
+                    // Silently ignore SignalR errors - message is already saved
                 }
 
                 return Ok(new { message = "Deliverable uploaded successfully", deliverable = response });
@@ -613,7 +635,10 @@ namespace newApi.Controllers
                 }
 
                 var searchHire = await _context.SearchHires
-                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId && (sh.ClientId == userId || sh.ExpertId == userId || _authService.IsAdmin(User)));
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId && 
+                                             ((sh.ClientId.HasValue && sh.ClientId.Value == userId) || 
+                                              (sh.ExpertId.HasValue && sh.ExpertId.Value == userId) || 
+                                              _authService.IsAdmin(User)));
                 if (searchHire == null)
                 {
                     return NotFound(new { message = "SearchHire not found or you are not authorized" });
@@ -679,7 +704,7 @@ namespace newApi.Controllers
     {
         public int Id { get; set; }
         public int SearchHireId { get; set; }
-        public int ClientId { get; set; }
+        public int? ClientId { get; set; } // ✅ Nullable para permitir anonimización completa
         public int? ExpertId { get; set; }
         public bool IsActive { get; set; }
         public DateTime CreatedAt { get; set; }
@@ -701,11 +726,11 @@ namespace newApi.Controllers
                 {
                     Id = m.Id,
                     ConversationId = m.ConversationId,
-                    SenderId = m.SenderId,
-                    Content = m.Content,
+                    SenderId = m.SenderId, // ✅ Ahora es nullable, asignación directa
+                    Content = m.Content ?? "[Mensaje eliminado]",
                     SentAt = m.SentAt,
                     IsRead = m.IsRead,
-                    SenderName = m.Sender?.Name,
+                    SenderName = m.SenderId.HasValue ? (m.Sender?.Name ?? "[Usuario eliminado]") : "[Usuario eliminado]",
                     LocationLatitude = m.LocationLatitude,
                     LocationLongitude = m.LocationLongitude,
                     AttachmentUrls = m.Attachments.Select(a => a.Url).ToList()
@@ -718,11 +743,11 @@ namespace newApi.Controllers
     {
         public int Id { get; set; }
         public int ConversationId { get; set; }
-        public int SenderId { get; set; }
-        public string Content { get; set; }
+        public int? SenderId { get; set; } // ✅ Nullable para permitir anonimización completa
+        public string? Content { get; set; } // ✅ Nullable para permitir anonimización
         public DateTime SentAt { get; set; }
         public bool IsRead { get; set; }
-        public string SenderName { get; set; }
+        public string? SenderName { get; set; } // ✅ Nullable para manejar usuarios eliminados
         public string? LocationLatitude { get; set; }
         public string? LocationLongitude { get; set; }
         public List<string> AttachmentUrls { get; set; } = new List<string>();
@@ -730,7 +755,7 @@ namespace newApi.Controllers
 
     public class UploadDeliverableDto
     {
-        public List<IFormFile> Files { get; set; }
+        public List<IFormFile>? Files { get; set; } // ✅ Nullable para permitir validación
     }
 
     public class DeliverableResponseDto

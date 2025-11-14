@@ -882,11 +882,11 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                // 🚨 LOG CRÍTICO: Error general al crear sesión de carga de dinero
+                // ⚠️ LOG WARNING: Error general al crear sesión de carga de dinero (el error de Stripe ya se loguea como CRITICAL arriba)
                 var userIdForLog = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userIdValue) ? userIdValue : (int?)null;
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Error creating load money session",
-                    details: $"Failed to create load money session: {ex.Message}",
+                await _loggingService.LogWarningAsync(
+                    message: "Error creating load money session",
+                    details: $"Failed to create load money session: {ex.Message}. Note: Stripe-specific errors are logged separately as CRITICAL.",
                     userId: userIdForLog,
                     source: "SubscriptionController.LoadMoney",
                     relatedEntityType: "Payment",

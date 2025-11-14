@@ -31,7 +31,7 @@ namespace newApi.Services
                 .Include(h => h.SearchService)
                     .ThenInclude(s => s.SelectedDeliverableTypes)
                         .ThenInclude(sdt => sdt.DeliverableType)
-                .Where(h => h.ClientId == userId)
+                .Where(h => h.ClientId.HasValue && h.ClientId.Value == userId)
                 .OrderByDescending(h => h.CreatedAt)
                 .ToListAsync();
 
@@ -175,16 +175,16 @@ namespace newApi.Services
                 Amount = hire.Amount,
                 CreatedAt = hire.CreatedAt,
                 UpdatedAt = hire.UpdatedAt,
-                Client = new UserDto
+                Client = hire.ClientId.HasValue && hire.Client != null ? new UserDto
                 {
                     Name = hire.Client.Name,
                     Email = hire.Client.Email
-                },
-                Expert = new UserDto
+                } : null, // ✅ Manejar caso donde ClientId es null (usuario eliminado)
+                Expert = hire.ExpertId.HasValue && hire.Expert != null ? new UserDto
                 {
                     Name = hire.Expert.Name,
                     Email = hire.Expert.Email
-                },
+                } : null, // ✅ Manejar caso donde ExpertId es null (usuario eliminado)
                 Service = new SearchServiceResponseDto
                 {
                     Id = hire.SearchService.Id,

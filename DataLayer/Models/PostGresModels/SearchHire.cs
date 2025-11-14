@@ -5,7 +5,7 @@ namespace newApi.DataLayer.Models.PostGresModels
     public class SearchHire
     {
         public int Id { get; set; }
-        public int ClientId { get; set; }
+        public int? ClientId { get; set; } // ✅ Nullable para permitir anonimización completa en eliminación de cuentas
         public int? ExpertId { get; set; }
         public int SearchServiceId { get; set; }
         public int SearchId { get; set; }

@@ -43,7 +43,7 @@ namespace newApi.DataLayer.Models.DTOs
     public class SearchHireResponseDto
     {
         public int Id { get; set; }
-        public int ClientId { get; set; }
+        public int? ClientId { get; set; } // ✅ Nullable para permitir anonimización completa
         public int? ExpertId { get; set; }
         public int SearchServiceId { get; set; }
         public int? SearchId { get; set; }
@@ -53,7 +53,7 @@ namespace newApi.DataLayer.Models.DTOs
         public decimal Amount { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
-        public UserDto Client { get; set; }
+        public UserDto? Client { get; set; } // ✅ Nullable para manejar usuarios eliminados
         public UserDto? Expert { get; set; }
         public SearchServiceResponseDto Service { get; set; }
         public ServiceTypeDto ServiceType { get; set; }

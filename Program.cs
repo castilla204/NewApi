@@ -410,7 +410,8 @@ catch (Exception ex)
 // Schedule recurring job with Hangfire
 app.UseHangfireDashboard("/hangfire");
 GlobalConfiguration.Configuration
-    .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()));
+    .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()))
+    .UseFilter(new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>())); // ✅ Filtro para alertar a soporte cuando jobs fallan definitivamente
 
 // ✅ OPTIMIZADO: Usar solo scheduled jobs para eventos específicos
 // Los recurring jobs fueron eliminados porque:

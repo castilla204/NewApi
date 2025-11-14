@@ -3,7 +3,7 @@
     public class Review
     {
         public int Id { get; set; }
-        public int ReviewerId { get; set; }
+        public int? ReviewerId { get; set; } // ✅ Nullable para permitir anonimización en eliminación de cuentas
         public int ExpertId { get; set; }
         public int SearchHireId { get; set; } 
         public int Score { get; set; }

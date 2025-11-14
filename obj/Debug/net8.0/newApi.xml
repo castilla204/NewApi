@@ -2437,10 +2437,51 @@
             Helper method to get StatusId from StatusValue
             </summary>
         </member>
+        <member name="M:newApi.Services.AccountDeletionService.DeleteUserDataAsync(System.Int32)">
+            <summary>
+            Elimina/anonimiza todos los datos de un usuario siguiendo las mejores prácticas del sistema.
+            Estructura en fases similar a ProcessMoneyDistributionAsync:
+            - Fase 1: Validaciones (dentro de transacción global)
+            - Fase 2: Anonimización de datos críticos (misma transacción global - sin nested tx)
+            - Fase 3: Eliminación de datos no críticos (misma transacción global - batch deletes)
+            - Fase 4: Eliminación del usuario (misma transacción global)
+            
+            NOTA: Todo se ejecuta en la transacción global de DeleteAccountAsync para evitar problemas de nested transactions.
+            </summary>
+        </member>
         <!-- Badly formed XML comment ignored for member "M:newApi.Services.AppointmentService.GetStatusIdByValueAsync(System.String)" -->
+        <member name="M:newApi.Services.AppointmentService.ProcessAppointmentTimerAsync(System.Int32)">
+            <summary>
+            Procesa un timer de cita expirado. Hangfire reintenta automáticamente hasta 5 veces con delays progresivos
+            (1m, 5m, 10m, 15m, 20m) para cubrir fallos transitorios de Stripe/BD/red.
+            </summary>
+        </member>
+        <member name="M:newApi.Services.AppointmentService.ProcessAppointmentToAwaitingReportAsync(System.Int32)">
+            <summary>
+            Cambia el estado de una cita confirmada a "awaiting_report" 3 horas después de la hora de la cita.
+            Hangfire reintenta automáticamente hasta 5 veces con delays progresivos
+            (1m, 5m, 10m, 15m, 20m) para cubrir fallos transitorios de BD/red.
+            </summary>
+        </member>
         <!-- Badly formed XML comment ignored for member "M:newApi.Services.AppointmentService.ValidateAppointmentLocationAsync(newApi.DataLayer.Models.PostGresModels.SearchHire,System.Nullable{System.Decimal},System.Nullable{System.Decimal})" -->
         <!-- Badly formed XML comment ignored for member "M:newApi.Services.AppointmentService.ValidateAppointmentAvailabilityAsync(newApi.DataLayer.Models.PostGresModels.SearchHire,System.DateTime)" -->
         <!-- Badly formed XML comment ignored for member "M:newApi.Services.AppointmentService.SendAppointmentStatusChangeMessageAsync(System.Int32,System.String,System.Int32)" -->
+        <member name="T:newApi.Services.HangfireFailedJobNotificationFilter">
+            <summary>
+            Filtro de Hangfire que detecta cuando un job falla definitivamente (después de agotar todos los reintentos)
+            y crea un log crítico para alertar a soporte.
+            </summary>
+        </member>
+        <member name="M:newApi.Services.HangfireFailedJobNotificationFilter.IsCriticalJob(System.String,System.String)">
+            <summary>
+            Determina si un job es crítico (procesa dinero o cambia estados)
+            </summary>
+        </member>
+        <member name="M:newApi.Services.HangfireFailedJobNotificationFilter.GetMaxRetryAttempts(Hangfire.BackgroundJob)">
+            <summary>
+            Obtiene el número máximo de reintentos configurados para el job
+            </summary>
+        </member>
         <member name="M:newApi.Services.IInvoiceService.GenerateInvoicePdfAsync(System.Int32)">
             <summary>
             Genera un PDF de factura para una contratación
@@ -2512,15 +2553,21 @@
             Obtiene el título y tipo de notificación según el nivel de log
             </summary>
         </member>
-        <member name="M:newApi.Services.StripeRefundService.ProcessMoneyDistributionAsync(System.Int32,System.String,System.String,System.Nullable{System.Int32})">
+        <member name="M:newApi.Services.StripeRefundService.ProcessMoneyDistributionAsync(System.Int32,System.String,System.String,System.Nullable{System.Int32},System.Boolean)">
             <summary>
             Orquesta la distribución de dinero según un estado concreto: realiza refund al cliente y transferencia al experto.
             Respeta subestados de finalización y granularidad (categoría/tipo/global) mediante el statusValue recibido.
+            
+            Estructura en 3 fases:
+            - Fase 1: Validaciones (sin cambiar estado)
+            - Fase 2: Cambio de estado (transacción BD rápida, separada)
+            - Fase 3: Procesamiento de dinero (Stripe, fuera de transacción de estado)
             </summary>
             <param name="searchHireId">ID del servicio contratado</param>
             <param name="statusValue">Estado específico, p.ej. "appointment_cancelled_by_expert_second"</param>
             <param name="reason">Razón del movimiento</param>
             <param name="initiatedByUserId">Opcional: usuario que inicia la operación (para trazas)</param>
+            <param name="updateState">Si true, cambia el estado de Appointment y SearchHire antes de procesar dinero (por defecto true)</param>
             <returns>True si refund y (si aplica) transfer se procesan correctamente</returns>
         </member>
         <member name="M:newApi.Services.SearchHireService.GetStatusIdByValueAsync(System.String)">

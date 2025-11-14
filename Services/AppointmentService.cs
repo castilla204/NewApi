@@ -898,11 +898,11 @@ namespace newApi.Services
 
             {
 
-                // 🚨 LOG CRÍTICO: Error general proponiendo cita (una sola vez, con información completa)
+                // ⚠️ LOG WARNING: Error general proponiendo cita (no afecta dinero, usuario puede reintentar)
 
-                await _loggingService.LogCriticalAsync(
+                await _loggingService.LogWarningAsync(
 
-                    message: "CRITICAL: Error proposing appointment",
+                    message: "Error proposing appointment",
 
                     details: $"An unexpected exception occurred while proposing appointment for SearchHire {searchHireId}. " +
 
@@ -912,7 +912,7 @@ namespace newApi.Services
 
                             $"Stack Trace: {ex.StackTrace}. " +
 
-                            $"ACTION REQUIRED: Review error - appointment proposal failed. User may need to retry.",
+                            $"User may need to retry the operation.",
 
                     userId: userId,
 
@@ -1207,7 +1207,19 @@ namespace newApi.Services
 
                 );
 
-
+                // ✅ Notificar al cliente que la cita fue confirmada por el experto
+                if (updatedAppointment.SearchHire?.ClientId != null)
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "Cita confirmada por el experto",
+                        details: $"El experto confirmó la cita para el {updatedAppointment.ProposedDate:dd/MM/yyyy} a las {updatedAppointment.ProposedTime:HH:mm} en {updatedAppointment.Location}.",
+                        userId: updatedAppointment.SearchHire.ClientId,
+                        source: "AppointmentService.ConfirmAppointmentAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: updatedAppointment.Id,
+                        notifyUser: true
+                    );
+                }
 
                 return MapToDto(updatedAppointment);
 
@@ -1233,11 +1245,11 @@ namespace newApi.Services
 
             {
 
-                // 🚨 LOG CRÍTICO: Error general confirmando cita (una sola vez, con información completa)
+                // ⚠️ LOG WARNING: Error general confirmando cita (no afecta dinero, usuario puede reintentar)
 
-                await _loggingService.LogCriticalAsync(
+                await _loggingService.LogWarningAsync(
 
-                    message: "CRITICAL: Error confirming appointment",
+                    message: "Error confirming appointment",
 
                     details: $"An unexpected exception occurred while confirming appointment {dto.AppointmentId}. " +
 
@@ -1247,7 +1259,7 @@ namespace newApi.Services
 
                             $"Stack Trace: {ex.StackTrace}. " +
 
-                            $"ACTION REQUIRED: Review error - appointment confirmation failed. User may need to retry.",
+                            $"User may need to retry the operation.",
 
                     userId: userId,
 
@@ -1879,11 +1891,11 @@ namespace newApi.Services
 
             {
 
-                // 🚨 LOG CRÍTICO: Error general rechazando cita (una sola vez, con información completa)
+                // ⚠️ LOG WARNING: Error general rechazando cita (el refund tiene su propio CRITICAL si falla, usuario puede reintentar)
 
-                await _loggingService.LogCriticalAsync(
+                await _loggingService.LogWarningAsync(
 
-                    message: "CRITICAL: Error rejecting appointment",
+                    message: "Error rejecting appointment",
 
                     details: $"An unexpected exception occurred while rejecting appointment {dto.AppointmentId}. " +
 
@@ -1893,7 +1905,7 @@ namespace newApi.Services
 
                             $"Stack Trace: {ex.StackTrace}. " +
 
-                            $"ACTION REQUIRED: Review error - appointment rejection failed. Expert may need to retry.",
+                            $"Expert may need to retry the operation. Note: If refund processing fails, it will be logged separately as CRITICAL.",
 
                     userId: userId,
 
@@ -2535,11 +2547,11 @@ namespace newApi.Services
 
             {
 
-                // 🚨 LOG CRÍTICO: Error general cancelando cita (una sola vez, con información completa)
+                // ⚠️ LOG WARNING: Error general cancelando cita (el refund tiene su propio CRITICAL si falla, usuario puede reintentar)
 
-                await _loggingService.LogCriticalAsync(
+                await _loggingService.LogWarningAsync(
 
-                    message: "CRITICAL: Error cancelling appointment",
+                    message: "Error cancelling appointment",
 
                     details: $"An unexpected exception occurred while cancelling appointment {dto.AppointmentId}. " +
 
@@ -2549,7 +2561,7 @@ namespace newApi.Services
 
                             $"Stack Trace: {ex.StackTrace}. " +
 
-                            $"ACTION REQUIRED: Review error - appointment cancellation failed. User may need to retry.",
+                            $"User may need to retry the operation. Note: If refund processing fails, it will be logged separately as CRITICAL.",
 
                     userId: userId,
 
@@ -2753,13 +2765,13 @@ namespace newApi.Services
 
                                     {
 
-                                        // 🚨 LOG CRÍTICO: Timer expirado - cliente no respondió
+                                        // ✅ LOG INFO: Timer expirado correctamente - cliente no respondió (comportamiento esperado)
 
-                                        await _loggingService.LogCriticalAsync(
+                                        await _loggingService.LogInfoAsync(
 
-                                            message: "CRITICAL: Appointment timer expired - client no response",
+                                            message: "Appointment timer expired - client no response, auto-cancelled",
 
-                                            details: $"Appointment {timer.Appointment.Id} cancelled due to client not responding within 24h",
+                                            details: $"Appointment {timer.Appointment.Id} cancelled automatically due to client not responding within 24h. Money distribution processed successfully.",
 
                                             userId: timer.Appointment.SearchHire?.ClientId,
 
@@ -3446,8 +3458,14 @@ namespace newApi.Services
 
         }
 
-
-
+        /// <summary>
+        /// Procesa un timer de cita expirado. Hangfire reintenta automáticamente hasta 5 veces con delays progresivos
+        /// (1m, 5m, 10m, 15m, 20m) para cubrir fallos transitorios de Stripe/BD/red.
+        /// </summary>
+        [AutomaticRetry(
+            Attempts = 5, 
+            DelaysInSeconds = new[] { 60, 300, 600, 900, 1200 },  // 1m, 5m, 10m, 15m, 20m
+            OnAttemptsExceeded = AttemptsExceededAction.Fail)]
         public async Task ProcessAppointmentTimerAsync(int timerId)
         {
             try
@@ -3841,6 +3859,20 @@ namespace newApi.Services
                                         MoneyDistributionSuccess = true
                                     }
                                 );
+                                
+                                // ✅ Notificar al experto que el servicio se completó automáticamente a su favor
+                                if (timer.Appointment.SearchHire?.ExpertId.HasValue == true)
+                                {
+                                    await _loggingService.LogInfoAsync(
+                                        message: "Servicio completado automáticamente a tu favor",
+                                        details: $"El cliente no respondió en 24 horas. El servicio #{timer.Appointment.SearchHireId} se completó automáticamente a tu favor y se procesó tu pago.",
+                                        userId: timer.Appointment.SearchHire.ExpertId.Value,
+                                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                        relatedEntityType: "Appointment",
+                                        relatedEntityId: timer.Appointment.Id,
+                                        notifyUser: true
+                                    );
+                                }
                             }
                         }
                         catch (Exception ex)
@@ -3974,8 +4006,15 @@ namespace newApi.Services
             }
         }
 
-
-
+        /// <summary>
+        /// Cambia el estado de una cita confirmada a "awaiting_report" 3 horas después de la hora de la cita.
+        /// Hangfire reintenta automáticamente hasta 5 veces con delays progresivos
+        /// (1m, 5m, 10m, 15m, 20m) para cubrir fallos transitorios de BD/red.
+        /// </summary>
+        [AutomaticRetry(
+            Attempts = 5, 
+            DelaysInSeconds = new[] { 60, 300, 600, 900, 1200 },  // 1m, 5m, 10m, 15m, 20m
+            OnAttemptsExceeded = AttemptsExceededAction.Fail)]
         public async Task ProcessAppointmentToAwaitingReportAsync(int appointmentId)
         {
             try
@@ -4059,6 +4098,20 @@ namespace newApi.Services
                     // Guardar el JobId en el timer
                     expertReportTimer.HangfireJobId = jobId;
                     await _context.SaveChangesAsync();
+                    
+                    // ✅ Notificar al experto que debe enviar el reporte en 24 horas
+                    if (searchHire.ExpertId.HasValue)
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "Debes enviar el reporte de la cita",
+                            details: $"Han pasado 3 horas desde la cita. Tienes 24 horas para enviar el reporte del servicio #{searchHire.Id}. Si no lo envías a tiempo, la cita será cancelada automáticamente.",
+                            userId: searchHire.ExpertId.Value,
+                            source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: appointment.Id,
+                            notifyUser: true
+                        );
+                    }
                     
                     // ✅ Marcar el timer de transición como expirado ya que el job se ejecutó exitosamente
                     var transitionTimers = await _context.AppointmentTimers
@@ -4353,6 +4406,20 @@ namespace newApi.Services
                         // ✅ COMMIT: Confirmar la transacción
 
                         await transaction.CommitAsync();
+                        
+                // ✅ Notificar al cliente que el experto envió el reporte
+                if (appointment.SearchHire?.ClientId != null)
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "Reporte del experto recibido",
+                        details: $"El experto envió el reporte del servicio #{appointment.SearchHireId}. Tienes 24 horas para aprobar o disputar el servicio.",
+                        userId: appointment.SearchHire.ClientId,
+                        source: "AppointmentService.SubmitExpertReportAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointment.Id,
+                        notifyUser: true
+                    );
+                }
 
                 // Cargar la cita actualizada con todas las relaciones
 
@@ -4414,11 +4481,11 @@ namespace newApi.Services
 
             {
 
-                // 🚨 LOG CRÍTICO: Error general enviando reporte de experto (una sola vez, con información completa)
+                // ⚠️ LOG WARNING: Error general enviando reporte de experto (no afecta dinero, usuario puede reintentar)
 
-                await _loggingService.LogCriticalAsync(
+                await _loggingService.LogWarningAsync(
 
-                    message: "CRITICAL: Error submitting expert report",
+                    message: "Error submitting expert report",
 
                     details: $"An unexpected exception occurred while submitting expert report for appointment {appointmentId}. " +
 
@@ -4428,7 +4495,7 @@ namespace newApi.Services
 
                             $"Stack Trace: {ex.StackTrace}. " +
 
-                            $"ACTION REQUIRED: Review error - report submission failed. Expert may need to retry.",
+                            $"Expert may need to retry the operation.",
 
                     userId: expertId,
 

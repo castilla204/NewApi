@@ -6,7 +6,7 @@
     {
         public int Id { get; set; }
         public int ConversationId { get; set; } // Ties the message to a conversation
-        public int SenderId { get; set; } // The user (client or expert) who sent the message
+        public int? SenderId { get; set; } // ✅ Nullable para permitir anonimización en eliminación de cuentas
         public string? Content { get; set; } // The message text
         public DateTime SentAt { get; set; } = DateTime.UtcNow;
         public bool IsRead { get; set; } = false; // Tracks if the message has been read

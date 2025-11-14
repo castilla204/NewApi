@@ -10,7 +10,7 @@
     public class ReviewResponseDto
     {
         public int Id { get; set; }
-        public int ReviewerId { get; set; }
+        public int? ReviewerId { get; set; } // ✅ Nullable para permitir anonimización completa
         public int ExpertId { get; set; }
         public int SearchHireId { get; set; }
         public int Score { get; set; }

@@ -3,7 +3,7 @@
     public class FinancialTransaction
     {
         public int Id { get; set; }
-        public int UserId { get; set; }
+        public int? UserId { get; set; } // ✅ Nullable para permitir anonimización en eliminación de cuentas
         public decimal Amount { get; set; }
         public string TransactionType { get; set; } // "Deposit", "ServicePayment", "Refund", "Payout"
         public string? RelatedEntityType { get; set; } // "SearchHire" para ServicePayment, NULL para Deposit

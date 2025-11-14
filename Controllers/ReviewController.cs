@@ -57,7 +57,7 @@ namespace newApi.Controllers
                 var searchHire = await _context.SearchHires
                     .Include(sh => sh.Status)
                     .Include(sh => sh.SearchService)
-                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId && sh.ClientId == userId);
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId && sh.ClientId.HasValue && sh.ClientId.Value == userId);
                 if (searchHire == null)
                 {
                     return NotFound(new { message = "SearchHire not found or you are not authorized to review this hire" });

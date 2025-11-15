@@ -415,15 +415,21 @@ namespace newApi.Services
                 // ===== FASE 2: CAMBIAR ESTADO (transacción BD rápida, separada) =====
                 if (updateState)
                 {
-                    // ✅ CORRECCIÓN: Usar estrategia de ejecución para manejar transacciones con reintentos (NpgsqlRetryingExecutionStrategy)
-                    var stateStrategy = _context.Database.CreateExecutionStrategy();
-                    var stateUpdateSuccess = await stateStrategy.ExecuteAsync(async () =>
+                    // ✅ CORRECCIÓN: Verificar si ya hay una transacción activa (ej: desde AccountDeletionService)
+                    var existingTransaction = _context.Database.CurrentTransaction;
+                    bool stateUpdateSuccess = false;
+                    
+                    // ✅ Si no hay transacción existente, crear una nueva con estrategia de reintento
+                    if (existingTransaction == null)
                     {
-                        using var stateTransaction = await _context.Database.BeginTransactionAsync(
-                            System.Data.IsolationLevel.ReadCommitted
-                        );
-                        try
+                        var stateStrategy = _context.Database.CreateExecutionStrategy();
+                        stateUpdateSuccess = await stateStrategy.ExecuteAsync(async () =>
                         {
+                            using var stateTransaction = await _context.Database.BeginTransactionAsync(
+                                System.Data.IsolationLevel.ReadCommitted
+                            );
+                            try
+                            {
                             // ✅ MEJORA GROK: Cargar entidades explícitamente para evitar null references
                             var searchHireForState = await _context.SearchHires
                                 .Include(sh => sh.Status)
@@ -556,6 +562,138 @@ namespace newApi.Services
                         return false; // NO procesar dinero si no pudimos cambiar estado
                     }
                     });
+                    }
+                    else
+                    {
+                        // ✅ Usar transacción existente - ejecutar sin crear nueva transacción
+                        try
+                        {
+                            // ✅ MEJORA GROK: Cargar entidades explícitamente para evitar null references
+                            var searchHireForState = await _context.SearchHires
+                                .Include(sh => sh.Status)
+                                .Include(sh => sh.Appointment)
+                                    .ThenInclude(a => a.Status)
+                                .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+                        
+                            if (searchHireForState == null)
+                            {
+                                stateUpdateSuccess = false;
+                            }
+                            else if (searchHireForState.Status?.IsFinalizationStatus == true)
+                            {
+                                // Ya está finalizado, no cambiar estado pero continuar con dinero
+                                stateUpdateSuccess = true; // Estado ya estaba finalizado, continuar con dinero
+                            }
+                            else
+                            {
+                                // Mapear statusValue a estados finales
+                                AppointmentStatus? appointmentStatus = MapAppointmentStatus(statusValue);
+                                
+                                // ✅ MEJORA: Verificar si el estado objetivo ya está aplicado (evitar cambios redundantes)
+                                bool stateNeedsUpdate = false;
+                                
+                                // Verificar Appointment.Status
+                                if (appointmentStatus.HasValue && searchHireForState.Appointment != null)
+                                {
+                                    var appointmentStatusRow = await _context.SystemStatuses
+                                        .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                                                 s.StatusValue == statusValue);
+                                    if (appointmentStatusRow != null)
+                                    {
+                                        // ✅ Verificar si el estado actual es diferente al objetivo
+                                        if (searchHireForState.Appointment.StatusId != appointmentStatusRow.Id)
+                                        {
+                                            searchHireForState.Appointment.StatusId = appointmentStatusRow.Id;
+                                            searchHireForState.Appointment.UpdatedAt = DateTime.UtcNow;
+                                            stateNeedsUpdate = true;
+                                        }
+                                    }
+                                }
+                                
+                                // Verificar SearchHire.Status
+                                var targetSearchHireStatus = appointmentStatus.HasValue 
+                                    ? await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatus.Value)
+                                    : null;
+                                
+                                string? targetSearchHireStatusValue = null;
+                                if (!targetSearchHireStatus.HasValue)
+                                {
+                                    // Si no hay mapeo de AppointmentStatus, usar statusValue directamente
+                                    targetSearchHireStatusValue = statusValue;
+                                }
+                                else
+                                {
+                                    targetSearchHireStatusValue = SearchHireStatusExtensions.ToStringValue(targetSearchHireStatus.Value);
+                                }
+                                
+                                if (!string.IsNullOrEmpty(targetSearchHireStatusValue))
+                                {
+                                    var searchHireStatusRow = await _context.SystemStatuses
+                                        .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                                 s.StatusValue == targetSearchHireStatusValue);
+                                    if (searchHireStatusRow != null)
+                                    {
+                                        // ✅ Verificar si el estado actual es diferente al objetivo
+                                        if (searchHireForState.StatusId != searchHireStatusRow.Id)
+                                        {
+                                            searchHireForState.StatusId = searchHireStatusRow.Id;
+                                            searchHireForState.UpdatedAt = DateTime.UtcNow;
+                                            stateNeedsUpdate = true;
+                                        }
+                                    }
+                                }
+                                
+                                // Solo hacer SaveChanges si realmente hay cambios
+                                if (stateNeedsUpdate)
+                                {
+                                    await _context.SaveChangesAsync();
+                                }
+                                // ✅ Estado verificado/actualizado (sin commit - usa transacción existente)
+                                stateUpdateSuccess = true; // Estado actualizado exitosamente
+                            }
+                        }
+                        catch (DbUpdateConcurrencyException ex)
+                        {
+                            // ✅ MEJORA GROK: Manejo específico de concurrencia
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Concurrency conflict updating state",
+                                details: $"Another process modified SearchHire {searchHireId} concurrently. Error: {ex.Message}. " +
+                                        $"Note: Using existing transaction from caller, rollback will be handled by caller.",
+                                userId: initiatedByUserId ?? searchHire?.ClientId ?? 0,
+                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                additionalData: new { 
+                                    Status = statusValue,
+                                    Error = ex.Message,
+                                    ErrorType = ex.GetType().Name,
+                                    UsingExistingTransaction = true
+                                }
+                            );
+                            stateUpdateSuccess = false;
+                        }
+                        catch (Exception ex)
+                        {
+                            // Error de BD al cambiar estado
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Failed to update state before money distribution",
+                                details: $"SearchHire {searchHireId} state update failed: {ex.Message}. StackTrace: {ex.StackTrace}. " +
+                                        $"Note: Using existing transaction from caller, rollback will be handled by caller.",
+                                userId: initiatedByUserId ?? searchHire?.ClientId ?? 0,
+                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                additionalData: new { 
+                                    Status = statusValue,
+                                    Error = ex.Message,
+                                    ErrorType = ex.GetType().Name,
+                                    StackTrace = ex.StackTrace,
+                                    UsingExistingTransaction = true
+                                }
+                            );
+                            stateUpdateSuccess = false;
+                        }
+                    }
 
                     // ✅ Verificar si el cambio de estado fue exitoso
                     if (!stateUpdateSuccess)
@@ -659,13 +797,14 @@ namespace newApi.Services
 
                 // ===== FASE 3: PROCESAR DINERO (fuera de transacción de estado) =====
                 // Orquestación bajo estrategia de reintento y transacción
-                var strategy = _context.Database.CreateExecutionStrategy();
-                return await strategy.ExecuteAsync(async () =>
+                // ✅ CORRECCIÓN: Verificar si ya hay una transacción activa ANTES de usar CreateExecutionStrategy
+                var existingTransactionForMoney = _context.Database.CurrentTransaction;
+                
+                // ✅ Función auxiliar para procesar dinero (reutilizable)
+                async Task<bool> ProcessMoneyAsync()
                 {
-                    // ✅ CORRECCIÓN: Verificar si ya hay una transacción activa
-                    var existingTransaction = _context.Database.CurrentTransaction;
                     IDbContextTransaction transaction = null;
-                    if (existingTransaction == null)
+                    if (existingTransactionForMoney == null)
                     {
                         transaction = await _context.Database.BeginTransactionAsync();
                     }
@@ -950,7 +1089,7 @@ namespace newApi.Services
                                 }
 
                                 // ✅ CORRECCIÓN: Solo hacer rollback si creamos la transacción
-                                if (existingTransaction == null)
+                                if (transaction != null)
                                 {
                                     await transaction.RollbackAsync();
                                 }
@@ -1168,7 +1307,20 @@ namespace newApi.Services
                         );
                         return false;
                     }
-                });
+                };
+                
+                // ✅ Si no hay transacción existente, usar estrategia de reintento
+                if (existingTransactionForMoney == null)
+                {
+                    var strategy = _context.Database.CreateExecutionStrategy();
+                    return await strategy.ExecuteAsync(ProcessMoneyAsync);
+                }
+                else
+                {
+                    // ✅ Usar transacción existente - ejecutar directamente sin estrategia de reintento
+                    // (el reintento se maneja a nivel de la transacción global)
+                    return await ProcessMoneyAsync();
+                }
             }
             catch (Exception ex)
             {

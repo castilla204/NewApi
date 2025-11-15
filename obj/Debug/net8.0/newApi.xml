@@ -2444,11 +2444,29 @@
         <member name="M:newApi.Migrations.MakeUserFieldsNullableForAccountDeletionAnonymization.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:newApi.Services.AccountDeletionService.GetStatusIdByValueAsync(System.String,System.Threading.CancellationToken)">
-            <summary>
-            Helper method to get StatusId from StatusValue with caching
-            ✅ MEJORA: Cache de estados para mejorar performance
-            </summary>
+        <member name="T:newApi.Migrations.MakeExpertIdNullableInSearchHires">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeExpertIdNullableInSearchHires.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeExpertIdNullableInSearchHires.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeExpertIdNullableInSearchHires.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.MakeExpertProfileIdNullableInSearchServices">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeExpertProfileIdNullableInSearchServices.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeExpertProfileIdNullableInSearchServices.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeExpertProfileIdNullableInSearchServices.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
         </member>
         <member name="M:newApi.Services.AccountDeletionService.DeleteUserDataAsync(System.Int32,System.Threading.CancellationToken)">
             <summary>

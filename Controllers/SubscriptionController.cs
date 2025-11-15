@@ -2533,10 +2533,40 @@ namespace newApi.Controllers
                 // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
                 var user = await _context.Users
                     .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
+                    .Include(u => u.ExpertProfile)
                     .FirstOrDefaultAsync();
                 if (user == null)
                 {
                     return NotFound(new { message = "User not found" });
+                }
+
+                // 🚨 VALIDACIÓN CRÍTICA: Los expertos no pueden crear contrataciones como clientes
+                // ✅ IMPORTANTE: Deben usar una cuenta distinta (no registrada como experto) para contratar
+                // ✅ MEJORA: Verificar explícitamente si tiene ExpertProfile en la BD (no solo en memoria)
+                var hasExpertProfile = await _context.ExpertProfiles
+                    .AnyAsync(ep => ep.UserId == userId);
+                
+                if (user.Role == UserRole.Expert || hasExpertProfile || user.ExpertProfile != null)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Expert attempted to create contract as client",
+                        details: $"User {userId} (Email: {user.Email}, Role: {user.Role}, HasExpertProfile: {hasExpertProfile}) attempted to create a contract as client. Blocked.",
+                        userId: userId,
+                        source: "SubscriptionController.HireService",
+                        relatedEntityType: "User",
+                        relatedEntityId: userId,
+                        additionalData: new { 
+                            UserId = userId,
+                            UserEmail = user.Email,
+                            UserRole = user.Role.ToString(),
+                            HasExpertProfileInMemory = user.ExpertProfile != null,
+                            HasExpertProfileInDb = hasExpertProfile
+                        }
+                    );
+                    
+                    return BadRequest(new { 
+                        message = "Los expertos no pueden crear contrataciones. Debes usar una cuenta distinta (no registrada como experto) para contratar servicios."
+                    });
                 }
 
                 // ✅ COMENTADO: Verificación de teléfono ya no es necesaria

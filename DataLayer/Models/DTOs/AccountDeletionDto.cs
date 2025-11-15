@@ -20,6 +20,10 @@ namespace newApi.DataLayer.Models.DTOs
         public List<ActiveContractInfo> ActiveContracts { get; set; } = new List<ActiveContractInfo>();
         public List<DisputeCreatedInfo> DisputesCreated { get; set; } = new List<DisputeCreatedInfo>();
         public bool RequiresManualReview { get; set; }
+        // ✅ MEJORA: IDs de contrataciones que fallaron para facilitar revisión manual
+        public List<int> FailedSearchHireIds { get; set; } = new List<int>();
+        // ✅ MEJORA: Cantidad de contrataciones que fallaron
+        public int FailedContractsCount { get; set; }
     }
 
     /// <summary>

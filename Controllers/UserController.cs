@@ -4,6 +4,8 @@ using System.Security.Claims;
 using newApi.Services;
 using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.DTOs;
+using newApi.DataLayer.Models;
+using Microsoft.EntityFrameworkCore;
 
 [Route("api/[controller]")]
 [ApiController]
@@ -12,16 +14,18 @@ public class UserController : ControllerBase
         private readonly UserService _userService;
         private readonly IAuthorizationServices _authService;
         private readonly ILoggingService _loggingService;
+        private readonly AppDbContext _context;
 
     public UserController(
         UserService userService,
-
         IAuthorizationServices authService,
-        ILoggingService loggingService)
+        ILoggingService loggingService,
+        AppDbContext context)
     {
         _userService = userService;
         _authService = authService;
         _loggingService = loggingService;
+        _context = context;
     }
 
     [Authorize]
@@ -334,6 +338,21 @@ public class UserController : ControllerBase
             var (success, token, user, expertProfile) = await _userService.BecomeExpert(userId, request);
             if (!success)
             {
+                // Verificar si el error es por contrataciones activas
+                var activeContractsAsClient = await _context.SearchHires
+                    .Include(sh => sh.Status)
+                    .Where(sh => sh.ClientId == userId && sh.Status != null && !sh.Status.IsFinalizationStatus)
+                    .ToListAsync();
+
+                if (activeContractsAsClient.Any())
+                {
+                    return BadRequest(new { 
+                        message = $"No puedes convertirte en experto mientras tengas contrataciones activas como cliente. " +
+                                 $"Tienes {activeContractsAsClient.Count} contratación(es) activa(s) que deben estar finalizadas antes de convertirte en experto. " +
+                                 $"Debes usar una cuenta distinta (no registrada como experto) para contratar servicios."
+                    });
+                }
+
                 // 🚨 LOG CRÍTICO: Fallo al convertirse en experto
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Failed to become expert",

@@ -219,3 +219,9 @@ catch (Exception ex)
 
 **Alternativa**: Si se requiere atomicidad total, implementar Opción 1 (más compleja).
 
+
+
+
+
+
+

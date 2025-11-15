@@ -153,3 +153,9 @@ El sistema está **robusto y seguro**:
 - ✅ Errores de notificaciones → Solo log warning (cuenta eliminada OK)
 - ✅ Todos los errores se loguean con detalles completos
 
+
+
+
+
+
+

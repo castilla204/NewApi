@@ -126,3 +126,9 @@ catch (Exception ex) {
 2. **Mover notificaciones fuera de transacción** - No deberían bloquear la eliminación
 3. **Mejorar manejo de errores en catch** - Revertir cambios parciales si es posible
 
+
+
+
+
+
+

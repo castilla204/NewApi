@@ -2462,7 +2462,25 @@
             NOTA: Todo se ejecuta en la transacción global de DeleteAccountAsync para evitar problemas de nested transactions.
             </summary>
         </member>
-        <!-- Badly formed XML comment ignored for member "M:newApi.Services.AppointmentService.GetStatusIdByValueAsync(System.String)" -->
+        <member name="M:newApi.Services.AppointmentService.GetStatusIdByValueAsync(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>
+            Helper method to get StatusId from StatusValue with caching
+            ✅ MEJORA: Cache de estados para mejorar performance
+            Soporta tanto AppointmentStatus como SearchHireStatus
+            </summary>
+        </member>
+        <member name="M:newApi.Services.AppointmentService.GetStatusIdByValueAsync(System.String)">
+            <summary>
+            Helper method to get StatusId from StatusValue (legacy method, mantiene compatibilidad)
+            Usa SearchHireStatus por defecto
+            </summary>
+        </member>
+        <member name="M:newApi.Services.AppointmentService.GetStatusByValueAndTypeAsync(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>
+            Helper method to get SystemStatus entity by value and type with caching
+            ✅ MEJORA: Cache para obtener la entidad completa cuando se necesite
+            </summary>
+        </member>
         <member name="M:newApi.Services.AppointmentService.ProcessAppointmentTimerAsync(System.Int32)">
             <summary>
             Procesa un timer de cita expirado. Hangfire reintenta automáticamente hasta 5 veces con delays progresivos

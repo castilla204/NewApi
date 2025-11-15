@@ -27,6 +27,7 @@ namespace newApi.Controllers
         private readonly StripeRefundService _refundService;
         private readonly ILoggingService _loggingService;
         private readonly IInvoiceService _invoiceService;
+        private readonly IAppointmentService _appointmentService;
 
         public SearchHireController(
             SearchHireService searchHireService,
@@ -36,7 +37,8 @@ namespace newApi.Controllers
             IAuthorizationServices authService,
             StripeRefundService refundService,
             ILoggingService loggingService,
-            IInvoiceService invoiceService)
+            IInvoiceService invoiceService,
+            IAppointmentService appointmentService)
         {
             _searchHireService = searchHireService;
             _context = context;
@@ -45,6 +47,7 @@ namespace newApi.Controllers
             _refundService = refundService;
             _loggingService = loggingService;
             _invoiceService = invoiceService;
+            _appointmentService = appointmentService;
             StripeConfiguration.ApiKey = configuration["Stripe:SecretKey"];
         }
 
@@ -187,6 +190,74 @@ namespace newApi.Controllers
                 searchHire.Conversations.Add(conversation);
 
                 await _context.SaveChangesAsync();
+
+                // ✅ Crear automáticamente la cita en estado "awaiting_appointment" con timer de 24h
+                // Esto asegura que el cliente tenga 24 horas para proponer una fecha/hora
+                try
+                {
+                    // Verificar que no exista ya una cita (por si acaso)
+                    var existingAppointment = await _context.Appointments
+                        .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
+                    
+                    if (existingAppointment == null)
+                    {
+                        // Obtener el estado "awaiting_appointment"
+                        var awaitingStatus = await _context.SystemStatuses
+                            .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                                      s.StatusValue == "awaiting_appointment");
+                        
+                        if (awaitingStatus != null)
+                        {
+                            var appointment = new Appointment
+                            {
+                                SearchHireId = searchHire.Id,
+                                StatusId = awaitingStatus.Id,
+                                CreatedAt = DateTime.UtcNow,
+                                UpdatedAt = DateTime.UtcNow
+                            };
+
+                            _context.Appointments.Add(appointment);
+                            await _context.SaveChangesAsync();
+
+                            // Crear timer para propuesta del cliente (24 horas)
+                            var proposalTimer = new AppointmentTimer
+                            {
+                                AppointmentId = appointment.Id,
+                                TimerType = "proposal",
+                                StartTime = DateTime.UtcNow,
+                                EndTime = DateTime.UtcNow.AddHours(24),
+                                IsExpired = false,
+                                CreatedAt = DateTime.UtcNow
+                            };
+
+                            _context.AppointmentTimers.Add(proposalTimer);
+                            await _context.SaveChangesAsync();
+
+                            // Programar scheduled job para cuando expire el timer (24 horas)
+                            var jobId = BackgroundJob.Schedule<IAppointmentService>(
+                                service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
+                                proposalTimer.EndTime - DateTime.UtcNow
+                            );
+
+                            // Guardar el JobId en el timer
+                            proposalTimer.HangfireJobId = jobId;
+                            await _context.SaveChangesAsync();
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Log error pero no fallar la creación de la contratación
+                    await _loggingService.LogWarningAsync(
+                        message: "Failed to create automatic appointment",
+                        details: $"Error creating automatic appointment for SearchHire {searchHire.Id}: {ex.Message}",
+                        userId: searchHire.ClientId,
+                        source: "SearchHireController.CreateSearchHire",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHire.Id,
+                        notifyUser: false
+                    );
+                }
 
                 // ✅ Notificar al cliente cuando se crea la contratación
                 var client = await _context.Users.FindAsync(searchHire.ClientId);

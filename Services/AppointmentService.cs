@@ -709,6 +709,32 @@ namespace newApi.Services
                     // ✅ CORRECCIÓN: Hacer SaveChanges para obtener el Id de la cita antes de recargarla
                     await _context.SaveChangesAsync();
 
+                    // ✅ Crear timer para propuesta del cliente (24 horas)
+                    // Cuando se crea la cita automáticamente, el estado es "awaiting_appointment", 
+                    // por lo que el cliente tiene 24 horas para proponer una fecha/hora
+                    var proposalTimer = new AppointmentTimer
+                    {
+                        AppointmentId = appointment.Id,
+                        TimerType = "proposal",
+                        StartTime = DateTime.UtcNow,
+                        EndTime = DateTime.UtcNow.AddHours(24),
+                        IsExpired = false,
+                        CreatedAt = DateTime.UtcNow
+                    };
+
+                    _context.AppointmentTimers.Add(proposalTimer);
+                    await _context.SaveChangesAsync();
+
+                    // Programar scheduled job para cuando expire el timer (24 horas)
+                    var jobId = BackgroundJob.Schedule<IAppointmentService>(
+                        service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
+                        proposalTimer.EndTime - DateTime.UtcNow
+                    );
+
+                    // Guardar el JobId en el timer
+                    proposalTimer.HangfireJobId = jobId;
+                    await _context.SaveChangesAsync();
+
                     // ✅ Recargar la cita con las relaciones usando FOR UPDATE para mantener el bloqueo
                     // Esto asegura que el estado se carga correctamente y se mantiene el bloqueo de fila
                     appointment = await _context.Appointments

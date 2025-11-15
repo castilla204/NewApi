@@ -12,7 +12,8 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-postgres@latest",
-        "postgresql://admin:Pedrohabo1%2F%2F@185.166.39.4:30000/atrapo"
+        "postgresql://admin:Pedrohabo1%2F%2F@185.166.39.4:30000/atrapo",
+        "--disable-read-only"
       ],
       "disabled": false,
       "alwaysAllow": [],

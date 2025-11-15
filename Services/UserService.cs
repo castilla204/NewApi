@@ -305,6 +305,36 @@ namespace newApi.Services
                 return (false, null, null, null);
             }
 
+            // 🚨 VALIDACIÓN CRÍTICA: Verificar que todas las contrataciones como cliente estén finalizadas
+            // ✅ IMPORTANTE: Un usuario no puede convertirse en experto si tiene contrataciones activas como cliente
+            var activeContractsAsClient = await _context.SearchHires
+                .Include(sh => sh.Status)
+                .Where(sh => sh.ClientId == userId && sh.Status != null && !sh.Status.IsFinalizationStatus)
+                .ToListAsync();
+
+            if (activeContractsAsClient.Any())
+            {
+                // ✅ LOG: Usuario intentó convertirse en experto con contrataciones activas
+                await _loggingService.LogWarningAsync(
+                    message: "User attempted to become expert with active contracts as client",
+                    details: $"User {userId} attempted to become expert but has {activeContractsAsClient.Count} active contract(s) as client. " +
+                            $"All contracts must be in a finalization status before becoming an expert. " +
+                            $"Active contract IDs: {string.Join(", ", activeContractsAsClient.Select(sh => sh.Id))}.",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "BecomeExpert",
+                        UserId = userId,
+                        ActiveContractsCount = activeContractsAsClient.Count,
+                        ActiveContractIds = activeContractsAsClient.Select(sh => sh.Id).ToList()
+                    }
+                );
+                
+                return (false, null, null, null);
+            }
+
             // Validar Latitude y Longitude
             if (string.IsNullOrEmpty(request.Latitude) || string.IsNullOrEmpty(request.Longitude))
             {

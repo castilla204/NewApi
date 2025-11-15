@@ -1,75 +1,107 @@
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using newApi.DataLayer;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
-using System.Security.Cryptography;
-using System.Text;
-using Stripe;
 using newApi.Common;
 
 namespace newApi.Services
 {
     public interface IAccountDeletionService
     {
-        Task<AccountDeletionStatusDto> CheckDeletionStatusAsync(int userId);
-        Task<AccountDeletionResponseDto> DeleteAccountAsync(int userId, AccountDeletionRequestDto request);
+        Task<AccountDeletionStatusDto> CheckDeletionStatusAsync(int userId, CancellationToken cancellationToken = default);
+        Task<AccountDeletionResponseDto> DeleteAccountAsync(int userId, AccountDeletionRequestDto request, CancellationToken cancellationToken = default);
     }
 
     public class AccountDeletionService : IAccountDeletionService
     {
         private readonly AppDbContext _context;
-        private readonly IConfiguration _configuration;
         private readonly IAccountDeletionNotificationService _notificationService;
-        private readonly SystemStatusService _systemStatusService;
         private readonly StripeRefundService _refundService;
         private readonly ILoggingService _loggingService;
 
         // Estados de contratación que requieren atención especial
         private readonly string[] _activeStatuses = { "pending", "awaiting_client_decision", "disputed" };
 
+        // ✅ MEJORA: Cache de estados para evitar consultas repetidas a la BD
+        private static readonly Dictionary<string, int> _statusCache = new Dictionary<string, int>();
+        private static readonly object _cacheLock = new object();
+        private static DateTime _cacheLastRefresh = DateTime.MinValue;
+        private static readonly TimeSpan _cacheExpiration = TimeSpan.FromMinutes(30); // Cache válido por 30 minutos
+
+        // ✅ MEJORA: Timeout para transacciones (5 minutos)
+        private static readonly TimeSpan _transactionTimeout = TimeSpan.FromMinutes(5);
+
         public AccountDeletionService(
             AppDbContext context,
-
-            IConfiguration configuration,
             IAccountDeletionNotificationService notificationService,
-            SystemStatusService systemStatusService,
             StripeRefundService refundService,
             ILoggingService loggingService)
         {
             _context = context;
-            _configuration = configuration;
             _notificationService = notificationService;
-            _systemStatusService = systemStatusService;
             _refundService = refundService;
             _loggingService = loggingService;
         }
 
         /// <summary>
-        /// Helper method to get StatusId from StatusValue
+        /// Helper method to get StatusId from StatusValue with caching
+        /// ✅ MEJORA: Cache de estados para mejorar performance
         /// </summary>
-        private async Task<int> GetStatusIdByValueAsync(string statusValue)
+        private async Task<int> GetStatusIdByValueAsync(string statusValue, CancellationToken cancellationToken = default)
         {
-            var systemStatus = await _context.SystemStatuses
-                .FirstOrDefaultAsync(s => s.StatusValue == statusValue && s.StatusType == "SearchHireStatus");
+            // Verificar si el cache está expirado
+            bool cacheExpired = DateTime.UtcNow - _cacheLastRefresh > _cacheExpiration;
             
+            lock (_cacheLock)
+            {
+                // Si el cache está expirado, limpiarlo
+                if (cacheExpired)
+                {
+                    _statusCache.Clear();
+                    _cacheLastRefresh = DateTime.UtcNow;
+                }
+
+                // Intentar obtener del cache
+                if (_statusCache.TryGetValue(statusValue, out int cachedId))
+                {
+                    return cachedId;
+                }
+            }
+
+            // Si no está en cache, consultar BD
+            var systemStatus = await _context.SystemStatuses
+                .FirstOrDefaultAsync(s => s.StatusValue == statusValue && s.StatusType == "SearchHireStatus", cancellationToken);
+            
+            int statusId;
             if (systemStatus == null)
             {
                 // Default to "pending" (ID = 1)
-                return 1;
+                statusId = 1;
+            }
+            else
+            {
+                statusId = systemStatus.Id;
+            }
+
+            // Guardar en cache
+            lock (_cacheLock)
+            {
+                _statusCache[statusValue] = statusId;
             }
             
-            return systemStatus.Id;
+            return statusId;
         }
 
-        public async Task<AccountDeletionStatusDto> CheckDeletionStatusAsync(int userId)
+        public async Task<AccountDeletionStatusDto> CheckDeletionStatusAsync(int userId, CancellationToken cancellationToken = default)
         {
             try
             {
                 var user = await _context.Users
                     .Include(u => u.SearchHiresAsClient)
                     .Include(u => u.SearchHiresAsExpert)
-                    .FirstOrDefaultAsync(u => u.Id == userId);
+                    .FirstOrDefaultAsync(u => u.Id == userId, cancellationToken);
 
                 if (user == null)
                 {
@@ -83,7 +115,7 @@ namespace newApi.Services
                 }
 
                 // Buscar contrataciones activas
-                var activeContracts = await GetActiveContractsAsync(userId);
+                var activeContracts = await GetActiveContractsAsync(userId, cancellationToken);
 
                 var canDeleteImmediately = !activeContracts.Any();
                 var message = canDeleteImmediately 
@@ -101,16 +133,34 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
+                // ✅ MEJORA: Logging del error para mejor trazabilidad
+                await _loggingService.LogErrorAsync(
+                    message: "Error checking account deletion status",
+                    details: $"Failed to check deletion status for user {userId}. Error: {ex.Message}",
+                    userId: userId,
+                    source: "AccountDeletionService.CheckDeletionStatusAsync",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
                 throw;
             }
         }
 
-        public async Task<AccountDeletionResponseDto> DeleteAccountAsync(int userId, AccountDeletionRequestDto request)
+        public async Task<AccountDeletionResponseDto> DeleteAccountAsync(int userId, AccountDeletionRequestDto request, CancellationToken cancellationToken = default)
         {
+            // ✅ MEJORA: Timeout para transacciones (5 minutos)
+            using var timeoutCts = new CancellationTokenSource(_transactionTimeout);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+            
             var strategy = _context.Database.CreateExecutionStrategy();
             return await strategy.ExecuteAsync(async () =>
             {
-                using var transaction = await _context.Database.BeginTransactionAsync();
+                using var transaction = await _context.Database.BeginTransactionAsync(linkedCts.Token);
                 try
             {
                 // 1. Verificar usuario y contraseña
@@ -118,7 +168,7 @@ namespace newApi.Services
                 var user = await _context.Users
                     .IgnoreQueryFilters() // Ignorar query filter para poder acceder a usuarios eliminados
                     .Include(u => u.ExpertProfile)
-                    .FirstOrDefaultAsync(u => u.Id == userId);
+                    .FirstOrDefaultAsync(u => u.Id == userId, linkedCts.Token);
 
                 if (user == null)
                 {
@@ -142,45 +192,233 @@ namespace newApi.Services
                 // No se requiere verificación de contraseña ya que el sistema solo usa autenticación con Google
 
                 // 2. Obtener contrataciones activas
-                var activeContracts = await GetActiveContractsAsync(userId);
+                var activeContracts = await GetActiveContractsAsync(userId, linkedCts.Token);
                 var disputesCreated = new List<DisputeCreatedInfo>();
+                // ✅ MEJORA: Acumular errores de procesamiento para determinar RequiresManualReview
+                var processingErrors = new List<(int SearchHireId, string ErrorMessage, string ErrorType, decimal Amount)>();
 
                 // 3. Procesar contrataciones activas
                 if (activeContracts.Any())
                 {
-                    disputesCreated = await ProcessActiveContractsAsync(userId, activeContracts, request.Reason);
+                    var result = await ProcessActiveContractsAsync(userId, activeContracts, request.Reason, linkedCts.Token);
+                    disputesCreated = result.TransactionsProcessed;
+                    processingErrors = result.ProcessingErrors;
                 }
 
                 // 4. Eliminar datos del usuario
-                await DeleteUserDataAsync(userId);
+                await DeleteUserDataAsync(userId, linkedCts.Token);
 
-                // 5. Enviar notificaciones
-                if (disputesCreated.Any())
+                // 5. Confirmar transacción PRIMERO (antes de notificaciones)
+                // ✅ MEJORA: Las notificaciones no deberían bloquear la eliminación de la cuenta
+                await transaction.CommitAsync(linkedCts.Token);
+
+                // 6. Enviar notificaciones DESPUÉS del commit (si fallan, no afectan la eliminación)
+                // ✅ MEJORA: Notificaciones fuera de transacción para que no bloqueen la eliminación
+                try
                 {
-                    await _notificationService.NotifyAffectedUsersAsync(disputesCreated);
+                    if (disputesCreated.Any())
+                    {
+                        await _notificationService.NotifyAffectedUsersAsync(disputesCreated);
+                    }
+                }
+                catch (Exception notificationEx)
+                {
+                    // ✅ Log pero no fallar - las notificaciones no son críticas para la eliminación
+                    await _loggingService.LogWarningAsync(
+                        message: "Failed to send notifications to affected users after account deletion",
+                        details: $"Account deletion succeeded for user {userId}, but failed to notify affected users. Error: {notificationEx.Message}. Notifications can be sent manually if needed.",
+                        userId: userId,
+                        source: "AccountDeletionService.DeleteAccountAsync",
+                        relatedEntityType: "Notification",
+                        relatedEntityId: null,
+                        additionalData: new { 
+                            DeletedUserId = userId,
+                            Error = notificationEx.Message,
+                            ErrorType = notificationEx.GetType().Name
+                        }
+                    );
                 }
 
-                // 6. Enviar notificación al usuario que eliminó su cuenta (antes de eliminarlo)
-                await _notificationService.SendAccountDeletionNotificationAsync(userId, request.Reason ?? "Sin razón especificada");
+                try
+                {
+                    // Enviar notificación al usuario que eliminó su cuenta (aunque ya esté eliminado, el log queda)
+                    await _notificationService.SendAccountDeletionNotificationAsync(userId, request.Reason ?? "Sin razón especificada");
+                }
+                catch (Exception notificationEx)
+                {
+                    // ✅ Log pero no fallar - la notificación no es crítica
+                    await _loggingService.LogWarningAsync(
+                        message: "Failed to send account deletion notification",
+                        details: $"Account deletion succeeded for user {userId}, but failed to send deletion notification. Error: {notificationEx.Message}.",
+                        userId: userId,
+                        source: "AccountDeletionService.DeleteAccountAsync",
+                        relatedEntityType: "Notification",
+                        relatedEntityId: null,
+                        additionalData: new { 
+                            DeletedUserId = userId,
+                            Error = notificationEx.Message,
+                            ErrorType = notificationEx.GetType().Name
+                        }
+                    );
+                }
+                // ✅ MEJORA: Determinar si requiere revisión manual basado en errores de procesamiento
+                var requiresManualReview = processingErrors.Any();
+                var failedSearchHireIds = processingErrors.Select(e => e.SearchHireId).ToList();
+                var message = activeContracts.Any() 
+                    ? $"Cuenta eliminada. Se procesaron {disputesCreated.Count} transacciones automáticas para contrataciones activas."
+                    : "Cuenta eliminada exitosamente";
+                
+                // ✅ MEJORA: Mensaje mejorado - más conciso si hay muchos errores
+                if (requiresManualReview)
+                {
+                    if (processingErrors.Count <= 3)
+                    {
+                        // Si hay pocos errores, mostrar detalles
+                        var errorDetails = string.Join(", ", processingErrors.Select(e => $"#{e.SearchHireId}"));
+                        message += $" {processingErrors.Count} contratación(es) requieren revisión manual debido a errores en el procesamiento (IDs: {errorDetails}).";
+                    }
+                    else
+                    {
+                        // Si hay muchos errores, resumir (evitar mensajes muy largos)
+                        message += $" {processingErrors.Count} contratación(es) requieren revisión manual debido a errores en el procesamiento. Ver logs para detalles completos.";
+                    }
+                }
 
-                // 7. Confirmar transacción
-                await transaction.CommitAsync();
                 return new AccountDeletionResponseDto
                 {
                     Success = true,
-                    Message = activeContracts.Any() 
-                        ? $"Cuenta eliminada. Se procesaron {disputesCreated.Count} transacciones automáticas para contrataciones activas."
-                        : "Cuenta eliminada exitosamente",
+                    Message = message,
                     ActiveContracts = activeContracts,
                     DisputesCreated = disputesCreated,
-                    RequiresManualReview = false // Ya no requiere revisión manual ya que se procesan automáticamente
+                    RequiresManualReview = requiresManualReview, // ✅ Dinámico: true si hay errores de procesamiento
+                    FailedSearchHireIds = failedSearchHireIds, // ✅ MEJORA: IDs para facilitar revisión manual
+                    FailedContractsCount = processingErrors.Count // ✅ MEJORA: Cantidad de fallos
                 };
             }
+                catch (DbUpdateConcurrencyException ex)
+                {
+                    // ✅ MEJORA: Manejo específico de conflictos de concurrencia (PostgreSQL MVCC)
+                    await transaction.RollbackAsync(linkedCts.Token);
+                    
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Account deletion failed - concurrency conflict",
+                        details: $"Account deletion transaction for user {userId} was rolled back due to concurrency conflict. " +
+                                $"Another process modified the user data concurrently. Error: {ex.Message}. " +
+                                $"All changes have been rolled back. User account remains intact. ACTION REQUIRED: Retry account deletion.",
+                        userId: userId,
+                        source: "AccountDeletionService.DeleteAccountAsync",
+                        relatedEntityType: "User",
+                        relatedEntityId: userId,
+                        additionalData: new { 
+                            DeletedUserId = userId,
+                            ErrorType = ex.GetType().Name,
+                            ErrorMessage = ex.Message,
+                            StackTrace = ex.StackTrace,
+                            InnerException = ex.InnerException?.Message,
+                            TransactionRolledBack = true,
+                            ErrorCategory = "ConcurrencyConflict",
+                            RetryRecommended = true
+                        }
+                    );
+                    
+                    throw;
+                }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is PostgresException pgEx)
+                {
+                    // ✅ MEJORA: Manejo específico de errores de PostgreSQL
+                    await transaction.RollbackAsync(linkedCts.Token);
+                    
+                    string errorCategory = "DatabaseError";
+                    string actionRequired = "Review database error and retry if appropriate";
+                    
+                    // Identificar tipo de error PostgreSQL por SqlState
+                    switch (pgEx.SqlState)
+                    {
+                        case "23505": // Unique constraint violation
+                            errorCategory = "UniqueConstraintViolation";
+                            actionRequired = "Data conflict detected. Review unique constraints.";
+                            break;
+                        case "23503": // Foreign key violation
+                            errorCategory = "ForeignKeyViolation";
+                            actionRequired = "Referential integrity violation. Review related data.";
+                            break;
+                        case "40001": // Serialization failure (deadlock)
+                            errorCategory = "Deadlock";
+                            actionRequired = "Deadlock detected. Retry account deletion.";
+                            break;
+                        case "40P01": // Deadlock detected
+                            errorCategory = "Deadlock";
+                            actionRequired = "Deadlock detected. Retry account deletion.";
+                            break;
+                        case "08003": // Connection does not exist
+                        case "08006": // Connection failure
+                            errorCategory = "ConnectionError";
+                            actionRequired = "Database connection error. Retry account deletion.";
+                            break;
+                    }
+                    
+                    await _loggingService.LogCriticalAsync(
+                        message: $"CRITICAL: Account deletion failed - PostgreSQL error ({pgEx.SqlState})",
+                        details: $"Account deletion transaction for user {userId} was rolled back due to PostgreSQL error. " +
+                                $"SQL State: {pgEx.SqlState}, Constraint: {pgEx.ConstraintName}, " +
+                                $"Message: {pgEx.Message}. All changes have been rolled back. User account remains intact. " +
+                                $"ACTION REQUIRED: {actionRequired}",
+                        userId: userId,
+                        source: "AccountDeletionService.DeleteAccountAsync",
+                        relatedEntityType: "User",
+                        relatedEntityId: userId,
+                        additionalData: new { 
+                            DeletedUserId = userId,
+                            ErrorType = dbEx.GetType().Name,
+                            PostgresErrorType = pgEx.GetType().Name,
+                            SqlState = pgEx.SqlState,
+                            ConstraintName = pgEx.ConstraintName,
+                            TableName = pgEx.TableName,
+                            ColumnName = pgEx.ColumnName,
+                            ErrorMessage = pgEx.Message,
+                            StackTrace = dbEx.StackTrace,
+                            InnerException = dbEx.InnerException?.Message,
+                            TransactionRolledBack = true,
+                            ErrorCategory = errorCategory,
+                            RetryRecommended = errorCategory == "Deadlock" || errorCategory == "ConnectionError"
+                        }
+                    );
+                    
+                    throw;
+                }
+                catch (OperationCanceledException ex) when (ex.CancellationToken == linkedCts.Token || ex.CancellationToken == timeoutCts.Token)
+                {
+                    // ✅ MEJORA: Manejo específico de timeout o cancelación
+                    await transaction.RollbackAsync(linkedCts.Token);
+                    
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Account deletion failed - transaction timeout",
+                        details: $"Account deletion transaction for user {userId} was cancelled due to timeout (5 minutes) or cancellation request. " +
+                                $"All changes have been rolled back. User account remains intact. " +
+                                $"ACTION REQUIRED: Review if operation should be retried or if there are performance issues.",
+                        userId: userId,
+                        source: "AccountDeletionService.DeleteAccountAsync",
+                        relatedEntityType: "User",
+                        relatedEntityId: userId,
+                        additionalData: new { 
+                            DeletedUserId = userId,
+                            ErrorType = ex.GetType().Name,
+                            ErrorMessage = ex.Message,
+                            StackTrace = ex.StackTrace,
+                            TransactionRolledBack = true,
+                            ErrorCategory = "Timeout",
+                            RetryRecommended = true,
+                            TimeoutDuration = _transactionTimeout.TotalMinutes
+                        }
+                    );
+                    
+                    throw;
+                }
                 catch (Exception ex)
                 {
-                    await transaction.RollbackAsync();
+                    // ✅ MEJOR PRÁCTICA: Logging completo del error antes de rethrow (catch-all para otros errores)
+                    await transaction.RollbackAsync(linkedCts.Token);
                     
-                    // ✅ MEJOR PRÁCTICA: Logging completo del error antes de rethrow
                     await _loggingService.LogCriticalAsync(
                         message: "CRITICAL: Account deletion transaction rolled back",
                         details: $"Account deletion transaction for user {userId} was rolled back due to error. Error Type: {ex.GetType().Name}, Error Message: {ex.Message}, Stack Trace: {ex.StackTrace}. " +
@@ -195,7 +433,8 @@ namespace newApi.Services
                             ErrorMessage = ex.Message,
                             StackTrace = ex.StackTrace,
                             InnerException = ex.InnerException?.Message,
-                            TransactionRolledBack = true
+                            TransactionRolledBack = true,
+                            ErrorCategory = "Unknown"
                         }
                     );
                     
@@ -204,7 +443,7 @@ namespace newApi.Services
             });
         }
 
-        private async Task<List<ActiveContractInfo>> GetActiveContractsAsync(int userId)
+        private async Task<List<ActiveContractInfo>> GetActiveContractsAsync(int userId, CancellationToken cancellationToken = default)
         {
             var activeContracts = new List<ActiveContractInfo>();
 
@@ -216,7 +455,7 @@ namespace newApi.Services
                 .Include(sh => sh.SearchService)
                     .ThenInclude(ss => ss.ServiceType)
                 .Include(sh => sh.Appointment)
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             foreach (var contract in clientContracts)
             {
@@ -242,7 +481,7 @@ namespace newApi.Services
                 .Include(sh => sh.SearchService)
                     .ThenInclude(ss => ss.ServiceType)
                 .Include(sh => sh.Appointment)
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             foreach (var contract in expertContracts)
             {
@@ -263,12 +502,15 @@ namespace newApi.Services
             return activeContracts;
         }
 
-        private async Task<List<DisputeCreatedInfo>> ProcessActiveContractsAsync(
+        private async Task<(List<DisputeCreatedInfo> TransactionsProcessed, List<(int SearchHireId, string ErrorMessage, string ErrorType, decimal Amount)> ProcessingErrors)> ProcessActiveContractsAsync(
             int userId, 
             List<ActiveContractInfo> activeContracts, 
-            string? deletionReason)
+            string? deletionReason,
+            CancellationToken cancellationToken = default)
         {
             var transactionsProcessed = new List<DisputeCreatedInfo>();
+            // ✅ MEJORA: Acumular errores para log crítico final
+            var processingErrors = new List<(int SearchHireId, string ErrorMessage, string ErrorType, decimal Amount)>();
 
             foreach (var contract in activeContracts)
             {
@@ -276,7 +518,7 @@ namespace newApi.Services
                     .Include(sh => sh.Status)
                     .Include(sh => sh.Client)
                     .Include(sh => sh.Expert)
-                    .FirstOrDefaultAsync(sh => sh.Id == contract.SearchHireId);
+                    .FirstOrDefaultAsync(sh => sh.Id == contract.SearchHireId, cancellationToken);
 
                 if (searchHire == null) continue;
 
@@ -303,27 +545,20 @@ namespace newApi.Services
                      // Verificar si hay subestado de finalización en appointment
                      var existingAppointment = await _context.Appointments
                          .Include(a => a.Status)
-                         .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
+                         .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id, cancellationToken);
                      
                      if (existingAppointment?.Status != null && existingAppointment.Status.IsFinalizationStatus)
                      {
                          continue; // Saltar al siguiente SearchHire - NO tocar nada
                      }
 
-                     // Cancelar citas asociadas si existen (solo para SearchHires NO finalizados)
-                     var appointmentsToProcess = await _context.Appointments
-                         .Where(a => a.SearchHireId == searchHire.Id)
-                         .ToListAsync();
+                     // 🎯 PROCESAR DINERO PRIMERO (con updateState: true para que cambie el estado automáticamente)
+                     // ✅ MEJORA: Procesar dinero ANTES de hacer cambios manuales para evitar estados inconsistentes
+                     // ProcessMoneyDistributionAsync con updateState: true manejará:
+                     // - Cambio de estado del SearchHire
+                     // - Cambio de estado del Appointment (si existe)
+                     // - Procesamiento del dinero
                      
-                     foreach (var appointment in appointmentsToProcess)
-                     {
-                         // Usar el estado apropiado según quién elimina la cuenta
-                         appointment.StatusId = isClientDeleting ? 13 : 15; // appointment_cancelled_by_client : appointment_cancelled_by_expert
-                         appointment.UpdatedAt = DateTime.UtcNow;
-                     }
-
-                     // 🎯 PROCESAR DINERO SOLO PARA SEARCHHIRES NO FINALIZADOS
-                     // ✅ MEJORAS: Procesar dinero automáticamente a favor del afectado y notificar a ambos
                      if (isClientDeleting)
                      {
                          // Si el cliente elimina su cuenta, dar el dinero al experto
@@ -331,18 +566,21 @@ namespace newApi.Services
                             searchHire.Id,
                             "cancelled_by_client_account_delete",
                             "Client account deletion - transfer to expert",
-                            updateState: true);
+                            updateState: true); // ✅ updateState: true maneja el cambio de estado automáticamente
                         
                         if (!transferSuccess)
                         {
-                            await _loggingService.LogCriticalAsync(
-                                message: "CRITICAL: Failed to process transfer to expert for account deletion",
+                            var errorMessage = $"Failed to process transfer to expert for SearchHire {searchHire.Id}";
+                            var errorType = "TransferFailure";
+                            
+                            // ✅ Log individual del error
+                            await _loggingService.LogErrorAsync(
+                                message: "Failed to process transfer to expert for account deletion",
                                 details: $"Transfer to expert failed for account deletion SearchHire {searchHire.Id}. Amount: {searchHire.Amount}€. Manual intervention required.",
                                 userId: searchHire.ExpertId,
                                 source: "AccountDeletionService.ProcessActiveContractsAsync",
                                 relatedEntityType: "Transfer",
                                 relatedEntityId: searchHire.Id,
-                                notifyUser: true,
                                 additionalData: new { 
                                     SearchHireId = searchHire.Id,
                                     Amount = searchHire.Amount,
@@ -351,7 +589,11 @@ namespace newApi.Services
                                 }
                             );
                             
-                            throw new Exception("Failed to process transfer to expert");
+                            // ✅ Acumular error para log crítico final
+                            processingErrors.Add((searchHire.Id, errorMessage, errorType, searchHire.Amount));
+                            
+                            // Continuar con siguiente contratación (no lanzar excepción)
+                            continue;
                         }
                         
                         // ✅ Notificar al experto que recibió el pago
@@ -390,9 +632,6 @@ namespace newApi.Services
                                 DeletionReason = deletionReason
                             }
                         );
-                        
-                         searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
-                         searchHire.UpdatedAt = DateTime.UtcNow;
                      }
                      else
                      {
@@ -401,18 +640,21 @@ namespace newApi.Services
                             searchHire.Id,
                             "cancelled_by_expert_account_delete",
                             reasonText,
-                            updateState: true);
+                            updateState: true); // ✅ updateState: true maneja el cambio de estado automáticamente
                         
                         if (!refundSuccess)
                         {
-                            await _loggingService.LogCriticalAsync(
-                                message: "CRITICAL: Failed to process Stripe refund for account deletion",
+                            var errorMessage = $"Failed to process Stripe refund for SearchHire {searchHire.Id}";
+                            var errorType = "RefundFailure";
+                            
+                            // ✅ Log individual del error
+                            await _loggingService.LogErrorAsync(
+                                message: "Failed to process Stripe refund for account deletion",
                                 details: $"Stripe refund failed for account deletion SearchHire {searchHire.Id}. Amount: {searchHire.Amount}€. Manual intervention required.",
                                 userId: searchHire.ClientId,
                                 source: "AccountDeletionService.ProcessActiveContractsAsync",
                                 relatedEntityType: "Refund",
                                 relatedEntityId: searchHire.Id,
-                                notifyUser: true,
                                 additionalData: new { 
                                     SearchHireId = searchHire.Id,
                                     Amount = searchHire.Amount,
@@ -422,7 +664,11 @@ namespace newApi.Services
                                 }
                             );
                             
-                            throw new Exception("Failed to process Stripe refund");
+                            // ✅ Acumular error para log crítico final
+                            processingErrors.Add((searchHire.Id, errorMessage, errorType, searchHire.Amount));
+                            
+                            // Continuar con siguiente contratación (no lanzar excepción)
+                            continue;
                         }
                         
                         // ✅ Notificar al cliente que recibió el reembolso
@@ -461,10 +707,10 @@ namespace newApi.Services
                                 }
                             );
                         }
-                        
-                         searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
-                         searchHire.UpdatedAt = DateTime.UtcNow;
                      }
+                     
+                     // ✅ NOTA: NO cambiar StatusId manualmente aquí - ProcessMoneyDistributionAsync con updateState: true ya lo hizo
+                     // El estado del SearchHire y Appointment ya fueron actualizados por ProcessMoneyDistributionAsync
 
                     transactionsProcessed.Add(new DisputeCreatedInfo
                     {
@@ -477,35 +723,74 @@ namespace newApi.Services
                 }
                 catch (Exception ex)
                 {
-                    // Si falla el procesamiento, crear una disputa como fallback
-                    var dispute = new newApi.DataLayer.Models.PostGresModels.Dispute
-                    {
-                        SearchHireId = searchHire.Id,
-                        ReporterId = userId,
-                        Reason = $"{reasonText} - Error en procesamiento automático: {ex.Message}",
-                        Status = "pending",
-                        ResolutionComments = "Disputa creada automáticamente por error en eliminación de cuenta",
-                        CreatedAt = DateTime.UtcNow,
-                        ExpertResponseDeadline = DateTime.UtcNow.AddHours(48)
-                    };
-
-                    _context.Disputes.Add(dispute);
-                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
-                    searchHire.UpdatedAt = DateTime.UtcNow;
-
-                    transactionsProcessed.Add(new DisputeCreatedInfo
-                    {
-                        DisputeId = dispute.Id,
-                        SearchHireId = searchHire.Id,
-                        Reason = dispute.Reason,
-                        AffectedPartyName = affectedParty?.Name ?? "Usuario",
-                        AffectedPartyEmail = affectedParty?.Email ?? ""
-                    });
+                    // ✅ MEJORA: Si falla el procesamiento, solo loguear y acumular error
+                    // NOTA: No hay cambios de estado previos que revertir porque ProcessMoneyDistributionAsync
+                    // se llama PRIMERO y si falla, no hace cambios (o hace rollback de sus propios cambios)
+                    await _loggingService.LogErrorAsync(
+                        message: "Money processing failed during account deletion",
+                        details: $"Money processing failed for SearchHire {searchHire.Id} during account deletion of user {userId}. Error: {ex.Message}.",
+                        userId: userId,
+                        source: "AccountDeletionService.ProcessActiveContractsAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHire.Id,
+                        additionalData: new { 
+                            SearchHireId = searchHire.Id,
+                            Error = ex.Message,
+                            ErrorType = ex.GetType().Name,
+                            StackTrace = ex.StackTrace,
+                            DeletionReason = deletionReason
+                        }
+                    );
+                    
+                    // ✅ Acumular error para log crítico final
+                    processingErrors.Add((searchHire.Id, ex.Message, ex.GetType().Name, searchHire.Amount));
+                    
+                    // Continuar con siguiente contratación (no lanzar excepción, no crear disputa)
                 }
             }
 
-            await _context.SaveChangesAsync();
-            return transactionsProcessed;
+            // ✅ MEJORA: Log crítico final resumiendo todos los errores acumulados
+            if (processingErrors.Any())
+            {
+                var errorSummary = string.Join("; ", processingErrors.Select(e => 
+                    $"SearchHire {e.SearchHireId} (Amount: {e.Amount}€, Error: {e.ErrorMessage})"));
+                
+                var totalFailedAmount = processingErrors.Sum(e => e.Amount);
+                var errorTypes = processingErrors.GroupBy(e => e.ErrorType)
+                    .Select(g => $"{g.Key}: {g.Count()}")
+                    .ToList();
+                
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Account deletion completed with processing failures",
+                    details: $"Account deletion for user {userId} completed, but {processingErrors.Count} contract(s) failed to process money. " +
+                            $"Total failed amount: {totalFailedAmount:F2}€. " +
+                            $"Error summary: {errorSummary}. " +
+                            $"Error types: {string.Join(", ", errorTypes)}. " +
+                            $"ACTION REQUIRED: Manual review and processing required for failed contracts. " +
+                            $"SearchHire IDs: {string.Join(", ", processingErrors.Select(e => e.SearchHireId))}.",
+                    userId: userId,
+                    source: "AccountDeletionService.ProcessActiveContractsAsync",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        DeletedUserId = userId,
+                        FailedContractsCount = processingErrors.Count,
+                        TotalFailedAmount = totalFailedAmount,
+                        FailedSearchHireIds = processingErrors.Select(e => e.SearchHireId).ToList(),
+                        ErrorDetails = processingErrors.Select(e => new { 
+                            SearchHireId = e.SearchHireId, 
+                            Amount = e.Amount, 
+                            ErrorMessage = e.ErrorMessage, 
+                            ErrorType = e.ErrorType 
+                        }).ToList(),
+                        ErrorTypes = errorTypes,
+                        DeletionReason = deletionReason
+                    }
+                );
+            }
+
+            await _context.SaveChangesAsync(cancellationToken);
+            return (transactionsProcessed, processingErrors);
         }
 
 
@@ -519,7 +804,7 @@ namespace newApi.Services
         /// 
         /// NOTA: Todo se ejecuta en la transacción global de DeleteAccountAsync para evitar problemas de nested transactions.
         /// </summary>
-        private async Task DeleteUserDataAsync(int userId)
+        private async Task DeleteUserDataAsync(int userId, CancellationToken cancellationToken = default)
         {
             // ===== FASE 1: VALIDACIONES (dentro de transacción global) =====
             try
@@ -528,7 +813,7 @@ namespace newApi.Services
                 var pendingTransactions = await _context.FinancialTransactions
                     .Where(ft => ft.UserId == userId && 
                                 (ft.TransactionType == "ServicePayment" || ft.TransactionType == "Deposit"))
-                    .AnyAsync();
+                    .AnyAsync(cancellationToken);
                 
                 if (pendingTransactions)
                 {
@@ -556,7 +841,7 @@ namespace newApi.Services
                         @"UPDATE ""Messages"" 
                           SET ""SenderId"" = NULL, 
                               ""Content"" = '[Usuario eliminado] ' || COALESCE(""Content"", '')
-                          WHERE ""SenderId"" = {0} AND ""SenderId"" IS NOT NULL", userId);
+                          WHERE ""SenderId"" = {0} AND ""SenderId"" IS NOT NULL", userId, cancellationToken);
                     
                     if (messagesCount > 0)
                     {
@@ -580,7 +865,7 @@ namespace newApi.Services
                               ""ExpertId"" = CASE WHEN ""ExpertId"" = {0} THEN NULL ELSE ""ExpertId"" END,
                               ""UpdatedAt"" = CURRENT_TIMESTAMP 
                           WHERE (""ClientId"" = {0} AND ""ClientId"" IS NOT NULL) 
-                             OR (""ExpertId"" = {0} AND ""ExpertId"" IS NOT NULL)", userId);
+                             OR (""ExpertId"" = {0} AND ""ExpertId"" IS NOT NULL)", userId, cancellationToken);
                     
                     if (conversationsCount > 0)
                     {
@@ -605,7 +890,7 @@ namespace newApi.Services
                               ""Description"" = CASE WHEN ""Description"" IS NOT NULL AND ""Description"" != '' 
                                   THEN '[Usuario eliminado] ' || ""Description"" 
                                   ELSE ""Description"" END
-                          WHERE ""ReviewerId"" = {0} AND ""ReviewerId"" IS NOT NULL", userId);
+                          WHERE ""ReviewerId"" = {0} AND ""ReviewerId"" IS NOT NULL", userId, cancellationToken);
                     
                     if (reviewsCount > 0)
                     {
@@ -630,7 +915,7 @@ namespace newApi.Services
                         @"UPDATE ""FinancialTransactions"" 
                           SET ""UserId"" = NULL,
                               ""UpdatedAt"" = CURRENT_TIMESTAMP
-                          WHERE ""UserId"" = {0} AND ""UserId"" IS NOT NULL", userId);
+                          WHERE ""UserId"" = {0} AND ""UserId"" IS NOT NULL", userId, cancellationToken);
                     
                     if (transactionsCount > 0)
                     {
@@ -660,7 +945,7 @@ namespace newApi.Services
                         @"UPDATE ""Notifications"" 
                           SET ""UserId"" = NULL, 
                               ""Message"" = '[Usuario eliminado] ' || COALESCE(""Message"", '')
-                          WHERE ""UserId"" = {0} AND ""UserId"" IS NOT NULL", userId);
+                          WHERE ""UserId"" = {0} AND ""UserId"" IS NOT NULL", userId, cancellationToken);
                     
                     if (notificationsCount > 0)
                     {
@@ -682,13 +967,13 @@ namespace newApi.Services
                         @"UPDATE ""SearchHires"" 
                           SET ""ClientId"" = NULL,
                               ""UpdatedAt"" = CURRENT_TIMESTAMP 
-                          WHERE ""ClientId"" = {0} AND ""ClientId"" IS NOT NULL", userId);
+                          WHERE ""ClientId"" = {0} AND ""ClientId"" IS NOT NULL", userId, cancellationToken);
                     
                     var searchHiresAsExpert = await _context.Database.ExecuteSqlRawAsync(
                         @"UPDATE ""SearchHires"" 
                           SET ""ExpertId"" = NULL,
                               ""UpdatedAt"" = CURRENT_TIMESTAMP 
-                          WHERE ""ExpertId"" = {0} AND ""ExpertId"" IS NOT NULL", userId);
+                          WHERE ""ExpertId"" = {0} AND ""ExpertId"" IS NOT NULL", userId, cancellationToken);
                     
                     var totalSearchHiresAnonymized = searchHiresAsClient + searchHiresAsExpert;
                     
@@ -752,7 +1037,7 @@ namespace newApi.Services
                 // 7. Eliminar likes (datos no críticos)
                 var likes = await _context.Likes
                     .Where(l => l.UserId == userId)
-                    .ToListAsync();
+                    .ToListAsync(cancellationToken);
                 if (likes.Any())
                 {
                     _context.Likes.RemoveRange(likes);
@@ -762,39 +1047,143 @@ namespace newApi.Services
                 // 8. Eliminar búsquedas (datos no críticos)
                 var searches = await _context.Searches
                     .Where(s => s.UserId == userId)
-                    .ToListAsync();
+                    .ToListAsync(cancellationToken);
                 if (searches.Any())
                 {
                     _context.Searches.RemoveRange(searches);
                     hasDeletes = true;
                 }
 
-                // 9. Eliminar servicios (si es experto - datos no críticos)
+                // 9. Eliminar/anonimizar servicios (si es experto - datos no críticos)
+                // ✅ MEJORA: Preservar servicios con contrataciones históricas (anonimizar en lugar de eliminar)
                 var expertProfile = await _context.ExpertProfiles
                     .Include(ep => ep.SearchServices)
                         .ThenInclude(ss => ss.Images)
-                    .FirstOrDefaultAsync(ep => ep.UserId == userId);
+                    .FirstOrDefaultAsync(ep => ep.UserId == userId, cancellationToken);
 
                 if (expertProfile != null)
                 {
-                    // Eliminar imágenes de servicios
-                    var serviceImages = expertProfile.SearchServices
-                        .SelectMany(ss => ss.Images)
-                        .ToList();
-                    if (serviceImages.Any())
+                    var servicesToAnonymize = new List<int>();
+                    var servicesToDelete = new List<int>();
+
+                    // ✅ MEJORA: Optimización - Batch check para evitar N+1 queries
+                    // En lugar de verificar cada servicio individualmente, hacemos una sola query
+                    var allServiceIds = expertProfile.SearchServices.Select(ss => ss.Id).ToList();
+                    
+                    if (allServiceIds.Any())
                     {
-                        _context.SearchServiceImages.RemoveRange(serviceImages);
-                        hasDeletes = true;
+                        // ✅ Una sola query para obtener todos los SearchHires asociados a los servicios
+                        var servicesWithHires = await _context.SearchHires
+                            .Where(sh => allServiceIds.Contains(sh.SearchServiceId))
+                            .Select(sh => sh.SearchServiceId)
+                            .Distinct()
+                            .ToListAsync(cancellationToken);
+
+                        var servicesWithHiresSet = new HashSet<int>(servicesWithHires);
+
+                        // ✅ Clasificar servicios: anonimizar si tienen hires, eliminar si no
+                        foreach (var service in expertProfile.SearchServices)
+                        {
+                            if (servicesWithHiresSet.Contains(service.Id))
+                            {
+                                // ✅ Preservar servicio para contrataciones históricas (auditoría, facturación, disputas)
+                                servicesToAnonymize.Add(service.Id);
+                            }
+                            else
+                            {
+                                // ✅ Eliminar servicio si no tiene contrataciones asociadas
+                                servicesToDelete.Add(service.Id);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Si no hay servicios, todos van a delete (aunque no habrá nada que eliminar)
+                        servicesToDelete.AddRange(allServiceIds);
                     }
 
-                    // Eliminar servicios
-                    if (expertProfile.SearchServices.Any())
+                    // ✅ Anonimizar servicios con contrataciones históricas
+                    if (servicesToAnonymize.Any())
                     {
-                        _context.SearchServices.RemoveRange(expertProfile.SearchServices);
-                        hasDeletes = true;
+                        // ✅ Usar EF Core para anonimizar de forma segura (evita SQL injection)
+                        var servicesToAnonymizeEntities = expertProfile.SearchServices
+                            .Where(ss => servicesToAnonymize.Contains(ss.Id))
+                            .ToList();
+
+                        foreach (var service in servicesToAnonymizeEntities)
+                        {
+                            service.ExpertProfileId = null;
+                            // ✅ IMPORTANTE: Desactivar servicio al anonimizar para que no aparezca en búsquedas
+                            // IsActive y ExpertProfileId son campos diferentes:
+                            // - IsActive: desactiva temporalmente (vacaciones, mantenimiento)
+                            // - ExpertProfileId = NULL: anonimiza (eliminación de cuenta)
+                            service.IsActive = false;
+                        }
+
+                        var anonymizedCount = servicesToAnonymizeEntities.Count;
+
+                        if (anonymizedCount > 0)
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "SearchServices anonymized for account deletion (preserved for historical contracts)",
+                                details: $"Anonymized {anonymizedCount} SearchService(s) for expert {userId} (ExpertProfileId set to NULL). " +
+                                        $"Services preserved because they have associated SearchHires (contracts) for historical/audit purposes. " +
+                                        $"Service IDs: {string.Join(", ", servicesToAnonymize)}.",
+                                userId: null,
+                                source: "AccountDeletionService.DeleteUserDataAsync",
+                                relatedEntityType: "SearchService",
+                                relatedEntityId: null,
+                                additionalData: new { 
+                                    DeletedUserId = userId,
+                                    AnonymizedServiceIds = servicesToAnonymize,
+                                    Reason = "Preserve services with historical contracts for audit trail and legal compliance"
+                                }
+                            );
+                        }
                     }
 
-                    // Eliminar perfil de experto
+                    // ✅ Eliminar imágenes de servicios que se van a eliminar (no anonimizar)
+                    if (servicesToDelete.Any())
+                    {
+                        var servicesToDeleteImages = expertProfile.SearchServices
+                            .Where(ss => servicesToDelete.Contains(ss.Id))
+                            .SelectMany(ss => ss.Images)
+                            .ToList();
+
+                        if (servicesToDeleteImages.Any())
+                        {
+                            _context.SearchServiceImages.RemoveRange(servicesToDeleteImages);
+                            hasDeletes = true;
+                        }
+
+                        // ✅ Eliminar servicios sin contrataciones asociadas
+                        var servicesToRemove = expertProfile.SearchServices
+                            .Where(ss => servicesToDelete.Contains(ss.Id))
+                            .ToList();
+
+                        if (servicesToRemove.Any())
+                        {
+                            _context.SearchServices.RemoveRange(servicesToRemove);
+                            hasDeletes = true;
+
+                            await _loggingService.LogInfoAsync(
+                                message: "SearchServices deleted for account deletion (no associated contracts)",
+                                details: $"Deleted {servicesToRemove.Count} SearchService(s) for expert {userId}. " +
+                                        $"Services deleted because they have no associated SearchHires (contracts). " +
+                                        $"Service IDs: {string.Join(", ", servicesToDelete)}.",
+                                userId: null,
+                                source: "AccountDeletionService.DeleteUserDataAsync",
+                                relatedEntityType: "SearchService",
+                                relatedEntityId: null,
+                                additionalData: new { 
+                                    DeletedUserId = userId,
+                                    DeletedServiceIds = servicesToDelete
+                                }
+                            );
+                        }
+                    }
+
+                    // ✅ Eliminar perfil de experto (no depende de servicios, FK es nullable)
                     _context.ExpertProfiles.Remove(expertProfile);
                     hasDeletes = true;
                 }
@@ -802,7 +1191,7 @@ namespace newApi.Services
                 // 10. Eliminar configuraciones de usuario (datos no críticos)
                 var userSettings = await _context.UserSettings
                     .Where(us => us.UserId == userId)
-                    .ToListAsync();
+                    .ToListAsync(cancellationToken);
                 if (userSettings.Any())
                 {
                     _context.UserSettings.RemoveRange(userSettings);
@@ -812,7 +1201,7 @@ namespace newApi.Services
                 // 11. Eliminar suscripciones (datos no críticos)
                 var subscriptions = await _context.UserSubscriptions
                     .Where(us => us.UserId == userId)
-                    .ToListAsync();
+                    .ToListAsync(cancellationToken);
                 if (subscriptions.Any())
                 {
                     _context.UserSubscriptions.RemoveRange(subscriptions);
@@ -822,7 +1211,7 @@ namespace newApi.Services
                 // ✅ BATCH SAVE: Un solo SaveChangesAsync para todos los deletes (mejor performance)
                 if (hasDeletes)
                 {
-                    await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync(cancellationToken);
                 }
 
                 // ===== FASE 4: SOFT DELETE DEL USUARIO (misma transacción global) =====
@@ -833,14 +1222,14 @@ namespace newApi.Services
                 // NOTA: Usar IgnoreQueryFilters() para acceder a usuarios eliminados si es necesario
                 var userToDelete = await _context.Users
                     .IgnoreQueryFilters() // Ignorar query filter para poder acceder a usuarios eliminados
-                    .FirstOrDefaultAsync(u => u.Id == userId);
+                    .FirstOrDefaultAsync(u => u.Id == userId, cancellationToken);
                 
                 if (userToDelete != null && !userToDelete.IsDeleted)
                 {
                     // ✅ SOFT DELETE: Marcar como eliminado en lugar de remover físicamente
                     userToDelete.IsDeleted = true;
                     userToDelete.DeletedAt = DateTime.UtcNow;
-                    await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync(cancellationToken);
                     
                     await _loggingService.LogInfoAsync(
                         message: "User soft deleted successfully",

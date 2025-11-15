@@ -3626,13 +3626,39 @@ namespace newApi.Services
                             timer.Appointment.StatusId = noProposalStatus.Id;
                             timer.Appointment.UpdatedAt = DateTime.UtcNow;
 
+                            // ✅ MEJORA: Actualizar el estado del SearchHire según el mapeo
+                            // ✅ IMPORTANTE: Cliente no propone → Estado específico con porcentajes distintos
+                            // ✅ Buscar primero el estado específico, si no existe usar el genérico
+                            var cancelledByClientNoProposalStatus = await _context.SystemStatuses
+                                .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                         s.StatusValue == "cancelled_by_client_no_proposal");
+                            
+                            // Fallback al estado genérico si no existe el específico
+                            if (cancelledByClientNoProposalStatus == null)
+                            {
+                                cancelledByClientNoProposalStatus = await _context.SystemStatuses
+                                    .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                             s.StatusValue == "cancelled_by_no_response");
+                            }
+                            
+                            if (cancelledByClientNoProposalStatus != null && timer.Appointment.SearchHire != null)
+                            {
+                                timer.Appointment.SearchHire.StatusId = cancelledByClientNoProposalStatus.Id;
+                                timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                            }
+
                             // Procesar dinero automáticamente
                             // ✅ OPTIMIZACIÓN: updateState: false porque ya cambiamos el estado arriba
+                            // ✅ Usar el estado específico si existe, sino el genérico
                             try
                             {
+                                var statusValueForMoney = cancelledByClientNoProposalStatus?.StatusValue == "cancelled_by_client_no_proposal"
+                                    ? "cancelled_by_client_no_proposal"
+                                    : "cancelled_by_no_response";
+                                
                                 await _refundService.ProcessMoneyDistributionAsync(
                                     timer.Appointment.SearchHireId,
-                                    "appointment_cancelled_by_no_response",
+                                    statusValueForMoney,
                                     "Client did not propose within 24h - automatic cancellation",
                                     null,
                                     updateState: false);
@@ -3655,13 +3681,39 @@ namespace newApi.Services
                             timer.Appointment.StatusId = noResponseStatus.Id;
                             timer.Appointment.UpdatedAt = DateTime.UtcNow;
 
+                            // ✅ MEJORA: Actualizar el estado del SearchHire según el mapeo
+                            // ✅ IMPORTANTE: Experto no responde → Estado específico con porcentajes distintos
+                            // ✅ Buscar primero el estado específico, si no existe usar el genérico
+                            var cancelledByExpertNoResponseStatus = await _context.SystemStatuses
+                                .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                         s.StatusValue == "cancelled_by_expert_no_response");
+                            
+                            // Fallback al estado genérico si no existe el específico
+                            if (cancelledByExpertNoResponseStatus == null)
+                            {
+                                cancelledByExpertNoResponseStatus = await _context.SystemStatuses
+                                    .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                             s.StatusValue == "cancelled_by_no_response");
+                            }
+                            
+                            if (cancelledByExpertNoResponseStatus != null && timer.Appointment.SearchHire != null)
+                            {
+                                timer.Appointment.SearchHire.StatusId = cancelledByExpertNoResponseStatus.Id;
+                                timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                            }
+
                             // Procesar dinero automáticamente
                             // ✅ OPTIMIZACIÓN: updateState: false porque ya cambiamos el estado arriba
+                            // ✅ Usar el estado específico si existe, sino el genérico
                             try
                             {
+                                var statusValueForMoney = cancelledByExpertNoResponseStatus?.StatusValue == "cancelled_by_expert_no_response"
+                                    ? "cancelled_by_expert_no_response"
+                                    : "cancelled_by_no_response";
+                                
                                 await _refundService.ProcessMoneyDistributionAsync(
                                     timer.Appointment.SearchHireId,
-                                    "appointment_cancelled_by_no_response",
+                                    statusValueForMoney,
                                     "Expert did not respond within 24h - automatic cancellation",
                                     null,
                                     updateState: false);
@@ -3683,6 +3735,18 @@ namespace newApi.Services
                         {
                             timer.Appointment.StatusId = noReportStatus.Id;
                             timer.Appointment.UpdatedAt = DateTime.UtcNow;
+
+                            // ✅ MEJORA: Actualizar el estado del SearchHire según el mapeo
+                            // ✅ IMPORTANTE: appointment_cancelled_by_no_report mapea a "cancelled" (estado genérico)
+                            var cancelledStatus = await _context.SystemStatuses
+                                .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                         s.StatusValue == "cancelled");
+                            
+                            if (cancelledStatus != null && timer.Appointment.SearchHire != null)
+                            {
+                                timer.Appointment.SearchHire.StatusId = cancelledStatus.Id;
+                                timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                            }
 
                             // Procesar dinero automáticamente
                             // ✅ OPTIMIZACIÓN: updateState: false porque ya cambiamos el estado arriba
@@ -3706,11 +3770,24 @@ namespace newApi.Services
                         // Si el cliente no aprueba/disputa en 24h, completar automáticamente a favor del experto
                         try
                         {
+                            // ✅ MEJORA: Actualizar el estado del SearchHire ANTES de procesar dinero
+                            // ✅ IMPORTANTE: "completed_without_client_approval" es un SearchHireStatus, no AppointmentStatus
+                            var completedWithoutApprovalStatus = await _context.SystemStatuses
+                                .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                         s.StatusValue == "completed_without_client_approval");
+                            
+                            if (completedWithoutApprovalStatus != null && timer.Appointment.SearchHire != null)
+                            {
+                                timer.Appointment.SearchHire.StatusId = completedWithoutApprovalStatus.Id;
+                                timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+                            }
+
                             var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
                                 timer.Appointment.SearchHireId,
                                 "completed_without_client_approval",
                                 "Client did not respond within 24h - automatic completion in favor of expert",
-                                null);
+                                null,
+                                updateState: false); // ✅ Ya actualizamos el estado arriba
 
                             if (!moneySuccess)
                             {

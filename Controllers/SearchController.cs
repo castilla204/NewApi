@@ -294,6 +294,45 @@ namespace newApi.Controllers
                     return NotFound(new { message = "User not found" });
                 }
 
+                // 🚨 VALIDACIÓN CRÍTICA: Los expertos no pueden crear contrataciones como clientes
+                // ✅ IMPORTANTE: Deben usar una cuenta distinta (no registrada como experto) para contratar
+                // ✅ Esta validación DEBE hacerse ANTES de crear el checkout session
+                // ✅ MEJORA: Verificar explícitamente si tiene ExpertProfile en la BD (no solo en memoria)
+                var userWithProfile = await _context.Users
+                    .Include(u => u.ExpertProfile)
+                    .FirstOrDefaultAsync(u => u.Id == userId);
+                
+                if (userWithProfile == null)
+                {
+                    return NotFound(new { message = "User not found" });
+                }
+
+                var hasExpertProfile = await _context.ExpertProfiles
+                    .AnyAsync(ep => ep.UserId == userId);
+
+                if (userWithProfile.Role == DataLayer.Models.PostGresModels.UserRole.Expert || hasExpertProfile || userWithProfile.ExpertProfile != null)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Expert attempted to create contract as client",
+                        details: $"User {userId} (Email: {userWithProfile.Email}, Role: {userWithProfile.Role}, HasExpertProfile: {hasExpertProfile}) attempted to create a contract as client via CreateSearchWithHire. Blocked.",
+                        userId: userId,
+                        source: "SearchController.CreateSearchWithHire",
+                        relatedEntityType: "User",
+                        relatedEntityId: userId,
+                        additionalData: new { 
+                            UserId = userId,
+                            UserEmail = userWithProfile.Email,
+                            UserRole = userWithProfile.Role.ToString(),
+                            HasExpertProfileInMemory = userWithProfile.ExpertProfile != null,
+                            HasExpertProfileInDb = hasExpertProfile
+                        }
+                    );
+                    
+                    return BadRequest(new { 
+                        message = "Los expertos no pueden crear contrataciones. Debes usar una cuenta distinta (no registrada como experto) para contratar servicios."
+                    });
+                }
+
                 // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
                 /*
                 if (!user.PhoneVerified)

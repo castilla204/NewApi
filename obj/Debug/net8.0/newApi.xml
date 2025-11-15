@@ -2432,12 +2432,25 @@
         <member name="M:newApi.Migrations.AddStripeFutureRequirementsToExpertProfile.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
-        <member name="M:newApi.Services.AccountDeletionService.GetStatusIdByValueAsync(System.String)">
+        <member name="T:newApi.Migrations.MakeUserFieldsNullableForAccountDeletionAnonymization">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeUserFieldsNullableForAccountDeletionAnonymization.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeUserFieldsNullableForAccountDeletionAnonymization.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeUserFieldsNullableForAccountDeletionAnonymization.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Services.AccountDeletionService.GetStatusIdByValueAsync(System.String,System.Threading.CancellationToken)">
             <summary>
-            Helper method to get StatusId from StatusValue
+            Helper method to get StatusId from StatusValue with caching
+            ✅ MEJORA: Cache de estados para mejorar performance
             </summary>
         </member>
-        <member name="M:newApi.Services.AccountDeletionService.DeleteUserDataAsync(System.Int32)">
+        <member name="M:newApi.Services.AccountDeletionService.DeleteUserDataAsync(System.Int32,System.Threading.CancellationToken)">
             <summary>
             Elimina/anonimiza todos los datos de un usuario siguiendo las mejores prácticas del sistema.
             Estructura en fases similar a ProcessMoneyDistributionAsync:

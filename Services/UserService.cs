@@ -206,16 +206,59 @@ namespace newApi.Services
             var settings = new GoogleJsonWebSignature.ValidationSettings { Audience = clientIds };
             var payload = await GoogleJsonWebSignature.ValidateAsync(request.AccessToken, settings);
 
+            // ✅ MEJORA: Buscar primero usuarios activos (sin IgnoreQueryFilters)
             var user = await _context.Users.FirstOrDefaultAsync(u => u.GoogleId == payload.Subject);
+
+            // ✅ MEJORA: Si no se encuentra usuario activo, buscar usuarios eliminados (soft deleted)
+            // Esto permite restaurar cuentas eliminadas cuando el usuario se vuelve a registrar
+            if (user == null)
+            {
+                var deletedUser = await _context.Users
+                    .IgnoreQueryFilters() // ✅ Ignorar query filter para buscar usuarios eliminados
+                    .FirstOrDefaultAsync(u => u.GoogleId == payload.Subject && u.IsDeleted);
+                
+                if (deletedUser != null)
+                {
+                    // ✅ RESTAURAR usuario eliminado en lugar de crear uno nuevo
+                    var previouslyDeletedAt = deletedUser.DeletedAt; // Guardar antes de limpiar
+                    deletedUser.IsDeleted = false;
+                    deletedUser.DeletedAt = null;
+                    deletedUser.Name = payload.Name?.Trim(); // Actualizar nombre por si cambió
+                    deletedUser.Email = payload.Email?.Trim(); // Actualizar email por si cambió
+                    
+                    await _context.SaveChangesAsync();
+                    
+                    user = deletedUser;
+                    
+                    // ✅ LOG INFORMATIVO: Usuario restaurado
+                    await _loggingService.LogInfoAsync(
+                        message: "User account restored after deletion",
+                        details: $"User account was restored after being deleted. Email: {user.Email}, UserId: {user.Id}, Previously deleted at: {previouslyDeletedAt:O}. " +
+                                $"Note: User data was anonymized during deletion and cannot be fully restored. User will need to reconfigure settings.",
+                        userId: user.Id,
+                        source: "UserService.GoogleAuth",
+                        relatedEntityType: "User",
+                        relatedEntityId: user.Id,
+                        additionalData: new { 
+                            Action = "UserRestoration",
+                            Email = user.Email,
+                            Name = user.Name,
+                            Role = user.Role.ToString(),
+                            GoogleId = user.GoogleId,
+                            PreviouslyDeletedAt = previouslyDeletedAt
+                        }
+                    );
+                }
+            }
 
             if (user == null)
             {
+                // ✅ Usuario completamente nuevo - crear desde cero
                 // 🔐 SEGURIDAD: Asignar rol de Admin solo si el email es el autorizado
                 var emailToCheck = payload.Email?.Trim().ToLowerInvariant();
                 var isAdminEmail = emailToCheck == "dcastillaa@gmail.com";
                 var userRole = isAdminEmail ? UserRole.Admin : UserRole.Client;
                 
-                // 🔍 DEBUG: Log para ver qué está pasando
                 user = new User
                 {
                     Name = payload.Name?.Trim(),
@@ -228,17 +271,22 @@ namespace newApi.Services
                 _context.Users.Add(user);
                 await _context.SaveChangesAsync();
 
-                var userSettings = new UserSetting
+                // ✅ Crear UserSettings solo si no existen (puede que existan si el usuario fue restaurado)
+                var existingSettings = await _context.UserSettings.FirstOrDefaultAsync(us => us.UserId == user.Id);
+                if (existingSettings == null)
                 {
-                    UserId = user.Id,
-                    IsWhatsAppEnabled = true,
-                    IsEmailEnabled = true,
-                    Theme = "light",
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow
-                };
-                _context.UserSettings.Add(userSettings);
-                await _context.SaveChangesAsync();
+                    var userSettings = new UserSetting
+                    {
+                        UserId = user.Id,
+                        IsWhatsAppEnabled = true,
+                        IsEmailEnabled = true,
+                        Theme = "light",
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow
+                    };
+                    _context.UserSettings.Add(userSettings);
+                    await _context.SaveChangesAsync();
+                }
                 
                 // ✅ LOG INFORMATIVO: Usuario creado exitosamente
                 await _loggingService.LogInfoAsync(
@@ -258,10 +306,9 @@ namespace newApi.Services
                     }
                 );
             }
-            else
+            else if (!user.IsDeleted)
             {
-                // 🔍 DEBUG: Log para usuarios existentes
-                // ✅ LOG INFORMATIVO: Usuario inició sesión
+                // ✅ Usuario existente y activo - login normal
                 await _loggingService.LogInfoAsync(
                     message: "User login successful",
                     details: $"User logged in via Google Auth. Email: {user.Email}, Role: {user.Role}, UserId: {user.Id}",

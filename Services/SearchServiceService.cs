@@ -67,6 +67,7 @@ namespace newApi.Services
                 }
 
                 var query = _context.SearchServices
+                    .AsNoTracking() // ✅ CORRECCIÓN: Forzar consulta desde BD, evitar tracking de EF Core
                     .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId && ss.IsActive && !ss.ExpertProfile.IsOnVacation
                         && ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted)
                     .Include(ss => ss.Images)
@@ -85,8 +86,9 @@ namespace newApi.Services
 
                 var services = await query.ToListAsync();
                 services = services
-                    .Where(ss => !string.IsNullOrEmpty(ss.ExpertProfile?.Latitude) && !string.IsNullOrEmpty(ss.ExpertProfile?.Longitude))
+                    .Where(ss => ss.IsActive && !string.IsNullOrEmpty(ss.ExpertProfile?.Latitude) && !string.IsNullOrEmpty(ss.ExpertProfile?.Longitude)) // ✅ CORRECCIÓN: Filtrar explícitamente por IsActive después de cargar
                     .ToList();
+                
                 // ✅ NUEVO: Cargar todas las disponibilidades activas de los expertos en una sola consulta
                 var expertProfileIds = services.Select(ss => ss.ExpertProfileId).Distinct().ToList();
                 var availabilities = await _context.ExpertAvailabilities
@@ -120,13 +122,11 @@ namespace newApi.Services
 
                         var distance = CalculateDistance(searchLatitude, searchLongitude, expertLat, expertLon);
                         var isExtremeDistance = distance > 10000m;
-                        if (isExtremeDistance)
-                        {
-                        }
                         return distance <= locationRange || (isExtremeDistance && distance <= locationRange * 2);
                     })
                     .Select(ss => MapToDetailDto(ss, availabilityByExpert))
                     .ToList();
+                
                 return filteredServices;
             }
             catch (Exception ex)
@@ -145,6 +145,7 @@ namespace newApi.Services
                 }
 
                 var query = _context.SearchServices
+                    .AsNoTracking() // ✅ CORRECCIÓN: Forzar consulta desde BD, evitar tracking de EF Core
                     .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId && ss.IsActive && !ss.ExpertProfile.IsOnVacation
                         && ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted)
                     .Include(ss => ss.Images)
@@ -156,7 +157,7 @@ namespace newApi.Services
 
                 var services = await query.ToListAsync();
                 services = services
-                    .Where(ss => !string.IsNullOrEmpty(ss.ExpertProfile?.Latitude) && !string.IsNullOrEmpty(ss.ExpertProfile?.Longitude))
+                    .Where(ss => ss.IsActive && !string.IsNullOrEmpty(ss.ExpertProfile?.Latitude) && !string.IsNullOrEmpty(ss.ExpertProfile?.Longitude)) // ✅ CORRECCIÓN: Filtrar explícitamente por IsActive después de cargar
                     .ToList();
                 // Agrupar servicios por experto para evitar duplicados
                 var expertGroups = services.GroupBy(ss => ss.ExpertProfile.User.Id);
@@ -213,6 +214,7 @@ namespace newApi.Services
             try
             {
                 IQueryable<SearchService> query = _context.SearchServices
+                    .AsNoTracking() // ✅ CORRECCIÓN: Forzar consulta desde BD, evitar tracking de EF Core
                     .Where(ss => ss.ExpertProfileId == expertId && ss.IsActive);
 
                 if (serviceTypeId.HasValue)
@@ -248,6 +250,7 @@ namespace newApi.Services
             try
             {
                 var service = await _context.SearchServices
+                    .AsNoTracking() // ✅ CORRECCIÓN: Forzar consulta desde BD, evitar tracking de EF Core
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
@@ -302,6 +305,7 @@ namespace newApi.Services
             {
                 // Retrieve the SearchService associated with the HireId, including related data
                 var service = await _context.SearchServices
+                    .AsNoTracking() // ✅ CORRECCIÓN: Forzar consulta desde BD, evitar tracking de EF Core
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
@@ -592,11 +596,15 @@ namespace newApi.Services
                     Id = ss.ExpertProfile.Id,
                     ProfilePictureUrl = ss.ExpertProfile.ProfilePictureUrl,
                     Description = ss.ExpertProfile.Description,
+                    StripeAccountId = ss.ExpertProfile.StripeAccountId,
                     CreatedAt = ss.ExpertProfile.CreatedAt,
                     User = userDto,
                     Reviews = reviews,
                     Latitude = ss.ExpertProfile.Latitude,
                     Longitude = ss.ExpertProfile.Longitude,
+                    StripeStatus = ss.ExpertProfile.StripeStatus, // ✅ CORRECCIÓN: Mapear StripeStatus
+                    StripeStatusDetails = ss.ExpertProfile.StripeStatusDetails, // ✅ CORRECCIÓN: Mapear StripeStatusDetails
+                    OnboardingCompleted = ss.ExpertProfile.OnboardingCompleted, // ✅ CORRECCIÓN: Mapear OnboardingCompleted
                     IsOnVacation = ss.ExpertProfile.IsOnVacation,
                     CurrentAvailability = availabilityDto, // ✅ NUEVO: Incluir horarios de disponibilidad
                     // ✅ FUTURE REQUIREMENTS
@@ -613,10 +621,13 @@ namespace newApi.Services
                 CategoryId = baseDto.CategoryId,
                 ServiceTypeId = baseDto.ServiceTypeId,
                 ServiceTypeName = baseDto.ServiceTypeName,
+                ServiceTypeCategoryId = baseDto.ServiceTypeCategoryId, // ✅ CORRECCIÓN: Incluir ServiceTypeCategoryId
+                RequiresAppointment = baseDto.RequiresAppointment, // ✅ CORRECCIÓN: Incluir RequiresAppointment
                 Price = baseDto.Price,
                 Conditions = baseDto.Conditions,
                 DurationInHours = baseDto.DurationInHours,
                 CreatedAt = baseDto.CreatedAt,
+                IsActive = baseDto.IsActive, // ✅ CORRECCIÓN: Incluir IsActive
                 ImageUrls = baseDto.ImageUrls,
                 Expert = baseDto.Expert,
                 SelectedDeliverableTypes = baseDto.SelectedDeliverableTypes,

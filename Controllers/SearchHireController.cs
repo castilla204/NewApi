@@ -76,6 +76,24 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid or missing user ID in token" });
                 }
 
+                // 🚨 VALIDACIÓN CRÍTICA: Los expertos no pueden crear contrataciones como clientes
+                // ✅ IMPORTANTE: Deben usar una cuenta distinta (no registrada como experto) para contratar
+                var user = await _context.Users
+                    .Include(u => u.ExpertProfile)
+                    .FirstOrDefaultAsync(u => u.Id == userId);
+                
+                if (user == null)
+                {
+                    return NotFound(new { message = "User not found" });
+                }
+
+                if (user.Role == UserRole.Expert || user.ExpertProfile != null)
+                {
+                    return BadRequest(new { 
+                        message = "Los expertos no pueden crear contrataciones. Debes usar una cuenta distinta (no registrada como experto) para contratar servicios."
+                    });
+                }
+
                 var search = await _context.Searches.FindAsync(dto.SearchId);
                 if (search == null)
                 {

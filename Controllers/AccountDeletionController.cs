@@ -31,7 +31,7 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                var status = await _accountDeletionService.CheckDeletionStatusAsync(userId);
+                var status = await _accountDeletionService.CheckDeletionStatusAsync(userId, HttpContext.RequestAborted);
                 return Ok(status);
             }
             catch (Exception ex)
@@ -58,7 +58,7 @@ namespace newApi.Controllers
                 {
                     return BadRequest(new { message = "Request body is required" });
                 }
-                var result = await _accountDeletionService.DeleteAccountAsync(userId, request);
+                var result = await _accountDeletionService.DeleteAccountAsync(userId, request, HttpContext.RequestAborted);
 
                 if (result.Success)
                 {
@@ -94,7 +94,7 @@ namespace newApi.Controllers
                 {
                     return BadRequest(new { message = "Request body is required" });
                 }
-                var result = await _accountDeletionService.DeleteAccountAsync(userId, request);
+                var result = await _accountDeletionService.DeleteAccountAsync(userId, request, HttpContext.RequestAborted);
 
                 if (result.Success)
                 {
@@ -120,7 +120,7 @@ namespace newApi.Controllers
         {
             try
             {
-                var status = await _accountDeletionService.CheckDeletionStatusAsync(userId);
+                var status = await _accountDeletionService.CheckDeletionStatusAsync(userId, HttpContext.RequestAborted);
                 return Ok(status);
             }
             catch (Exception ex)

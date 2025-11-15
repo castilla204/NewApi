@@ -415,17 +415,21 @@ namespace newApi.Services
                 // ===== FASE 2: CAMBIAR ESTADO (transacción BD rápida, separada) =====
                 if (updateState)
                 {
-                    using var stateTransaction = await _context.Database.BeginTransactionAsync(
-                        System.Data.IsolationLevel.ReadCommitted
-                    );
-                    try
+                    // ✅ CORRECCIÓN: Usar estrategia de ejecución para manejar transacciones con reintentos (NpgsqlRetryingExecutionStrategy)
+                    var stateStrategy = _context.Database.CreateExecutionStrategy();
+                    var stateUpdateSuccess = await stateStrategy.ExecuteAsync(async () =>
                     {
-                        // ✅ MEJORA GROK: Cargar entidades explícitamente para evitar null references
-                        var searchHireForState = await _context.SearchHires
-                            .Include(sh => sh.Status)
-                            .Include(sh => sh.Appointment)
-                                .ThenInclude(a => a.Status)
-                            .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+                        using var stateTransaction = await _context.Database.BeginTransactionAsync(
+                            System.Data.IsolationLevel.ReadCommitted
+                        );
+                        try
+                        {
+                            // ✅ MEJORA GROK: Cargar entidades explícitamente para evitar null references
+                            var searchHireForState = await _context.SearchHires
+                                .Include(sh => sh.Status)
+                                .Include(sh => sh.Appointment)
+                                    .ThenInclude(a => a.Status)
+                                .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
                         
                         if (searchHireForState == null)
                         {
@@ -439,6 +443,7 @@ namespace newApi.Services
                             // Ya está finalizado, no cambiar estado pero continuar con dinero
                             await stateTransaction.CommitAsync();
                             // Continuar a Fase 3 para procesar dinero si es necesario
+                            return true; // Estado ya estaba finalizado, continuar con dinero
                         }
                         else
                         {
@@ -506,19 +511,18 @@ namespace newApi.Services
                             }
                             await stateTransaction.CommitAsync();
                             // ✅ Estado verificado/actualizado y commiteado
+                            return true; // Estado actualizado exitosamente
                         }
                     }
                     catch (DbUpdateConcurrencyException ex)
                     {
                         // ✅ MEJORA GROK: Manejo específico de concurrencia
                         await stateTransaction.RollbackAsync();
-                        // Cargar searchHire para obtener ClientId si no está disponible
-                        var searchHireForError = await _context.SearchHires
-                            .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+                        // Usar searchHire ya cargado o usar initiatedByUserId como fallback
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Concurrency conflict updating state",
                             details: $"Another process modified SearchHire {searchHireId} concurrently. Error: {ex.Message}",
-                            userId: initiatedByUserId ?? searchHireForError?.ClientId ?? 0,
+                            userId: initiatedByUserId ?? searchHire?.ClientId ?? 0,
                             source: "StripeRefundService.ProcessMoneyDistributionAsync",
                             relatedEntityType: "SearchHire",
                             relatedEntityId: searchHireId,
@@ -534,13 +538,11 @@ namespace newApi.Services
                     {
                         // Error de BD al cambiar estado → Revertir
                         await stateTransaction.RollbackAsync();
-                        // Cargar searchHire para obtener ClientId si no está disponible
-                        var searchHireForError = await _context.SearchHires
-                            .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+                        // Usar searchHire ya cargado o usar initiatedByUserId como fallback
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Failed to update state before money distribution",
                             details: $"SearchHire {searchHireId} state update failed: {ex.Message}. StackTrace: {ex.StackTrace}",
-                            userId: initiatedByUserId ?? searchHireForError?.ClientId ?? 0,
+                            userId: initiatedByUserId ?? searchHire?.ClientId ?? 0,
                             source: "StripeRefundService.ProcessMoneyDistributionAsync",
                             relatedEntityType: "SearchHire",
                             relatedEntityId: searchHireId,
@@ -552,6 +554,106 @@ namespace newApi.Services
                             }
                         );
                         return false; // NO procesar dinero si no pudimos cambiar estado
+                    }
+                    });
+
+                    // ✅ Verificar si el cambio de estado fue exitoso
+                    if (!stateUpdateSuccess)
+                    {
+                        // ⚠️ FALLBACK: Si falló el cambio de estado, intentar cambiarlo manualmente para evitar bloqueos
+                        // Esto es crítico para evitar que el sistema quede bloqueado
+                        try
+                        {
+                            var fallbackSearchHire = await _context.SearchHires
+                                .Include(sh => sh.Status)
+                                .Include(sh => sh.Appointment)
+                                    .ThenInclude(a => a.Status)
+                                .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+                            
+                            if (fallbackSearchHire != null && fallbackSearchHire.Status?.IsFinalizationStatus != true)
+                            {
+                                // Mapear statusValue a estados finales
+                                AppointmentStatus? appointmentStatus = MapAppointmentStatus(statusValue);
+                                
+                                // Cambiar Appointment.Status si aplica
+                                if (appointmentStatus.HasValue && fallbackSearchHire.Appointment != null)
+                                {
+                                    var appointmentStatusRow = await _context.SystemStatuses
+                                        .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                                                 s.StatusValue == statusValue);
+                                    if (appointmentStatusRow != null && fallbackSearchHire.Appointment.StatusId != appointmentStatusRow.Id)
+                                    {
+                                        fallbackSearchHire.Appointment.StatusId = appointmentStatusRow.Id;
+                                        fallbackSearchHire.Appointment.UpdatedAt = DateTime.UtcNow;
+                                    }
+                                }
+                                
+                                // Cambiar SearchHire.Status
+                                var targetSearchHireStatus = appointmentStatus.HasValue 
+                                    ? await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatus.Value)
+                                    : null;
+                                
+                                string? targetSearchHireStatusValue = null;
+                                if (!targetSearchHireStatus.HasValue)
+                                {
+                                    targetSearchHireStatusValue = statusValue;
+                                }
+                                else
+                                {
+                                    targetSearchHireStatusValue = SearchHireStatusExtensions.ToStringValue(targetSearchHireStatus.Value);
+                                }
+                                
+                                if (!string.IsNullOrEmpty(targetSearchHireStatusValue))
+                                {
+                                    var searchHireStatusRow = await _context.SystemStatuses
+                                        .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                                 s.StatusValue == targetSearchHireStatusValue);
+                                    if (searchHireStatusRow != null && fallbackSearchHire.StatusId != searchHireStatusRow.Id)
+                                    {
+                                        fallbackSearchHire.StatusId = searchHireStatusRow.Id;
+                                        fallbackSearchHire.UpdatedAt = DateTime.UtcNow;
+                                    }
+                                }
+                                
+                                await _context.SaveChangesAsync();
+                                
+                                await _loggingService.LogWarningAsync(
+                                    message: "State updated manually after ProcessMoneyDistributionAsync state phase failure",
+                                    details: $"SearchHire {searchHireId} state was manually updated as fallback because ProcessMoneyDistributionAsync failed in Phase 2 (state change). " +
+                                            $"This prevents the system from being blocked. Status changed to: {targetSearchHireStatusValue ?? statusValue}",
+                                    userId: initiatedByUserId ?? searchHire?.ClientId ?? 0,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId,
+                                    additionalData: new { 
+                                        Status = statusValue,
+                                        FallbackStateChange = true
+                                    }
+                                );
+                                
+                                // Continuar con procesamiento de dinero aunque haya fallado la Fase 2
+                                // El estado ya está cambiado, así que podemos intentar procesar el dinero
+                            }
+                        }
+                        catch (Exception fallbackEx)
+                        {
+                            // Si el fallback también falla, log crítico pero continuar
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Fallback state update also failed",
+                                details: $"SearchHire {searchHireId} state update failed in both main phase and fallback. " +
+                                        $"Fallback error: {fallbackEx.Message}. " +
+                                        $"System may be blocked. Manual intervention required.",
+                                userId: initiatedByUserId ?? searchHire?.ClientId ?? 0,
+                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                additionalData: new { 
+                                    Status = statusValue,
+                                    FallbackError = fallbackEx.Message
+                                }
+                            );
+                            // Aún así, intentar procesar dinero (puede que el estado ya esté correcto)
+                        }
                     }
                 }
 

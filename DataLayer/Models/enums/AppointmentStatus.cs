@@ -11,13 +11,16 @@ namespace newApi.DataLayer.Models.enums
         AppointmentRejected,                    // Experto rechazó
         AppointmentCancelledByClient,           // Primera cancelación del cliente
         AppointmentCancelledByClientSecond,     // Segunda cancelación del cliente
+        AppointmentCancelledByClientNoProposal, // Cliente no propuso cita en 24h (timer "proposal")
         AppointmentCancelledByExpert,           // Primera cancelación del experto
         AppointmentCancelledByExpertSecond,     // Segunda cancelación del experto
-        AppointmentCancelledByNoResponse,       // Cliente no propuso en tiempo
+        AppointmentCancelledByExpertNoResponse, // Experto no respondió a propuesta en 24h (timer "response")
+        AppointmentCancelledByNoResponse,       // [DEPRECATED] Cliente no propuso en tiempo - usar AppointmentCancelledByClientNoProposal
         AppointmentCancelledByExpertRejection,  // Experto rechazó 2 veces (cancelación por rechazos)
         AppointmentAwaitingReport,              // Esperando reporte/archivos del experto (3h después de la cita)
         AppointmentCancelledByNoReport,          // Experto no envió reporte en 24h
-        AppointmentReportSent                   // Experto envió el reporte
+        AppointmentReportSent,                 // Experto envió el reporte
+        AppointmentCompletedWithoutClientApproval // Cliente no decidió (aprobó/disputó) en 24h (timer "client_decision")
     }
 
     public static class AppointmentStatusExtensions
@@ -32,13 +35,16 @@ namespace newApi.DataLayer.Models.enums
                 AppointmentStatus.AppointmentRejected => "appointment_rejected",
                 AppointmentStatus.AppointmentCancelledByClient => "appointment_cancelled_by_client",
                 AppointmentStatus.AppointmentCancelledByClientSecond => "appointment_cancelled_by_client_second",
+                AppointmentStatus.AppointmentCancelledByClientNoProposal => "appointment_cancelled_by_client_no_proposal",
                 AppointmentStatus.AppointmentCancelledByExpert => "appointment_cancelled_by_expert",
                 AppointmentStatus.AppointmentCancelledByExpertSecond => "appointment_cancelled_by_expert_second",
+                AppointmentStatus.AppointmentCancelledByExpertNoResponse => "appointment_cancelled_by_expert_no_response",
                 AppointmentStatus.AppointmentCancelledByNoResponse => "appointment_cancelled_by_no_response",
                 AppointmentStatus.AppointmentCancelledByExpertRejection => "appointment_cancelled_by_expert_rejection",
                 AppointmentStatus.AppointmentAwaitingReport => "appointment_awaiting_report",
                 AppointmentStatus.AppointmentCancelledByNoReport => "appointment_cancelled_by_no_report",
                 AppointmentStatus.AppointmentReportSent => "appointment_report_sent",
+                AppointmentStatus.AppointmentCompletedWithoutClientApproval => "appointment_completed_without_client_approval",
                 _ => status.ToString().ToLower()
             };
         }
@@ -53,13 +59,16 @@ namespace newApi.DataLayer.Models.enums
                 "appointment_rejected" => AppointmentStatus.AppointmentRejected,
                 "appointment_cancelled_by_client" => AppointmentStatus.AppointmentCancelledByClient,
                 "appointment_cancelled_by_client_second" => AppointmentStatus.AppointmentCancelledByClientSecond,
+                "appointment_cancelled_by_client_no_proposal" => AppointmentStatus.AppointmentCancelledByClientNoProposal,
                 "appointment_cancelled_by_expert" => AppointmentStatus.AppointmentCancelledByExpert,
                 "appointment_cancelled_by_expert_second" => AppointmentStatus.AppointmentCancelledByExpertSecond,
+                "appointment_cancelled_by_expert_no_response" => AppointmentStatus.AppointmentCancelledByExpertNoResponse,
                 "appointment_cancelled_by_no_response" => AppointmentStatus.AppointmentCancelledByNoResponse,
                 "appointment_cancelled_by_expert_rejection" => AppointmentStatus.AppointmentCancelledByExpertRejection,
                 "appointment_awaiting_report" => AppointmentStatus.AppointmentAwaitingReport,
                 "appointment_cancelled_by_no_report" => AppointmentStatus.AppointmentCancelledByNoReport,
                 "appointment_report_sent" => AppointmentStatus.AppointmentReportSent,
+                "appointment_completed_without_client_approval" => AppointmentStatus.AppointmentCompletedWithoutClientApproval,
                 _ => throw new ArgumentException($"Invalid appointment status: {value}")
             };
         }

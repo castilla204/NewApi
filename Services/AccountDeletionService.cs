@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using Hangfire;
 using newApi.DataLayer;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
@@ -471,6 +472,7 @@ namespace newApi.Services
             var appointments = await _context.Appointments
                 .Where(a => searchHireIds.Contains(a.SearchHireId))
                 .Include(a => a.Status)
+                .Include(a => a.Timers) // ✅ Incluir timers para cancelar jobs de Hangfire
                 .ToDictionaryAsync(a => a.SearchHireId, cancellationToken);
 
             foreach (var contract in activeContracts)
@@ -507,6 +509,74 @@ namespace newApi.Services
                      if (existingAppointment?.Status != null && existingAppointment.Status.IsFinalizationStatus)
                      {
                          continue; // Saltar al siguiente SearchHire - NO tocar nada
+                     }
+
+                     // 🚨 CANCELAR TRABAJOS DE HANGFIRE PROGRAMADOS PARA ESTE APPOINTMENT
+                     // Esto debe hacerse ANTES de procesar el dinero para evitar que los jobs se ejecuten
+                     if (existingAppointment?.Timers != null && existingAppointment.Timers.Any())
+                     {
+                         var activeTimers = existingAppointment.Timers.Where(t => !t.IsExpired).ToList();
+                         
+                         if (activeTimers.Any())
+                         {
+                             await _loggingService.LogInfoAsync(
+                                 message: "Cancelando trabajos de Hangfire para contratación",
+                                 details: $"Cancelando {activeTimers.Count} timer(s) activo(s) para la contratación #{searchHire.Id} debido a eliminación de cuenta.",
+                                 userId: userId,
+                                 source: "AccountDeletionService.ProcessActiveContractsAsync",
+                                 relatedEntityType: "SearchHire",
+                                 relatedEntityId: searchHire.Id,
+                                 additionalData: new { 
+                                     SearchHireId = searchHire.Id,
+                                     AppointmentId = existingAppointment.Id,
+                                     TimerCount = activeTimers.Count,
+                                     TimerTypes = string.Join(", ", activeTimers.Select(t => t.TimerType))
+                                 }
+                             );
+                             
+                             foreach (var timer in activeTimers)
+                             {
+                                 timer.IsExpired = true;
+                                 timer.ExpiredAt = DateTime.UtcNow;
+                                 timer.Notes = $"Cancelado por eliminación de cuenta del {(isClientDeleting ? "cliente" : "experto")}";
+                                 
+                                 // ✅ CANCELAR job de Hangfire si existe
+                                 if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                                 {
+                                     try
+                                     {
+                                         Hangfire.BackgroundJob.Delete(timer.HangfireJobId);
+                                         timer.HangfireJobId = null; // Limpiar referencia
+                                         
+                                         await _loggingService.LogInfoAsync(
+                                             message: "Job de Hangfire cancelado",
+                                             details: $"Job cancelado para timer {timer.TimerType} del appointment #{existingAppointment.Id}",
+                                             userId: userId,
+                                             source: "AccountDeletionService.ProcessActiveContractsAsync",
+                                             relatedEntityType: "AppointmentTimer",
+                                             relatedEntityId: timer.Id
+                                         );
+                                     }
+                                     catch (Exception ex)
+                                     {
+                                         // Si el job ya no existe o fue procesado, continuar sin error
+                                         timer.HangfireJobId = null;
+                                         
+                                         await _loggingService.LogWarningAsync(
+                                             message: "Error al cancelar job de Hangfire (probablemente ya no existe)",
+                                             details: $"Error: {ex.Message}. Timer: {timer.TimerType}, AppointmentId: {existingAppointment.Id}",
+                                             userId: userId,
+                                             source: "AccountDeletionService.ProcessActiveContractsAsync",
+                                             relatedEntityType: "AppointmentTimer",
+                                             relatedEntityId: timer.Id
+                                         );
+                                     }
+                                 }
+                             }
+                             
+                             // Guardar cambios en los timers
+                             await _context.SaveChangesAsync(cancellationToken);
+                         }
                      }
 
                      // 🎯 PROCESAR DINERO PRIMERO (con updateState: true para que cambie el estado automáticamente)
@@ -850,7 +920,7 @@ namespace newApi.Services
                     // ✅ IDEMPOTENCIA: Solo actualizar si ReviewerId no es NULL (no anonimizado ya)
                     // ✅ MEJORA: Agregar UpdatedAt para trazabilidad (aunque Review no tiene UpdatedAt, se preserva CreatedAt)
                     // ✅ CRÍTICO: Anonimizar Reviews ANTES de anonimizar/eliminar SearchHires para evitar violaciones de FK
-                    var reviewsCount = await _context.Database.ExecuteSqlRawAsync(
+                    var reviewsAsReviewerCount = await _context.Database.ExecuteSqlRawAsync(
                         @"UPDATE ""Reviews"" 
                           SET ""ReviewerId"" = NULL, 
                               ""Description"" = CASE WHEN ""Description"" IS NOT NULL AND ""Description"" != '' 
@@ -859,25 +929,39 @@ namespace newApi.Services
                           WHERE ""ReviewerId"" = {0} AND ""ReviewerId"" IS NOT NULL", 
                         new object[] { userId }, cancellationToken);
                     
+                    // ✅ ANONIMIZAR reseñas recibidas (cuando el experto elimina su cuenta)
+                    var reviewsAsExpertCount = await _context.Database.ExecuteSqlRawAsync(
+                        @"UPDATE ""Reviews"" 
+                          SET ""ExpertId"" = NULL, 
+                              ""Description"" = CASE WHEN ""Description"" IS NOT NULL AND ""Description"" != '' 
+                                  THEN '[Usuario eliminado] ' || ""Description"" 
+                                  ELSE ""Description"" END
+                          WHERE ""ExpertId"" = {0} AND ""ExpertId"" IS NOT NULL", 
+                        new object[] { userId }, cancellationToken);
+                    
+                    var totalReviewsAnonymizedUser = reviewsAsReviewerCount + reviewsAsExpertCount;
+                    
                     // ✅ CRÍTICO: También anonimizar Reviews que referencian SearchHires del usuario
                     // Esto previene violaciones de FK cuando se anonimizan/eliminan SearchHires
+                    // ✅ CORRECCIÓN: Anonimizar SearchHireId = NULL además de Description para permitir eliminación de SearchHires
                     var reviewsForUserSearchHires = await _context.Database.ExecuteSqlRawAsync(
                         @"UPDATE ""Reviews"" 
-                          SET ""Description"" = CASE WHEN ""Description"" IS NOT NULL AND ""Description"" != '' 
+                          SET ""SearchHireId"" = NULL,
+                              ""Description"" = CASE WHEN ""Description"" IS NOT NULL AND ""Description"" != '' 
                                   THEN '[Usuario eliminado] ' || ""Description"" 
                                   ELSE ""Description"" END
                           WHERE ""SearchHireId"" IN (
                               SELECT ""Id"" FROM ""SearchHires"" 
                               WHERE ""ClientId"" = {0} OR ""ExpertId"" = {0}
-                          ) AND ""Description"" NOT LIKE '[Usuario eliminado]%'", 
+                          ) AND ""SearchHireId"" IS NOT NULL", 
                         new object[] { userId }, cancellationToken);
                     
-                    var totalReviewsAnonymized = reviewsCount + reviewsForUserSearchHires;
+                    var totalReviewsAnonymized = totalReviewsAnonymizedUser + reviewsForUserSearchHires;
                     if (totalReviewsAnonymized > 0)
                     {
                         await _loggingService.LogInfoAsync(
                             message: "Reviews anonymized for account deletion",
-                            details: $"Anonymized {totalReviewsAnonymized} reviews for user {userId} ({reviewsCount} as reviewer, {reviewsForUserSearchHires} related to user's SearchHires). Ratings and averages preserved.",
+                            details: $"Anonymized {totalReviewsAnonymized} reviews for user {userId} ({reviewsAsReviewerCount} as reviewer, {reviewsAsExpertCount} as expert, {reviewsForUserSearchHires} related to user's SearchHires). Ratings and averages preserved.",
                             userId: null,
                             source: "AccountDeletionService.DeleteUserDataAsync",
                             relatedEntityType: "Review",
@@ -1000,6 +1084,31 @@ namespace newApi.Services
                             relatedEntityId: null
                         );
                     }
+
+                    // 7. ✅ ANONIMIZAR SearchId en SearchHires antes de eliminar Searches
+                    // Aunque la BD lo hará automáticamente con SetNull, es mejor ser explícito para claridad y logging
+                    var searchHiresSearchIdAnonymized = await _context.Database.ExecuteSqlRawAsync(
+                        @"UPDATE ""SearchHires"" 
+                          SET ""SearchId"" = NULL,
+                              ""UpdatedAt"" = CURRENT_TIMESTAMP 
+                          WHERE ""SearchId"" IN (
+                              SELECT ""Id"" FROM ""Searches"" 
+                              WHERE ""UserId"" = {0}
+                          ) AND ""SearchId"" IS NOT NULL", 
+                        new object[] { userId }, cancellationToken);
+                    
+                    if (searchHiresSearchIdAnonymized > 0)
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "SearchId anonymized in SearchHires for account deletion",
+                            details: $"Anonymized SearchId in {searchHiresSearchIdAnonymized} SearchHire(s) before deleting user's Searches. " +
+                                    $"This preserves SearchHires (contracts) even when their associated Search is deleted.",
+                            userId: null,
+                            source: "AccountDeletionService.DeleteUserDataAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: null
+                        );
+                    }
                 }
                 catch (DbUpdateConcurrencyException ex)
                 {
@@ -1046,7 +1155,7 @@ namespace newApi.Services
                 
                 bool hasDeletes = false;
                 
-                // 7. Eliminar likes (datos no críticos)
+                // 8. Eliminar likes (datos no críticos)
                 var likes = await _context.Likes
                     .Where(l => l.UserId == userId)
                     .ToListAsync(cancellationToken);
@@ -1056,7 +1165,7 @@ namespace newApi.Services
                     hasDeletes = true;
                 }
 
-                // 8. Eliminar búsquedas (datos no críticos)
+                // 9. Eliminar búsquedas (datos no críticos - SearchHires preservados con SearchId = NULL)
                 var searches = await _context.Searches
                     .Where(s => s.UserId == userId)
                     .ToListAsync(cancellationToken);
@@ -1066,7 +1175,7 @@ namespace newApi.Services
                     hasDeletes = true;
                 }
 
-                // 9. Eliminar/anonimizar servicios (SOLO si el usuario que elimina es el EXPERTO - datos no críticos)
+                // 10. Eliminar/anonimizar servicios (SOLO si el usuario que elimina es el EXPERTO - datos no críticos)
                 // ✅ CRÍTICO: Si un CLIENTE elimina su cuenta, NO tocar los servicios del experto
                 // ✅ MEJORA: Preservar servicios con contrataciones históricas (anonimizar en lugar de eliminar)
                 var expertProfile = await _context.ExpertProfiles
@@ -1350,7 +1459,7 @@ namespace newApi.Services
                     hasDeletes = true;
                 }
 
-                // 10. Eliminar configuraciones de usuario (datos no críticos)
+                // 11. Eliminar configuraciones de usuario (datos no críticos)
                 var userSettings = await _context.UserSettings
                     .Where(us => us.UserId == userId)
                     .ToListAsync(cancellationToken);
@@ -1360,7 +1469,7 @@ namespace newApi.Services
                     hasDeletes = true;
                 }
 
-                // 11. Eliminar suscripciones (datos no críticos)
+                // 12. Eliminar suscripciones (datos no críticos)
                 var subscriptions = await _context.UserSubscriptions
                     .Where(us => us.UserId == userId)
                     .ToListAsync(cancellationToken);

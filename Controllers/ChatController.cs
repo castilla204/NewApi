@@ -77,11 +77,6 @@ namespace newApi.Controllers
                         return NotFound(new { message = "Search hire not found" });
                     }
 
-                    if (!searchHire.ExpertId.HasValue)
-                    {
-                        return BadRequest(new { message = "Cannot create conversation: No expert assigned to this search hire" });
-                    }
-
                     // Verificar autorización: debe ser cliente, experto o admin
                     // ✅ MEJORA: Manejar nullable ClientId y ExpertId correctamente
                     var isClient = searchHire.ClientId.HasValue && searchHire.ClientId.Value == userId;
@@ -93,11 +88,13 @@ namespace newApi.Controllers
                         return Unauthorized(new { message = "You are not authorized to create a conversation for this search" });
                     }
 
+                    // ✅ CORRECCIÓN: Permitir crear conversación incluso si ExpertId es NULL (experto borró cuenta)
+                    // La conversación debe preservarse para que el cliente pueda ver el historial
                     conversation = new Conversation
                     {
                         SearchHireId = searchHire.Id,
                         ClientId = searchHire.ClientId, // ✅ ClientId es ahora nullable, asignación directa
-                        ExpertId = searchHire.ExpertId, // ✅ ExpertId es nullable, asignación directa
+                        ExpertId = searchHire.ExpertId, // ✅ ExpertId es nullable, puede ser NULL si experto borró cuenta
                         IsActive = true,
                         CreatedAt = DateTime.UtcNow,
                         UpdatedAt = DateTime.UtcNow,
@@ -181,9 +178,97 @@ namespace newApi.Controllers
         }
 
         /// <summary>
-        /// Obtener conversación específica por ID (solo para Admin)
+        /// Obtener conversación directamente por SearchHireId
+        /// Funciona incluso cuando el Search fue eliminado (cliente borró su cuenta)
         /// </summary>
-        [HttpGet("conversation/{conversationId}")]
+        [HttpGet("by-searchhire/{searchHireId}")]
+        public async Task<ActionResult<ConversationDto>> GetConversationBySearchHireId(int searchHireId)
+        {
+            try
+            {
+                if (!int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
+                {
+                    return Unauthorized(new { message = "Invalid or missing user ID in token" });
+                }
+
+                // Buscar conversación directamente por SearchHireId (no depende de SearchId)
+                var conversation = await _context.Conversations
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Sender)
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Attachments)
+                    .Include(c => c.Client)
+                    .Include(c => c.Expert)
+                    .Include(c => c.SearchHire)
+                    .FirstOrDefaultAsync(c => c.SearchHireId == searchHireId &&
+                                             ((c.ClientId.HasValue && c.ClientId.Value == userId) || 
+                                              (c.ExpertId.HasValue && c.ExpertId.Value == userId) || 
+                                              _authService.IsAdmin(User)));
+
+                if (conversation == null)
+                {
+                    // Verificar si el SearchHire existe y crear conversación si no existe
+                    var searchHire = await _context.SearchHires
+                        .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+
+                    if (searchHire == null)
+                    {
+                        return NotFound(new { message = "Search hire not found" });
+                    }
+
+                    // Verificar autorización
+                    var isClient = searchHire.ClientId.HasValue && searchHire.ClientId.Value == userId;
+                    var isExpert = searchHire.ExpertId.HasValue && searchHire.ExpertId.Value == userId;
+                    var isAdmin = _authService.IsAdmin(User);
+                    
+                    if (!isClient && !isExpert && !isAdmin)
+                    {
+                        return Unauthorized(new { message = "You are not authorized to access this conversation" });
+                    }
+
+                    // ✅ CORRECCIÓN: Permitir crear conversación incluso si ExpertId es NULL (experto borró cuenta)
+                    // La conversación debe preservarse para que el cliente pueda ver el historial
+                    // Crear nueva conversación
+                    conversation = new Conversation
+                    {
+                        SearchHireId = searchHireId,
+                        ClientId = searchHire.ClientId,
+                        ExpertId = searchHire.ExpertId, // ✅ Puede ser NULL si experto borró cuenta
+                        IsActive = true,
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow,
+                        Messages = new List<Message>()
+                    };
+
+                    _context.Conversations.Add(conversation);
+                    await _context.SaveChangesAsync();
+                    
+                    await _loggingService.LogInfoAsync(
+                        message: "New conversation created by SearchHireId",
+                        details: $"New conversation created for SearchHireId {searchHireId}. ConversationId: {conversation.Id}, ClientId: {conversation.ClientId}, ExpertId: {conversation.ExpertId}",
+                        userId: userId,
+                        source: "ChatController.GetConversationBySearchHireId",
+                        relatedEntityType: "Conversation",
+                        relatedEntityId: conversation.Id,
+                        additionalData: new { 
+                            Action = "CreateConversation",
+                            SearchHireId = searchHireId,
+                            ConversationId = conversation.Id,
+                            ClientId = conversation.ClientId,
+                            ExpertId = conversation.ExpertId
+                        }
+                    );
+                }
+
+                var conversationDto = ConversationDto.FromConversation(conversation);
+                return Ok(conversationDto);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "Failed to retrieve conversation", detail = ex.Message });
+            }
+        }
+
         public async Task<ActionResult<ConversationDto>> GetConversationById(int conversationId)
         {
             try

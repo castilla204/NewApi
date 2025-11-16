@@ -234,9 +234,10 @@
             Obtener todas las conversaciones (solo para Admin)
             </summary>
         </member>
-        <member name="M:newApi.Controllers.ChatController.GetConversationById(System.Int32)">
+        <member name="M:newApi.Controllers.ChatController.GetConversationBySearchHireId(System.Int32)">
             <summary>
-            Obtener conversación específica por ID (solo para Admin)
+            Obtener conversación directamente por SearchHireId
+            Funciona incluso cuando el Search fue eliminado (cliente borró su cuenta)
             </summary>
         </member>
         <member name="T:newApi.Controllers.DisputeController">
@@ -352,6 +353,12 @@
         <member name="M:newApi.Controllers.SearchHireController.GetStatusIdByValueAsync(System.String)">
             <summary>
             Helper method to get StatusId from StatusValue
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.SearchHireController.GetSearchHireDetailsComplete(System.Int32)">
+            <summary>
+            Obtener detalles completos de una contratación directamente por SearchHireId
+            Funciona incluso cuando el Search fue eliminado (cliente borró su cuenta)
             </summary>
         </member>
         <member name="M:newApi.Controllers.SearchServiceController.GetMapExperts(System.Int32,System.Int32)">
@@ -2468,6 +2475,42 @@
         <member name="M:newApi.Migrations.MakeExpertProfileIdNullableInSearchServices.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
+        <member name="T:newApi.Migrations.MakeSearchHireIdNullableInReviews">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeSearchHireIdNullableInReviews.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeSearchHireIdNullableInReviews.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeSearchHireIdNullableInReviews.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.MakeSearchIdNullableInSearchHires">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeSearchIdNullableInSearchHires.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeSearchIdNullableInSearchHires.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.MakeSearchIdNullableInSearchHires.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.FixReviewExpertIdNullableAndNotificationFK">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.FixReviewExpertIdNullableAndNotificationFK.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.FixReviewExpertIdNullableAndNotificationFK.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.FixReviewExpertIdNullableAndNotificationFK.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
         <member name="M:newApi.Services.AccountDeletionService.DeleteUserDataAsync(System.Int32,System.Threading.CancellationToken)">
             <summary>
             Elimina/anonimiza todos los datos de un usuario siguiendo las mejores prácticas del sistema.
@@ -2578,6 +2621,21 @@
             </summary>
             <param name="expertProfile">Perfil del experto a validar</param>
             <returns>Resultado de la validación con mensaje de error si aplica</returns>
+        </member>
+        <member name="T:newApi.Services.IWebhookProcessingService">
+            <summary>
+            Servicio para procesamiento asíncrono de webhooks de Stripe
+            </summary>
+        </member>
+        <member name="M:newApi.Services.IWebhookProcessingService.ProcessConnectWebhookEventAsync(System.String)">
+            <summary>
+            Procesa un evento de webhook de Stripe de forma asíncrona
+            </summary>
+        </member>
+        <member name="M:newApi.Services.IWebhookProcessingService.ProcessGeneralWebhookEventAsync(System.String)">
+            <summary>
+            Procesa un evento de webhook general de Stripe de forma asíncrona
+            </summary>
         </member>
         <member name="M:newApi.Services.LoggingService.ProcessUserNotificationAsync(System.Int32,System.String,System.String,System.String)">
             <summary>
@@ -2693,6 +2751,27 @@
         <member name="M:newApi.Services.SystemStatusService.GetDefaultMapping(newApi.DataLayer.Models.enums.AppointmentStatus)">
             <summary>
             Mapeo por defecto (fallback) para AppointmentStatus → SearchHireStatus
+            </summary>
+        </member>
+        <!-- Badly formed XML comment ignored for member "T:newApi.Services.WebhookProcessingService" -->
+        <member name="M:newApi.Services.WebhookProcessingService.ProcessConnectWebhookEventAsync(System.String)">
+            <summary>
+            Procesa un evento de webhook de Connect Stripe de forma asíncrona
+            </summary>
+        </member>
+        <member name="M:newApi.Services.WebhookProcessingService.ProcessGeneralWebhookEventAsync(System.String)">
+            <summary>
+            Procesa un evento de webhook general de Stripe de forma asíncrona
+            </summary>
+        </member>
+        <member name="M:newApi.Services.WebhookProcessingService.IsStripeErrorRetryable(Stripe.StripeException)">
+            <summary>
+            Determina si un error de Stripe es reintentable
+            </summary>
+        </member>
+        <member name="M:newApi.Services.WebhookProcessingService.LogProcessingError(newApi.DataLayer.Models.AppDbContext,newApi.Services.ILoggingService,System.String,System.Exception,System.Boolean)">
+            <summary>
+            Loggea un error de procesamiento y actualiza el evento en la BD
             </summary>
         </member>
     </members>

@@ -380,6 +380,34 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "La cuenta de pagos fue rechazada por Stripe. No se puede abrir el panel. Reinicia el onboarding para crear una cuenta nueva." });
                 }
 
+                // ✅ CORRECCIÓN: Para cuentas Express, Stripe solo permite account_onboarding (no account_update)
+                // Obtener info de la cuenta desde Stripe para verificar tipo y requirements
+                var accountService = new AccountService();
+                Account stripeAccount;
+                try
+                {
+                    stripeAccount = await accountService.GetAsync(expertProfile.StripeAccountId);
+                }
+                catch (StripeException ex)
+                {
+                    return StatusCode(500, new { message = "Error al obtener información de Stripe", error = ex.Message });
+                }
+
+                // ⚠️ IMPORTANTE: Las cuentas Express NO soportan account_update, solo account_onboarding
+                // Según documentación oficial de Stripe: "You cannot create account_update type Account Links 
+                // for Express accounts. Valid types for Express accounts are [account_onboarding]."
+                // Por lo tanto, siempre usamos account_onboarding para cuentas Express
+                // account_onboarding funciona tanto para completar requirements como para editar información
+                string linkType = "account_onboarding";
+                
+                // Opcional: Si en el futuro usas cuentas Custom o Standard, podrías usar account_update:
+                // if (stripeAccount.Type == "custom" || stripeAccount.Type == "standard") {
+                //     bool hasRequirementsPending = (stripeAccount.Requirements?.CurrentlyDue?.Count ?? 0) > 0 ||
+                //                                   (stripeAccount.Requirements?.PastDue?.Count ?? 0) > 0 ||
+                //                                   !string.IsNullOrEmpty(stripeAccount.Requirements?.DisabledReason);
+                //     linkType = hasRequirementsPending ? "account_onboarding" : "account_update";
+                // }
+                
                 // Crear un enlace de cuenta de Stripe Connect para actualizar datos bancarios
                 var accountLinkService = new Stripe.AccountLinkService();
                 var accountLinkOptions = new Stripe.AccountLinkCreateOptions
@@ -387,7 +415,7 @@ namespace newApi.Controllers
                     Account = expertProfile.StripeAccountId,
                     RefreshUrl = "https://atrapo.io/expert-panel?refresh=true", // URL si necesita refrescar
                     ReturnUrl = "https://atrapo.io/expert-panel", // URL de retorno después de actualizar datos
-                    Type = "account_onboarding" // Tipo de enlace para completar/actualizar información de la cuenta
+                    Type = linkType // ✅ account_update para cuentas aprobadas, account_onboarding para requirements pendientes
                 };
 
                 var accountLink = await accountLinkService.CreateAsync(accountLinkOptions);
@@ -1281,11 +1309,19 @@ namespace newApi.Controllers
                                     }
                                 }
                                 
-                                // Rejected: Si disabled_reason indica rechazo (docs: startsWith "rejected.", etc.)
+                                // ✅ CORREGIDO: Rejected solo para rechazos PERMANENTES (Stripe Docs 2025)
+                                // PERMANENTES: rejected.* (fraud, terms_of_service, unsupported_business, other, listed) + listed
+                                // TEMPORALES (van a Pending): under_review, requirements.*, action_required.*, other (sin prefijo rejected)
                                 bool isRejected = !string.IsNullOrEmpty(disabledReason) &&
-                                                  (disabledReason.StartsWith("rejected.") || disabledReason == "under_review" || disabledReason == "listed" ||
-                                                   disabledReason == "requirements.past_due" || disabledReason == "requirements.pending_verification" ||
-                                                   disabledReason == "other" || disabledReason == "action_required.requested_capabilities");
+                                                  (disabledReason.StartsWith("rejected.") ||  // rejected.fraud, rejected.terms_of_service, rejected.unsupported_business, rejected.other, rejected.listed
+                                                   disabledReason == "listed");                // OFAC/sanctions list (permanente)
+                                
+                                // NOTA: Los siguientes ahora irán a Pending (recuperables/temporales):
+                                // - under_review: Revisión manual en curso
+                                // - requirements.past_due: Vencidos pero recuperables
+                                // - requirements.pending_verification: Documentos en verificación asíncrona
+                                // - action_required.requested_capabilities: Requiere acción del usuario
+                                // - other: Genérico temporal (sin prefijo "rejected.")
                                 
                                 // Logging Detallado (agregado para debug)
                                 
@@ -1471,12 +1507,11 @@ namespace newApi.Controllers
 
                                             bool isAccountApproved = allRequirementsMet && paymentsEnabled && detailsSubmitted && tosAccepted && notDisabled;
                                             
-                                                    // ✅ CORRECCIÓN: Manejar todos los estados, no solo aprobado
+                                                    // ✅ CORREGIDO: Rejected solo para rechazos PERMANENTES (Stripe Docs 2025)
                                                     string disabledReason = account.Requirements?.DisabledReason ?? "";
                                                     bool isRejected = !string.IsNullOrEmpty(disabledReason) &&
-                                                                      (disabledReason.StartsWith("rejected.") || disabledReason == "under_review" || disabledReason == "listed" ||
-                                                                       disabledReason == "requirements.past_due" || disabledReason == "requirements.pending_verification" ||
-                                                                       disabledReason == "other" || disabledReason == "action_required.requested_capabilities");
+                                                                      (disabledReason.StartsWith("rejected.") ||  // rejected.fraud, rejected.terms_of_service, rejected.unsupported_business, rejected.other, rejected.listed
+                                                                       disabledReason == "listed");                // OFAC/sanctions list (permanente)
                                             
                                             var previousStatusFallback = profileByUserId.StripeStatus;
                                             
@@ -3214,24 +3249,40 @@ namespace newApi.Controllers
                 return false; // Temporal, permite reintentar
             }
 
-            // Rechazos PERMANENTES que bloquean crear nueva cuenta:
-            // - rejected.fraud: Fraude detectado - NO permitir crear otra cuenta
-            // - rejected.terms_of_service: Violación de términos - NO permitir crear otra cuenta
-            // - rejected.unsupported_business: Negocio no permitido - NO permitir crear otra cuenta
-            // - rejected.other: Otros motivos graves - NO permitir crear otra cuenta
-            // - under_review: En revisión manual - NO permitir crear otra mientras se revisa
-            // - listed: Lista de sanciones (OFAC, etc.) - NO permitir crear otra cuenta
-            // - other: Motivo desconocido genérico - Por seguridad, bloquear hasta revisar
-            if (disabledReason.StartsWith("rejected.") || 
-                disabledReason == "under_review" || 
-                disabledReason == "listed" ||
-                disabledReason == "other")
+            // ✅ CORREGIDO: Distinguir entre rechazos PERMANENTES y TEMPORALES (Stripe Docs 2025)
+            
+            // RECHAZOS PERMANENTES - Bloquean crear nueva cuenta:
+            // - rejected.*: Fraude, violación TOS, negocio no permitido, etc.
+            // - listed: Lista de sanciones OFAC - cuenta bloqueada permanentemente
+            if (disabledReason.StartsWith("rejected.") || disabledReason == "listed")
             {
-                return true; // Permanente, bloquea
+                return true; // PERMANENTE: Bloquea crear nueva cuenta
+            }
+            
+            // ESTADOS TEMPORALES EN REVISIÓN - Bloquean crear OTRA cuenta mientras se resuelve:
+            // - under_review: En revisión manual - debe esperar resultado antes de crear otra
+            // - requirements.past_due: Requirements vencidos - debe completar la cuenta actual primero
+            // - requirements.pending_verification: Docs en verificación - debe esperar resultado
+            // RAZÓN: Prevenir múltiples cuentas mientras hay issues pendientes en la primera
+            if (disabledReason == "under_review" || 
+                disabledReason == "requirements.past_due" || 
+                disabledReason == "requirements.pending_verification")
+            {
+                return true; // TEMPORAL: Bloquea crear otra cuenta hasta resolver la actual
+            }
+            
+            // ESTADOS QUE PERMITEN REINTENTAR con nueva cuenta:
+            // - action_required.requested_capabilities: Puede crear nueva cuenta sin esas capabilities
+            // - other (sin prefijo rejected): Genérico temporal - puede reintentar
+            // - fields_needed: Faltan campos - puede reintentar con nueva cuenta
+            if (disabledReason == "action_required.requested_capabilities" || 
+                disabledReason == "other" || 
+                disabledReason == "fields_needed")
+            {
+                return false; // Permite crear nueva cuenta
             }
 
-            // Por defecto, si no conocemos el tipo, bloqueamos por seguridad
-            // Esto previene que valores nuevos o desconocidos permitan crear cuentas sin revisar
+            // Por defecto: Bloquear por seguridad (valores nuevos/desconocidos requieren revisión)
             return true;
         }
 

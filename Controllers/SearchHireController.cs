@@ -329,6 +329,285 @@ namespace newApi.Controllers
             }
         }
 
+        /// <summary>
+        /// Obtener detalles completos de una contratación directamente por SearchHireId
+        /// Funciona incluso cuando el Search fue eliminado (cliente borró su cuenta)
+        /// </summary>
+        [HttpGet("{id}/details-complete")]
+        public async Task<IActionResult> GetSearchHireDetailsComplete(int id)
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                // Cargar SearchHire con todas las relaciones necesarias (sin depender de Search)
+                var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Status)
+                    .Include(sh => sh.Client) // ✅ Puede ser null si cliente borró cuenta
+                    .Include(sh => sh.Expert) // ✅ Puede ser null si experto borró cuenta
+                    .Include(sh => sh.SearchService)
+                        .ThenInclude(ss => ss.ExpertProfile)
+                    .Include(sh => sh.SearchService)
+                        .ThenInclude(ss => ss.ServiceType)
+                        .ThenInclude(st => st.ServiceTypeCategory)
+                    .Include(sh => sh.SearchService)
+                        .ThenInclude(ss => ss.SelectedDeliverableTypes)
+                        .ThenInclude(ssdt => ssdt.DeliverableType)
+                    .Include(sh => sh.SearchService)
+                        .ThenInclude(ss => ss.Images)
+                    .Include(sh => sh.Appointment)
+                        .ThenInclude(a => a.Status)
+                    .Include(sh => sh.Appointment)
+                        .ThenInclude(a => a.Timers)
+                    .Include(sh => sh.Deliverables)
+                    .Include(sh => sh.Disputes)
+                    .Include(sh => sh.Conversations)
+                        .ThenInclude(c => c.Messages)
+                    .Include(sh => sh.Search) // ✅ Incluir Search si existe (puede ser null)
+                        .ThenInclude(s => s.SearchParameters)
+                    .FirstOrDefaultAsync(sh => sh.Id == id &&
+                        (sh.ClientId == userId || 
+                         (sh.ExpertId.HasValue && sh.ExpertId.Value == userId) || 
+                         _authService.IsAdmin(User)));
+
+                if (searchHire == null)
+                {
+                    return NotFound(new { message = "Search hire not found or unauthorized" });
+                }
+
+                // Obtener configuración de distribución de dinero
+                var systemStatusService = HttpContext.RequestServices.GetRequiredService<SystemStatusService>();
+                var moneyDistribution = await systemStatusService.GetMoneyDistributionAsync(
+                    searchHire.Status.StatusValue, 
+                    searchHire.SearchService?.CategoryId, 
+                    searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
+
+                // Obtener la categoría del servicio
+                CategoryDto category = null;
+                if (searchHire.SearchService?.ServiceType?.ServiceTypeCategory != null)
+                {
+                    category = new CategoryDto
+                    {
+                        Id = searchHire.SearchService.ServiceType.ServiceTypeCategory.Id,
+                        Name = searchHire.SearchService.ServiceType.ServiceTypeCategory.Name,
+                        IsActive = searchHire.SearchService.ServiceType.ServiceTypeCategory.IsActive,
+                        CreatedAt = searchHire.SearchService.ServiceType.ServiceTypeCategory.CreatedAt,
+                        UpdatedAt = searchHire.SearchService.ServiceType.ServiceTypeCategory.UpdatedAt
+                    };
+                }
+
+                // Obtener la reseña si existe
+                ReviewDto review = null;
+                var reviewEntity = await _context.Reviews
+                    .Include(r => r.Reviewer)
+                    .Include(r => r.ImagesCollection)
+                    .FirstOrDefaultAsync(r => r.SearchHireId == searchHire.Id);
+
+                if (reviewEntity != null)
+                {
+                    review = new ReviewDto
+                    {
+                        Id = reviewEntity.Id,
+                        Score = reviewEntity.Score,
+                        Description = reviewEntity.Description,
+                        CreatedAt = reviewEntity.CreatedAt,
+                        Reviewer = reviewEntity.ReviewerId.HasValue && reviewEntity.Reviewer != null ? new UserDto
+                        {
+                            Id = reviewEntity.Reviewer!.Id, // ✅ Null-forgiving operator: ya verificamos que no es null
+                            Name = reviewEntity.Reviewer!.Name,
+                            Email = reviewEntity.Reviewer!.Email,
+                            ProfilePictureUrl = null
+                        } : null,
+                        ImageUrls = reviewEntity.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>()
+                    };
+                }
+
+                // Cargar disponibilidad del experto si existe
+                ExpertProfileDto? expertProfileDto = null;
+                if (searchHire.SearchService?.ExpertProfile != null)
+                {
+                    var expertProfile = searchHire.SearchService.ExpertProfile;
+                    var currentAvailability = await _context.ExpertAvailabilities
+                        .Where(ea => ea.ExpertId == expertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
+                        .OrderByDescending(ea => ea.EffectiveFrom)
+                        .FirstOrDefaultAsync();
+
+                    CurrentExpertAvailabilityDto? availabilityDto = null;
+                    if (currentAvailability != null)
+                    {
+                        var daysOfWeek = System.Text.Json.JsonSerializer.Deserialize<List<string>>(currentAvailability.DaysOfWeek) ?? new List<string>();
+                        availabilityDto = new CurrentExpertAvailabilityDto
+                        {
+                            Id = currentAvailability.Id,
+                            DaysOfWeek = daysOfWeek,
+                            StartTime = currentAvailability.StartTime,
+                            EndTime = currentAvailability.EndTime,
+                            EffectiveFrom = currentAvailability.EffectiveFrom
+                        };
+                    }
+
+                    expertProfileDto = new ExpertProfileDto
+                    {
+                        Id = expertProfile.Id,
+                        ProfilePictureUrl = expertProfile.ProfilePictureUrl ?? string.Empty,
+                        Description = expertProfile.Description ?? string.Empty,
+                        StripeAccountId = expertProfile.StripeAccountId,
+                        CreatedAt = expertProfile.CreatedAt,
+                        User = searchHire.ExpertId.HasValue && searchHire.Expert != null ? new UserDto
+                        {
+                            Id = searchHire.Expert.Id,
+                            Name = searchHire.Expert.Name,
+                            Email = searchHire.Expert.Email,
+                            ProfilePictureUrl = null
+                        } : null,
+                        Reviews = new List<ReviewDto>(),
+                        Latitude = expertProfile.Latitude ?? string.Empty,
+                        Longitude = expertProfile.Longitude ?? string.Empty,
+                        StripeStatus = expertProfile.StripeStatus,
+                        StripeStatusDetails = expertProfile.StripeStatusDetails,
+                        OnboardingCompleted = expertProfile.OnboardingCompleted,
+                        IsOnVacation = expertProfile.IsOnVacation,
+                        CurrentAvailability = availabilityDto,
+                        StripeFutureRequirements = expertProfile.StripeFutureRequirements,
+                        StripeFutureDueAt = expertProfile.StripeFutureDueAt
+                    };
+                }
+
+                // Crear respuesta completa
+                var searchDetailsComplete = new SearchDetailsCompleteResponseDto
+                {
+                    Search = searchHire.Search != null ? new SearchListDto
+                    {
+                        Id = searchHire.Search.Id,
+                        UserId = searchHire.Search.UserId,
+                        Title = searchHire.Search.Title,
+                        Description = searchHire.Search.Description,
+                        Frequency = searchHire.Search.Frequency,
+                        IsActive = searchHire.Search.IsActive,
+                        IsRevised = searchHire.Search.IsRevised,
+                        CreatedAt = searchHire.Search.CreatedAt,
+                        User = searchHire.ClientId.HasValue && searchHire.Client != null ? new UserDto
+                        {
+                            Id = searchHire.Client.Id,
+                            Name = searchHire.Client.Name,
+                            Email = searchHire.Client.Email,
+                            ProfilePictureUrl = null
+                        } : null
+                    } : null, // ✅ Search puede ser null si cliente borró cuenta
+                    MoneyDistribution = moneyDistribution != null ? new MoneyDistributionConfigDto
+                    {
+                        ClientPercentage = moneyDistribution.ClientPercentage,
+                        ExpertPercentage = moneyDistribution.ExpertPercentage,
+                        PlatformPercentage = moneyDistribution.PlatformPercentage,
+                        Source = "SearchHire",
+                        Status = "Active"
+                    } : null,
+                    Category = category,
+                    Review = review,
+                    Appointment = searchHire.Appointment != null ? new AppointmentDto
+                    {
+                        Id = searchHire.Appointment.Id,
+                        SearchHireId = searchHire.Appointment.SearchHireId,
+                        Status = searchHire.Appointment.Status?.StatusValue ?? string.Empty,
+                        ProposedDate = searchHire.Appointment.ProposedDate,
+                        ProposedTime = searchHire.Appointment.ProposedTime,
+                        Location = searchHire.Appointment.Location,
+                        Latitude = searchHire.Appointment.Latitude,
+                        Longitude = searchHire.Appointment.Longitude,
+                        DoorNumber = searchHire.Appointment.DoorNumber,
+                        OwnerPhone = searchHire.Appointment.OwnerPhone,
+                        SiteDetails = searchHire.Appointment.SiteDetails,
+                        RejectionCount = searchHire.Appointment.RejectionCount,
+                        ClientCancellationCount = searchHire.Appointment.ClientCancellationCount,
+                        ExpertCancellationCount = searchHire.Appointment.ExpertCancellationCount,
+                        LastRejectionAt = searchHire.Appointment.LastRejectionAt,
+                        LastClientCancellationAt = searchHire.Appointment.LastClientCancellationAt,
+                        LastExpertCancellationAt = searchHire.Appointment.LastExpertCancellationAt,
+                        LastProposalAt = searchHire.Appointment.LastProposalAt,
+                        LastResponseAt = searchHire.Appointment.LastResponseAt,
+                        CreatedAt = searchHire.Appointment.CreatedAt,
+                        UpdatedAt = searchHire.Appointment.UpdatedAt,
+                        ClientName = searchHire.ClientId.HasValue && searchHire.Client != null ? searchHire.Client.Name : null,
+                        ExpertName = searchHire.ExpertId.HasValue && searchHire.Expert != null ? searchHire.Expert.Name : null,
+                        Amount = searchHire.Amount,
+                        ExpertLatitude = searchHire.SearchService?.ExpertProfile?.Latitude,
+                        ExpertLongitude = searchHire.SearchService?.ExpertProfile?.Longitude,
+                        LocationRange = searchHire.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50,
+                        StatusInfo = searchHire.Appointment.Status != null ? new SystemStatusDto
+                        {
+                            Id = searchHire.Appointment.Status.Id,
+                            StatusType = searchHire.Appointment.Status.StatusType,
+                            StatusName = searchHire.Appointment.Status.StatusName,
+                            StatusValue = searchHire.Appointment.Status.StatusValue,
+                            DisplayName = searchHire.Appointment.Status.DisplayName,
+                            Description = searchHire.Appointment.Status.Description,
+                            Color = searchHire.Appointment.Status.Color,
+                            IsActive = searchHire.Appointment.Status.IsActive,
+                            IsFinalizationStatus = searchHire.Appointment.Status.IsFinalizationStatus,
+                            SortOrder = searchHire.Appointment.Status.SortOrder,
+                            CreatedAt = searchHire.Appointment.Status.CreatedAt,
+                            UpdatedAt = searchHire.Appointment.Status.UpdatedAt
+                        } : null,
+                        Timers = searchHire.Appointment.Timers?.Select(t => new AppointmentTimerDto
+                        {
+                            Id = t.Id,
+                            AppointmentId = t.AppointmentId,
+                            TimerType = t.TimerType,
+                            StartTime = t.StartTime,
+                            EndTime = t.EndTime,
+                            IsExpired = t.IsExpired,
+                            ExpiredAt = t.ExpiredAt
+                        }).ToList() ?? new List<AppointmentTimerDto>()
+                    } : null,
+                    Deliverables = searchHire.Deliverables?.Select(d => new DeliverableDto
+                    {
+                        Id = d.Id,
+                        Type = d.Type,
+                        Url = d.Url,
+                        CreatedAt = d.CreatedAt
+                    }).ToList() ?? new List<DeliverableDto>(),
+                    RequiredDeliverableTypes = searchHire.SearchService?.SelectedDeliverableTypes?
+                        .Where(ssdt => ssdt.IsSelected && ssdt.DeliverableType != null)
+                        .Select(ssdt => new DeliverableTypeDto
+                        {
+                            Id = ssdt.DeliverableType.Id,
+                            Name = ssdt.DeliverableType.Name,
+                            DisplayName = ssdt.DeliverableType.DisplayName,
+                            Description = ssdt.DeliverableType.Description,
+                            IsRequired = ssdt.DeliverableType.IsRequired,
+                            IsActive = ssdt.DeliverableType.IsActive,
+                            SortOrder = ssdt.DeliverableType.SortOrder
+                        })
+                        .OrderBy(dt => dt.SortOrder)
+                        .ToList() ?? new List<DeliverableTypeDto>(),
+                    Disputes = searchHire.Disputes?.Select(d => new DisputeDto
+                    {
+                        Id = d.Id,
+                        SearchHireId = d.SearchHireId,
+                        ReporterId = d.ReporterId,
+                        Status = d.Status,
+                        Reason = d.Reason,
+                        ExpertResponse = d.ExpertResponse,
+                        ExpertResponseDeadline = d.ExpertResponseDeadline,
+                        ExpertResponseAt = d.ExpertResponseAt,
+                        CanExpertRespond = d.CanExpertRespond,
+                        CreatedAt = d.CreatedAt
+                    }).ToList() ?? new List<DisputeDto>(),
+                    ExpertProfile = expertProfileDto
+                };
+
+                return Ok(searchDetailsComplete);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "Internal server error", detail = ex.Message });
+            }
+        }
+
         // GET: api/searchhire/client
         [HttpGet("client")]
         public async Task<IActionResult> GetClientHires()

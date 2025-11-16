@@ -5,7 +5,7 @@ namespace newApi.DataLayer.Models.DTOs
     /// </summary>
     public class SearchDetailsCompleteResponseDto
     {
-        public SearchListDto Search { get; set; }
+        public SearchListDto? Search { get; set; } // ✅ Nullable: puede ser null si el cliente borró su cuenta
         public MoneyDistributionConfigDto? MoneyDistribution { get; set; }
         public CategoryDto? Category { get; set; }
         public ReviewDto? Review { get; set; }

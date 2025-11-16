@@ -171,6 +171,12 @@ namespace newApi.DataLayer.Models
             modelBuilder.Entity<User>()
                 .HasQueryFilter(u => !u.IsDeleted);
 
+            modelBuilder.Entity<Notification>()
+                .HasOne(n => n.User)
+                .WithMany()
+                .HasForeignKey(n => n.UserId)
+                .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull para permitir anonimización
+
             modelBuilder.Entity<UserSubscription>()
                 .HasOne(us => us.User)
                 .WithMany(u => u.UserSubscriptions)
@@ -276,7 +282,7 @@ namespace newApi.DataLayer.Models
                 .HasOne(sh => sh.Search)
                 .WithOne(s => s.SearchHire)
                 .HasForeignKey<SearchHire>(sh => sh.SearchId)
-                .OnDelete(DeleteBehavior.Cascade);
+                .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull para preservar SearchHires cuando se eliminan Searches
 
             modelBuilder.Entity<Review>()
                 .HasOne(r => r.Reviewer)
@@ -288,13 +294,13 @@ namespace newApi.DataLayer.Models
                 .HasOne(r => r.Expert)
                 .WithMany(u => u.ReviewsReceived)
                 .HasForeignKey(r => r.ExpertId)
-                .OnDelete(DeleteBehavior.Restrict);
+                .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull para permitir anonimización cuando el experto elimina su cuenta
 
             modelBuilder.Entity<Review>()
                 .HasOne(r => r.SearchHire)
                 .WithMany()
                 .HasForeignKey(r => r.SearchHireId)
-                .OnDelete(DeleteBehavior.Restrict);
+                .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull para permitir anonimización cuando se eliminan SearchHires
 
             modelBuilder.Entity<ReviewImage>()
                 .HasOne(ri => ri.Review)

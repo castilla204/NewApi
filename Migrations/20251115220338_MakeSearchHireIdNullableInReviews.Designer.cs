@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using newApi.DataLayer.Models;
@@ -11,9 +12,11 @@ using newApi.DataLayer.Models;
 namespace newApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251115220338_MakeSearchHireIdNullableInReviews")]
+    partial class MakeSearchHireIdNullableInReviews
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1193,7 +1196,7 @@ namespace newApi.Migrations
                     b.Property<string>("ExpertTransferId")
                         .HasColumnType("text");
 
-                    b.Property<int?>("SearchId")
+                    b.Property<int>("SearchId")
                         .HasColumnType("integer");
 
                     b.Property<int>("SearchServiceId")
@@ -2349,7 +2352,8 @@ namespace newApi.Migrations
                     b.HasOne("newApi.DataLayer.Models.PostGresModels.Search", "Search")
                         .WithOne("SearchHire")
                         .HasForeignKey("newApi.DataLayer.Models.PostGresModels.SearchHire", "SearchId")
-                        .OnDelete(DeleteBehavior.SetNull);
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.HasOne("newApi.DataLayer.Models.PostGresModels.SearchService", "SearchService")
                         .WithMany("SearchHires")

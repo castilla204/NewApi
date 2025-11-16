@@ -49,6 +49,8 @@ namespace newApi.DataLayer.Models
         public DbSet<ProcessedWebhookEvent> ProcessedWebhookEvents { get; set; }
         public DbSet<Appointment> Appointments { get; set; }
         public DbSet<AppointmentTimer> AppointmentTimers { get; set; }
+        public DbSet<RefreshToken> RefreshTokens { get; set; }
+        public DbSet<UserMfaSettings> UserMfaSettings { get; set; }
         public DbSet<DeliverableType> DeliverableTypes { get; set; }
         public DbSet<SearchServiceDeliverableType> SearchServiceDeliverableTypes { get; set; }
         // Tablas redundantes eliminadas - reemplazadas por StatusConfigurations
@@ -707,6 +709,33 @@ namespace newApi.DataLayer.Models
                 .WithMany(s => s.LogTypes)
                 .HasForeignKey(lt => lt.SeverityId)
                 .OnDelete(DeleteBehavior.SetNull);
+
+            // ✅ SEGURIDAD 2025: Configuración de RefreshToken
+            modelBuilder.Entity<RefreshToken>(entity =>
+            {
+                entity.HasOne(rt => rt.User)
+                    .WithMany()
+                    .HasForeignKey(rt => rt.UserId)
+                    .OnDelete(DeleteBehavior.Cascade); // Eliminar tokens si se elimina usuario
+
+                // Índices para rendimiento
+                entity.HasIndex(rt => rt.Token).IsUnique();
+                entity.HasIndex(rt => rt.UserId);
+                entity.HasIndex(rt => rt.ExpiresAt);
+                entity.HasIndex(rt => new { rt.UserId, rt.IsRevoked, rt.ExpiresAt });
+            });
+
+            // ✅ SEGURIDAD 2025: Configuración de UserMfaSettings
+            modelBuilder.Entity<UserMfaSettings>(entity =>
+            {
+                entity.HasOne(mfa => mfa.User)
+                    .WithMany()
+                    .HasForeignKey(mfa => mfa.UserId)
+                    .OnDelete(DeleteBehavior.Cascade); // Eliminar MFA si se elimina usuario
+
+                // Un usuario solo puede tener una configuración MFA
+                entity.HasIndex(mfa => mfa.UserId).IsUnique();
+            });
         }
     }
 }

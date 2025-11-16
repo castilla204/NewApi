@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using System.Security.Claims;
 using newApi.Services;
 using newApi.ScrapperGateway.DataLayer.Models.DTOs;
@@ -9,6 +10,7 @@ using Microsoft.EntityFrameworkCore;
 
 [Route("api/[controller]")]
 [ApiController]
+[EnableRateLimiting("api")] // ✅ SEGURIDAD: 100 requests/minuto por IP
 public class UserController : ControllerBase
 {
         private readonly UserService _userService;
@@ -276,6 +278,7 @@ public class UserController : ControllerBase
     */
 
     [HttpPost("google-auth")]
+    [EnableRateLimiting("auth")] // ✅ SEGURIDAD: 5 intentos cada 5 minutos por IP (sobrescribe "api")
     public async Task<IActionResult> GoogleAuth([FromBody] GoogleAuthDto request)
     {
         try

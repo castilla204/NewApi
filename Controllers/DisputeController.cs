@@ -255,13 +255,13 @@ namespace newApi.Controllers
                         Name = d.Reporter.Name,
                         Email = d.Reporter.Email
                     },
-                    Client = new UserDto
+                    Client = d.SearchHire.ClientId.HasValue && d.SearchHire.Client != null ? new UserDto
                     {
                         Id = d.SearchHire.Client.Id,
                         Name = d.SearchHire.Client.Name,
                         Email = d.SearchHire.Client.Email
-                    },
-                    Expert = d.SearchHire.Expert != null ? new UserDto
+                    } : null, // ✅ Manejar caso donde ClientId es null (usuario eliminado)
+                    Expert = d.SearchHire.ExpertId.HasValue && d.SearchHire.Expert != null ? new UserDto
                     {
                         Id = d.SearchHire.Expert.Id,
                         Name = d.SearchHire.Expert.Name,
@@ -758,13 +758,13 @@ namespace newApi.Controllers
                         Name = dispute.Reporter.Name,
                         Email = dispute.Reporter.Email
                     },
-                    Client = new UserDto
+                    Client = dispute.SearchHire.ClientId.HasValue && dispute.SearchHire.Client != null ? new UserDto
                     {
                         Id = dispute.SearchHire.Client.Id,
                         Name = dispute.SearchHire.Client.Name,
                         Email = dispute.SearchHire.Client.Email
-                    },
-                    Expert = dispute.SearchHire.Expert != null ? new UserDto
+                    } : null, // ✅ Manejar caso donde ClientId es null (usuario eliminado)
+                    Expert = dispute.SearchHire.ExpertId.HasValue && dispute.SearchHire.Expert != null ? new UserDto
                     {
                         Id = dispute.SearchHire.Expert.Id,
                         Name = dispute.SearchHire.Expert.Name,
@@ -1238,13 +1238,13 @@ namespace newApi.Controllers
                         Name = dispute.Reporter.Name,
                         Email = dispute.Reporter.Email
                     },
-                    Client = new UserDto
+                    Client = dispute.SearchHire.ClientId.HasValue && dispute.SearchHire.Client != null ? new UserDto
                     {
                         Id = dispute.SearchHire.Client.Id,
                         Name = dispute.SearchHire.Client.Name,
                         Email = dispute.SearchHire.Client.Email
-                    },
-                    Expert = dispute.SearchHire.Expert != null ? new UserDto
+                    } : null, // ✅ Manejar caso donde ClientId es null (usuario eliminado)
+                    Expert = dispute.SearchHire.ExpertId.HasValue && dispute.SearchHire.Expert != null ? new UserDto
                     {
                         Id = dispute.SearchHire.Expert.Id,
                         Name = dispute.SearchHire.Expert.Name,

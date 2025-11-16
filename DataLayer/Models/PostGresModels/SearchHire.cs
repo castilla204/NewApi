@@ -8,7 +8,7 @@ namespace newApi.DataLayer.Models.PostGresModels
         public int? ClientId { get; set; } // ✅ Nullable para permitir anonimización completa en eliminación de cuentas
         public int? ExpertId { get; set; }
         public int SearchServiceId { get; set; }
-        public int SearchId { get; set; }
+        public int? SearchId { get; set; } // ✅ Nullable para permitir anonimización cuando se eliminan Searches
         public int StatusId { get; set; }
         public virtual SystemStatus Status { get; set; }
         public string? ExpertTransferId { get; set; }
@@ -17,7 +17,7 @@ namespace newApi.DataLayer.Models.PostGresModels
         public DateTime? UpdatedAt { get; set; }
         public DateTime? CompletionDeadline { get; set; }
         public bool? ClientApproved { get; set; }
-        public virtual User Client { get; set; }
+        public virtual User? Client { get; set; } // ✅ Nullable para permitir anonimización completa en eliminación de cuentas
         public virtual User? Expert { get; set; }
         public virtual SearchService SearchService { get; set; }
         public virtual Search Search { get; set; }

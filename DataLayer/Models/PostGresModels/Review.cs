@@ -4,8 +4,8 @@
     {
         public int Id { get; set; }
         public int? ReviewerId { get; set; } // ✅ Nullable para permitir anonimización en eliminación de cuentas
-        public int ExpertId { get; set; }
-        public int SearchHireId { get; set; } 
+        public int? ExpertId { get; set; } // ✅ Nullable para permitir anonimización cuando el experto elimina su cuenta
+        public int? SearchHireId { get; set; } // ✅ Nullable para permitir anonimización cuando se eliminan SearchHires 
         public int Score { get; set; }
         public string Description { get; set; }
         public string[] Images { get; set; }

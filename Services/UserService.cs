@@ -325,8 +325,14 @@ namespace newApi.Services
                 );
             }
 
-            var token = GenerateJwtToken(user);
-            return (true, token, user);
+            // ✅ SEGURIDAD 2025: Generar Access Token + Refresh Token
+            var accessToken = GenerateJwtToken(user);
+            var refreshToken = await GenerateRefreshTokenAsync(user.Id, "GoogleAuth");
+            
+            // Devolver ambos tokens separados por pipe (el frontend los separará)
+            var combinedToken = $"{accessToken}|{refreshToken}";
+            
+            return (true, combinedToken, user);
         }
 
         public async Task<(bool success, string token, User user, ExpertProfile expertProfile)> BecomeExpert(
@@ -591,7 +597,12 @@ namespace newApi.Services
                 }
             );
             
-            return (true, token, user, expertProfile);
+            // ✅ SEGURIDAD 2025: Generar Access Token + Refresh Token
+            var accessToken = GenerateJwtToken(user);
+            var refreshToken = await GenerateRefreshTokenAsync(user.Id, "BecomeExpert");
+            var combinedToken = $"{accessToken}|{refreshToken}";
+            
+            return (true, combinedToken, user, expertProfile);
         }
 
         public async Task<ExpertProfileDto> GetExpertProfile(int userId)
@@ -886,7 +897,7 @@ namespace newApi.Services
         }
 
 
-        private string GenerateJwtToken(User user)
+        public string GenerateJwtToken(User user)
         {
             // Convertir el valor numérico del enum al nombre del enum
             var roleName = user.Role switch
@@ -897,14 +908,13 @@ namespace newApi.Services
                 _ => "Client"
             };
 
-            // 🔍 DEBUG: Log para ver qué rol se está generando
-
             var claims = new[]
             {
             new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new Claim(ClaimTypes.Email, user.Email),
             new Claim(ClaimTypes.Name, user.Name),
-            new Claim(ClaimTypes.Role, roleName) // Ahora siempre devuelve el nombre del enum
+            new Claim(ClaimTypes.Role, roleName),
+            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()) // ✅ SEGURIDAD: ID único del token para revocación
         };
 
             var key = new SymmetricSecurityKey(
@@ -916,11 +926,62 @@ namespace newApi.Services
                 issuer: _configuration["Jwt:Issuer"],
                 audience: _configuration["Jwt:Audience"],
                 claims: claims,
-                expires: DateTime.Now.AddDays(1),
+                expires: DateTime.UtcNow.AddMinutes(30), // ✅ SEGURIDAD 2025: 30 minutos (antes: 24h)
+                notBefore: DateTime.UtcNow, // ✅ SEGURIDAD: Token válido desde ahora
                 signingCredentials: creds
             );
 
             return new JwtSecurityTokenHandler().WriteToken(token);
+        }
+
+        /// <summary>
+        /// ✅ SEGURIDAD 2025: Generar Refresh Token criptográficamente seguro
+        /// </summary>
+        public async Task<string> GenerateRefreshTokenAsync(int userId, string ipAddress)
+        {
+            using var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
+            var randomBytes = new byte[64];
+            rng.GetBytes(randomBytes);
+            var token = Convert.ToBase64String(randomBytes);
+
+            // Verificar que el token sea único
+            while (await _context.RefreshTokens.AnyAsync(rt => rt.Token == token))
+            {
+                rng.GetBytes(randomBytes);
+                token = Convert.ToBase64String(randomBytes);
+            }
+
+            var refreshToken = new RefreshToken
+            {
+                Token = token,
+                UserId = userId,
+                ExpiresAt = DateTime.UtcNow.AddDays(7), // ✅ Best Practice: 7 días
+                CreatedByIp = ipAddress,
+                DeviceInfo = GetDeviceInfo()
+            };
+
+            _context.RefreshTokens.Add(refreshToken);
+            await _context.SaveChangesAsync();
+
+            return token;
+        }
+
+        /// <summary>
+        /// Obtener IP del cliente (para auditoría de seguridad)
+        /// </summary>
+        private string GetClientIpAddress()
+        {
+            // TODO: Implementar obteniendo el HttpContext
+            return "unknown";
+        }
+
+        /// <summary>
+        /// Obtener información del dispositivo (para auditoría)
+        /// </summary>
+        private string? GetDeviceInfo()
+        {
+            // TODO: Implementar obteniendo el User-Agent del HttpContext
+            return null;
         }
     }
 }

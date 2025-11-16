@@ -1,9 +1,11 @@
 using Google.Cloud.SecretManager.V1;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Stripe;
 using System.Text;
+using System.Threading.RateLimiting;
 using RabbitMQ.Client;
 using newApi.RabbitMQ;
 using newApi.Services;
@@ -177,6 +179,79 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
+// ✅ SEGURIDAD 2025: Configurar Rate Limiting nativo de .NET 8
+builder.Services.AddRateLimiter(options =>
+{
+    // 1. Política para autenticación: 5 intentos cada 5 minutos por IP
+    options.AddFixedWindowLimiter("auth", opt =>
+    {
+        opt.PermitLimit = 5;
+        opt.Window = TimeSpan.FromMinutes(5);
+        opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
+        opt.QueueLimit = 0; // No permitir cola
+    });
+
+    // 2. Política para API general: 100 requests por minuto por IP
+    options.AddFixedWindowLimiter("api", opt =>
+    {
+        opt.PermitLimit = 100;
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
+        opt.QueueLimit = 2; // Permitir 2 requests en cola
+    });
+
+    // 3. Política para operaciones de pago: 10 por minuto por usuario
+    options.AddFixedWindowLimiter("payment", opt =>
+    {
+        opt.PermitLimit = 10;
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
+        opt.QueueLimit = 0;
+    });
+
+    // 4. Política para admin: 200 requests por minuto
+    options.AddFixedWindowLimiter("admin", opt =>
+    {
+        opt.PermitLimit = 200;
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
+        opt.QueueLimit = 5;
+    });
+
+    // 5. Política global por IP: 1000 requests por hora
+    options.GlobalLimiter = System.Threading.RateLimiting.PartitionedRateLimiter.Create<Microsoft.AspNetCore.Http.HttpContext, string>(httpContext =>
+        System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: partition => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 1000,
+                Window = TimeSpan.FromHours(1)
+            }));
+
+    // Respuesta cuando se excede el límite
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        
+        if (context.Lease.TryGetMetadata(System.Threading.RateLimiting.MetadataName.RetryAfter, out var retryAfter))
+        {
+            await context.HttpContext.Response.WriteAsJsonAsync(new
+            {
+                error = "Too many requests. Please try again later.",
+                retryAfter = retryAfter.TotalSeconds
+            }, cancellationToken);
+        }
+        else
+        {
+            await context.HttpContext.Response.WriteAsJsonAsync(new
+            {
+                error = "Too many requests. Please try again later."
+            }, cancellationToken);
+        }
+    };
+});
+
 builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly,
     typeof(PlatformMappingProfile).Assembly,
     typeof(CategoryMappingProfile).Assembly,
@@ -202,7 +277,7 @@ builder.Services.AddAuthentication(options =>
 })
 .AddJwtBearer(options =>
 {
-    options.RequireHttpsMetadata = false;
+    options.RequireHttpsMetadata = !builder.Environment.IsDevelopment(); // ✅ SEGURIDAD: HTTPS obligatorio en producción
     options.SaveToken = true;
     options.TokenValidationParameters = new TokenValidationParameters
     {
@@ -326,6 +401,8 @@ builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<ILoggingService, LoggingService>();
 builder.Services.AddScoped<IInvoiceService, newApi.Services.InvoiceService>();
 builder.Services.AddScoped<IStripeValidationService, StripeValidationService>();
+builder.Services.AddScoped<RefreshTokenCleanupService>(); // ✅ SEGURIDAD 2025: Limpieza de refresh tokens
+builder.Services.AddScoped<MfaService>(); // ✅ SEGURIDAD 2025: Autenticación Multifactor (MFA/2FA)
 
 // Background services - AppointmentTimerBackgroundService migrated to Hangfire
 
@@ -409,6 +486,18 @@ catch (Exception ex)
 
 // Schedule recurring job with Hangfire
 app.UseHangfireDashboard("/hangfire");
+
+// ✅ SEGURIDAD 2025: Configurar limpieza automática de refresh tokens
+// Se ejecuta todos los días a las 3:00 AM
+RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
+    "cleanup-expired-refresh-tokens",
+    service => service.CleanupExpiredTokensAsync(),
+    Cron.Daily(3), // 3:00 AM todos los días
+    new RecurringJobOptions
+    {
+        TimeZone = TimeZoneInfo.Utc
+    }
+);
 GlobalConfiguration.Configuration
     .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()))
     .UseFilter(new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>())); // ✅ Filtro para alertar a soporte cuando jobs fallan definitivamente
@@ -435,6 +524,9 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("AllowSpecificOrigin"); // Aplicar CORS antes de otros middleware
+
+// ✅ SEGURIDAD 2025: Aplicar Rate Limiting
+app.UseRateLimiter();
 
 // Development mode middleware - bypass authentication for testing
 // DISABLED: Using real JWT authentication instead

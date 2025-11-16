@@ -223,6 +223,47 @@
             Método auxiliar para subir deliverables para una cita
             </summary>
         </member>
+        <member name="M:newApi.Controllers.AuthController.RefreshToken(newApi.DataLayer.Models.DTOs.RefreshTokenRequestDto)">
+            <summary>
+            ✅ SEGURIDAD 2025: Renovar Access Token usando Refresh Token
+            Best Practice: Rotación de tokens (invalida el refresh token antiguo y genera uno nuevo)
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AuthController.Logout(newApi.DataLayer.Models.DTOs.LogoutRequestDto)">
+            <summary>
+            ✅ SEGURIDAD 2025: Logout seguro (revoca el refresh token)
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AuthController.RevokeAllTokens">
+            <summary>
+            ✅ SEGURIDAD: Revocar todos los tokens del usuario (en caso de compromiso)
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AuthController.SetupMfa">
+            <summary>
+            ✅ SEGURIDAD 2025: Configurar MFA (paso 1 - obtener QR code)
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AuthController.EnableMfa(newApi.DataLayer.Models.DTOs.EnableMfaRequestDto)">
+            <summary>
+            ✅ SEGURIDAD 2025: Habilitar MFA (paso 2 - confirmar con código TOTP)
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AuthController.VerifyMfa(newApi.DataLayer.Models.DTOs.VerifyMfaRequestDto)">
+            <summary>
+            ✅ SEGURIDAD 2025: Verificar código MFA durante login
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AuthController.DisableMfa(newApi.DataLayer.Models.DTOs.DisableMfaRequestDto)">
+            <summary>
+            ✅ SEGURIDAD 2025: Deshabilitar MFA (requiere contraseña + código TOTP)
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.AuthController.GetMfaStatus">
+            <summary>
+            ✅ SEGURIDAD 2025: Obtener estado de MFA del usuario
+            </summary>
+        </member>
         <member name="M:newApi.Controllers.CategoriesController.GetParentCategories">
             <summary>
             Obtiene solo las categorías padre (sin subcategorías) para seleccionar al crear subcategorías
@@ -333,6 +374,20 @@
         <member name="M:newApi.Controllers.ExpertAvailabilityController.GetAvailabilityHistory">
             <summary>
             Obtener el historial completo de disponibilidades del experto
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.FinancialTransactionController.GetMyTransactions(System.Int32,System.Int32,System.String)">
+            <summary>
+            Obtener las transacciones financieras del usuario autenticado
+            </summary>
+            <param name="page">Número de página (por defecto: 1)</param>
+            <param name="pageSize">Tamaño de página (por defecto: 20, máximo: 100)</param>
+            <param name="transactionType">Filtrar por tipo de transacción (opcional): "Deposit", "ServicePayment", "Refund", "Payout"</param>
+            <returns>Lista paginada de transacciones financieras</returns>
+        </member>
+        <member name="M:newApi.Controllers.FinancialTransactionController.MapToDto(newApi.DataLayer.Models.PostGresModels.FinancialTransaction)">
+            <summary>
+            Mapear FinancialTransaction a FinancialTransactionDto
             </summary>
         </member>
         <member name="M:newApi.Controllers.SearchController.GetStatusIdByValueAsync(System.String)">
@@ -1096,6 +1151,46 @@
             DTO para obtener solo la disponibilidad actual activa
             </summary>
         </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.FinancialTransactionDto">
+            <summary>
+            DTO para respuesta de transacciones financieras
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.FinancialTransactionListResponseDto">
+            <summary>
+            DTO para respuesta de lista de transacciones con paginación
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.EnableMfaRequestDto">
+            <summary>
+            DTO para habilitar MFA
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.EnableMfaResponseDto">
+            <summary>
+            DTO para respuesta de habilitación de MFA
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.VerifyMfaRequestDto">
+            <summary>
+            DTO para verificar código MFA
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.VerifyMfaResponseDto">
+            <summary>
+            DTO para respuesta de verificación MFA
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.DisableMfaRequestDto">
+            <summary>
+            DTO para deshabilitar MFA
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.DTOs.MfaStatusDto">
+            <summary>
+            DTO para estado de MFA
+            </summary>
+        </member>
         <member name="T:newApi.DataLayer.Models.DTOs.MoneyDistributionConfigDto">
             <summary>
             DTO para configuración de distribución de dinero
@@ -1589,6 +1684,12 @@
             Datos adicionales del evento (opcional, para debugging)
             </summary>
         </member>
+        <member name="T:newApi.DataLayer.Models.PostGresModels.RefreshToken">
+            <summary>
+            Refresh Token para renovación segura de Access Tokens
+            Best Practice 2025: Rotación de tokens para máxima seguridad
+            </summary>
+        </member>
         <member name="P:newApi.DataLayer.Models.PostGresModels.SearchHire.ExpertAvailabilityId">
             <summary>
             ID de la disponibilidad del experto usada al momento de crear esta contratación
@@ -1621,6 +1722,54 @@
             <summary>
             Tabla centralizada para todos los estados del sistema
             Reemplaza los enums hardcodeados por una solución flexible y configurable
+            </summary>
+        </member>
+        <member name="T:newApi.DataLayer.Models.PostGresModels.UserMfaSettings">
+            <summary>
+            ✅ SEGURIDAD 2025: Configuración de MFA (Autenticación Multifactor) para usuarios
+            Soporta TOTP (Google Authenticator, Microsoft Authenticator, etc.)
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.UserMfaSettings.IsEnabled">
+            <summary>
+            Indica si MFA está habilitado para este usuario
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.UserMfaSettings.TotpSecret">
+            <summary>
+            Secreto TOTP cifrado (base32)
+            ⚠️ CRÍTICO: Este valor debe estar cifrado en BD
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.UserMfaSettings.RecoveryCodesEncrypted">
+            <summary>
+            Códigos de recuperación cifrados (JSON array)
+            Formato: ["code1", "code2", ..., "code10"]
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.UserMfaSettings.RecoveryCodesUsed">
+            <summary>
+            Número de códigos de recuperación usados
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.UserMfaSettings.EnabledAt">
+            <summary>
+            Fecha de habilitación de MFA
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.UserMfaSettings.LastVerifiedAt">
+            <summary>
+            Fecha de última verificación exitosa con MFA
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.UserMfaSettings.FailedAttempts">
+            <summary>
+            Número de intentos fallidos consecutivos
+            </summary>
+        </member>
+        <member name="P:newApi.DataLayer.Models.PostGresModels.UserMfaSettings.LockedUntil">
+            <summary>
+            Fecha hasta la cual el usuario está bloqueado (si excedió intentos)
             </summary>
         </member>
         <member name="P:newApi.ScrapperGateway.DataLayer.Models.DTOs.BecomeExpertRequestDto.AvailabilityDaysOfWeek">
@@ -2511,6 +2660,42 @@
         <member name="M:newApi.Migrations.FixReviewExpertIdNullableAndNotificationFK.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
             <inheritdoc />
         </member>
+        <member name="T:newApi.Migrations.AddRefreshTokens">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddRefreshTokens.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddRefreshTokens.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddRefreshTokens.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.AddUserMfaSettings">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddUserMfaSettings.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddUserMfaSettings.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.AddUserMfaSettings.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:newApi.Migrations.CreateUserMfaSettingsTable">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.CreateUserMfaSettingsTable.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.CreateUserMfaSettingsTable.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:newApi.Migrations.CreateUserMfaSettingsTable.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
         <member name="M:newApi.Services.AccountDeletionService.DeleteUserDataAsync(System.Int32,System.Threading.CancellationToken)">
             <summary>
             Elimina/anonimiza todos los datos de un usuario siguiendo las mejores prácticas del sistema.
@@ -2660,6 +2845,118 @@
             Obtiene el título y tipo de notificación según el nivel de log
             </summary>
         </member>
+        <member name="T:newApi.Services.MfaService">
+            <summary>
+            ✅ SEGURIDAD 2025: Servicio de autenticación multifactor (MFA)
+            Implementa TOTP (Time-based One-Time Password) compatible con Google Authenticator
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.GenerateTotpSecretAsync(System.Int32)">
+            <summary>
+            Genera un secreto TOTP nuevo para un usuario
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.GenerateQrCode(System.String)">
+            <summary>
+            Genera un código QR en formato Base64
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.FormatSecretForManualEntry(System.String)">
+            <summary>
+            Formatea el secreto para entrada manual (grupos de 4 caracteres)
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.VerifyTotpCode(System.String,System.String)">
+            <summary>
+            Verifica un código TOTP
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.GenerateRecoveryCodes(System.Int32)">
+            <summary>
+            Genera códigos de recuperación (10 códigos)
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.GenerateRandomCode(System.Int32)">
+            <summary>
+            Genera un código aleatorio seguro
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.FormatRecoveryCode(System.String)">
+            <summary>
+            Formatea un código de recuperación (XXXX-XXXX)
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.EncryptSecret(System.String)">
+            <summary>
+            Cifra el secreto TOTP para almacenamiento
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.DecryptSecret(System.String)">
+            <summary>
+            Descifra el secreto TOTP
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.EncryptRecoveryCodes(System.Collections.Generic.List{System.String})">
+            <summary>
+            Cifra códigos de recuperación (JSON)
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.DecryptRecoveryCodes(System.String)">
+            <summary>
+            Descifra códigos de recuperación
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.GetEncryptionKey">
+            <summary>
+            Obtiene la clave de cifrado desde configuración
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.SaveTotpSecretForSetupAsync(System.Int32)">
+            <summary>
+            ✅ FIX: Guarda el secreto TOTP temporalmente para setup (sin habilitar MFA)
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.EnableMfaAsync(System.Int32,System.String)">
+            <summary>
+            ✅ FIX: Habilita MFA para un usuario (valida código del secreto YA GUARDADO)
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.GenerateTotpSecretFromExisting(System.String,System.String)">
+            <summary>
+            Genera QR code a partir de un secreto existente
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.VerifyMfaCodeAsync(System.Int32,System.String,System.Boolean)">
+            <summary>
+            Verifica un código MFA (TOTP o código de recuperación)
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.DisableMfaAsync(System.Int32,System.String,System.String)">
+            <summary>
+            Deshabilita MFA para un usuario (requiere contraseña + código TOTP)
+            </summary>
+        </member>
+        <member name="M:newApi.Services.MfaService.GetMfaStatusAsync(System.Int32)">
+            <summary>
+            Obtiene el estado de MFA de un usuario
+            </summary>
+        </member>
+        <member name="T:newApi.Services.RefreshTokenCleanupService">
+            <summary>
+            ✅ SEGURIDAD 2025: Servicio para limpieza automática de refresh tokens expirados
+            Se ejecuta periódicamente con Hangfire
+            </summary>
+        </member>
+        <member name="M:newApi.Services.RefreshTokenCleanupService.CleanupExpiredTokensAsync">
+            <summary>
+            Eliminar tokens expirados o revocados que tengan más de 30 días
+            </summary>
+        </member>
+        <member name="M:newApi.Services.RefreshTokenCleanupService.GetTokenStatsAsync">
+            <summary>
+            Obtener estadísticas de tokens para monitoreo
+            </summary>
+        </member>
         <member name="M:newApi.Services.StripeRefundService.ProcessMoneyDistributionAsync(System.Int32,System.String,System.String,System.Nullable{System.Int32},System.Boolean)">
             <summary>
             Orquesta la distribución de dinero según un estado concreto: realiza refund al cliente y transferencia al experto.
@@ -2751,6 +3048,21 @@
         <member name="M:newApi.Services.SystemStatusService.GetDefaultMapping(newApi.DataLayer.Models.enums.AppointmentStatus)">
             <summary>
             Mapeo por defecto (fallback) para AppointmentStatus → SearchHireStatus
+            </summary>
+        </member>
+        <member name="M:newApi.Services.UserService.GenerateRefreshTokenAsync(System.Int32,System.String)">
+            <summary>
+            ✅ SEGURIDAD 2025: Generar Refresh Token criptográficamente seguro
+            </summary>
+        </member>
+        <member name="M:newApi.Services.UserService.GetClientIpAddress">
+            <summary>
+            Obtener IP del cliente (para auditoría de seguridad)
+            </summary>
+        </member>
+        <member name="M:newApi.Services.UserService.GetDeviceInfo">
+            <summary>
+            Obtener información del dispositivo (para auditoría)
             </summary>
         </member>
         <!-- Badly formed XML comment ignored for member "T:newApi.Services.WebhookProcessingService" -->

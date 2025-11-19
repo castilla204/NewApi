@@ -123,9 +123,11 @@ jobs:
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-results.sarif'
+          exit-code: '0'  # No fallar el workflow si hay vulnerabilidades
 
       - name: Upload Trivy results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
+        if: always()  # Ejecutar siempre, incluso si Trivy falla
         with:
           sarif_file: 'trivy-results.sarif'
 

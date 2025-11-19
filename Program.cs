@@ -75,10 +75,22 @@ builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key");
 var isDevelopment = builder.Environment.IsDevelopment();
 if (isDevelopment)
 {
-    // En desarrollo: valores hardcodeados (no van al Secret Manager)
-    builder.Configuration["Stripe:SecretKey"] = "sk_test_51RDr9QR7PVKiStYueTMBRCFZGySidpx1f07iqqJYt9K4KqvAmgZHi6V1GDVpRyQxU3U08OcgGZDcHuqg7MpZaf0l004FRtdQym";
-    builder.Configuration["Stripe:WebhookSecret"] = "whsec_YMCdzRPhKbpE0xke1L1YP3TPQnkO2UHt";
-    builder.Configuration["Stripe:GeneralWebhookSecret"] = "whsec_6rVBKKefl9hkihHD82LIA828KF5usVxJ";
+    // En desarrollo: usar variables de entorno o User Secrets
+    // NUNCA hardcodear secretos en el código
+    // Configurar con: dotnet user-secrets set "Stripe:SecretKey" "valor"
+    // O usar variables de entorno: STRIPE_SECRET_KEY
+    if (string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]))
+    {
+        builder.Configuration["Stripe:SecretKey"] = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY") ?? "";
+    }
+    if (string.IsNullOrEmpty(builder.Configuration["Stripe:WebhookSecret"]))
+    {
+        builder.Configuration["Stripe:WebhookSecret"] = Environment.GetEnvironmentVariable("STRIPE_WEBHOOK_SECRET") ?? "";
+    }
+    if (string.IsNullOrEmpty(builder.Configuration["Stripe:GeneralWebhookSecret"]))
+    {
+        builder.Configuration["Stripe:GeneralWebhookSecret"] = Environment.GetEnvironmentVariable("STRIPE_GENERAL_WEBHOOK_SECRET") ?? "";
+    }
 }
 else
 {

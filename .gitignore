@@ -1,43 +1,17 @@
-# MCP Agent files - Generated files
-cursor-backend-logs/node_modules/
-cursor-backend-logs/*.map
-cursor-backend-logs/*.js
-cursor-backend-logs/*.cjs
-cursor-backend-logs/*.mjs
-cursor-backend-logs/dist/
-cursor-backend-logs/build/
-
-# Keep source files
-!cursor-backend-logs/simple-log-monitor.js
-!cursor-backend-logs/http-api-server.js
-!cursor-backend-logs/package.json
-
-# .NET
-bin/
-obj/
+# Secrets and sensitive files
+**/appsettings.Development.json
+**/appsettings.Production.json
+**/appsettings.Local.json
+k8s/regcred-secret.yaml
+k8s/*-secret.yaml
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+cloudcredential.json
+**/bin/
+**/obj/
 *.user
 *.suo
 *.cache
-*.dll
-*.pdb
-*.exe
-*.log
-
-# Visual Studio
-.vs/
-*.sln.docstates
-
-# JetBrains
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Temporary files
-*.tmp
-*.temp
-
-# Kubernetes secrets (contienen información sensible)
-k8s/*-secrets.yaml
-!k8s/regcred-secret.yaml  # Mantener regcred si es necesario

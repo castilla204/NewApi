@@ -29,12 +29,12 @@
 		</PackageReference>
 		<PackageReference Include="Microsoft.IdentityModel.Tokens" Version="7.3.1" />
 		<PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-		<PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.0" />
+		<PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.3" />
 		<PackageReference Include="OpenAI" Version="2.1.0" />
 		<PackageReference Include="Otp.NET" Version="1.4.0" />
 		<PackageReference Include="QRCoder" Version="1.7.0" />
 		<PackageReference Include="RabbitMQ.Client" Version="6.8.1" />
-		<PackageReference Include="SixLabors.ImageSharp" Version="3.1.10" />
+		<PackageReference Include="SixLabors.ImageSharp" Version="3.1.11" />
 		<PackageReference Include="Stripe.net" Version="47.3.0" />
 		<PackageReference Include="Swashbuckle.AspNetCore" Version="6.4.0" />
 		<PackageReference Include="Google.Apis.Auth" Version="1.68.0" />

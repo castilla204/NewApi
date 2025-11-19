@@ -11,6 +11,10 @@ on:
       - develop
   workflow_dispatch:
 
+permissions:
+  contents: read
+  security-events: write
+
 env:
   REGISTRY: docker.io
   IMAGE_NAME: erizo9/newapi
@@ -126,8 +130,9 @@ jobs:
           exit-code: '0'  # No fallar el workflow si hay vulnerabilidades
 
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()  # Ejecutar siempre, incluso si Trivy falla
+        continue-on-error: true  # No fallar el workflow si falla el upload
         with:
           sarif_file: 'trivy-results.sarif'
 

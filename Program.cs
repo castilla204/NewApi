@@ -44,6 +44,15 @@ var secretClient = SecretManagerServiceClient.Create();
 // Funci�n para obtener secretos
 string GetSecretValue(string secretName)
 {
+    // Primero intentar leer de variables de entorno (para override en Kubernetes)
+    var envVarName = secretName.Replace("-", "_").ToUpper();
+    var envValue = Environment.GetEnvironmentVariable(envVarName);
+    if (!string.IsNullOrEmpty(envValue))
+    {
+        return envValue;
+    }
+    
+    // Si no existe en variables de entorno, usar Secret Manager
     var projectId = "grup-441318";
     var secretVersion = secretClient.AccessSecretVersion($"projects/{projectId}/secrets/{secretName}/versions/latest");
     return secretVersion.Payload.Data.ToStringUtf8();

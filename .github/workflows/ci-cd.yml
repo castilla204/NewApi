@@ -125,18 +125,29 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Trivy vulnerability scanner
+        id: trivy-scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'  # Formato legible para logs
+          exit-code: '1'  # Fallar si hay vulnerabilidades críticas o altas
+
+      - name: Run Trivy vulnerability scanner (SARIF format)
+        id: trivy-sarif
+        continue-on-error: true  # No fallar si Code Scanning no está habilitado
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-results.sarif'
-          exit-code: '1'  # Fallar si hay vulnerabilidades críticas o altas
+          exit-code: '0'  # No fallar aquí, ya se validó en el paso anterior
 
       - name: Upload Trivy results to GitHub Security
+        if: always() && steps.trivy-sarif.outcome == 'success' && hashFiles('trivy-results.sarif') != ''
+        continue-on-error: true  # Opcional: puede fallar si Code Scanning no está habilitado
         uses: github/codeql-action/upload-sarif@v4
-        if: always() && hashFiles('trivy-results.sarif') != ''
-        continue-on-error: true  # Opcional: puede fallar en repos privados sin Advanced Security
         with:
           sarif_file: 'trivy-results.sarif'
           wait-for-processing: false

@@ -110,31 +110,33 @@ jobs:
           echo "🚀 ArgoCD will automatically deploy when it detects the new image"
           echo "🔍 Check ArgoCD UI: https://argocd.inspecciono.com"
 
-  # Job opcional: Security scanning
+  # Job de Security scanning (obligatorio)
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
     needs: build-and-push
     if: github.event_name != 'pull_request'
-    continue-on-error: true  # No fallar el workflow completo si el security scan falla
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
-        continue-on-error: true
         with:
           scan-type: 'fs'
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-results.sarif'
-          exit-code: '0'  # No fallar el workflow si hay vulnerabilidades
+          exit-code: '1'  # Fallar si hay vulnerabilidades críticas o altas
 
       - name: Upload Trivy results to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
         if: always() && hashFiles('trivy-results.sarif') != ''
-        continue-on-error: true  # No fallar el workflow si falla el upload
         with:
           sarif_file: 'trivy-results.sarif'
+          wait-for-processing: false
 

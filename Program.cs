@@ -365,7 +365,8 @@ builder.Services.AddCors(options =>
         builder.WithOrigins(
             "http://localhost:3000",
             "http://localhost:5173",
-            "https://inspecciono.com") // <--- agregar dominio de frontend producci�n
+            "https://inspecciono.com",
+            "https://www.inspecciono.com") // <--- agregar dominio de frontend producci�n
                .AllowAnyMethod()
                .AllowAnyHeader()
                .AllowCredentials()

@@ -725,10 +725,7 @@ catch (Exception ex)
 // Schedule recurring job with Hangfire - con try-catch para evitar crashes
 try
 {
-    app.UseHangfireDashboard("/hangfire", new DashboardOptions
-    {
-        Authorization = new[] { new HangfireAuthorizationFilter() }
-    });
+    app.UseHangfireDashboard("/hangfire");
 }
 catch (Exception ex)
 {

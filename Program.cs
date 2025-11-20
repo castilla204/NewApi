@@ -733,19 +733,26 @@ catch (Exception ex)
 }
 
 // ✅ SEGURIDAD 2025: Configurar limpieza automática de refresh tokens
-// Se ejecuta todos los días a las 3:00 AM
-RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
-    "cleanup-expired-refresh-tokens",
-    service => service.CleanupExpiredTokensAsync(),
-    Cron.Daily(3), // 3:00 AM todos los días
-    new RecurringJobOptions
-    {
-        TimeZone = TimeZoneInfo.Utc
-    }
-);
-GlobalConfiguration.Configuration
-    .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()))
-    .UseFilter(new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>())); // ✅ Filtro para alertar a soporte cuando jobs fallan definitivamente
+// Se ejecuta todos los días a las 3:00 AM - solo si Hangfire está disponible
+try
+{
+    RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
+        "cleanup-expired-refresh-tokens",
+        service => service.CleanupExpiredTokensAsync(),
+        Cron.Daily(3), // 3:00 AM todos los días
+        new RecurringJobOptions
+        {
+            TimeZone = TimeZoneInfo.Utc
+        }
+    );
+    GlobalConfiguration.Configuration
+        .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()))
+        .UseFilter(new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>()));
+}
+catch (Exception ex)
+{
+    app.Logger.LogWarning($"No se pudieron configurar trabajos recurrentes de Hangfire: {ex.Message}");
+} // ✅ Filtro para alertar a soporte cuando jobs fallan definitivamente
 
 // ✅ OPTIMIZADO: Usar solo scheduled jobs para eventos específicos
 // Los recurring jobs fueron eliminados porque:

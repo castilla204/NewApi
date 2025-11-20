@@ -73,19 +73,33 @@ if (!isDevelopment)
                     initLogger.LogInformation("Archivo de credenciales parece válido (contiene project_id)");
                 }
                 
+                // IMPORTANTE: Forzar IPv4 ANTES de crear el cliente
+                // Esto debe hacerse antes de cualquier operación de red
+                try
+                {
+                    // Establecer variable de entorno para forzar IPv4 en .NET
+                    Environment.SetEnvironmentVariable("DOTNET_SYSTEM_NET_DISABLEIPV6", "1");
+                    initLogger.LogInformation("IPv6 deshabilitado para forzar IPv4 (ANTES de crear cliente)");
+                }
+                catch (Exception ipv6Ex)
+                {
+                    initLogger.LogWarning($"No se pudo deshabilitar IPv6: {ipv6Ex.Message}");
+                }
+                
                 // Crear el cliente de Secret Manager con configuración mejorada
                 initLogger.LogInformation("Creando cliente de Secret Manager...");
                 
-                // Configurar el cliente con opciones específicas para Kubernetes
-                // El problema puede ser que gRPC necesita configuración especial para HTTP/2 en Kubernetes
+                // Configurar el cliente con opciones específicas para Kubernetes/K3s
                 var clientBuilder = new SecretManagerServiceClientBuilder();
                 
                 // Configurar el endpoint explícitamente
                 var endpoint = "secretmanager.googleapis.com:443";
                 clientBuilder.Endpoint = endpoint;
+                initLogger.LogInformation($"Endpoint configurado: {endpoint}");
                 
                 // Configurar opciones de gRPC específicas para Kubernetes/K3s
                 // El problema puede ser que gRPC necesita configuración especial para HTTP/2
+                initLogger.LogInformation("Configurando adaptador gRPC con opciones para Kubernetes...");
                 clientBuilder.GrpcAdapter = GrpcNetClientAdapter.Default.WithAdditionalOptions(options =>
                 {
                     // Configurar timeouts más largos para la conexión inicial
@@ -94,26 +108,10 @@ if (!isDevelopment)
                     // No configurar KeepAlive muy agresivo - puede causar problemas en Kubernetes
                 });
                 
-                // IMPORTANTE: Configurar el cliente para que no intente múltiples conexiones simultáneas
-                // Esto puede ayudar a evitar el error "Resource temporarily unavailable"
-                initLogger.LogInformation("Configurando cliente gRPC con opciones para Kubernetes...");
-                
+                initLogger.LogInformation("Construyendo cliente de Secret Manager...");
                 secretClient = clientBuilder.Build();
                 
                 initLogger.LogInformation($"Cliente de Secret Manager creado exitosamente (endpoint: {endpoint})");
-                
-                // Forzar IPv4 a nivel de sistema si es posible
-                // Esto ayuda a evitar problemas cuando IPv6 no está disponible
-                try
-                {
-                    // Establecer variable de entorno para forzar IPv4 en .NET
-                    Environment.SetEnvironmentVariable("DOTNET_SYSTEM_NET_DISABLEIPV6", "1");
-                    initLogger.LogInformation("IPv6 deshabilitado para forzar IPv4");
-                }
-                catch
-                {
-                    // Ignorar si no se puede establecer
-                }
                 
                 secretManagerAvailable = true; // Asumimos disponible hasta que falle
             }

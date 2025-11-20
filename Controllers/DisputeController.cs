@@ -28,6 +28,7 @@ namespace newApi.Controllers
         private readonly SystemStatusService _systemStatusService;
         private readonly StripeRefundService _refundService;
         private readonly ILoggingService _loggingService;
+        private readonly ISignedUrlService _signedUrlService;
 
         /// <summary>
         /// Constructor del controlador de disputas
@@ -36,7 +37,15 @@ namespace newApi.Controllers
         /// <param name="logger">Logger para registro de eventos</param>
         /// <param name="configuration">Configuración de la aplicación</param>
         /// <param name="storageClient">Cliente de Google Cloud Storage</param>
-        public DisputeController(AppDbContext context, IConfiguration configuration, StorageClient storageClient, IAuthorizationServices authService, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService)
+        public DisputeController(
+            AppDbContext context,
+            IConfiguration configuration,
+            StorageClient storageClient,
+            IAuthorizationServices authService,
+            SystemStatusService systemStatusService,
+            StripeRefundService refundService,
+            ILoggingService loggingService,
+            ISignedUrlService signedUrlService)
         {
             _context = context;
             _configuration = configuration;
@@ -45,6 +54,7 @@ namespace newApi.Controllers
             _systemStatusService = systemStatusService;
             _refundService = refundService;
             _loggingService = loggingService;
+            _signedUrlService = signedUrlService;
         }
 
         /// <summary>
@@ -275,21 +285,25 @@ namespace newApi.Controllers
                         CreatedAt = d.SearchHire.Search.CreatedAt
                     },
                     // ✅ NUEVO: Archivos adjuntos
-                    Files = d.Files.Select(f => new DisputeFileDto
-                    {
-                        Id = f.Id,
-                        FileName = f.FileName,
-                        FileType = f.FileType,
-                        FileSize = f.FileSize,
-                        CreatedAt = f.CreatedAt,
-                        FilePath = f.FilePath,
-                        FileUrl = f.FilePath,
-                        UploadedByUserId = f.UploadedByUserId,
-                        UploadedByUserName = f.UploadedByUser?.Name ?? "Usuario desconocido",
-                        UploadedByUserEmail = f.UploadedByUser?.Email ?? "",
-                        FileCategory = f.FileCategory,
-                        FileCategoryLabel = f.FileCategory == "client" ? "Archivo del Cliente" : "Archivo del Experto"
-                    }).ToList()
+                      Files = d.Files.Select(f =>
+                      {
+                          var signedFileUrl = ResolveDisputeFileUrl(f);
+                          return new DisputeFileDto
+                          {
+                              Id = f.Id,
+                              FileName = f.FileName,
+                              FileType = f.FileType,
+                              FileSize = f.FileSize,
+                              CreatedAt = f.CreatedAt,
+                              FilePath = signedFileUrl,
+                              FileUrl = signedFileUrl,
+                              UploadedByUserId = f.UploadedByUserId,
+                              UploadedByUserName = f.UploadedByUser?.Name ?? "Usuario desconocido",
+                              UploadedByUserEmail = f.UploadedByUser?.Email ?? "",
+                              FileCategory = f.FileCategory,
+                              FileCategoryLabel = f.FileCategory == "client" ? "Archivo del Cliente" : "Archivo del Experto"
+                          };
+                      }).ToList()
                 }).ToList();
 
                 // Calcular estadísticas
@@ -1050,7 +1064,11 @@ namespace newApi.Controllers
                                         bucket: bucketName,
                                         objectName: objectName,
                                         contentType: file.ContentType,
-                                        source: inputStream
+                                        source: inputStream,
+                                        options: new UploadObjectOptions
+                                        {
+                                            PredefinedAcl = PredefinedObjectAcl.Private
+                                        }
                                     );
                                 }
 
@@ -1232,20 +1250,24 @@ namespace newApi.Controllers
                         Description = dispute.SearchHire.Search.Description ?? "",
                         CreatedAt = dispute.SearchHire.Search.CreatedAt
                     },
-                    Files = dispute.Files.Select(f => new DisputeFileDto
+                    Files = dispute.Files.Select(f =>
                     {
-                        Id = f.Id,
-                        FileName = f.FileName,
-                        FileType = f.FileType,
-                        FileSize = f.FileSize,
-                        CreatedAt = f.CreatedAt,
-                        FilePath = f.FilePath,
-                        FileUrl = f.FilePath,
-                        UploadedByUserId = f.UploadedByUserId,
-                        UploadedByUserName = f.UploadedByUser?.Name ?? "Usuario desconocido",
-                        UploadedByUserEmail = f.UploadedByUser?.Email ?? "",
-                        FileCategory = f.FileCategory,
-                        FileCategoryLabel = f.FileCategory == "client" ? "Archivo del Cliente" : "Archivo del Experto"
+                        var signedFileUrl = ResolveDisputeFileUrl(f);
+                        return new DisputeFileDto
+                        {
+                            Id = f.Id,
+                            FileName = f.FileName,
+                            FileType = f.FileType,
+                            FileSize = f.FileSize,
+                            CreatedAt = f.CreatedAt,
+                            FilePath = signedFileUrl,
+                            FileUrl = signedFileUrl,
+                            UploadedByUserId = f.UploadedByUserId,
+                            UploadedByUserName = f.UploadedByUser?.Name ?? "Usuario desconocido",
+                            UploadedByUserEmail = f.UploadedByUser?.Email ?? "",
+                            FileCategory = f.FileCategory,
+                            FileCategoryLabel = f.FileCategory == "client" ? "Archivo del Cliente" : "Archivo del Experto"
+                        };
                     }).ToList()
                 }).ToList();
 
@@ -1437,7 +1459,15 @@ namespace newApi.Controllers
                             await file.CopyToAsync(memoryStream);
                             memoryStream.Position = 0;
 
-                            await _storageClient.UploadObjectAsync(bucketName, fileName, null, memoryStream);
+                            await _storageClient.UploadObjectAsync(
+                                bucketName,
+                                fileName,
+                                file.ContentType,
+                                memoryStream,
+                                new UploadObjectOptions
+                                {
+                                    PredefinedAcl = PredefinedObjectAcl.Private
+                                });
 
                             // Crear URL del archivo
                             var fileUrl = $"https://storage.googleapis.com/{bucketName}/{fileName}";
@@ -1472,6 +1502,51 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
+        private string ResolveDisputeFileUrl(DisputeFile? file)
+        {
+            if (file == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(file.FilePath) ? string.Empty : file.FilePath;
+            var objectName = ExtractObjectNameFromUrl(file.FilePath);
+            if (string.IsNullOrEmpty(objectName))
+            {
+                return fallback;
+            }
+
+            return _signedUrlService.GetSignedUrl(objectName) ?? fallback;
+        }
+
+        private string? ExtractObjectNameFromUrl(string? filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                return null;
+            }
+
+            try
+            {
+                var bucketName = _configuration["GoogleCloud:BucketName"];
+                if (!string.IsNullOrWhiteSpace(bucketName))
+                {
+                    var prefix = $"https://storage.googleapis.com/{bucketName}/";
+                    if (filePath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return filePath[prefix.Length..];
+                    }
+                }
+
+                var uri = new Uri(filePath);
+                return uri.AbsolutePath.TrimStart('/');
+            }
+            catch
+            {
+                return null;
             }
         }
 

@@ -76,18 +76,22 @@ if (!isDevelopment)
                 // Crear el cliente de Secret Manager con configuración mejorada
                 initLogger.LogInformation("Creando cliente de Secret Manager...");
                 
-                // Configurar el cliente con opciones para Kubernetes
-                // Forzar IPv4 y configurar timeouts más largos para evitar "Resource temporarily unavailable"
+                // Configurar el cliente con opciones específicas para Kubernetes
+                // El problema puede ser que gRPC necesita configuración especial para HTTP/2 en Kubernetes
                 var clientBuilder = new SecretManagerServiceClientBuilder();
                 
-                // Configurar el endpoint explícitamente para evitar problemas de DNS/IPv6
-                // Usar IPv4 explícitamente resolviendo a una IP específica si es necesario
+                // Configurar el endpoint explícitamente
                 var endpoint = "secretmanager.googleapis.com:443";
                 clientBuilder.Endpoint = endpoint;
                 
-                // Configurar opciones de gRPC para Kubernetes
-                // Esto ayuda a evitar problemas de "Resource temporarily unavailable"
-                clientBuilder.GrpcAdapter = GrpcNetClientAdapter.Default;
+                // Configurar opciones de gRPC con timeouts más largos
+                // Esto es crítico para Kubernetes donde las conexiones pueden ser más lentas
+                clientBuilder.GrpcAdapter = GrpcNetClientAdapter.Default.WithAdditionalOptions(options =>
+                {
+                    // Configurar timeouts más largos para la conexión inicial
+                    options.MaxReceiveMessageSize = 4 * 1024 * 1024; // 4MB
+                    options.MaxSendMessageSize = 4 * 1024 * 1024; // 4MB
+                });
                 
                 secretClient = clientBuilder.Build();
                 

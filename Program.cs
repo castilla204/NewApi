@@ -592,30 +592,37 @@ builder.Services.AddCors(options =>
 });
 
 
-// Configure Hangfire con configuración optimizada para K3s
-builder.Services.AddHangfire(config => config
-    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
-    .UseSimpleAssemblyNameTypeSerializer()
-    .UseRecommendedSerializerSettings()
-    .UsePostgreSqlStorage(builder.Configuration.GetConnectionString("PostgresConnection"), new PostgreSqlStorageOptions
-    {
-        QueuePollInterval = TimeSpan.FromSeconds(15),
-        InvisibilityTimeout = TimeSpan.FromMinutes(30),
-        DistributedLockTimeout = TimeSpan.FromMinutes(10),
-        PrepareSchemaIfNecessary = true
-    })
-    .UseDefaultTypeResolver()
-    .UseDefaultTypeSerializer());
-
-// Configurar Hangfire Server con menos workers para K3s
-builder.Services.AddHangfireServer(options =>
+// Configure Hangfire con configuración optimizada para K3s - con manejo de errores
+try
 {
-    options.WorkerCount = 2; // Reducir workers para evitar sobrecarga de conexiones
-    options.ServerTimeout = TimeSpan.FromMinutes(5);
-    options.HeartbeatInterval = TimeSpan.FromSeconds(30);
-    options.ServerCheckInterval = TimeSpan.FromMinutes(1);
-    options.SchedulePollingInterval = TimeSpan.FromSeconds(30);
-});
+    builder.Services.AddHangfire(config => config
+        .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+        .UseSimpleAssemblyNameTypeSerializer()
+        .UseRecommendedSerializerSettings()
+        .UsePostgreSqlStorage(builder.Configuration.GetConnectionString("PostgresConnection"), new PostgreSqlStorageOptions
+        {
+            QueuePollInterval = TimeSpan.FromSeconds(15),
+            InvisibilityTimeout = TimeSpan.FromMinutes(30),
+            DistributedLockTimeout = TimeSpan.FromMinutes(10),
+            PrepareSchemaIfNecessary = true
+        })
+        .UseDefaultTypeResolver()
+        .UseDefaultTypeSerializer());
+
+    // Configurar Hangfire Server con menos workers para K3s
+    builder.Services.AddHangfireServer(options =>
+    {
+        options.WorkerCount = 2; // Reducir workers para evitar sobrecarga de conexiones
+        options.ServerTimeout = TimeSpan.FromMinutes(5);
+        options.HeartbeatInterval = TimeSpan.FromSeconds(30);
+        options.ServerCheckInterval = TimeSpan.FromMinutes(1);
+        options.SchedulePollingInterval = TimeSpan.FromSeconds(30);
+    });
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"⚠️  Hangfire no se pudo configurar: {ex.Message}. La aplicación continuará sin Hangfire.");
+}
 
 // Register Services
 builder.Services.AddScoped<IRabbitMQService, RabbitMQService>();

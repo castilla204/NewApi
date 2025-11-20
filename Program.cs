@@ -38,11 +38,27 @@ builder.Services.Configure<RequestLocalizationOptions>(options =>
     options.SupportedUICultures = new[] { new System.Globalization.CultureInfo("es-ES") };
 });
 
-// Instancia el cliente de Secret Manager
-var secretClient = SecretManagerServiceClient.Create();
+// Verificar el entorno PRIMERO
+var isDevelopment = builder.Environment.IsDevelopment();
 
-// Funci�n para obtener secretos
-string GetSecretValue(string secretName)
+// Instancia el cliente de Secret Manager solo si NO está en desarrollo
+SecretManagerServiceClient? secretClient = null;
+if (!isDevelopment)
+{
+    try
+    {
+        secretClient = SecretManagerServiceClient.Create();
+    }
+    catch (Exception ex)
+    {
+        builder.Logging.AddConsole();
+        var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+        logger.LogWarning($"No se pudo inicializar Secret Manager: {ex.Message}. Usando variables de entorno.");
+    }
+}
+
+// Función para obtener secretos
+string? GetSecretValue(string secretName, string? defaultValue = null)
 {
     // Primero intentar leer de variables de entorno (para override en Kubernetes)
     var envVarName = secretName.Replace("-", "_").ToUpper();
@@ -52,14 +68,35 @@ string GetSecretValue(string secretName)
         return envValue;
     }
     
-    // Si no existe en variables de entorno, usar Secret Manager
-    var projectId = "grup-441318";
-    var secretVersion = secretClient.AccessSecretVersion($"projects/{projectId}/secrets/{secretName}/versions/latest");
-    return secretVersion.Payload.Data.ToStringUtf8();
+    // En desarrollo, usar valor por defecto si está disponible
+    if (isDevelopment)
+    {
+        return defaultValue;
+    }
+    
+    // En producción, intentar usar Secret Manager
+    if (secretClient != null)
+    {
+        try
+        {
+            var projectId = "grup-441318";
+            var secretVersion = secretClient.AccessSecretVersion($"projects/{projectId}/secrets/{secretName}/versions/latest");
+            return secretVersion.Payload.Data.ToStringUtf8();
+        }
+        catch (Exception ex)
+        {
+            builder.Logging.AddConsole();
+            var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+            logger.LogError($"Error al obtener secreto {secretName} de Secret Manager: {ex.Message}");
+            return defaultValue; // Retornar valor por defecto en caso de error
+        }
+    }
+    
+    return defaultValue;
 }
 
 // Cargar secretos de Google Cloud Secret Manager
-var googleClientIds = GetSecretValue("google-client-ids")
+var googleClientIds = GetSecretValue("google-client-ids", null)
                       ?.Split(',', StringSplitOptions.RemoveEmptyEntries)
                       .Select(id => id.Trim())
                       .ToArray();
@@ -74,14 +111,11 @@ if (googleClientIds != null && googleClientIds.Length > 0)
     builder.Configuration.AddInMemoryCollection(configDict);
 }
 
-builder.Configuration["Jwt:Key"] = GetSecretValue("jwt-key");
-builder.Configuration["Jwt:Issuer"] = GetSecretValue("jwt-issuer");
-builder.Configuration["Jwt:Audience"] = GetSecretValue("jwt-audience");
-builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password");
-builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key");
-
-// Configurar Stripe según el entorno (desarrollo vs producción)
-var isDevelopment = builder.Environment.IsDevelopment();
+builder.Configuration["Jwt:Key"] = GetSecretValue("jwt-key", null) ?? "";
+builder.Configuration["Jwt:Issuer"] = GetSecretValue("jwt-issuer", null) ?? "";
+builder.Configuration["Jwt:Audience"] = GetSecretValue("jwt-audience", null) ?? "";
+builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password", null) ?? "";
+builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key", null) ?? "";
 if (isDevelopment)
 {
     // En desarrollo: usar variables de entorno o User Secrets
@@ -104,27 +138,27 @@ if (isDevelopment)
 else
 {
     // En producción: valores desde Google Cloud Secret Manager
-    builder.Configuration["Stripe:SecretKey"] = GetSecretValue("stripe-secret-key");
-    builder.Configuration["Stripe:WebhookSecret"] = GetSecretValue("stripe-webhook-secret");
-    builder.Configuration["Stripe:GeneralWebhookSecret"] = GetSecretValue("stripe-general-webhook-secret");
+    builder.Configuration["Stripe:SecretKey"] = GetSecretValue("stripe-secret-key", null) ?? "";
+    builder.Configuration["Stripe:WebhookSecret"] = GetSecretValue("stripe-webhook-secret", null) ?? "";
+    builder.Configuration["Stripe:GeneralWebhookSecret"] = GetSecretValue("stripe-general-webhook-secret", null) ?? "";
 }
 
-builder.Configuration["Twilio:AccountSid"] = GetSecretValue("twilio-account-sid");
-builder.Configuration["Twilio:AuthToken"] = GetSecretValue("twilio-auth-token");
-builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-verification-service-sid");
+builder.Configuration["Twilio:AccountSid"] = GetSecretValue("twilio-account-sid", null) ?? "";
+builder.Configuration["Twilio:AuthToken"] = GetSecretValue("twilio-auth-token", null) ?? "";
+builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-verification-service-sid", null) ?? "";
 builder.Configuration["GoogleCloud:BucketName"] = "atrapobucket";
 
 // Configuración de Email (opcional - si no está configurado, no se enviarán emails)
 // Puede usar SMTP de hosting propio, Gmail, SendGrid, etc.
 try
 {
-    builder.Configuration["Email:SmtpHost"] = GetSecretValue("email-smtp-host") ?? "";
+    builder.Configuration["Email:SmtpHost"] = GetSecretValue("email-smtp-host", "") ?? "";
     // ⚠️ RECOMENDACIÓN: Usar puerto 587 (STARTTLS) en lugar de 465 (SSL) para mejor compatibilidad
-    builder.Configuration["Email:SmtpPort"] = GetSecretValue("email-smtp-port") ?? "587";
-    builder.Configuration["Email:SmtpUsername"] = GetSecretValue("email-smtp-username") ?? "";
-    builder.Configuration["Email:SmtpPassword"] = GetSecretValue("email-smtp-password") ?? "";
-    builder.Configuration["Email:FromEmail"] = GetSecretValue("email-from-email") ?? "info@inspecciono.com";
-    builder.Configuration["Email:FromName"] = GetSecretValue("email-from-name") ?? "Inspecciono";
+    builder.Configuration["Email:SmtpPort"] = GetSecretValue("email-smtp-port", "587") ?? "587";
+    builder.Configuration["Email:SmtpUsername"] = GetSecretValue("email-smtp-username", "") ?? "";
+    builder.Configuration["Email:SmtpPassword"] = GetSecretValue("email-smtp-password", "") ?? "";
+    builder.Configuration["Email:FromEmail"] = GetSecretValue("email-from-email", "info@inspecciono.com") ?? "info@inspecciono.com";
+    builder.Configuration["Email:FromName"] = GetSecretValue("email-from-name", "Inspecciono") ?? "Inspecciono";
 }
 catch
 {
@@ -145,11 +179,11 @@ if (isDevelopment)
 {
     // En desarrollo: usar valores de desarrollo o desde Secret Manager
     // Usar localhost:5433 para conectarse a través del túnel SSH
-    var dbHost = GetSecretValue("postgres-host") ?? "localhost";
-    var dbPort = GetSecretValue("postgres-port") ?? "5433"; // Puerto del túnel SSH
-    var dbUsername = GetSecretValue("postgres-username") ?? "postgres";
-    var dbPassword = GetSecretValue("postgres-password") ?? "postgres";
-    var dbName = GetSecretValue("postgres-database") ?? "newapi";
+    var dbHost = GetSecretValue("postgres-host", "localhost") ?? "localhost";
+    var dbPort = GetSecretValue("postgres-port", "5433") ?? "5433"; // Puerto del túnel SSH
+    var dbUsername = GetSecretValue("postgres-username", "postgres") ?? "postgres";
+    var dbPassword = GetSecretValue("postgres-password", "postgres") ?? "postgres";
+    var dbName = GetSecretValue("postgres-database", "newapi") ?? "newapi";
     
     connectionString = $"Host={dbHost};Port={dbPort};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
 }

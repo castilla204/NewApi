@@ -1,5 +1,6 @@
 using Google.Cloud.SecretManager.V1;
 using Google.Api.Gax.Grpc;
+using Grpc.Core;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -72,9 +73,13 @@ if (!isDevelopment)
                     initLogger.LogInformation("Archivo de credenciales parece válido (contiene project_id)");
                 }
                 
-                // Crear el cliente de Secret Manager
+                // Crear el cliente de Secret Manager con configuración mejorada
                 initLogger.LogInformation("Creando cliente de Secret Manager...");
-                secretClient = SecretManagerServiceClient.Create();
+                
+                // Configurar el cliente con opciones para Kubernetes
+                var clientBuilder = new SecretManagerServiceClientBuilder();
+                secretClient = clientBuilder.Build();
+                
                 initLogger.LogInformation("Cliente de Secret Manager creado exitosamente");
                 secretManagerAvailable = true; // Asumimos disponible hasta que falle
             }
@@ -103,22 +108,13 @@ if (!isDevelopment)
 // Función para obtener secretos
 string? GetSecretValue(string secretName, string? defaultValue = null)
 {
-    // Primero intentar leer de variables de entorno (para override en Kubernetes)
-    // Esto tiene prioridad sobre Secret Manager
-    var envVarName = secretName.Replace("-", "_").ToUpper();
-    var envValue = Environment.GetEnvironmentVariable(envVarName);
-    if (!string.IsNullOrEmpty(envValue))
-    {
-        return envValue;
-    }
-    
     // En desarrollo, usar valor por defecto si está disponible
     if (isDevelopment)
     {
         return defaultValue;
     }
     
-    // En producción, intentar usar Secret Manager SOLO si está disponible
+    // En producción, USAR SECRET MANAGER (prioridad absoluta)
     if (secretClient != null && secretManagerAvailable)
     {
         try
@@ -130,16 +126,22 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
             var secretLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
             secretLogger.LogInformation($"Intentando obtener secreto: {secretName} desde {secretPath}");
             
-            // Configurar call settings con timeout y reintentos para manejar problemas de conectividad
+            // Configurar call settings con timeout y reintentos mejorados para Kubernetes
+            // Aumentar timeout y reintentos para manejar problemas de conectividad temporal
             var callSettings = CallSettings.FromRetry(
                 RetrySettings.FromExponentialBackoff(
-                    maxAttempts: 3,
-                    initialBackoff: TimeSpan.FromSeconds(2),
-                    maxBackoff: TimeSpan.FromSeconds(10),
+                    maxAttempts: 5, // Más reintentos
+                    initialBackoff: TimeSpan.FromSeconds(3), // Esperar más antes del primer reintento
+                    maxBackoff: TimeSpan.FromSeconds(15),
                     backoffMultiplier: 2.0,
-                    retryFilter: RetrySettings.FilterForStatusCodes(StatusCode.Unavailable, StatusCode.DeadlineExceeded)
+                    retryFilter: RetrySettings.FilterForStatusCodes(
+                        Grpc.Core.StatusCode.Unavailable, 
+                        Grpc.Core.StatusCode.DeadlineExceeded,
+                        Grpc.Core.StatusCode.Internal,
+                        Grpc.Core.StatusCode.ResourceExhausted
+                    )
                 )
-            ).WithTimeout(TimeSpan.FromSeconds(15)); // Timeout más largo para Kubernetes
+            ).WithTimeout(TimeSpan.FromSeconds(30)); // Timeout más largo para Kubernetes
             
             secretLogger.LogInformation($"Llamando a Secret Manager con timeout de 15 segundos...");
             var startTime = DateTime.UtcNow;

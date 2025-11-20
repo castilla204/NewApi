@@ -21,6 +21,7 @@ using Microsoft.AspNetCore.Server.IIS;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Authorization;
+using newApi.Middleware;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -114,6 +115,48 @@ if (googleClientIds != null && googleClientIds.Length > 0)
 builder.Configuration["Jwt:Key"] = GetSecretValue("jwt-key", null) ?? "";
 builder.Configuration["Jwt:Issuer"] = GetSecretValue("jwt-issuer", null) ?? "";
 builder.Configuration["Jwt:Audience"] = GetSecretValue("jwt-audience", null) ?? "";
+
+// ✅ SEGURIDAD 2025: Validar longitud mínima de clave JWT (OWASP Best Practice)
+var jwtKey = builder.Configuration["Jwt:Key"];
+if (string.IsNullOrEmpty(jwtKey))
+{
+    throw new InvalidOperationException(
+        "⚠️ CRITICAL SECURITY ERROR: JWT Key is not configured. " +
+        "Please set 'jwt-key' in Google Cloud Secret Manager or User Secrets.");
+}
+
+var jwtKeyBytes = Encoding.UTF8.GetBytes(jwtKey);
+const int MINIMUM_KEY_LENGTH_BITS = 256; // OWASP/NIST recommendation for HMAC-SHA256
+const int MINIMUM_KEY_LENGTH_BYTES = MINIMUM_KEY_LENGTH_BITS / 8; // 32 bytes
+const int RECOMMENDED_KEY_LENGTH_BYTES = 64; // 512 bits
+
+if (jwtKeyBytes.Length < MINIMUM_KEY_LENGTH_BYTES)
+{
+    throw new InvalidOperationException(
+        $"⚠️ CRITICAL SECURITY ERROR: JWT Key is too short ({jwtKeyBytes.Length} bytes / {jwtKeyBytes.Length * 8} bits). " +
+        $"Minimum required: {MINIMUM_KEY_LENGTH_BYTES} bytes ({MINIMUM_KEY_LENGTH_BITS} bits). " +
+        $"Recommended: {RECOMMENDED_KEY_LENGTH_BYTES} bytes (512 bits). " +
+        $"\n\nTo generate a secure key:\n" +
+        $"  PowerShell: [Convert]::ToBase64String((1..64 | ForEach-Object {{Get-Random -Minimum 0 -Maximum 256}}))\n" +
+        $"  Bash: openssl rand -base64 64");
+}
+
+if (jwtKeyBytes.Length < RECOMMENDED_KEY_LENGTH_BYTES && !builder.Environment.IsDevelopment())
+{
+    Console.WriteLine(
+        $"⚠️ WARNING: JWT Key length ({jwtKeyBytes.Length} bytes / {jwtKeyBytes.Length * 8} bits) is below " +
+        $"recommended length ({RECOMMENDED_KEY_LENGTH_BYTES} bytes / 512 bits) for production. " +
+        $"Consider generating a longer key for maximum security.");
+}
+else if (jwtKeyBytes.Length >= RECOMMENDED_KEY_LENGTH_BYTES)
+{
+    Console.WriteLine($"✅ JWT Key length validated: {jwtKeyBytes.Length} bytes ({jwtKeyBytes.Length * 8} bits) - EXCELLENT");
+}
+else
+{
+    Console.WriteLine($"✅ JWT Key length validated: {jwtKeyBytes.Length} bytes ({jwtKeyBytes.Length * 8} bits) - SECURE");
+}
+
 builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password", null) ?? "";
 builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key", null) ?? "";
 if (isDevelopment)
@@ -177,30 +220,7 @@ string connectionString;
 
 if (isDevelopment)
 {
-<<<<<<< HEAD
-    // En desarrollo: usar configuración local del túnel (variables de entorno o user secrets)
-    // NO usar Google Cloud Secret Manager en desarrollo
-    // Configurar con:
-    // dotnet user-secrets set "ConnectionStrings:PostgresConnection" "Host=localhost;Port=5432;Username=postgres;Password=...;Database=newapi"
-    // O variables de entorno: DB_HOST, DB_PORT, DB_USERNAME, DB_PASSWORD, DB_NAME
-=======
-    // En desarrollo: usar valores de desarrollo o desde Secret Manager
-    // Usar localhost:5433 para conectarse a través del túnel SSH
-<<<<<<< HEAD
-    var dbHost = GetSecretValue("postgres-host") ?? "localhost";
-    var dbPort = GetSecretValue("postgres-port") ?? "5433"; // Puerto del túnel SSH
-    var dbUsername = GetSecretValue("postgres-username") ?? "postgres";
-    var dbPassword = GetSecretValue("postgres-password") ?? "postgres";
-    var dbName = GetSecretValue("postgres-database") ?? "newapi";
->>>>>>> 72ad49839a4b58f9691d233fa2c79e3ea58386a8
-=======
-    var dbHost = GetSecretValue("postgres-host", "localhost") ?? "localhost";
-    var dbPort = GetSecretValue("postgres-port", "5433") ?? "5433"; // Puerto del túnel SSH
-    var dbUsername = GetSecretValue("postgres-username", "postgres") ?? "postgres";
-    var dbPassword = GetSecretValue("postgres-password", "postgres") ?? "postgres";
-    var dbName = GetSecretValue("postgres-database", "newapi") ?? "newapi";
->>>>>>> 5c563144debc7e282c1dc0d12c6bd2f2962e3cf0
-    
+    // En desarrollo: usar valores de desarrollo
     var existingConnectionString = builder.Configuration.GetConnectionString("PostgresConnection");
     
     if (!string.IsNullOrEmpty(existingConnectionString))
@@ -661,6 +681,10 @@ context.Request.Headers.ContainsKey("X-Bypass-Auth"))
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+// ✅ SEGURIDAD 2025: FORZAR MFA para Admin y Expertos
+// OWASP/NIST/PCI DSS: MFA obligatorio para cuentas privilegiadas
+app.UseRequireMfa();
 
 // Add health check endpoint
 app.MapHealthChecks("/health");

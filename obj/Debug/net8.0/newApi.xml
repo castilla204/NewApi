@@ -1805,6 +1805,17 @@
             Hora de fin de la franja horaria (formato "HH:mm", ej: "18:00")
             </summary>
         </member>
+        <member name="T:newApi.Middleware.RequireMfaMiddleware">
+            <summary>
+            ✅ SEGURIDAD 2025: Middleware para FORZAR MFA en Admin y Expertos
+            OWASP/NIST/PCI DSS: MFA obligatorio para cuentas privilegiadas
+            </summary>
+        </member>
+        <member name="T:newApi.Middleware.RequireMfaMiddlewareExtensions">
+            <summary>
+            Extensión para registrar el middleware
+            </summary>
+        </member>
         <member name="T:newApi.Migrations.AddServiceTypeCategoryTable">
             <inheritdoc />
         </member>

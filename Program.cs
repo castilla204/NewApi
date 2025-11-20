@@ -722,8 +722,18 @@ catch (Exception ex)
 }
 
 
-// Schedule recurring job with Hangfire
-app.UseHangfireDashboard("/hangfire");
+// Schedule recurring job with Hangfire - con try-catch para evitar crashes
+try
+{
+    app.UseHangfireDashboard("/hangfire", new DashboardOptions
+    {
+        Authorization = new[] { new HangfireAuthorizationFilter() }
+    });
+}
+catch (Exception ex)
+{
+    app.Logger.LogError($"Error inicializando Hangfire Dashboard: {ex.Message}. La aplicación continuará sin Hangfire.");
+}
 
 // ✅ SEGURIDAD 2025: Configurar limpieza automática de refresh tokens
 // Se ejecuta todos los días a las 3:00 AM

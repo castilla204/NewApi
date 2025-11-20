@@ -55,6 +55,12 @@ spec:
           value: "/etc/credentials/cloudcredential.json"
         - name: ASPNETCORE_ENVIRONMENT
           value: "Production"
+        - name: DOTNET_SYSTEM_NET_DISABLEIPV6
+          value: "1"
+        - name: GRPC_VERBOSITY
+          value: "ERROR"
+        - name: GRPC_TRACE
+          value: ""
         - name: POSTGRES_HOST
           value: "postgres-svc"
         - name: POSTGRES_PORT

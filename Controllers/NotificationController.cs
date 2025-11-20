@@ -92,13 +92,21 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
+                var isAdmin = _authService.IsAdmin(User);
                 var notification = await _context.Notifications.FindAsync(id);
                 if (notification == null)
                 {
                     return NotFound(new { message = "Notification not found" });
                 }
 
-                if (notification.UserId != userId && notification.UserId != null)
+                if (notification.UserId == null)
+                {
+                    if (!isAdmin)
+                    {
+                        return Unauthorized(new { message = "Admin access required to modify broadcast notifications" });
+                    }
+                }
+                else if (notification.UserId != userId)
                 {
                     return Unauthorized(new { message = "Cannot mark other users' notifications as read" });
                 }

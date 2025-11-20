@@ -15,3 +15,7 @@ cloudcredential.json
 *.user
 *.suo
 *.cache
+
+# Node modules
+**/node_modules/
+cursor-backend-logs/

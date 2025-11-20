@@ -134,14 +134,30 @@ string connectionString;
 
 if (isDevelopment)
 {
-    // En desarrollo: usar valores de desarrollo o desde Secret Manager
-    var dbHost = GetSecretValue("postgres-host") ?? "localhost";
-    var dbPort = GetSecretValue("postgres-port") ?? "5432";
-    var dbUsername = GetSecretValue("postgres-username") ?? "postgres";
-    var dbPassword = GetSecretValue("postgres-password") ?? "postgres";
-    var dbName = GetSecretValue("postgres-database") ?? "newapi";
+    // En desarrollo: usar configuración local del túnel (variables de entorno o user secrets)
+    // NO usar Google Cloud Secret Manager en desarrollo
+    // Configurar con:
+    // dotnet user-secrets set "ConnectionStrings:PostgresConnection" "Host=localhost;Port=5432;Username=postgres;Password=...;Database=newapi"
+    // O variables de entorno: DB_HOST, DB_PORT, DB_USERNAME, DB_PASSWORD, DB_NAME
     
-    connectionString = $"Host={dbHost};Port={dbPort};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
+    var existingConnectionString = builder.Configuration.GetConnectionString("PostgresConnection");
+    
+    if (!string.IsNullOrEmpty(existingConnectionString))
+    {
+        // Usar connection string desde appsettings.Development.json o user secrets
+        connectionString = existingConnectionString;
+    }
+    else
+    {
+        // Construir desde variables de entorno individuales (para túnel local)
+        var dbHost = Environment.GetEnvironmentVariable("DB_HOST") ?? "localhost";
+        var dbPort = Environment.GetEnvironmentVariable("DB_PORT") ?? "5432";
+        var dbUsername = Environment.GetEnvironmentVariable("DB_USERNAME") ?? "postgres";
+        var dbPassword = Environment.GetEnvironmentVariable("DB_PASSWORD") ?? "postgres";
+        var dbName = Environment.GetEnvironmentVariable("DB_NAME") ?? "newapi";
+        
+        connectionString = $"Host={dbHost};Port={dbPort};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
+    }
 }
 else
 {

@@ -144,8 +144,9 @@ string connectionString;
 if (isDevelopment)
 {
     // En desarrollo: usar valores de desarrollo o desde Secret Manager
+    // Usar localhost:5433 para conectarse a través del túnel SSH
     var dbHost = GetSecretValue("postgres-host") ?? "localhost";
-    var dbPort = GetSecretValue("postgres-port") ?? "5432";
+    var dbPort = GetSecretValue("postgres-port") ?? "5433"; // Puerto del túnel SSH
     var dbUsername = GetSecretValue("postgres-username") ?? "postgres";
     var dbPassword = GetSecretValue("postgres-password") ?? "postgres";
     var dbName = GetSecretValue("postgres-database") ?? "newapi";

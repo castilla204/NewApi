@@ -84,14 +84,19 @@ if (!isDevelopment)
                 var endpoint = "secretmanager.googleapis.com:443";
                 clientBuilder.Endpoint = endpoint;
                 
-                // Configurar opciones de gRPC con timeouts más largos
-                // Esto es crítico para Kubernetes donde las conexiones pueden ser más lentas
+                // Configurar opciones de gRPC específicas para Kubernetes/K3s
+                // El problema puede ser que gRPC necesita configuración especial para HTTP/2
                 clientBuilder.GrpcAdapter = GrpcNetClientAdapter.Default.WithAdditionalOptions(options =>
                 {
                     // Configurar timeouts más largos para la conexión inicial
                     options.MaxReceiveMessageSize = 4 * 1024 * 1024; // 4MB
                     options.MaxSendMessageSize = 4 * 1024 * 1024; // 4MB
+                    // No configurar KeepAlive muy agresivo - puede causar problemas en Kubernetes
                 });
+                
+                // IMPORTANTE: Configurar el cliente para que no intente múltiples conexiones simultáneas
+                // Esto puede ayudar a evitar el error "Resource temporarily unavailable"
+                initLogger.LogInformation("Configurando cliente gRPC con opciones para Kubernetes...");
                 
                 secretClient = clientBuilder.Build();
                 

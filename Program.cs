@@ -602,9 +602,7 @@ builder.Services.AddHangfire(config => config
         QueuePollInterval = TimeSpan.FromSeconds(15),
         InvisibilityTimeout = TimeSpan.FromMinutes(30),
         DistributedLockTimeout = TimeSpan.FromMinutes(10),
-        PrepareSchemaIfNecessary = true,
-        // Configuración para Kubernetes - más tiempo para conexiones lentas
-        TransactionTimeout = TimeSpan.FromMinutes(5)
+        PrepareSchemaIfNecessary = true
     })
     .UseDefaultTypeResolver()
     .UseDefaultTypeSerializer());

@@ -152,12 +152,13 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
             secretLogger.LogInformation($"Intentando obtener secreto: {secretName} desde {secretPath}");
             
             // Configurar call settings con timeout y reintentos mejorados para Kubernetes
-            // Aumentar timeout y reintentos para manejar problemas de conectividad temporal
+            // Aumentar timeout significativamente para manejar problemas de conectividad
+            // gRPC puede necesitar más tiempo para establecer la conexión HTTP/2
             var callSettings = CallSettings.FromRetry(
                 RetrySettings.FromExponentialBackoff(
-                    maxAttempts: 5, // Más reintentos
-                    initialBackoff: TimeSpan.FromSeconds(3), // Esperar más antes del primer reintento
-                    maxBackoff: TimeSpan.FromSeconds(15),
+                    maxAttempts: 3, // Reducir reintentos pero aumentar timeout inicial
+                    initialBackoff: TimeSpan.FromSeconds(5), // Esperar más antes del primer reintento
+                    maxBackoff: TimeSpan.FromSeconds(20),
                     backoffMultiplier: 2.0,
                     retryFilter: RetrySettings.FilterForStatusCodes(
                         Grpc.Core.StatusCode.Unavailable, 
@@ -166,9 +167,9 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
                         Grpc.Core.StatusCode.ResourceExhausted
                     )
                 )
-            ).WithTimeout(TimeSpan.FromSeconds(30)); // Timeout más largo para Kubernetes
+            ).WithTimeout(TimeSpan.FromSeconds(60)); // Timeout MUY largo (60s) para Kubernetes - gRPC puede ser lento
             
-            secretLogger.LogInformation($"Llamando a Secret Manager con timeout de 30 segundos...");
+            secretLogger.LogInformation($"Llamando a Secret Manager con timeout de 60 segundos...");
             var startTime = DateTime.UtcNow;
             
             var secretVersion = secretClient.AccessSecretVersion(secretPath, callSettings: callSettings);
@@ -326,12 +327,22 @@ if (isDevelopment)
 else
 {
     // En producción: Intentar desde Secret Manager, pero usar variables de entorno como fallback
-    // Esto permite que la app funcione aunque Secret Manager no esté disponible
+    // Esto permite que la app funcione aunque Secret Manager no esté disponible temporalmente
     var dbHost = GetSecretValue("postgres-host") ?? Environment.GetEnvironmentVariable("POSTGRES_HOST") ?? "postgres-svc";
     var dbPort = GetSecretValue("postgres-port") ?? Environment.GetEnvironmentVariable("POSTGRES_PORT") ?? "5432";
-    var dbUsername = GetSecretValue("postgres-username") ?? Environment.GetEnvironmentVariable("POSTGRES_USERNAME") ?? throw new InvalidOperationException("postgres-username is required. Configure via Secret Manager or POSTGRES_USERNAME env var");
-    var dbPassword = GetSecretValue("postgres-password") ?? Environment.GetEnvironmentVariable("POSTGRES_PASSWORD") ?? throw new InvalidOperationException("postgres-password is required. Configure via Secret Manager or POSTGRES_PASSWORD env var");
+    var dbUsername = GetSecretValue("postgres-username") ?? Environment.GetEnvironmentVariable("POSTGRES_USERNAME");
+    var dbPassword = GetSecretValue("postgres-password") ?? Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
     var dbName = GetSecretValue("postgres-database") ?? Environment.GetEnvironmentVariable("POSTGRES_DATABASE") ?? "newapi";
+    
+    // Si no hay credenciales de DB, lanzar error claro
+    if (string.IsNullOrEmpty(dbUsername) || string.IsNullOrEmpty(dbPassword))
+    {
+        throw new InvalidOperationException(
+            "Database credentials are required in production. " +
+            "Configure via Secret Manager (postgres-username, postgres-password) " +
+            "or environment variables (POSTGRES_USERNAME, POSTGRES_PASSWORD). " +
+            "Secret Manager status: " + (secretManagerAvailable ? "Available but failed to retrieve secrets" : "Not available"));
+    }
     
     connectionString = $"Host={dbHost};Port={dbPort};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
 }

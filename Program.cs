@@ -526,7 +526,25 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     }));
 
 // Configure Google Cloud Storage
-builder.Services.AddSingleton(StorageClient.Create());
+builder.Services.AddSingleton<StorageClient>(sp =>
+{
+    var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
+    if (!string.IsNullOrEmpty(credentialsPath) && System.IO.File.Exists(credentialsPath))
+    {
+        var credential = GoogleCredential.FromFile(credentialsPath);
+        return StorageClient.Create(credential);
+    }
+    // Si no hay credenciales, intentar usar credenciales predeterminadas o retornar null
+    try
+    {
+        return StorageClient.Create();
+    }
+    catch
+    {
+        // Si falla, retornar null - los servicios que lo necesiten deberán manejarlo
+        return null!;
+    }
+});
 
 // Configure RabbitMQ
 builder.Services.AddSingleton<RabbitMQ.Client.IConnectionFactory>(sp =>

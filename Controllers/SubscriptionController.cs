@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -2980,30 +2980,51 @@ namespace newApi.Controllers
                     return NotFound(new { message = "No pending dispute found" });
                 }
 
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
+                dispute.Status = "Resolved";
+                dispute.ResolutionComments = request.Resolution;
+                await _context.SaveChangesAsync();
+
+                var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                var statusValue = request.ResolveInFavorOfClient
+                    ? SearchHireStatus.DisputeResolvedClient.ToStringValue()
+                    : SearchHireStatus.DisputeResolvedExpert.ToStringValue();
+
+                var success = await _refundService.ProcessMoneyDistributionAsync(
+                    searchHire.Id,
+                    statusValue,
+                    request.ResolveInFavorOfClient
+                        ? $"Dispute resolved in favor of client: {request.Resolution}"
+                        : $"Dispute resolved in favor of expert: {request.Resolution}",
+                    adminUserId);
+
+                if (!success)
                 {
-                    dispute.Status = "Resolved";
-                    dispute.ResolutionComments = request.Resolution;
+                    var lastCriticalLog = await _context.Logs
+                        .Include(l => l.LogType)
+                        .Where(l => l.RelatedEntityType == "SearchHire" &&
+                                    l.RelatedEntityId == searchHire.Id &&
+                                    l.LogType != null &&
+                                    l.LogType.Name == "Critical" &&
+                                    l.Source != null &&
+                                    l.Source.Contains("ProcessMoneyDistributionAsync"))
+                        .OrderByDescending(l => l.CreatedAt)
+                        .FirstOrDefaultAsync();
+
+                    var errorMessage = lastCriticalLog != null
+                        ? $"Failed to process money distribution: {lastCriticalLog.Message}. Check logs for details (LogId: {lastCriticalLog.Id})"
+                        : "Failed to process money distribution. Check ProcessMoneyDistributionAsync logs for details.";
+
+                    return StatusCode(500, new
+                    {
+                        message = errorMessage,
+                        searchHireId = searchHire.Id,
+                        status = statusValue,
+                        logId = lastCriticalLog?.Id
+                    });
+                }
 
                 if (request.ResolveInFavorOfClient)
                 {
-                    // Orquestador: 100% a cliente según configuración de disputa
-                    var success = await _refundService.ProcessMoneyDistributionAsync(
-                        searchHire.Id,
-                        "dispute_resolved_client",
-                        $"Dispute resolved in favor of client: {request.Resolution}",
-                        int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"));
-
-                    if (!success)
-                    {
-                        await transaction.RollbackAsync();
-                        return StatusCode(500, new { message = "Failed to process client refund" });
-                    }
-
-                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedClient.ToStringValue());
-                    // 📝 LOGGING
-                    var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
                     await _loggingService.LogWarningAsync(
                         message: "RESOLVE_DISPUTE_CLIENT_REFUND",
                         details: $"Resolvió disputa {searchHire.Id} a favor del cliente con orquestador: {request.Resolution}",
@@ -3013,24 +3034,8 @@ namespace newApi.Controllers
                         relatedEntityId: searchHire.Id
                     );
                 }
-                    else
-                    {
-                    // Orquestador: 100% a experto según configuración de disputa
-                    var success = await _refundService.ProcessMoneyDistributionAsync(
-                        searchHire.Id,
-                        "dispute_resolved_expert",
-                        $"Dispute resolved in favor of expert: {request.Resolution}",
-                        int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"));
-
-                    if (!success)
-                    {
-                        await transaction.RollbackAsync();
-                        return StatusCode(500, new { message = "Failed to process expert payout" });
-                    }
-
-                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedExpert.ToStringValue());
-                    // 📝 LOGGING
-                    var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                else
+                {
                     await _loggingService.LogWarningAsync(
                         message: "RESOLVE_DISPUTE_EXPERT",
                         details: $"Resolvió disputa {searchHire.Id} a favor del experto con orquestador: {request.Resolution}",
@@ -3039,24 +3044,9 @@ namespace newApi.Controllers
                         relatedEntityType: "SearchHire",
                         relatedEntityId: searchHire.Id
                     );
-                    }
-                    searchHire.UpdatedAt = DateTime.UtcNow;
+                }
 
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
-
-                    return Ok(new { message = "Dispute resolved" });
-                }
-                catch (StripeException ex)
-                {
-                    await transaction.RollbackAsync();
-                    return StatusCode(500, new { message = "Failed to process dispute resolution" });
-                }
-                catch (Exception ex)
-                {
-                    await transaction.RollbackAsync();
-                    return StatusCode(500, new { message = "Failed to resolve dispute" });
-                }
+                return Ok(new { message = "Dispute resolved" });
             }
             catch (Exception ex)
             {

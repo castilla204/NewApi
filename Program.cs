@@ -43,17 +43,20 @@ var isDevelopment = builder.Environment.IsDevelopment();
 
 // Instancia el cliente de Secret Manager solo si NO está en desarrollo
 SecretManagerServiceClient? secretClient = null;
+bool secretManagerAvailable = false;
 if (!isDevelopment)
 {
     try
     {
         secretClient = SecretManagerServiceClient.Create();
+        secretManagerAvailable = true; // Asumimos disponible hasta que falle
     }
     catch (Exception ex)
     {
+        secretManagerAvailable = false;
         builder.Logging.AddConsole();
         var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-        tempLogger.LogWarning($"No se pudo inicializar Secret Manager: {ex.Message}. Usando variables de entorno.");
+        tempLogger.LogWarning($"No se pudo inicializar Secret Manager: {ex.Message}. Usando solo variables de entorno.");
     }
 }
 
@@ -61,6 +64,7 @@ if (!isDevelopment)
 string? GetSecretValue(string secretName, string? defaultValue = null)
 {
     // Primero intentar leer de variables de entorno (para override en Kubernetes)
+    // Esto tiene prioridad sobre Secret Manager
     var envVarName = secretName.Replace("-", "_").ToUpper();
     var envValue = Environment.GetEnvironmentVariable(envVarName);
     if (!string.IsNullOrEmpty(envValue))
@@ -74,8 +78,8 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
         return defaultValue;
     }
     
-    // En producción, intentar usar Secret Manager
-    if (secretClient != null)
+    // En producción, intentar usar Secret Manager SOLO si está disponible
+    if (secretClient != null && secretManagerAvailable)
     {
         try
         {
@@ -85,13 +89,20 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
         }
         catch (Exception ex)
         {
-            builder.Logging.AddConsole();
-            var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-            tempLogger.LogError($"Error al obtener secreto {secretName} de Secret Manager: {ex.Message}");
+            // Si falla una vez, marcar como no disponible para evitar más intentos
+            // Solo loguear el primer error para no saturar los logs
+            if (secretManagerAvailable)
+            {
+                secretManagerAvailable = false;
+                builder.Logging.AddConsole();
+                var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+                tempLogger.LogWarning($"Secret Manager no está disponible (error: {ex.Message}). Usando solo variables de entorno para todos los secretos.");
+            }
             return defaultValue; // Retornar valor por defecto en caso de error
         }
     }
     
+    // Si Secret Manager no está disponible, usar valor por defecto (que puede ser null)
     return defaultValue;
 }
 

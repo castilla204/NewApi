@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Security.Claims;
@@ -6,6 +6,7 @@ using newApi.Services;
 using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models;
+using newApi.DataLayer.Models.PostGresModels;
 using Microsoft.EntityFrameworkCore;
 
 [Route("api/[controller]")]
@@ -17,17 +18,20 @@ public class UserController : ControllerBase
         private readonly IAuthorizationServices _authService;
         private readonly ILoggingService _loggingService;
         private readonly AppDbContext _context;
+        private readonly ISignedUrlService _signedUrlService;
 
     public UserController(
         UserService userService,
         IAuthorizationServices authService,
         ILoggingService loggingService,
-        AppDbContext context)
+        AppDbContext context,
+        ISignedUrlService signedUrlService)
     {
         _userService = userService;
         _authService = authService;
         _loggingService = loggingService;
         _context = context;
+        _signedUrlService = signedUrlService;
     }
 
     [Authorize]
@@ -377,32 +381,32 @@ public class UserController : ControllerBase
                 return BadRequest(new { message = "Failed to become expert" });
             }
 
-            var response = new BecomeExpertResponseDto
-            {
-                Message = "Successfully became an expert",
-                Token = token,
-                User = new UserInfoDto
-                {
-                    Id = user.Id,
-                    Name = user.Name,
-                    Email = user.Email,
-                    PhoneVerified = user.PhoneVerified,
-                    Role = user.Role.ToString(),
-                    ExpertProfile = new ExpertProfileInfoDto
-                    {
-                        Id = expertProfile.Id,
-                        ProfilePictureUrl = expertProfile.ProfilePictureUrl,
-                        Description = expertProfile.Description,
-                        StripeAccountId = expertProfile.StripeAccountId,
-                        CreatedAt = expertProfile.CreatedAt,
-                        Latitude = expertProfile.Latitude,
-                        Longitude = expertProfile.Longitude,
-                        StripeStatus = expertProfile.StripeStatus,
-                        StripeStatusDetails = expertProfile.StripeStatusDetails,
-                        OnboardingCompleted = expertProfile.OnboardingCompleted
-                    }
-                }
-            };
+              var response = new BecomeExpertResponseDto
+              {
+                  Message = "Successfully became an expert",
+                  Token = token,
+                  User = new UserInfoDto
+                  {
+                      Id = user.Id,
+                      Name = user.Name,
+                      Email = user.Email,
+                      PhoneVerified = user.PhoneVerified,
+                      Role = user.Role.ToString(),
+                      ExpertProfile = new ExpertProfileInfoDto
+                      {
+                          Id = expertProfile.Id,
+                          ProfilePictureUrl = ResolveProfilePictureUrl(expertProfile),
+                          Description = expertProfile.Description,
+                          StripeAccountId = expertProfile.StripeAccountId,
+                          CreatedAt = expertProfile.CreatedAt,
+                          Latitude = expertProfile.Latitude,
+                          Longitude = expertProfile.Longitude,
+                          StripeStatus = expertProfile.StripeStatus,
+                          StripeStatusDetails = expertProfile.StripeStatusDetails,
+                          OnboardingCompleted = expertProfile.OnboardingCompleted
+                      }
+                  }
+              };
 
             // ✅ LOG INFORMATIVO: Usuario se convirtió en experto exitosamente
             await _loggingService.LogInfoAsync(
@@ -558,6 +562,20 @@ public class UserController : ControllerBase
         {
             return StatusCode(500, new { message = "Failed to toggle vacation mode" });
         }
+    }
+
+    private string ResolveProfilePictureUrl(ExpertProfile? expertProfile)
+    {
+        if (expertProfile == null)
+        {
+            return "/default-avatar.png";
+        }
+
+        var fallback = string.IsNullOrWhiteSpace(expertProfile.ProfilePictureUrl)
+            ? "/default-avatar.png"
+            : expertProfile.ProfilePictureUrl;
+
+        return _signedUrlService.GetSignedUrl(expertProfile.ProfilePictureObjectName ?? string.Empty) ?? fallback;
     }
 
     public class GoogleAuthDto

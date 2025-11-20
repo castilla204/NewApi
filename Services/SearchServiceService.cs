@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Google.Cloud.Storage.V1;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Processing;
@@ -16,16 +16,18 @@ namespace newApi.Services
         private readonly AppDbContext _context;
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
+        private readonly ISignedUrlService _signedUrlService;
 
         public SearchServiceService(
-      AppDbContext context,
-      IConfiguration configuration,
-
-      StorageClient storageClient)
+            AppDbContext context,
+            IConfiguration configuration,
+            StorageClient storageClient,
+            ISignedUrlService signedUrlService)
         {
             _context = context;
             _configuration = configuration;
             _storageClient = storageClient;
+            _signedUrlService = signedUrlService;
         }
 
         public async Task<IEnumerable<SearchServiceDetailDto>> GetAllServices(
@@ -171,7 +173,7 @@ namespace newApi.Services
                     {
                         Id = expert.Id,
                         Name = expert.Name,
-                        ProfilePictureUrl = firstService.ExpertProfile.ProfilePictureUrl ?? "/default-avatar.png",
+                        ProfilePictureUrl = ResolveProfilePictureUrl(firstService.ExpertProfile),
                         AverageRating = expert.ReviewsReceived != null && expert.ReviewsReceived.Any()
                             ? expert.ReviewsReceived.Average(r => r.Score)
                             : 0,
@@ -491,14 +493,16 @@ namespace newApi.Services
                                     bucketName,
                                     objectName,
                                     "image/jpeg",
-                                    outputStream
+                                    outputStream,
+                                    new UploadObjectOptions
+                                    {
+                                        PredefinedAcl = PredefinedObjectAcl.Private
+                                    }
                                 );
                             }
                         }
 
                         var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-                        imageUrls.Add(imageUrl);
-
                         var searchServiceImage = new SearchServiceImage
                         {
                             SearchServiceId = searchService.Id,
@@ -507,6 +511,7 @@ namespace newApi.Services
                             CreatedAt = DateTime.UtcNow
                         };
                         _context.SearchServiceImages.Add(searchServiceImage);
+                        imageUrls.Add(ResolveServiceImageUrl(searchServiceImage));
                     }
                     await _context.SaveChangesAsync();
                 }
@@ -519,7 +524,7 @@ namespace newApi.Services
             }
         }
 
-        private static SearchServiceDetailDto MapToDetailDto(SearchService ss, Dictionary<int, ExpertAvailability>? availabilityByExpert = null)
+        private SearchServiceDetailDto MapToDetailDto(SearchService ss, Dictionary<int, ExpertAvailability>? availabilityByExpert = null)
         {
             if (ss == null) return null;
 
@@ -536,7 +541,10 @@ namespace newApi.Services
                 DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,
                 IsActive = ss.IsActive,
-                ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>(),
+                ImageUrls = ss.Images?
+                    .Select(img => ResolveServiceImageUrl(img))
+                    .Where(url => !string.IsNullOrEmpty(url))
+                    .ToList() ?? new List<string>(),
                 SelectedDeliverableTypes = ss.SelectedDeliverableTypes?
                     .Select(ssdt => new DeliverableTypeDto
                     {
@@ -573,7 +581,10 @@ namespace newApi.Services
                         Email = r.Reviewer.Email,
                         ProfilePictureUrl = null // User no tiene ProfilePictureUrl, está en ExpertProfile
                     } : null,
-                    ImageUrls = r.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>()
+                    ImageUrls = r.ImagesCollection?
+                        .Select(img => ResolveReviewImageUrl(img))
+                        .Where(url => !string.IsNullOrEmpty(url))
+                        .ToList() ?? new List<string>()
                 }).ToList() ?? new List<ReviewDto>();
 
                 // ✅ NUEVO: Obtener la disponibilidad actual activa del experto
@@ -594,7 +605,7 @@ namespace newApi.Services
                 expertProfileDto = new ExpertProfileDto
                 {
                     Id = ss.ExpertProfile.Id,
-                    ProfilePictureUrl = ss.ExpertProfile.ProfilePictureUrl,
+                    ProfilePictureUrl = ResolveProfilePictureUrl(ss.ExpertProfile),
                     Description = ss.ExpertProfile.Description,
                     StripeAccountId = ss.ExpertProfile.StripeAccountId,
                     CreatedAt = ss.ExpertProfile.CreatedAt,
@@ -641,7 +652,7 @@ namespace newApi.Services
             return detailDto;
         }
 
-        private static SearchServiceResponseDto MapToResponseDto(SearchService ss)
+        private SearchServiceResponseDto MapToResponseDto(SearchService ss)
         {
             
             var searchService = new SearchServiceResponseDto
@@ -657,7 +668,10 @@ namespace newApi.Services
                 DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,
                 IsActive = ss.IsActive,
-                ImageUrls = ss.Images?.Select(i => i.ImageUrl).ToList() ?? new List<string>(),
+                ImageUrls = ss.Images?
+                    .Select(img => ResolveServiceImageUrl(img))
+                    .Where(url => !string.IsNullOrEmpty(url))
+                    .ToList() ?? new List<string>(),
                 SelectedDeliverableTypes = ss.SelectedDeliverableTypes?
                     .Select(ssdt => new DeliverableTypeDto
                     {
@@ -694,13 +708,16 @@ namespace newApi.Services
                         Email = r.Reviewer.Email,
                         ProfilePictureUrl = null // User no tiene ProfilePictureUrl, está en ExpertProfile
                     } : null,
-                    ImageUrls = r.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>()
+                    ImageUrls = r.ImagesCollection?
+                        .Select(img => ResolveReviewImageUrl(img))
+                        .Where(url => !string.IsNullOrEmpty(url))
+                        .ToList() ?? new List<string>()
                 }).ToList() ?? new List<ReviewDto>();
 
                 expertProfileDto = new ExpertProfileDto
                 {
                     Id = ss.ExpertProfile.Id,
-                    ProfilePictureUrl = ss.ExpertProfile.ProfilePictureUrl,
+                    ProfilePictureUrl = ResolveProfilePictureUrl(ss.ExpertProfile),
                     Description = ss.ExpertProfile.Description,
                     CreatedAt = ss.ExpertProfile.CreatedAt,
                     User = userDto,
@@ -879,14 +896,16 @@ namespace newApi.Services
                                     bucketName,
                                     objectName,
                                     "image/jpeg",
-                                    outputStream
+                                    outputStream,
+                                    new UploadObjectOptions
+                                    {
+                                        PredefinedAcl = PredefinedObjectAcl.Private
+                                    }
                                 );
                             }
                         }
 
                         var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-                        imageUrls.Add(imageUrl);
-
                         var searchServiceImage = new SearchServiceImage
                         {
                             SearchServiceId = newSearchService.Id,
@@ -895,6 +914,7 @@ namespace newApi.Services
                             CreatedAt = DateTime.UtcNow
                         };
                         _context.SearchServiceImages.Add(searchServiceImage);
+                        imageUrls.Add(ResolveServiceImageUrl(searchServiceImage));
                     }
                     await _context.SaveChangesAsync();
                 }
@@ -936,6 +956,42 @@ namespace newApi.Services
             {
                 return false;
             }
+        }
+
+        private string ResolveProfilePictureUrl(ExpertProfile? expertProfile)
+        {
+            if (expertProfile == null)
+            {
+                return "/default-avatar.png";
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(expertProfile.ProfilePictureUrl)
+                ? "/default-avatar.png"
+                : expertProfile.ProfilePictureUrl;
+
+            return _signedUrlService.GetSignedUrl(expertProfile.ProfilePictureObjectName ?? string.Empty) ?? fallback;
+        }
+
+        private string ResolveServiceImageUrl(SearchServiceImage? image)
+        {
+            if (image == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(image.ImageUrl) ? string.Empty : image.ImageUrl;
+            return _signedUrlService.GetSignedUrl(image.ImageObjectName ?? string.Empty) ?? fallback;
+        }
+
+        private string ResolveReviewImageUrl(ReviewImage? image)
+        {
+            if (image == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(image.ImageUrl) ? string.Empty : image.ImageUrl;
+            return _signedUrlService.GetSignedUrl(image.ImageObjectName ?? string.Empty) ?? fallback;
         }
     }
 }

@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Google.Cloud.Storage.V1;
@@ -27,18 +27,20 @@ namespace newApi.Controllers
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
         private readonly ILoggingService _loggingService;
+        private readonly ISignedUrlService _signedUrlService;
 
         public ReviewController(
             AppDbContext context,
             IConfiguration configuration,
             StorageClient storageClient,
-
-            ILoggingService loggingService)
+            ILoggingService loggingService,
+            ISignedUrlService signedUrlService)
         {
             _context = context;
             _configuration = configuration;
             _storageClient = storageClient;
             _loggingService = loggingService;
+            _signedUrlService = signedUrlService;
         }
 
         [HttpPost("search-hire/{searchHireId}")]
@@ -139,13 +141,16 @@ namespace newApi.Controllers
                                     bucket: bucketName,
                                     objectName: objectName,
                                     contentType: "image/jpeg",
-                                    source: outputStream
+                                    source: outputStream,
+                                    options: new UploadObjectOptions
+                                    {
+                                        PredefinedAcl = PredefinedObjectAcl.Private
+                                    }
                                 );
                             }
                         }
 
                         var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-                        imageUrls.Add(imageUrl);
 
                         var reviewImage = new ReviewImage
                         {
@@ -155,6 +160,7 @@ namespace newApi.Controllers
                             CreatedAt = DateTime.UtcNow
                         };
                         _context.ReviewImages.Add(reviewImage);
+                        imageUrls.Add(ResolveReviewImageUrl(reviewImage));
                     }
                     await _context.SaveChangesAsync();
                 }
@@ -226,10 +232,13 @@ namespace newApi.Controllers
                 }
 
                 // Obtener todas las reseñas para el experto especificado
-                var reviews = await _context.Reviews
+                var reviewEntities = await _context.Reviews
                     .Where(r => r.ExpertId == expertId)
                     .Include(r => r.Reviewer)
                     .Include(r => r.ImagesCollection)
+                    .ToListAsync();
+
+                var reviews = reviewEntities
                     .Select(r => new ReviewResponseDto
                     {
                         Id = r.Id,
@@ -238,10 +247,13 @@ namespace newApi.Controllers
                         SearchHireId = r.SearchHireId,
                         Score = r.Score,
                         Description = r.Description,
-                        ImageUrls = r.ImagesCollection.Select(ri => ri.ImageUrl).ToList(),
+                        ImageUrls = r.ImagesCollection?
+                            .Select(ri => ResolveReviewImageUrl(ri))
+                            .Where(url => !string.IsNullOrEmpty(url))
+                            .ToList() ?? new List<string>(),
                         CreatedAt = r.CreatedAt
                     })
-                    .ToListAsync();
+                    .ToList();
 
                 if (!reviews.Any())
                 {
@@ -254,6 +266,17 @@ namespace newApi.Controllers
             {
                 return StatusCode(500, new { message = "An error occurred while retrieving reviews" });
             }
+        }
+
+        private string ResolveReviewImageUrl(ReviewImage? image)
+        {
+            if (image == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(image.ImageUrl) ? string.Empty : image.ImageUrl;
+            return _signedUrlService.GetSignedUrl(image.ImageObjectName ?? string.Empty) ?? fallback;
         }
     }
 }

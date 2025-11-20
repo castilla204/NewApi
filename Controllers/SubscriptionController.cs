@@ -148,7 +148,7 @@ namespace newApi.Controllers
                 }
             }
 
-            var disabledReason = requirements.DisabledReason ?? account.DisabledReason ?? string.Empty;
+            var disabledReason = requirements.DisabledReason ?? string.Empty;
             var futureCurrentlyDue = futureRequirements.CurrentlyDue ?? new List<string>();
             var futureEventuallyDue = futureRequirements.EventuallyDue ?? new List<string>();
             var futurePastDue = futureRequirements.PastDue ?? new List<string>();
@@ -1441,8 +1441,8 @@ namespace newApi.Controllers
                             StatusDetails = $"{GetStatusMessage(StripeStatus.Deauthorized)} Stripe desconectó tu cuenta el {DateTime.UtcNow:yyyy-MM-dd}."
                         };
 
-                        var strategy = _context.Database.CreateExecutionStrategy();
-                        await strategy.ExecuteAsync(async () =>
+                        var deauthStrategy = _context.Database.CreateExecutionStrategy();
+                        await deauthStrategy.ExecuteAsync(async () =>
                         {
                             await using var transaction = await _context.Database.BeginTransactionAsync();
                             try

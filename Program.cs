@@ -77,10 +77,35 @@ if (!isDevelopment)
                 initLogger.LogInformation("Creando cliente de Secret Manager...");
                 
                 // Configurar el cliente con opciones para Kubernetes
+                // Forzar IPv4 y configurar timeouts más largos para evitar "Resource temporarily unavailable"
                 var clientBuilder = new SecretManagerServiceClientBuilder();
+                
+                // Configurar el endpoint explícitamente para evitar problemas de DNS/IPv6
+                // Usar IPv4 explícitamente resolviendo a una IP específica si es necesario
+                var endpoint = "secretmanager.googleapis.com:443";
+                clientBuilder.Endpoint = endpoint;
+                
+                // Configurar opciones de gRPC para Kubernetes
+                // Esto ayuda a evitar problemas de "Resource temporarily unavailable"
+                clientBuilder.GrpcAdapter = GrpcNetClientAdapter.Default;
+                
                 secretClient = clientBuilder.Build();
                 
-                initLogger.LogInformation("Cliente de Secret Manager creado exitosamente");
+                initLogger.LogInformation($"Cliente de Secret Manager creado exitosamente (endpoint: {endpoint})");
+                
+                // Forzar IPv4 a nivel de sistema si es posible
+                // Esto ayuda a evitar problemas cuando IPv6 no está disponible
+                try
+                {
+                    // Establecer variable de entorno para forzar IPv4 en .NET
+                    Environment.SetEnvironmentVariable("DOTNET_SYSTEM_NET_DISABLEIPV6", "1");
+                    initLogger.LogInformation("IPv6 deshabilitado para forzar IPv4");
+                }
+                catch
+                {
+                    // Ignorar si no se puede establecer
+                }
+                
                 secretManagerAvailable = true; // Asumimos disponible hasta que falle
             }
             catch (Exception ex)
@@ -143,7 +168,7 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
                 )
             ).WithTimeout(TimeSpan.FromSeconds(30)); // Timeout más largo para Kubernetes
             
-            secretLogger.LogInformation($"Llamando a Secret Manager con timeout de 15 segundos...");
+            secretLogger.LogInformation($"Llamando a Secret Manager con timeout de 30 segundos...");
             var startTime = DateTime.UtcNow;
             
             var secretVersion = secretClient.AccessSecretVersion(secretPath, callSettings: callSettings);

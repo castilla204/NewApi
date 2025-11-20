@@ -243,9 +243,10 @@ if (googleClientIds != null && googleClientIds.Length > 0)
     builder.Configuration.AddInMemoryCollection(configDict);
 }
 
-builder.Configuration["Jwt:Key"] = GetSecretValue("jwt-key", null) ?? "";
-builder.Configuration["Jwt:Issuer"] = GetSecretValue("jwt-issuer", null) ?? "";
-builder.Configuration["Jwt:Audience"] = GetSecretValue("jwt-audience", null) ?? "";
+// JWT - Leer de variables de entorno primero (ESO), luego de Secret Manager como fallback
+builder.Configuration["Jwt:Key"] = Environment.GetEnvironmentVariable("JWT_KEY") ?? GetSecretValue("jwt-key", null) ?? "";
+builder.Configuration["Jwt:Issuer"] = Environment.GetEnvironmentVariable("JWT_ISSUER") ?? GetSecretValue("jwt-issuer", null) ?? "";
+builder.Configuration["Jwt:Audience"] = Environment.GetEnvironmentVariable("JWT_AUDIENCE") ?? GetSecretValue("jwt-audience", null) ?? "";
 builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password", null) ?? "";
 builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key", null) ?? "";
 if (isDevelopment)

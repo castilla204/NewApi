@@ -687,31 +687,6 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Expert)
-                    .ThenInclude(e => e.ExpertProfile)
-                    .Include(sh => sh.Client)
-                    .FirstOrDefaultAsync();
-
-                if (searchHire == null)
-                {
-                    return NotFound(new { message = "Service not found" });
-                }
-
-                if (searchHire.ClientId != userId)
-                {
-                    return Unauthorized(new { message = "Unauthorized to complete this service" });
-                }
-
-                if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue() && 
-                    searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
-                {
-                    return BadRequest(new { message = "Service cannot be approved in current state" });
-                }
-
                 if (request.ClientApproved == null)
                 {
                     return BadRequest(new { error = "ClientApproved is required" });
@@ -721,8 +696,38 @@ namespace newApi.Controllers
                 var strategy = _context.Database.CreateExecutionStrategy();
                 return await strategy.ExecuteAsync(async () =>
                 {
+                    SearchHire? searchHire = null;
+                    await using var transaction = await _context.Database.BeginTransactionAsync();
                     try
                     {
+                        // 🔒 ROW-LEVEL LOCKING dentro de la transacción para que el candado se mantenga hasta el commit/rollback
+                        searchHire = await _context.SearchHires
+                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.Expert)
+                                .ThenInclude(e => e.ExpertProfile)
+                            .Include(sh => sh.Client)
+                            .FirstOrDefaultAsync();
+
+                        if (searchHire == null)
+                        {
+                            await transaction.RollbackAsync();
+                            return NotFound(new { message = "Service not found" });
+                        }
+
+                        if (searchHire.ClientId != userId)
+                        {
+                            await transaction.RollbackAsync();
+                            return Unauthorized(new { message = "Unauthorized to complete this service" });
+                        }
+
+                        if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue() &&
+                            searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                        {
+                            await transaction.RollbackAsync();
+                            return BadRequest(new { message = "Service cannot be approved in current state" });
+                        }
+
                         searchHire.ClientApproved = request.ClientApproved.Value;
 
                         if (!searchHire.ClientApproved.Value)

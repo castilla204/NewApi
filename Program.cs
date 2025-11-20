@@ -46,17 +46,28 @@ SecretManagerServiceClient? secretClient = null;
 bool secretManagerAvailable = false;
 if (!isDevelopment)
 {
-    try
+    // Verificar si el archivo de credenciales existe
+    var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
+    if (!string.IsNullOrEmpty(credentialsPath) && File.Exists(credentialsPath))
     {
-        secretClient = SecretManagerServiceClient.Create();
-        secretManagerAvailable = true; // Asumimos disponible hasta que falle
+        try
+        {
+            secretClient = SecretManagerServiceClient.Create();
+            secretManagerAvailable = true; // Asumimos disponible hasta que falle
+        }
+        catch (Exception ex)
+        {
+            secretManagerAvailable = false;
+            builder.Logging.AddConsole();
+            var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+            tempLogger.LogWarning($"No se pudo inicializar Secret Manager: {ex.Message}. Usando solo variables de entorno.");
+        }
     }
-    catch (Exception ex)
+    else
     {
-        secretManagerAvailable = false;
         builder.Logging.AddConsole();
         var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-        tempLogger.LogWarning($"No se pudo inicializar Secret Manager: {ex.Message}. Usando solo variables de entorno.");
+        tempLogger.LogWarning($"GOOGLE_APPLICATION_CREDENTIALS no está configurado o el archivo no existe. Usando solo variables de entorno.");
     }
 }
 
@@ -188,30 +199,9 @@ string connectionString;
 
 if (isDevelopment)
 {
-<<<<<<< HEAD
     // En desarrollo: usar configuración local del túnel (variables de entorno o user secrets)
     // NO usar Google Cloud Secret Manager en desarrollo
-    // Configurar con:
-    // dotnet user-secrets set "ConnectionStrings:PostgresConnection" "Host=localhost;Port=5432;Username=postgres;Password=...;Database=newapi"
-    // O variables de entorno: DB_HOST, DB_PORT, DB_USERNAME, DB_PASSWORD, DB_NAME
-=======
-    // En desarrollo: usar valores de desarrollo o desde Secret Manager
     // Usar localhost:5433 para conectarse a través del túnel SSH
-<<<<<<< HEAD
-    var dbHost = GetSecretValue("postgres-host") ?? "localhost";
-    var dbPort = GetSecretValue("postgres-port") ?? "5433"; // Puerto del túnel SSH
-    var dbUsername = GetSecretValue("postgres-username") ?? "postgres";
-    var dbPassword = GetSecretValue("postgres-password") ?? "postgres";
-    var dbName = GetSecretValue("postgres-database") ?? "newapi";
->>>>>>> 72ad49839a4b58f9691d233fa2c79e3ea58386a8
-=======
-    var dbHost = GetSecretValue("postgres-host", "localhost") ?? "localhost";
-    var dbPort = GetSecretValue("postgres-port", "5433") ?? "5433"; // Puerto del túnel SSH
-    var dbUsername = GetSecretValue("postgres-username", "postgres") ?? "postgres";
-    var dbPassword = GetSecretValue("postgres-password", "postgres") ?? "postgres";
-    var dbName = GetSecretValue("postgres-database", "newapi") ?? "newapi";
->>>>>>> 5c563144debc7e282c1dc0d12c6bd2f2962e3cf0
-    
     var existingConnectionString = builder.Configuration.GetConnectionString("PostgresConnection");
     
     if (!string.IsNullOrEmpty(existingConnectionString))
@@ -223,7 +213,7 @@ if (isDevelopment)
     {
         // Construir desde variables de entorno individuales (para túnel local)
         var dbHost = Environment.GetEnvironmentVariable("DB_HOST") ?? "localhost";
-        var dbPort = Environment.GetEnvironmentVariable("DB_PORT") ?? "5432";
+        var dbPort = Environment.GetEnvironmentVariable("DB_PORT") ?? "5433"; // Puerto del túnel SSH
         var dbUsername = Environment.GetEnvironmentVariable("DB_USERNAME") ?? "postgres";
         var dbPassword = Environment.GetEnvironmentVariable("DB_PASSWORD") ?? "postgres";
         var dbName = Environment.GetEnvironmentVariable("DB_NAME") ?? "newapi";

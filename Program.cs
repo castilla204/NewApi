@@ -49,7 +49,7 @@ if (!isDevelopment)
 {
     // Verificar si el archivo de credenciales existe
     var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
-    if (!string.IsNullOrEmpty(credentialsPath) && File.Exists(credentialsPath))
+    if (!string.IsNullOrEmpty(credentialsPath) && System.IO.File.Exists(credentialsPath))
     {
         try
         {

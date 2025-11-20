@@ -52,8 +52,8 @@ if (!isDevelopment)
     catch (Exception ex)
     {
         builder.Logging.AddConsole();
-        var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-        logger.LogWarning($"No se pudo inicializar Secret Manager: {ex.Message}. Usando variables de entorno.");
+        var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+        tempLogger.LogWarning($"No se pudo inicializar Secret Manager: {ex.Message}. Usando variables de entorno.");
     }
 }
 
@@ -86,8 +86,8 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
         catch (Exception ex)
         {
             builder.Logging.AddConsole();
-            var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-            logger.LogError($"Error al obtener secreto {secretName} de Secret Manager: {ex.Message}");
+            var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+            tempLogger.LogError($"Error al obtener secreto {secretName} de Secret Manager: {ex.Message}");
             return defaultValue; // Retornar valor por defecto en caso de error
         }
     }

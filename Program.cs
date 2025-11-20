@@ -44,6 +44,15 @@ var secretClient = SecretManagerServiceClient.Create();
 // Funci�n para obtener secretos
 string GetSecretValue(string secretName)
 {
+    // Primero intentar leer de variables de entorno (para override en Kubernetes)
+    var envVarName = secretName.Replace("-", "_").ToUpper();
+    var envValue = Environment.GetEnvironmentVariable(envVarName);
+    if (!string.IsNullOrEmpty(envValue))
+    {
+        return envValue;
+    }
+    
+    // Si no existe en variables de entorno, usar Secret Manager
     var projectId = "grup-441318";
     var secretVersion = secretClient.AccessSecretVersion($"projects/{projectId}/secrets/{secretName}/versions/latest");
     return secretVersion.Payload.Data.ToStringUtf8();
@@ -134,11 +143,21 @@ string connectionString;
 
 if (isDevelopment)
 {
+<<<<<<< HEAD
     // En desarrollo: usar configuración local del túnel (variables de entorno o user secrets)
     // NO usar Google Cloud Secret Manager en desarrollo
     // Configurar con:
     // dotnet user-secrets set "ConnectionStrings:PostgresConnection" "Host=localhost;Port=5432;Username=postgres;Password=...;Database=newapi"
     // O variables de entorno: DB_HOST, DB_PORT, DB_USERNAME, DB_PASSWORD, DB_NAME
+=======
+    // En desarrollo: usar valores de desarrollo o desde Secret Manager
+    // Usar localhost:5433 para conectarse a través del túnel SSH
+    var dbHost = GetSecretValue("postgres-host") ?? "localhost";
+    var dbPort = GetSecretValue("postgres-port") ?? "5433"; // Puerto del túnel SSH
+    var dbUsername = GetSecretValue("postgres-username") ?? "postgres";
+    var dbPassword = GetSecretValue("postgres-password") ?? "postgres";
+    var dbName = GetSecretValue("postgres-database") ?? "newapi";
+>>>>>>> 72ad49839a4b58f9691d233fa2c79e3ea58386a8
     
     var existingConnectionString = builder.Configuration.GetConnectionString("PostgresConnection");
     

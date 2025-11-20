@@ -1,4 +1,5 @@
 using Google.Cloud.SecretManager.V1;
+using Google.Api.Gax.Grpc;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -53,6 +54,8 @@ if (!isDevelopment)
     {
         try
         {
+            // Crear el cliente de Secret Manager
+            // El cliente se crea de forma lazy, no intenta conectarse hasta la primera llamada
             secretClient = SecretManagerServiceClient.Create();
             secretManagerAvailable = true; // Asumimos disponible hasta que falle
         }
@@ -96,7 +99,20 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
         try
         {
             var projectId = "grup-441318";
-            var secretVersion = secretClient.AccessSecretVersion($"projects/{projectId}/secrets/{secretName}/versions/latest");
+            // Configurar call settings con timeout y reintentos para manejar problemas de conectividad
+            var callSettings = CallSettings.FromRetry(
+                RetrySettings.FromExponentialBackoff(
+                    maxAttempts: 3,
+                    initialBackoff: TimeSpan.FromSeconds(2),
+                    maxBackoff: TimeSpan.FromSeconds(10),
+                    backoffMultiplier: 2.0,
+                    retryFilter: RetrySettings.FilterForStatusCodes(StatusCode.Unavailable, StatusCode.DeadlineExceeded)
+                )
+            ).WithTimeout(TimeSpan.FromSeconds(15)); // Timeout más largo para Kubernetes
+            
+            var secretVersion = secretClient.AccessSecretVersion(
+                $"projects/{projectId}/secrets/{secretName}/versions/latest",
+                callSettings: callSettings);
             return secretVersion.Payload.Data.ToStringUtf8();
         }
         catch (Exception ex)

@@ -50,29 +50,54 @@ if (!isDevelopment)
 {
     // Verificar si el archivo de credenciales existe
     var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
-    if (!string.IsNullOrEmpty(credentialsPath) && System.IO.File.Exists(credentialsPath))
+    builder.Logging.AddConsole();
+    var initLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    
+    initLogger.LogInformation($"=== INICIALIZANDO SECRET MANAGER ===");
+    initLogger.LogInformation($"GOOGLE_APPLICATION_CREDENTIALS: {credentialsPath ?? "NO CONFIGURADO"}");
+    
+    if (!string.IsNullOrEmpty(credentialsPath))
     {
-        try
+        var fileExists = System.IO.File.Exists(credentialsPath);
+        initLogger.LogInformation($"Archivo de credenciales existe: {fileExists}");
+        
+        if (fileExists)
         {
-            // Crear el cliente de Secret Manager
-            // El cliente se crea de forma lazy, no intenta conectarse hasta la primera llamada
-            secretClient = SecretManagerServiceClient.Create();
-            secretManagerAvailable = true; // Asumimos disponible hasta que falle
+            try
+            {
+                // Leer información básica del archivo de credenciales
+                var credContent = System.IO.File.ReadAllText(credentialsPath);
+                if (credContent.Contains("project_id"))
+                {
+                    initLogger.LogInformation("Archivo de credenciales parece válido (contiene project_id)");
+                }
+                
+                // Crear el cliente de Secret Manager
+                initLogger.LogInformation("Creando cliente de Secret Manager...");
+                secretClient = SecretManagerServiceClient.Create();
+                initLogger.LogInformation("Cliente de Secret Manager creado exitosamente");
+                secretManagerAvailable = true; // Asumimos disponible hasta que falle
+            }
+            catch (Exception ex)
+            {
+                secretManagerAvailable = false;
+                initLogger.LogError($"ERROR al crear cliente de Secret Manager: {ex.GetType().Name} - {ex.Message}");
+                initLogger.LogError($"Stack trace: {ex.StackTrace}");
+                initLogger.LogWarning("Usando solo variables de entorno como fallback.");
+            }
         }
-        catch (Exception ex)
+        else
         {
-            secretManagerAvailable = false;
-            builder.Logging.AddConsole();
-            var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-            tempLogger.LogWarning($"No se pudo inicializar Secret Manager: {ex.Message}. Usando solo variables de entorno.");
+            initLogger.LogWarning($"El archivo de credenciales no existe en la ruta: {credentialsPath}");
+            initLogger.LogWarning("Usando solo variables de entorno como fallback.");
         }
     }
     else
     {
-        builder.Logging.AddConsole();
-        var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-        tempLogger.LogWarning($"GOOGLE_APPLICATION_CREDENTIALS no está configurado o el archivo no existe. Usando solo variables de entorno.");
+        initLogger.LogWarning("GOOGLE_APPLICATION_CREDENTIALS no está configurado. Usando solo variables de entorno.");
     }
+    
+    initLogger.LogInformation($"Secret Manager disponible: {secretManagerAvailable}");
 }
 
 // Función para obtener secretos
@@ -99,6 +124,12 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
         try
         {
             var projectId = "grup-441318";
+            var secretPath = $"projects/{projectId}/secrets/{secretName}/versions/latest";
+            
+            builder.Logging.AddConsole();
+            var secretLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+            secretLogger.LogInformation($"Intentando obtener secreto: {secretName} desde {secretPath}");
+            
             // Configurar call settings con timeout y reintentos para manejar problemas de conectividad
             var callSettings = CallSettings.FromRetry(
                 RetrySettings.FromExponentialBackoff(
@@ -110,21 +141,48 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
                 )
             ).WithTimeout(TimeSpan.FromSeconds(15)); // Timeout más largo para Kubernetes
             
-            var secretVersion = secretClient.AccessSecretVersion(
-                $"projects/{projectId}/secrets/{secretName}/versions/latest",
-                callSettings: callSettings);
+            secretLogger.LogInformation($"Llamando a Secret Manager con timeout de 15 segundos...");
+            var startTime = DateTime.UtcNow;
+            
+            var secretVersion = secretClient.AccessSecretVersion(secretPath, callSettings: callSettings);
+            
+            var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+            secretLogger.LogInformation($"Secreto {secretName} obtenido exitosamente en {duration}ms");
+            
             return secretVersion.Payload.Data.ToStringUtf8();
         }
-        catch (Exception ex)
+        catch (Grpc.Core.RpcException rpcEx)
         {
             // Si falla una vez, marcar como no disponible para evitar más intentos
-            // Solo loguear el primer error para no saturar los logs
             if (secretManagerAvailable)
             {
                 secretManagerAvailable = false;
                 builder.Logging.AddConsole();
                 var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-                tempLogger.LogWarning($"Secret Manager no está disponible (error: {ex.Message}). Usando solo variables de entorno para todos los secretos.");
+                tempLogger.LogError($"ERROR gRPC al obtener secreto {secretName}:");
+                tempLogger.LogError($"  Status Code: {rpcEx.StatusCode}");
+                tempLogger.LogError($"  Status Detail: {rpcEx.Status.Detail}");
+                tempLogger.LogError($"  Debug Exception: {rpcEx.Status.DebugException?.Message ?? "N/A"}");
+                if (rpcEx.Status.DebugException is System.Net.Sockets.SocketException socketEx)
+                {
+                    tempLogger.LogError($"  Socket Error Code: {socketEx.SocketErrorCode}");
+                    tempLogger.LogError($"  Native Error Code: {socketEx.NativeErrorCode}");
+                }
+                tempLogger.LogWarning("Secret Manager no está disponible. Usando solo variables de entorno para todos los secretos.");
+            }
+            return defaultValue; // Retornar valor por defecto en caso de error
+        }
+        catch (Exception ex)
+        {
+            // Si falla una vez, marcar como no disponible para evitar más intentos
+            if (secretManagerAvailable)
+            {
+                secretManagerAvailable = false;
+                builder.Logging.AddConsole();
+                var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+                tempLogger.LogError($"ERROR inesperado al obtener secreto {secretName}: {ex.GetType().Name} - {ex.Message}");
+                tempLogger.LogError($"Stack trace: {ex.StackTrace}");
+                tempLogger.LogWarning("Secret Manager no está disponible. Usando solo variables de entorno para todos los secretos.");
             }
             return defaultValue; // Retornar valor por defecto en caso de error
         }
@@ -240,12 +298,13 @@ if (isDevelopment)
 }
 else
 {
-    // En producción: OBLIGATORIO desde Secret Manager (sin fallbacks de producción)
-    var dbHost = GetSecretValue("postgres-host") ?? throw new InvalidOperationException("postgres-host secret is required in production");
-    var dbPort = GetSecretValue("postgres-port") ?? throw new InvalidOperationException("postgres-port secret is required in production");
-    var dbUsername = GetSecretValue("postgres-username") ?? throw new InvalidOperationException("postgres-username secret is required in production");
-    var dbPassword = GetSecretValue("postgres-password") ?? throw new InvalidOperationException("postgres-password secret is required in production");
-    var dbName = GetSecretValue("postgres-database") ?? throw new InvalidOperationException("postgres-database secret is required in production");
+    // En producción: Intentar desde Secret Manager, pero usar variables de entorno como fallback
+    // Esto permite que la app funcione aunque Secret Manager no esté disponible
+    var dbHost = GetSecretValue("postgres-host") ?? Environment.GetEnvironmentVariable("POSTGRES_HOST") ?? "postgres-svc";
+    var dbPort = GetSecretValue("postgres-port") ?? Environment.GetEnvironmentVariable("POSTGRES_PORT") ?? "5432";
+    var dbUsername = GetSecretValue("postgres-username") ?? Environment.GetEnvironmentVariable("POSTGRES_USERNAME") ?? throw new InvalidOperationException("postgres-username is required. Configure via Secret Manager or POSTGRES_USERNAME env var");
+    var dbPassword = GetSecretValue("postgres-password") ?? Environment.GetEnvironmentVariable("POSTGRES_PASSWORD") ?? throw new InvalidOperationException("postgres-password is required. Configure via Secret Manager or POSTGRES_PASSWORD env var");
+    var dbName = GetSecretValue("postgres-database") ?? Environment.GetEnvironmentVariable("POSTGRES_DATABASE") ?? "newapi";
     
     connectionString = $"Host={dbHost};Port={dbPort};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
 }

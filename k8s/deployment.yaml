@@ -55,6 +55,10 @@ spec:
           value: "/etc/credentials/cloudcredential.json"
         - name: ASPNETCORE_ENVIRONMENT
           value: "Production"
+        - name: POSTGRES_HOST
+          value: "postgres-svc"
+        - name: POSTGRES_PORT
+          value: "5432"
         resources:
           requests:
             memory: "256Mi"
@@ -72,7 +76,7 @@ spec:
           failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /health/ready
+            path: /health
             port: 7124
           initialDelaySeconds: 30
           periodSeconds: 5

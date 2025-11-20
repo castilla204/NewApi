@@ -592,37 +592,33 @@ builder.Services.AddCors(options =>
 });
 
 
-// Configure Hangfire con configuración optimizada para K3s - con manejo de errores
-try
-{
-    builder.Services.AddHangfire(config => config
-        .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
-        .UseSimpleAssemblyNameTypeSerializer()
-        .UseRecommendedSerializerSettings()
-        .UsePostgreSqlStorage(builder.Configuration.GetConnectionString("PostgresConnection"), new PostgreSqlStorageOptions
-        {
-            QueuePollInterval = TimeSpan.FromSeconds(15),
-            InvisibilityTimeout = TimeSpan.FromMinutes(30),
-            DistributedLockTimeout = TimeSpan.FromMinutes(10),
-            PrepareSchemaIfNecessary = true
-        })
-        .UseDefaultTypeResolver()
-        .UseDefaultTypeSerializer());
-
-    // Configurar Hangfire Server con menos workers para K3s
-    builder.Services.AddHangfireServer(options =>
+// ⚠️  HANGFIRE TEMPORALMENTE DESHABILITADO
+// Causa problemas de agotamiento de recursos de socket en K3s
+// TODO: Habilitar cuando se optimice la configuración de PostgreSQL o se use Redis como backend
+/*
+builder.Services.AddHangfire(config => config
+    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    .UsePostgreSqlStorage(builder.Configuration.GetConnectionString("PostgresConnection"), new PostgreSqlStorageOptions
     {
-        options.WorkerCount = 2; // Reducir workers para evitar sobrecarga de conexiones
-        options.ServerTimeout = TimeSpan.FromMinutes(5);
-        options.HeartbeatInterval = TimeSpan.FromSeconds(30);
-        options.ServerCheckInterval = TimeSpan.FromMinutes(1);
-        options.SchedulePollingInterval = TimeSpan.FromSeconds(30);
-    });
-}
-catch (Exception ex)
+        QueuePollInterval = TimeSpan.FromSeconds(15),
+        InvisibilityTimeout = TimeSpan.FromMinutes(30),
+        DistributedLockTimeout = TimeSpan.FromMinutes(10),
+        PrepareSchemaIfNecessary = true
+    })
+    .UseDefaultTypeResolver()
+    .UseDefaultTypeSerializer());
+
+builder.Services.AddHangfireServer(options =>
 {
-    Console.WriteLine($"⚠️  Hangfire no se pudo configurar: {ex.Message}. La aplicación continuará sin Hangfire.");
-}
+    options.WorkerCount = 2;
+    options.ServerTimeout = TimeSpan.FromMinutes(5);
+    options.HeartbeatInterval = TimeSpan.FromSeconds(30);
+    options.ServerCheckInterval = TimeSpan.FromMinutes(1);
+    options.SchedulePollingInterval = TimeSpan.FromSeconds(30);
+});
+*/
 
 // Register Services
 builder.Services.AddScoped<IRabbitMQService, RabbitMQService>();
@@ -729,37 +725,25 @@ catch (Exception ex)
 }
 
 
-// Schedule recurring job with Hangfire - con try-catch para evitar crashes
-try
-{
-    app.UseHangfireDashboard("/hangfire");
-}
-catch (Exception ex)
-{
-    app.Logger.LogError($"Error inicializando Hangfire Dashboard: {ex.Message}. La aplicación continuará sin Hangfire.");
-}
+// Hangfire Dashboard - Comentado porque Hangfire está deshabilitado
+// app.UseHangfireDashboard("/hangfire");
 
-// ✅ SEGURIDAD 2025: Configurar limpieza automática de refresh tokens
-// Se ejecuta todos los días a las 3:00 AM - solo si Hangfire está disponible
-try
-{
-    RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
-        "cleanup-expired-refresh-tokens",
-        service => service.CleanupExpiredTokensAsync(),
-        Cron.Daily(3), // 3:00 AM todos los días
-        new RecurringJobOptions
-        {
-            TimeZone = TimeZoneInfo.Utc
-        }
-    );
-    GlobalConfiguration.Configuration
-        .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()))
-        .UseFilter(new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>()));
-}
-catch (Exception ex)
-{
-    app.Logger.LogWarning($"No se pudieron configurar trabajos recurrentes de Hangfire: {ex.Message}");
-} // ✅ Filtro para alertar a soporte cuando jobs fallan definitivamente
+// ✅ SEGURIDAD 2025: Limpieza automática de refresh tokens - Comentado porque Hangfire está deshabilitado
+// TODO: Implementar con un servicio background alternativo o habilitar Hangfire con Redis
+/*
+RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
+    "cleanup-expired-refresh-tokens",
+    service => service.CleanupExpiredTokensAsync(),
+    Cron.Daily(3),
+    new RecurringJobOptions
+    {
+        TimeZone = TimeZoneInfo.Utc
+    }
+);
+GlobalConfiguration.Configuration
+    .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()))
+    .UseFilter(new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>()));
+*/ // ✅ Filtro para alertar a soporte cuando jobs fallan definitivamente
 
 // ✅ OPTIMIZADO: Usar solo scheduled jobs para eventos específicos
 // Los recurring jobs fueron eliminados porque:

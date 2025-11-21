@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -27,15 +27,16 @@ namespace newApi.Controllers
         private readonly ISubscriptionService _subscriptionService;
         private readonly IStripeValidationService _stripeValidationService;
         private readonly ILoggingService _loggingService;
+        private readonly ISignedUrlService _signedUrlService;
 
         public SearchController(
             AppDbContext context,
-
             IAuthorizationServices authService,
             IUserService userService,
             ISubscriptionService subscriptionService,
             IStripeValidationService stripeValidationService,
-            ILoggingService loggingService)
+            ILoggingService loggingService,
+            ISignedUrlService signedUrlService)
         {
             _context = context;
             _authService = authService;
@@ -43,6 +44,7 @@ namespace newApi.Controllers
             _subscriptionService = subscriptionService;
             _stripeValidationService = stripeValidationService;
             _loggingService = loggingService;
+            _signedUrlService = signedUrlService;
         }
 
         /// <summary>
@@ -203,11 +205,11 @@ namespace newApi.Controllers
                         Status = s.SearchHire.Status.StatusValue,
                         StatusTranslated = s.SearchHire.Status.StatusValue.ToSpanishTranslation(),
                         CreatedAt = s.SearchHire.CreatedAt,
-                        Expert = s.SearchHire.Expert != null ? new UserDto
-                        {
-                            Name = s.SearchHire.Expert.Name,
-                            ProfilePictureUrl = s.SearchHire.Expert.ExpertProfile?.ProfilePictureUrl ?? "/default-avatar.png"
-                        } : null,
+                          Expert = s.SearchHire.Expert != null ? new UserDto
+                          {
+                              Name = s.SearchHire.Expert.Name,
+                              ProfilePictureUrl = ResolveProfilePictureUrl(s.SearchHire.Expert.ExpertProfile)
+                          } : null,
                         // ✅ NUEVO: Información completa del estado con colores
                         StatusInfo = s.SearchHire.Status != null ? new SystemStatusDto
                         {
@@ -625,11 +627,11 @@ namespace newApi.Controllers
                             Status = s.SearchHire.Status.StatusValue,
                             StatusTranslated = s.SearchHire.Status.StatusValue.ToSpanishTranslation(),
                             CreatedAt = s.SearchHire.CreatedAt,
-                            Expert = s.SearchHire.Expert != null ? new UserDto
-                            {
-                                Name = s.SearchHire.Expert.Name,
-                                ProfilePictureUrl = s.SearchHire.Expert.ExpertProfile?.ProfilePictureUrl ?? "/default-avatar.png"
-                            } : null,
+                              Expert = s.SearchHire.Expert != null ? new UserDto
+                              {
+                                  Name = s.SearchHire.Expert.Name,
+                                  ProfilePictureUrl = ResolveProfilePictureUrl(s.SearchHire.Expert.ExpertProfile)
+                              } : null,
                             // ✅ NUEVO: Información completa del estado con colores
                             StatusInfo = s.SearchHire.Status != null ? new SystemStatusDto
                             {
@@ -894,11 +896,11 @@ namespace newApi.Controllers
                         Status = search.SearchHire.Status.StatusValue,
                         StatusTranslated = search.SearchHire.Status.StatusValue.ToSpanishTranslation(),
                         CreatedAt = search.SearchHire.CreatedAt,
-                        Expert = search.SearchHire.Expert != null ? new UserDto
-                        {
-                            Name = search.SearchHire.Expert.Name,
-                            ProfilePictureUrl = search.SearchHire.Expert.ExpertProfile?.ProfilePictureUrl ?? "/default-avatar.png"
-                        } : null,
+                          Expert = search.SearchHire.Expert != null ? new UserDto
+                          {
+                              Name = search.SearchHire.Expert.Name,
+                              ProfilePictureUrl = ResolveProfilePictureUrl(search.SearchHire.Expert.ExpertProfile)
+                          } : null,
                         Service = search.SearchHire.SearchService != null ? new ServiceInfo
                         {
                             Id = search.SearchHire.SearchService.Id,
@@ -1106,20 +1108,20 @@ namespace newApi.Controllers
                         };
                     }
 
-                    expertProfileDto = new ExpertProfileDto
-                    {
-                        Id = expertProfile.Id,
-                        ProfilePictureUrl = expertProfile.ProfilePictureUrl ?? string.Empty,
-                        Description = expertProfile.Description ?? string.Empty,
-                        StripeAccountId = expertProfile.StripeAccountId,
-                        CreatedAt = expertProfile.CreatedAt,
-                        User = search.SearchHire.Expert != null ? new UserDto
-                        {
-                            Id = search.SearchHire.Expert.Id,
-                            Name = search.SearchHire.Expert.Name,
-                            Email = search.SearchHire.Expert.Email,
-                            ProfilePictureUrl = null
-                        } : null,
+                      expertProfileDto = new ExpertProfileDto
+                      {
+                          Id = expertProfile.Id,
+                          ProfilePictureUrl = ResolveProfilePictureUrl(expertProfile),
+                          Description = expertProfile.Description ?? string.Empty,
+                          StripeAccountId = expertProfile.StripeAccountId,
+                          CreatedAt = expertProfile.CreatedAt,
+                          User = search.SearchHire.Expert != null ? new UserDto
+                          {
+                              Id = search.SearchHire.Expert.Id,
+                              Name = search.SearchHire.Expert.Name,
+                              Email = search.SearchHire.Expert.Email,
+                              ProfilePictureUrl = null
+                          } : null,
                         Reviews = new List<ReviewDto>(), // Las reviews se cargan por separado si es necesario
                         Latitude = expertProfile.Latitude ?? string.Empty,
                         Longitude = expertProfile.Longitude ?? string.Empty,
@@ -1164,7 +1166,7 @@ namespace newApi.Controllers
                                 Id = search.SearchHire.Expert.Id,
                                 Name = search.SearchHire.Expert.Name,
                                 Email = search.SearchHire.Expert.Email,
-                                ProfilePictureUrl = search.SearchHire.SearchService?.ExpertProfile?.ProfilePictureUrl
+                                  ProfilePictureUrl = ResolveProfilePictureUrl(search.SearchHire.SearchService?.ExpertProfile)
                             } : null,
                             Service = search.SearchHire.SearchService != null ? new ServiceInfo
                             {
@@ -1269,7 +1271,7 @@ namespace newApi.Controllers
                     {
                         Id = d.Id,
                         Type = d.Type,
-                        Url = d.Url,
+                        Url = ResolveDeliverableUrl(d),
                         CreatedAt = d.CreatedAt
                     }).ToList() ?? new List<DeliverableDto>(),
                     RequiredDeliverableTypes = search.SearchHire?.SearchService?.SelectedDeliverableTypes?
@@ -1310,7 +1312,30 @@ namespace newApi.Controllers
             }
         }
 
+        private string ResolveProfilePictureUrl(ExpertProfile? expertProfile)
+        {
+            if (expertProfile == null)
+            {
+                return "/default-avatar.png";
+            }
 
+            var fallback = string.IsNullOrWhiteSpace(expertProfile.ProfilePictureUrl)
+                ? "/default-avatar.png"
+                : expertProfile.ProfilePictureUrl;
+
+            return _signedUrlService.GetSignedUrl(expertProfile.ProfilePictureObjectName ?? string.Empty) ?? fallback;
+        }
+
+        private string ResolveDeliverableUrl(SearchHireDeliverable? deliverable)
+        {
+            if (deliverable == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(deliverable.Url) ? string.Empty : deliverable.Url;
+            return _signedUrlService.GetSignedUrl(deliverable.ObjectName ?? string.Empty) ?? fallback;
+        }
     }
 
     public class CreateSearchWithHireDto

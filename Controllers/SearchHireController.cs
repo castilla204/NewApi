@@ -28,17 +28,18 @@ namespace newApi.Controllers
         private readonly ILoggingService _loggingService;
         private readonly IInvoiceService _invoiceService;
         private readonly IAppointmentService _appointmentService;
+        private readonly ISignedUrlService _signedUrlService;
 
         public SearchHireController(
             SearchHireService searchHireService,
             AppDbContext context,
-
             IConfiguration configuration,
             IAuthorizationServices authService,
             StripeRefundService refundService,
             ILoggingService loggingService,
             IInvoiceService invoiceService,
-            IAppointmentService appointmentService)
+            IAppointmentService appointmentService,
+            ISignedUrlService signedUrlService)
         {
             _searchHireService = searchHireService;
             _context = context;
@@ -48,6 +49,7 @@ namespace newApi.Controllers
             _loggingService = loggingService;
             _invoiceService = invoiceService;
             _appointmentService = appointmentService;
+            _signedUrlService = signedUrlService;
             StripeConfiguration.ApiKey = configuration["Stripe:SecretKey"];
         }
 
@@ -422,7 +424,10 @@ namespace newApi.Controllers
                             Email = reviewEntity.Reviewer!.Email,
                             ProfilePictureUrl = null
                         } : null,
-                        ImageUrls = reviewEntity.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>()
+                        ImageUrls = reviewEntity.ImagesCollection?
+                            .Select(img => ResolveReviewImageUrl(img))
+                            .Where(url => !string.IsNullOrEmpty(url))
+                            .ToList() ?? new List<string>()
                     };
                 }
 
@@ -453,7 +458,7 @@ namespace newApi.Controllers
                     expertProfileDto = new ExpertProfileDto
                     {
                         Id = expertProfile.Id,
-                        ProfilePictureUrl = expertProfile.ProfilePictureUrl ?? string.Empty,
+                        ProfilePictureUrl = ResolveProfilePictureUrl(expertProfile),
                         Description = expertProfile.Description ?? string.Empty,
                         StripeAccountId = expertProfile.StripeAccountId,
                         CreatedAt = expertProfile.CreatedAt,
@@ -567,7 +572,7 @@ namespace newApi.Controllers
                     {
                         Id = d.Id,
                         Type = d.Type,
-                        Url = d.Url,
+                        Url = ResolveDeliverableUrl(d),
                         CreatedAt = d.CreatedAt
                     }).ToList() ?? new List<DeliverableDto>(),
                     RequiredDeliverableTypes = searchHire.SearchService?.SelectedDeliverableTypes?
@@ -966,6 +971,42 @@ namespace newApi.Controllers
             }
 
             await _context.SaveChangesAsync();
+        }
+
+        private string ResolveProfilePictureUrl(ExpertProfile? expertProfile)
+        {
+            if (expertProfile == null)
+            {
+                return "/default-avatar.png";
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(expertProfile.ProfilePictureUrl)
+                ? "/default-avatar.png"
+                : expertProfile.ProfilePictureUrl;
+
+            return _signedUrlService.GetSignedUrl(expertProfile.ProfilePictureObjectName ?? string.Empty) ?? fallback;
+        }
+
+        private string ResolveReviewImageUrl(ReviewImage? image)
+        {
+            if (image == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(image.ImageUrl) ? string.Empty : image.ImageUrl;
+            return _signedUrlService.GetSignedUrl(image.ImageObjectName ?? string.Empty) ?? fallback;
+        }
+
+        private string ResolveDeliverableUrl(SearchHireDeliverable? deliverable)
+        {
+            if (deliverable == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(deliverable.Url) ? string.Empty : deliverable.Url;
+            return _signedUrlService.GetSignedUrl(deliverable.ObjectName ?? string.Empty) ?? fallback;
         }
     }
 

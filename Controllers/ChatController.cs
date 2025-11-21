@@ -33,13 +33,21 @@ namespace newApi.Controllers
         private readonly IConfiguration _configuration;
         private readonly IAuthorizationServices _authService;
         private readonly ILoggingService _loggingService;
+        private readonly ISignedUrlService _signedUrlService;
         private static readonly HashSet<string> AllowedImageExtensions = new(StringComparer.OrdinalIgnoreCase) { ".jpg", ".jpeg", ".png" };
         private static readonly HashSet<string> AllowedVideoExtensions = new(StringComparer.OrdinalIgnoreCase) { ".mp4" };
         private static readonly HashSet<string> AllowedImageContentTypes = new(StringComparer.OrdinalIgnoreCase) { "image/jpeg", "image/png" };
         private static readonly HashSet<string> AllowedVideoContentTypes = new(StringComparer.OrdinalIgnoreCase) { "video/mp4" };
         private const long MaxAttachmentSizeBytes = 10 * 1024 * 1024;
 
-        public ChatController(AppDbContext context, IHubContext<ChatHub> hubContext, StorageClient storageClient, IConfiguration configuration, IAuthorizationServices authService, ILoggingService loggingService)
+        public ChatController(
+            AppDbContext context,
+            IHubContext<ChatHub> hubContext,
+            StorageClient storageClient,
+            IConfiguration configuration,
+            IAuthorizationServices authService,
+            ILoggingService loggingService,
+            ISignedUrlService signedUrlService)
         {
             _context = context;
             _hubContext = hubContext;
@@ -47,6 +55,7 @@ namespace newApi.Controllers
             _configuration = configuration;
             _authService = authService;
             _loggingService = loggingService;
+            _signedUrlService = signedUrlService;
         }
 
         [HttpGet("conversation")]
@@ -128,6 +137,7 @@ namespace newApi.Controllers
                 }
 
                 var conversationDto = ConversationDto.FromConversation(conversation);
+                PopulateSignedAttachmentUrls(conversation, conversationDto);
                 return Ok(conversationDto);
             }
             catch (Exception)
@@ -161,7 +171,15 @@ namespace newApi.Controllers
                     .OrderByDescending(c => c.UpdatedAt)
                     .ToListAsync();
 
-                var conversationDtos = conversations.Select(ConversationDto.FromConversation).ToList();
+                var conversationDtos = conversations
+                    .Select(c => ConversationDto.FromConversation(c))
+                    .ToList();
+
+                for (var i = 0; i < conversations.Count && i < conversationDtos.Count; i++)
+                {
+                    PopulateSignedAttachmentUrls(conversations[i], conversationDtos[i]);
+                }
+
                 return Ok(conversationDtos);
             }
             catch (Exception ex)
@@ -266,6 +284,7 @@ namespace newApi.Controllers
                 }
 
                 var conversationDto = ConversationDto.FromConversation(conversation);
+                PopulateSignedAttachmentUrls(conversation, conversationDto);
                 return Ok(conversationDto);
             }
             catch (Exception ex)
@@ -300,6 +319,7 @@ namespace newApi.Controllers
                 }
 
                 var conversationDto = ConversationDto.FromConversation(conversation);
+                PopulateSignedAttachmentUrls(conversation, conversationDto);
                 return Ok(conversationDto);
             }
             catch (Exception ex)
@@ -387,7 +407,7 @@ namespace newApi.Controllers
                 conversation.UpdatedAt = DateTime.UtcNow;
                 await _context.SaveChangesAsync();
 
-                var attachmentUrls = new List<string>();
+                    var attachmentUrls = new List<string>();
                 if (dto.Attachments != null && dto.Attachments.Any())
                 {
                     var bucketName = _configuration["GoogleCloud:BucketName"];
@@ -396,7 +416,6 @@ namespace newApi.Controllers
                         try
                         {
                             var uploadResult = await ValidateAndUploadAttachmentAsync(file, bucketName, dto.ConversationId, userId);
-                            attachmentUrls.Add(uploadResult.Url);
 
                             var attachment = new MessageAttachment
                             {
@@ -407,6 +426,7 @@ namespace newApi.Controllers
                                 CreatedAt = DateTime.UtcNow
                             };
                             _context.MessageAttachments.Add(attachment);
+                            attachmentUrls.Add(ResolveAttachmentUrl(attachment));
                         }
                         catch (InvalidOperationException ex)
                         {
@@ -594,12 +614,15 @@ namespace newApi.Controllers
                                 bucket: bucketName,
                                 objectName: objectName,
                                 contentType: contentType,
-                                source: inputStream
+                                source: inputStream,
+                                options: new UploadObjectOptions
+                                {
+                                    PredefinedAcl = PredefinedObjectAcl.Private
+                                }
                             );
                         }
 
                         var deliverableUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-                        deliverableUrls.Add(deliverableUrl);
 
                         var deliverable = new SearchHireDeliverable
                         {
@@ -610,6 +633,7 @@ namespace newApi.Controllers
                             CreatedAt = DateTime.UtcNow
                         };
                         _context.SearchHireDeliverables.Add(deliverable);
+                        deliverableUrls.Add(ResolveDeliverableUrl(deliverable));
                     }
                     await _context.SaveChangesAsync();
                 }
@@ -680,15 +704,18 @@ namespace newApi.Controllers
                     return NotFound(new { message = "SearchHire not found or you are not authorized" });
                 }
 
-                var deliverables = await _context.SearchHireDeliverables
-                    .Where(d => d.SearchHireId == searchHireId)
-                    .Select(d => new DeliverableResponseDto
-                    {
-                        SearchHireId = d.SearchHireId,
-                        DeliverableUrls = new List<string> { d.Url },
-                        CreatedAt = d.CreatedAt
-                    })
-                    .ToListAsync();
+                    var deliverableEntities = await _context.SearchHireDeliverables
+                        .Where(d => d.SearchHireId == searchHireId)
+                        .ToListAsync();
+
+                    var deliverables = deliverableEntities
+                        .Select(d => new DeliverableResponseDto
+                        {
+                            SearchHireId = d.SearchHireId,
+                            DeliverableUrls = new List<string> { ResolveDeliverableUrl(d) },
+                            CreatedAt = d.CreatedAt
+                        })
+                        .ToList();
 
                 if (!deliverables.Any())
                 {
@@ -799,7 +826,11 @@ namespace newApi.Controllers
                     bucket: bucketName,
                     objectName: objectName,
                     contentType: contentType,
-                    source: inputStream);
+                    source: inputStream,
+                    options: new UploadObjectOptions
+                    {
+                        PredefinedAcl = PredefinedObjectAcl.Private
+                    });
             }
             catch (Exception ex)
             {
@@ -824,6 +855,48 @@ namespace newApi.Controllers
 
             var url = $"https://storage.googleapis.com/{bucketName}/{objectName}";
             return (url, objectName, isVideo ? "video" : "image");
+        }
+
+        private string ResolveAttachmentUrl(MessageAttachment? attachment)
+        {
+            if (attachment == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(attachment.Url) ? string.Empty : attachment.Url;
+            return _signedUrlService.GetSignedUrl(attachment.ObjectName ?? string.Empty) ?? fallback;
+        }
+
+        private string ResolveDeliverableUrl(SearchHireDeliverable? deliverable)
+        {
+            if (deliverable == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(deliverable.Url) ? string.Empty : deliverable.Url;
+            return _signedUrlService.GetSignedUrl(deliverable.ObjectName ?? string.Empty) ?? fallback;
+        }
+
+        private void PopulateSignedAttachmentUrls(Conversation conversation, ConversationDto conversationDto)
+        {
+            if (conversation?.Messages == null || conversationDto?.Messages == null)
+            {
+                return;
+            }
+
+            var messageLookup = conversation.Messages.ToDictionary(m => m.Id);
+            foreach (var messageDto in conversationDto.Messages)
+            {
+                if (messageLookup.TryGetValue(messageDto.Id, out var message))
+                {
+                    messageDto.AttachmentUrls = message.Attachments?
+                        .Select(ResolveAttachmentUrl)
+                        .Where(url => !string.IsNullOrEmpty(url))
+                        .ToList() ?? new List<string>();
+                }
+            }
         }
 
     }

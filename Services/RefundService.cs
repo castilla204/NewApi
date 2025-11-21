@@ -881,8 +881,17 @@ namespace newApi.Services
                             );
                         }
 
-                        // MODIFICACIÓN: Usar UUID para idempotency key (mejor que string custom, según docs 2025)
-                        var idempotencyKey = Guid.NewGuid().ToString();
+                        var normalizedStatusValue = (statusValue ?? "unknown").ToLowerInvariant();
+                        var idempotencyBaseKey = $"searchhire:{searchHireId}:status:{normalizedStatusValue}";
+                        string BuildIdempotencyKey(string suffix)
+                        {
+                            var fullKey = $"{idempotencyBaseKey}:{suffix}";
+                            return fullKey.Length > 255 ? fullKey.Substring(0, 255) : fullKey;
+                        }
+
+                        var transferIdempotencyKey = BuildIdempotencyKey("transfer");
+                        var refundIdempotencyKey = BuildIdempotencyKey("refund");
+                        var reversalIdempotencyKey = BuildIdempotencyKey("reversal");
 
                         // Si hay refund y transfer, ejecutar primero la transferencia y después el refund; si el refund falla, revertir la transferencia
                         var needsRefund = clientRefundAmount > 0 && !refundAlreadyProcessed;
@@ -966,10 +975,9 @@ namespace newApi.Services
                                 }
                             };
 
-                            // MODIFICACIÓN: Idempotency correcta con RequestOptions (antes estaba en metadata, lo cual no funciona)
                             var transferRequestOptions = new RequestOptions
                             {
-                                IdempotencyKey = idempotencyKey
+                                IdempotencyKey = transferIdempotencyKey
                             };
 
                             var transferSvc = new TransferService();
@@ -1015,10 +1023,9 @@ namespace newApi.Services
                                 }
                             };
 
-                            // MODIFICACIÓN: Idempotency correcta con RequestOptions
                             var refundRequestOptions = new RequestOptions
                             {
-                                IdempotencyKey = idempotencyKey + "-refund" // Unique por operación para evitar colisiones
+                                IdempotencyKey = refundIdempotencyKey
                             };
 
                             try
@@ -1052,9 +1059,8 @@ namespace newApi.Services
                                     try
                                     {
                                         var reversalSvc = new TransferReversalService();
-                                        // MODIFICACIÓN: Agregar idempotency a reversal también
                                         var reversalOptions = new TransferReversalCreateOptions { Amount = (long)(expertAmount * 100) }; // Revertir total
-                                        var reversalRequestOptions = new RequestOptions { IdempotencyKey = idempotencyKey + "-reversal" };
+                                        var reversalRequestOptions = new RequestOptions { IdempotencyKey = reversalIdempotencyKey };
                                         await reversalSvc.CreateAsync(createdTransferId, reversalOptions, reversalRequestOptions);
                                     }
                                     catch (Exception revEx)

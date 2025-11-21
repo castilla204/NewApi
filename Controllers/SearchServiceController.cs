@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using newApi.Services;
@@ -29,11 +29,18 @@ namespace newApi.Controllers
         {
             return status switch
             {
-                StripeStatus.NotRequested => "You haven't set up your Stripe account yet. Please configure your payment account to start offering services.",
-                StripeStatus.Pending => "Your Stripe account application is being reviewed. Please wait for approval before creating services.",
+                StripeStatus.NotRequested => "You haven't set up your Stripe account yet. Configure your payment account to create services.",
+                StripeStatus.Pending => "Your Stripe Connect onboarding is still in progress. Finish onboarding before publishing services.",
+                StripeStatus.ActionRequired => "Stripe needs additional information right now. Open your Stripe dashboard to complete the missing data.",
+                StripeStatus.PendingVerification => "Stripe is verifying the information you already submitted. Please wait for approval.",
+                StripeStatus.RequirementsDue => "Stripe marked requirements that will be due soon. Complete them to avoid restrictions.",
+                StripeStatus.RequirementsPastDue => "Some requirements expired and payouts are blocked. Update your information on Stripe to continue.",
+                StripeStatus.RestrictedSoon => "Stripe will restrict your account if you don't resolve the pending requirements immediately.",
+                StripeStatus.Restricted => "Your Stripe account is currently restricted. Resolve the action items shown in the Stripe dashboard.",
+                StripeStatus.Disabled => "Stripe disabled payments/payouts for your account. Contact Stripe support if needed.",
                 StripeStatus.Approved => "Your Stripe account is approved and ready to receive payments.",
-                StripeStatus.Rejected => "Your Stripe account application was rejected. Please try setting up your account again with correct information.",
-                StripeStatus.Deauthorized => "Your Stripe account has been deauthorized. Please contact support or try setting up your account again.",
+                StripeStatus.Rejected => "Your Stripe account application was rejected. Contact support before trying again.",
+                StripeStatus.Deauthorized => "Your Stripe account was disconnected. Restart onboarding to reconnect it.",
                 _ => "Unknown Stripe account status. Please contact support."
             };
         }

@@ -286,7 +286,7 @@
             Controlador para la gestión de disputas por parte de administradores
             </summary>
         </member>
-        <member name="M:newApi.Controllers.DisputeController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Configuration.IConfiguration,Google.Cloud.Storage.V1.StorageClient,newApi.Services.IAuthorizationServices,newApi.Services.SystemStatusService,newApi.Services.StripeRefundService,newApi.Services.ILoggingService)">
+        <member name="M:newApi.Controllers.DisputeController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Configuration.IConfiguration,Google.Cloud.Storage.V1.StorageClient,newApi.Services.IAuthorizationServices,newApi.Services.SystemStatusService,newApi.Services.StripeRefundService,newApi.Services.ILoggingService,newApi.Services.ISignedUrlService)">
             <summary>
             Constructor del controlador de disputas
             </summary>
@@ -2985,7 +2985,7 @@
             <param name="updateState">Si true, cambia el estado de Appointment y SearchHire antes de procesar dinero (por defecto true)</param>
             <returns>True si refund y (si aplica) transfer se procesan correctamente</returns>
         </member>
-        <member name="M:newApi.Services.SearchHireService.GetStatusIdByValueAsync(System.String)">
+        <member name="M:newApi.Services.SearchHireService.FindStatusIdByValueAsync(System.String)">
             <summary>
             Helper method to get StatusId from StatusValue
             </summary>

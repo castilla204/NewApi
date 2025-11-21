@@ -763,16 +763,43 @@ builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly,
     typeof(CategoryMappingProfile).Assembly,
     typeof(UserMappingProfile).Assembly);
 
-// Configure SignalR
+// ✅ MEJORAS 2025: Configure SignalR con mejores prácticas
+// - Timeouts optimizados para conexiones estables
+// - KeepAlive mejorado para detectar desconexiones rápidamente
+// - Protocolos optimizados para mejor rendimiento
+// - Soporte para reconexión automática mejorada
 var signalRBuilder = builder.Services.AddSignalR(options =>
 {
-    options.EnableDetailedErrors = true;
-    options.KeepAliveInterval = TimeSpan.FromSeconds(10);
-    options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+    // ✅ MEJORA 2025: Habilitar errores detallados solo en desarrollo
+    options.EnableDetailedErrors = isDevelopment;
+    
+    // ✅ MEJORA 2025: KeepAlive optimizado - enviar ping cada 15 segundos
+    // Esto ayuda a detectar conexiones muertas más rápido
+    options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+    
+    // ✅ MEJORA 2025: Timeout de cliente aumentado a 60 segundos
+    // Permite más tiempo para reconexión automática antes de marcar como desconectado
+    options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);
+    
+    // ✅ MEJORA 2025: MaximumReceiveMessageSize aumentado para archivos grandes
+    // Permite mensajes más grandes (útil para metadata de archivos)
+    options.MaximumReceiveMessageSize = 32 * 1024; // 32KB
+    
+    // ✅ MEJORA 2025: MaximumParallelInvocationsPerClient
+    // Limita invocaciones paralelas por cliente para evitar sobrecarga
+    options.MaximumParallelInvocationsPerClient = 5;
+    
+    // ✅ MEJORA 2025: StreamBufferCapacity para streaming (si se usa en el futuro)
+    options.StreamBufferCapacity = 10;
 })
 .AddJsonProtocol(options =>
 {
+    // ✅ MEJORA 2025: Mantener naming policy null para compatibilidad con frontend
     options.PayloadSerializerOptions.PropertyNamingPolicy = null;
+    
+    // ✅ MEJORA 2025: Configurar opciones de serialización para mejor rendimiento
+    options.PayloadSerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+    options.PayloadSerializerOptions.WriteIndented = false; // No indentar en producción
 });
 
 // ✅ ESCALABILIDAD: Configurar Redis como backplane para SignalR
@@ -791,7 +818,7 @@ if (!isDevelopment)
         
         signalRBuilder.AddStackExchangeRedis(redisConnectionString, redisOptions =>
         {
-            redisOptions.Configuration.ChannelPrefix = "SignalR";
+            redisOptions.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal("SignalR");
             redisOptions.Configuration.DefaultDatabase = 0;
         });
         

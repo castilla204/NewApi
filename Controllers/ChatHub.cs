@@ -49,7 +49,9 @@ public class ChatHub : Hub
         await base.OnDisconnectedAsync(exception);
     }
 
-    public async Task JoinConversation(int conversationId)
+    // Acepta 1 o 2 parámetros para compatibilidad con el frontend
+    // El segundo parámetro se ignora si se proporciona
+    public async Task JoinConversation(int conversationId, object? optionalParam = null)
     {
         var userId = GetUserIdOrThrow();
         using var scope = _serviceScopeFactory.CreateScope();
@@ -79,7 +81,7 @@ public class ChatHub : Hub
         await Groups.AddToGroupAsync(Context.ConnectionId, $"conversation-{conversationId}");
 
         await LogInfoAsync("User joined conversation via SignalR", userId, conversationId,
-            new { ConnectionId = Context.ConnectionId, ConversationId = conversationId });
+            new { ConnectionId = Context.ConnectionId, ConversationId = conversationId, OptionalParam = optionalParam });
     }
 
     public async Task LeaveConversation(int conversationId)

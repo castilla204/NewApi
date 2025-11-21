@@ -547,6 +547,8 @@ builder.Services.AddSingleton<StorageClient>(sp =>
     }
 });
 
+builder.Services.AddSingleton<ISignedUrlService, GoogleSignedUrlService>();
+
 // Configure RabbitMQ
 builder.Services.AddSingleton<RabbitMQ.Client.IConnectionFactory>(sp =>
 {

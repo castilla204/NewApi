@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -24,20 +24,22 @@ namespace newApi.Services
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
         private readonly ILoggingService _loggingService;
+        private readonly ISignedUrlService _signedUrlService;
         private readonly string _twilioVerificationServiceSid;
         private readonly string _twilioauthToken;
 
         public UserService(
-     AppDbContext context,
-     IConfiguration configuration,
-
-     StorageClient storageClient,
-     ILoggingService loggingService)
+            AppDbContext context,
+            IConfiguration configuration,
+            StorageClient storageClient,
+            ILoggingService loggingService,
+            ISignedUrlService signedUrlService)
         {
             _context = context;
             _configuration = configuration;
             _storageClient = storageClient;
             _loggingService = loggingService;
+            _signedUrlService = signedUrlService;
             _twilioVerificationServiceSid = configuration["Twilio:VerificationServiceSid"];
             _twilioauthToken = configuration["Twilio:AuthToken"];
         }
@@ -441,16 +443,20 @@ namespace newApi.Services
                         Mode = ResizeMode.Max
                     }));
 
-                    using (var outputStream = new MemoryStream())
-                    {
-                        image.SaveAsJpeg(outputStream);
-                        outputStream.Position = 0;
-                        await _storageClient.UploadObjectAsync(
-                            bucket: bucketName,
-                            objectName: objectName,
-                            contentType: "image/jpeg",
-                            source: outputStream
-                        );
+                        using (var outputStream = new MemoryStream())
+                        {
+                            image.SaveAsJpeg(outputStream);
+                            outputStream.Position = 0;
+                            await _storageClient.UploadObjectAsync(
+                                bucket: bucketName,
+                                objectName: objectName,
+                                contentType: "image/jpeg",
+                                source: outputStream,
+                                options: new UploadObjectOptions
+                                {
+                                    PredefinedAcl = PredefinedObjectAcl.Private
+                                }
+                            );
                         
                         // 🚨 LOG CRÍTICO: Imagen subida exitosamente
                         await _loggingService.LogCriticalAsync(
@@ -637,7 +643,7 @@ namespace newApi.Services
             return new ExpertProfileDto
             {
                 Id = expertProfile.Id,
-                ProfilePictureUrl = expertProfile.ProfilePictureUrl,
+                ProfilePictureUrl = ResolveProfilePictureUrl(expertProfile),
                 StripeAccountId = expertProfile.StripeAccountId,
                 Description = expertProfile.Description,
                 CreatedAt = expertProfile.CreatedAt,
@@ -732,7 +738,11 @@ namespace newApi.Services
                                     bucket: bucketName,
                                     objectName: objectName,
                                     contentType: "image/jpeg",
-                                    source: outputStream
+                                    source: outputStream,
+                                    options: new UploadObjectOptions
+                                    {
+                                        PredefinedAcl = PredefinedObjectAcl.Private
+                                    }
                                 );
                             }
                         }
@@ -844,7 +854,7 @@ namespace newApi.Services
                 var updatedProfileDto = new ExpertProfileDto
                 {
                     Id = expertProfile.Id,
-                    ProfilePictureUrl = expertProfile.ProfilePictureUrl,
+                    ProfilePictureUrl = ResolveProfilePictureUrl(expertProfile),
                     StripeAccountId = expertProfile.StripeAccountId,
                     Description = expertProfile.Description,
                     CreatedAt = expertProfile.CreatedAt,
@@ -982,6 +992,20 @@ namespace newApi.Services
         {
             // TODO: Implementar obteniendo el User-Agent del HttpContext
             return null;
+        }
+
+        private string ResolveProfilePictureUrl(ExpertProfile? expertProfile)
+        {
+            if (expertProfile == null)
+            {
+                return "/default-avatar.png";
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(expertProfile.ProfilePictureUrl)
+                ? "/default-avatar.png"
+                : expertProfile.ProfilePictureUrl;
+
+            return _signedUrlService.GetSignedUrl(expertProfile.ProfilePictureObjectName ?? string.Empty) ?? fallback;
         }
     }
 }

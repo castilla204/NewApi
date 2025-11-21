@@ -1,9 +1,12 @@
 using Google.Cloud.SecretManager.V1;
+using Google.Api.Gax.Grpc;
+using Grpc.Core;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Stripe;
+using System.IO;
 using System.Text;
 using System.Threading.RateLimiting;
 using RabbitMQ.Client;
@@ -44,55 +47,184 @@ var isDevelopment = builder.Environment.IsDevelopment();
 
 // Instancia el cliente de Secret Manager solo si NO está en desarrollo
 SecretManagerServiceClient? secretClient = null;
+bool secretManagerAvailable = false;
 if (!isDevelopment)
 {
-    try
+    // Verificar si el archivo de credenciales existe
+    var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
+    builder.Logging.AddConsole();
+    var initLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    
+    initLogger.LogInformation($"=== INICIALIZANDO SECRET MANAGER ===");
+    initLogger.LogInformation($"GOOGLE_APPLICATION_CREDENTIALS: {credentialsPath ?? "NO CONFIGURADO"}");
+    
+    if (!string.IsNullOrEmpty(credentialsPath))
     {
-        secretClient = SecretManagerServiceClient.Create();
+        var fileExists = System.IO.File.Exists(credentialsPath);
+        initLogger.LogInformation($"Archivo de credenciales existe: {fileExists}");
+        
+        if (fileExists)
+        {
+            try
+            {
+                // Leer información básica del archivo de credenciales
+                var credContent = System.IO.File.ReadAllText(credentialsPath);
+                if (credContent.Contains("project_id"))
+                {
+                    initLogger.LogInformation("Archivo de credenciales parece válido (contiene project_id)");
+                }
+                
+                // IMPORTANTE: Forzar IPv4 ANTES de crear el cliente
+                // Esto debe hacerse antes de cualquier operación de red
+                try
+                {
+                    // Establecer variable de entorno para forzar IPv4 en .NET
+                    Environment.SetEnvironmentVariable("DOTNET_SYSTEM_NET_DISABLEIPV6", "1");
+                    initLogger.LogInformation("IPv6 deshabilitado para forzar IPv4 (ANTES de crear cliente)");
+                }
+                catch (Exception ipv6Ex)
+                {
+                    initLogger.LogWarning($"No se pudo deshabilitar IPv6: {ipv6Ex.Message}");
+                }
+                
+                // Crear el cliente de Secret Manager con configuración mejorada
+                initLogger.LogInformation("Creando cliente de Secret Manager...");
+                
+                // Configurar el cliente con opciones específicas para Kubernetes/K3s
+                var clientBuilder = new SecretManagerServiceClientBuilder();
+                
+                // Configurar el endpoint explícitamente
+                var endpoint = "secretmanager.googleapis.com:443";
+                clientBuilder.Endpoint = endpoint;
+                initLogger.LogInformation($"Endpoint configurado: {endpoint}");
+                
+                // Configurar opciones de gRPC específicas para Kubernetes/K3s
+                // El problema puede ser que gRPC necesita configuración especial para HTTP/2
+                initLogger.LogInformation("Configurando adaptador gRPC con opciones para Kubernetes...");
+                clientBuilder.GrpcAdapter = GrpcNetClientAdapter.Default.WithAdditionalOptions(options =>
+                {
+                    // Configurar timeouts más largos para la conexión inicial
+                    options.MaxReceiveMessageSize = 4 * 1024 * 1024; // 4MB
+                    options.MaxSendMessageSize = 4 * 1024 * 1024; // 4MB
+                    // No configurar KeepAlive muy agresivo - puede causar problemas en Kubernetes
+                });
+                
+                initLogger.LogInformation("Construyendo cliente de Secret Manager...");
+                secretClient = clientBuilder.Build();
+                
+                initLogger.LogInformation($"Cliente de Secret Manager creado exitosamente (endpoint: {endpoint})");
+                
+                secretManagerAvailable = true; // Asumimos disponible hasta que falle
+            }
+            catch (Exception ex)
+            {
+                secretManagerAvailable = false;
+                initLogger.LogError($"ERROR al crear cliente de Secret Manager: {ex.GetType().Name} - {ex.Message}");
+                initLogger.LogError($"Stack trace: {ex.StackTrace}");
+                initLogger.LogWarning("Usando solo variables de entorno como fallback.");
+            }
+        }
+        else
+        {
+            initLogger.LogWarning($"El archivo de credenciales no existe en la ruta: {credentialsPath}");
+            initLogger.LogWarning("Usando solo variables de entorno como fallback.");
+        }
     }
-    catch (Exception ex)
+    else
     {
-        builder.Logging.AddConsole();
-        var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-        tempLogger.LogWarning($"No se pudo inicializar Secret Manager: {ex.Message}. Usando variables de entorno.");
+        initLogger.LogWarning("GOOGLE_APPLICATION_CREDENTIALS no está configurado. Usando solo variables de entorno.");
     }
+    
+    initLogger.LogInformation($"Secret Manager disponible: {secretManagerAvailable}");
 }
 
 // Función para obtener secretos
 string? GetSecretValue(string secretName, string? defaultValue = null)
 {
-    // Primero intentar leer de variables de entorno (para override en Kubernetes)
-    var envVarName = secretName.Replace("-", "_").ToUpper();
-    var envValue = Environment.GetEnvironmentVariable(envVarName);
-    if (!string.IsNullOrEmpty(envValue))
-    {
-        return envValue;
-    }
-    
     // En desarrollo, usar valor por defecto si está disponible
     if (isDevelopment)
     {
         return defaultValue;
     }
     
-    // En producción, intentar usar Secret Manager
-    if (secretClient != null)
+    // En producción, USAR SECRET MANAGER (prioridad absoluta)
+    if (secretClient != null && secretManagerAvailable)
     {
         try
         {
             var projectId = "grup-441318";
-            var secretVersion = secretClient.AccessSecretVersion($"projects/{projectId}/secrets/{secretName}/versions/latest");
+            var secretPath = $"projects/{projectId}/secrets/{secretName}/versions/latest";
+            
+            builder.Logging.AddConsole();
+            var secretLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+            secretLogger.LogInformation($"Intentando obtener secreto: {secretName} desde {secretPath}");
+            
+            // Configurar call settings con timeout y reintentos mejorados para Kubernetes
+            // Aumentar timeout significativamente para manejar problemas de conectividad
+            // gRPC puede necesitar más tiempo para establecer la conexión HTTP/2
+            var callSettings = CallSettings.FromRetry(
+                RetrySettings.FromExponentialBackoff(
+                    maxAttempts: 3, // Reducir reintentos pero aumentar timeout inicial
+                    initialBackoff: TimeSpan.FromSeconds(5), // Esperar más antes del primer reintento
+                    maxBackoff: TimeSpan.FromSeconds(20),
+                    backoffMultiplier: 2.0,
+                    retryFilter: RetrySettings.FilterForStatusCodes(
+                        Grpc.Core.StatusCode.Unavailable, 
+                        Grpc.Core.StatusCode.DeadlineExceeded,
+                        Grpc.Core.StatusCode.Internal,
+                        Grpc.Core.StatusCode.ResourceExhausted
+                    )
+                )
+            ).WithTimeout(TimeSpan.FromSeconds(60)); // Timeout MUY largo (60s) para Kubernetes - gRPC puede ser lento
+            
+            secretLogger.LogInformation($"Llamando a Secret Manager con timeout de 60 segundos...");
+            var startTime = DateTime.UtcNow;
+            
+            var secretVersion = secretClient.AccessSecretVersion(secretPath, callSettings: callSettings);
+            
+            var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+            secretLogger.LogInformation($"Secreto {secretName} obtenido exitosamente en {duration}ms");
+            
             return secretVersion.Payload.Data.ToStringUtf8();
+        }
+        catch (Grpc.Core.RpcException rpcEx)
+        {
+            // Si falla una vez, marcar como no disponible para evitar más intentos
+            if (secretManagerAvailable)
+            {
+                secretManagerAvailable = false;
+                builder.Logging.AddConsole();
+                var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+                tempLogger.LogError($"ERROR gRPC al obtener secreto {secretName}:");
+                tempLogger.LogError($"  Status Code: {rpcEx.StatusCode}");
+                tempLogger.LogError($"  Status Detail: {rpcEx.Status.Detail}");
+                tempLogger.LogError($"  Debug Exception: {rpcEx.Status.DebugException?.Message ?? "N/A"}");
+                if (rpcEx.Status.DebugException is System.Net.Sockets.SocketException socketEx)
+                {
+                    tempLogger.LogError($"  Socket Error Code: {socketEx.SocketErrorCode}");
+                    tempLogger.LogError($"  Native Error Code: {socketEx.NativeErrorCode}");
+                }
+                tempLogger.LogWarning("Secret Manager no está disponible. Usando solo variables de entorno para todos los secretos.");
+            }
+            return defaultValue; // Retornar valor por defecto en caso de error
         }
         catch (Exception ex)
         {
-            builder.Logging.AddConsole();
-            var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-            tempLogger.LogError($"Error al obtener secreto {secretName} de Secret Manager: {ex.Message}");
+            // Si falla una vez, marcar como no disponible para evitar más intentos
+            if (secretManagerAvailable)
+            {
+                secretManagerAvailable = false;
+                builder.Logging.AddConsole();
+                var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+                tempLogger.LogError($"ERROR inesperado al obtener secreto {secretName}: {ex.GetType().Name} - {ex.Message}");
+                tempLogger.LogError($"Stack trace: {ex.StackTrace}");
+                tempLogger.LogWarning("Secret Manager no está disponible. Usando solo variables de entorno para todos los secretos.");
+            }
             return defaultValue; // Retornar valor por defecto en caso de error
         }
     }
     
+    // Si Secret Manager no está disponible, usar valor por defecto (que puede ser null)
     return defaultValue;
 }
 
@@ -112,9 +244,10 @@ if (googleClientIds != null && googleClientIds.Length > 0)
     builder.Configuration.AddInMemoryCollection(configDict);
 }
 
-builder.Configuration["Jwt:Key"] = GetSecretValue("jwt-key", null) ?? "";
-builder.Configuration["Jwt:Issuer"] = GetSecretValue("jwt-issuer", null) ?? "";
-builder.Configuration["Jwt:Audience"] = GetSecretValue("jwt-audience", null) ?? "";
+// JWT - Leer de variables de entorno primero (ESO), luego de Secret Manager como fallback
+builder.Configuration["Jwt:Key"] = Environment.GetEnvironmentVariable("JWT_KEY") ?? GetSecretValue("jwt-key", null) ?? "";
+builder.Configuration["Jwt:Issuer"] = Environment.GetEnvironmentVariable("JWT_ISSUER") ?? GetSecretValue("jwt-issuer", null) ?? "";
+builder.Configuration["Jwt:Audience"] = Environment.GetEnvironmentVariable("JWT_AUDIENCE") ?? GetSecretValue("jwt-audience", null) ?? "";
 
 // ✅ SEGURIDAD 2025: Validar longitud mínima de clave JWT (OWASP Best Practice)
 var jwtKey = builder.Configuration["Jwt:Key"];
@@ -122,7 +255,7 @@ if (string.IsNullOrEmpty(jwtKey))
 {
     throw new InvalidOperationException(
         "⚠️ CRITICAL SECURITY ERROR: JWT Key is not configured. " +
-        "Please set 'jwt-key' in Google Cloud Secret Manager or User Secrets.");
+        "Please set 'JWT_KEY' environment variable, 'jwt-key' in Google Cloud Secret Manager, or User Secrets.");
 }
 
 var jwtKeyBytes = Encoding.UTF8.GetBytes(jwtKey);
@@ -156,7 +289,6 @@ else
 {
     Console.WriteLine($"✅ JWT Key length validated: {jwtKeyBytes.Length} bytes ({jwtKeyBytes.Length * 8} bits) - SECURE");
 }
-
 builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password", null) ?? "";
 builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key", null) ?? "";
 if (isDevelopment)
@@ -220,7 +352,9 @@ string connectionString;
 
 if (isDevelopment)
 {
-    // En desarrollo: usar valores de desarrollo
+    // En desarrollo: usar configuración local del túnel (variables de entorno o user secrets)
+    // NO usar Google Cloud Secret Manager en desarrollo
+    // Usar localhost:5433 para conectarse a través del túnel SSH
     var existingConnectionString = builder.Configuration.GetConnectionString("PostgresConnection");
     
     if (!string.IsNullOrEmpty(existingConnectionString))
@@ -232,7 +366,7 @@ if (isDevelopment)
     {
         // Construir desde variables de entorno individuales (para túnel local)
         var dbHost = Environment.GetEnvironmentVariable("DB_HOST") ?? "localhost";
-        var dbPort = Environment.GetEnvironmentVariable("DB_PORT") ?? "5432";
+        var dbPort = Environment.GetEnvironmentVariable("DB_PORT") ?? "5433"; // Puerto del túnel SSH
         var dbUsername = Environment.GetEnvironmentVariable("DB_USERNAME") ?? "postgres";
         var dbPassword = Environment.GetEnvironmentVariable("DB_PASSWORD") ?? "postgres";
         var dbName = Environment.GetEnvironmentVariable("DB_NAME") ?? "newapi";
@@ -242,12 +376,23 @@ if (isDevelopment)
 }
 else
 {
-    // En producción: OBLIGATORIO desde Secret Manager (sin fallbacks de producción)
-    var dbHost = GetSecretValue("postgres-host") ?? throw new InvalidOperationException("postgres-host secret is required in production");
-    var dbPort = GetSecretValue("postgres-port") ?? throw new InvalidOperationException("postgres-port secret is required in production");
-    var dbUsername = GetSecretValue("postgres-username") ?? throw new InvalidOperationException("postgres-username secret is required in production");
-    var dbPassword = GetSecretValue("postgres-password") ?? throw new InvalidOperationException("postgres-password secret is required in production");
-    var dbName = GetSecretValue("postgres-database") ?? throw new InvalidOperationException("postgres-database secret is required in production");
+    // En producción: Intentar desde Secret Manager, pero usar variables de entorno como fallback
+    // Esto permite que la app funcione aunque Secret Manager no esté disponible temporalmente
+    var dbHost = GetSecretValue("postgres-host") ?? Environment.GetEnvironmentVariable("POSTGRES_HOST") ?? "postgres-svc";
+    var dbPort = GetSecretValue("postgres-port") ?? Environment.GetEnvironmentVariable("POSTGRES_PORT") ?? "5432";
+    var dbUsername = GetSecretValue("postgres-username") ?? Environment.GetEnvironmentVariable("POSTGRES_USERNAME");
+    var dbPassword = GetSecretValue("postgres-password") ?? Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
+    var dbName = GetSecretValue("postgres-database") ?? Environment.GetEnvironmentVariable("POSTGRES_DATABASE") ?? "newapi";
+    
+    // Si no hay credenciales de DB, lanzar error claro
+    if (string.IsNullOrEmpty(dbUsername) || string.IsNullOrEmpty(dbPassword))
+    {
+        throw new InvalidOperationException(
+            "Database credentials are required in production. " +
+            "Configure via Secret Manager (postgres-username, postgres-password) " +
+            "or environment variables (POSTGRES_USERNAME, POSTGRES_PASSWORD). " +
+            "Secret Manager status: " + (secretManagerAvailable ? "Available but failed to retrieve secrets" : "Not available"));
+    }
     
     connectionString = $"Host={dbHost};Port={dbPort};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
 }
@@ -394,10 +539,10 @@ builder.Services.AddAuthentication(options =>
         ValidateAudience = true,
         ValidateLifetime = true,
         ValidateIssuerSigningKey = true,
-        ValidIssuer = builder.Configuration["Jwt:Issuer"],
-        ValidAudience = builder.Configuration["Jwt:Audience"],
+        ValidIssuer = builder.Configuration["Jwt:Issuer"] ?? Environment.GetEnvironmentVariable("JWT_ISSUER") ?? "",
+        ValidAudience = builder.Configuration["Jwt:Audience"] ?? Environment.GetEnvironmentVariable("JWT_AUDIENCE") ?? "",
         IssuerSigningKey = new SymmetricSecurityKey(
-            Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? throw new InvalidOperationException("JWT Key not found in configuration."))),
+            Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY") ?? throw new InvalidOperationException("JWT Key not found in configuration or environment variables."))),
         ClockSkew = TimeSpan.Zero
     };
     options.Events = new JwtBearerEvents
@@ -424,7 +569,27 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     }));
 
 // Configure Google Cloud Storage
-builder.Services.AddSingleton(StorageClient.Create());
+builder.Services.AddSingleton<StorageClient>(sp =>
+{
+    var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
+    if (!string.IsNullOrEmpty(credentialsPath) && System.IO.File.Exists(credentialsPath))
+    {
+        var credential = GoogleCredential.FromFile(credentialsPath);
+        return StorageClient.Create(credential);
+    }
+    // Si no hay credenciales, intentar usar credenciales predeterminadas o retornar null
+    try
+    {
+        return StorageClient.Create();
+    }
+    catch
+    {
+        // Si falla, retornar null - los servicios que lo necesiten deberán manejarlo
+        return null!;
+    }
+});
+
+builder.Services.AddSingleton<ISignedUrlService, GoogleSignedUrlService>();
 
 // Configure RabbitMQ
 builder.Services.AddSingleton<RabbitMQ.Client.IConnectionFactory>(sp =>
@@ -472,7 +637,10 @@ builder.Services.AddCors(options =>
 });
 
 
-// Configure Hangfire
+// ⚠️  HANGFIRE TEMPORALMENTE DESHABILITADO
+// Causa problemas de agotamiento de recursos de socket en K3s
+// TODO: Habilitar cuando se optimice la configuración de PostgreSQL o se use Redis como backend
+/*
 builder.Services.AddHangfire(config => config
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
@@ -487,7 +655,15 @@ builder.Services.AddHangfire(config => config
     .UseDefaultTypeResolver()
     .UseDefaultTypeSerializer());
 
-builder.Services.AddHangfireServer();
+builder.Services.AddHangfireServer(options =>
+{
+    options.WorkerCount = 2;
+    options.ServerTimeout = TimeSpan.FromMinutes(5);
+    options.HeartbeatInterval = TimeSpan.FromSeconds(30);
+    options.ServerCheckInterval = TimeSpan.FromMinutes(1);
+    options.SchedulePollingInterval = TimeSpan.FromSeconds(30);
+});
+*/
 
 // Register Services
 builder.Services.AddScoped<IRabbitMQService, RabbitMQService>();
@@ -594,15 +770,16 @@ catch (Exception ex)
 }
 
 
-// Schedule recurring job with Hangfire
-app.UseHangfireDashboard("/hangfire");
+// Hangfire Dashboard - Comentado porque Hangfire está deshabilitado
+// app.UseHangfireDashboard("/hangfire");
 
-// ✅ SEGURIDAD 2025: Configurar limpieza automática de refresh tokens
-// Se ejecuta todos los días a las 3:00 AM
+// ✅ SEGURIDAD 2025: Limpieza automática de refresh tokens - Comentado porque Hangfire está deshabilitado
+// TODO: Implementar con un servicio background alternativo o habilitar Hangfire con Redis
+/*
 RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     "cleanup-expired-refresh-tokens",
     service => service.CleanupExpiredTokensAsync(),
-    Cron.Daily(3), // 3:00 AM todos los días
+    Cron.Daily(3),
     new RecurringJobOptions
     {
         TimeZone = TimeZoneInfo.Utc
@@ -610,7 +787,8 @@ RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
 );
 GlobalConfiguration.Configuration
     .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()))
-    .UseFilter(new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>())); // ✅ Filtro para alertar a soporte cuando jobs fallan definitivamente
+    .UseFilter(new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>()));
+*/ // ✅ Filtro para alertar a soporte cuando jobs fallan definitivamente
 
 // ✅ OPTIMIZADO: Usar solo scheduled jobs para eventos específicos
 // Los recurring jobs fueron eliminados porque:

@@ -54,11 +54,12 @@ namespace newApi.Middleware
 
                 var hasMfaEnabled = mfaSettings != null && mfaSettings.IsEnabled;
 
-                // ✅ Rutas permitidas (para que puedan configurar MFA)
+                // ✅ Rutas permitidas (para que puedan configurar y verificar MFA)
                 var allowedPaths = new[]
                 {
                     "/api/auth/mfa/setup",
                     "/api/auth/mfa/enable",
+                    "/api/auth/mfa/verify",  // ✅ CRÍTICO: Permitir verificar código MFA
                     "/api/auth/mfa/status",
                     "/api/auth/logout",
                     "/api/user/profile" // Para que vean su perfil
@@ -67,7 +68,7 @@ namespace newApi.Middleware
                 var isAllowedPath = allowedPaths.Any(p => 
                     context.Request.Path.StartsWithSegments(p, StringComparison.OrdinalIgnoreCase));
 
-                // ❌ Si NO tiene MFA y NO está en ruta permitida → BLOQUEAR
+                // ❌ CASO 1: Si NO tiene MFA habilitado y NO está en ruta permitida → BLOQUEAR
                 if (!hasMfaEnabled && !isAllowedPath)
                 {
                     _logger.LogWarning(
@@ -87,12 +88,43 @@ namespace newApi.Middleware
                     return;
                 }
 
-                // ✅ Si tiene MFA habilitado, log de acceso exitoso
+                // ✅ CASO 2: Si tiene MFA habilitado, verificar si lo ha verificado en esta sesión
                 if (hasMfaEnabled)
                 {
-                    _logger.LogInformation(
-                        "MFA verified access: User {UserId} (Role: {Role}) accessing {Path}",
-                        userId, userRole, context.Request.Path);
+                    // Verificar si LastVerifiedAt es reciente (dentro de las últimas 8 horas)
+                    // Esto permite que el usuario no tenga que verificar el código en cada request
+                    var mfaVerificationValidDuration = TimeSpan.FromHours(8);
+                    var isMfaVerified = mfaSettings.LastVerifiedAt.HasValue && 
+                                       (DateTime.UtcNow - mfaSettings.LastVerifiedAt.Value) < mfaVerificationValidDuration;
+
+                    // ❌ Si MFA está habilitado pero NO está verificado y NO está en ruta permitida → BLOQUEAR
+                    if (!isMfaVerified && !isAllowedPath)
+                    {
+                        _logger.LogWarning(
+                            "MFA verification required: User {UserId} (Role: {Role}) attempted to access {Path} without verifying MFA code. LastVerifiedAt: {LastVerifiedAt}",
+                            userId, userRole, context.Request.Path, mfaSettings.LastVerifiedAt);
+
+                        context.Response.StatusCode = 403;
+                        context.Response.ContentType = "application/json";
+                        await context.Response.WriteAsJsonAsync(new
+                        {
+                            error = "MFA_VERIFICATION_REQUIRED",
+                            message = "Multi-factor authentication code verification is required. Please verify your MFA code to continue.",
+                            requiresMfaVerification = true,
+                            verifyUrl = "/api/auth/mfa/verify",
+                            lastVerifiedAt = mfaSettings.LastVerifiedAt,
+                            userRole = userRole.ToString()
+                        });
+                        return;
+                    }
+
+                    // ✅ Si MFA está habilitado y verificado, permitir acceso
+                    if (isMfaVerified)
+                    {
+                        _logger.LogInformation(
+                            "MFA verified access: User {UserId} (Role: {Role}) accessing {Path}. LastVerifiedAt: {LastVerifiedAt}",
+                            userId, userRole, context.Request.Path, mfaSettings.LastVerifiedAt);
+                    }
                 }
             }
 

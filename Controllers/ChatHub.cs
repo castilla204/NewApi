@@ -121,6 +121,7 @@ namespace newApi.Controllers
         /// <summary>
         /// ✅ MEJORA 2025: JoinConversation mejorado con notificación de usuario online
         /// </summary>
+        /// <param name="conversationId">ID de la conversación a la que unirse</param>
         public async Task JoinConversation(int conversationId)
         {
             try

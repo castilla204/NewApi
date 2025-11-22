@@ -31,7 +31,18 @@ namespace newApi.Controllers
         {
             try
             {
+                // ✅ CORRECCIÓN: Verificar conexión antes de consultar
+                if (!await _context.Database.CanConnectAsync())
+                {
+                    return StatusCode(503, new { 
+                        success = false,
+                        message = "Database connection unavailable. Please check your SSH tunnel.",
+                        error = "DATABASE_CONNECTION_LOST"
+                    });
+                }
+
                 var parentCategories = await _context.Categories
+                    .AsNoTracking() // ✅ MEJORA: No tracking para mejor rendimiento
                     .Where(c => c.IsActive && c.ParentId == null)
                     .Include(c => c.Subcategories)
                     .OrderBy(c => c.Name)
@@ -54,12 +65,36 @@ namespace newApi.Controllers
                     message = "Parent categories retrieved successfully"
                 });
             }
+            catch (Npgsql.NpgsqlException npgsqlEx)
+            {
+                // ✅ CORRECCIÓN: Manejo específico de errores de PostgreSQL
+                // SqlState puede no estar disponible en NpgsqlException, intentar obtenerlo del PostgresException interno
+                var sqlState = (npgsqlEx.InnerException as Npgsql.PostgresException)?.SqlState ?? "UNKNOWN";
+                return StatusCode(503, new { 
+                    success = false,
+                    message = "Database connection error. Please check your SSH tunnel.",
+                    error = "DATABASE_CONNECTION_ERROR",
+                    details = npgsqlEx.Message,
+                    sqlState = sqlState
+                });
+            }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateException dbEx)
+            {
+                // ✅ CORRECCIÓN: Manejo de errores de Entity Framework
+                return StatusCode(503, new { 
+                    success = false,
+                    message = "Database error occurred.",
+                    error = "DATABASE_ERROR",
+                    details = dbEx.InnerException?.Message ?? dbEx.Message
+                });
+            }
             catch (Exception ex)
             {
                 return StatusCode(500, new { 
                     success = false,
                     message = "Failed to retrieve parent categories",
-                    error = ex.Message 
+                    error = ex.Message,
+                    errorType = ex.GetType().Name
                 });
             }
         }
@@ -69,7 +104,17 @@ namespace newApi.Controllers
         {
             try
             {
+                // ✅ CORRECCIÓN: Verificar conexión antes de consultar
+                if (!await _context.Database.CanConnectAsync())
+                {
+                    return StatusCode(503, new { 
+                        message = "Database connection unavailable. Please check your SSH tunnel.",
+                        error = "DATABASE_CONNECTION_LOST"
+                    });
+                }
+
                 var categories = await _context.Categories
+                    .AsNoTracking() // ✅ MEJORA: No tracking para mejor rendimiento y evitar problemas de conexión
                     .Where(c => c.IsActive)
                     .Include(c => c.Subcategories)
                     .ToListAsync();
@@ -89,9 +134,34 @@ namespace newApi.Controllers
 
                 return Ok(categoryDtos);
             }
+            catch (Npgsql.NpgsqlException npgsqlEx)
+            {
+                // ✅ CORRECCIÓN: Manejo específico de errores de PostgreSQL
+                // SqlState puede no estar disponible en NpgsqlException, intentar obtenerlo del PostgresException interno
+                var sqlState = (npgsqlEx.InnerException as Npgsql.PostgresException)?.SqlState ?? "UNKNOWN";
+                return StatusCode(503, new { 
+                    message = "Database connection error. Please check your SSH tunnel.",
+                    error = "DATABASE_CONNECTION_ERROR",
+                    details = npgsqlEx.Message,
+                    sqlState = sqlState
+                });
+            }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateException dbEx)
+            {
+                // ✅ CORRECCIÓN: Manejo de errores de Entity Framework
+                return StatusCode(503, new { 
+                    message = "Database error occurred.",
+                    error = "DATABASE_ERROR",
+                    details = dbEx.InnerException?.Message ?? dbEx.Message
+                });
+            }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Failed to retrieve categories" });
+                return StatusCode(500, new { 
+                    message = "Failed to retrieve categories",
+                    error = "UNKNOWN_ERROR",
+                    details = ex.Message
+                });
             }
         }
 
@@ -161,7 +231,7 @@ namespace newApi.Controllers
 
                 var isSubcategory = category.ParentId.HasValue;
                 var categoryType = isSubcategory ? "subcategoría" : "categoría";
-                var parentInfo = isSubcategory ? $" bajo la categoría padre (ID: {category.ParentId.Value})" : "";
+                var parentInfo = isSubcategory && category.ParentId.HasValue ? $" bajo la categoría padre (ID: {category.ParentId.Value})" : "";
 
 
                 var categoryDto = _mapper.Map<CategoryDto>(category);

@@ -354,7 +354,8 @@ namespace newApi.Controllers
         }
 
         /// <summary>
-        /// ✅ SEGURIDAD 2025: Deshabilitar MFA (requiere contraseña + código TOTP)
+        /// ✅ SEGURIDAD 2025: Deshabilitar MFA (solo requiere código TOTP)
+        /// ✅ CORRECCIÓN: Eliminado parámetro password - todos los usuarios usan Google OAuth
         /// </summary>
         [HttpPost("mfa/disable")]
         [Authorize]
@@ -367,11 +368,11 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid or missing user ID in token" });
                 }
 
-                var success = await _mfaService.DisableMfaAsync(userId, request.Password, request.TotpCode);
+                var success = await _mfaService.DisableMfaAsync(userId, request.TotpCode);
 
                 if (!success)
                 {
-                    return BadRequest(new { message = "Invalid password or TOTP code" });
+                    return BadRequest(new { message = "Invalid TOTP code" });
                 }
 
                 return Ok(new { message = "MFA disabled successfully" });

@@ -124,3 +124,4 @@ Si no quieres usar Redis, puedes:
 
 Pero **Redis es la solución más común y recomendada** para SignalR en Kubernetes.
 
+

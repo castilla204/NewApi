@@ -256,7 +256,8 @@
         </member>
         <member name="M:newApi.Controllers.AuthController.DisableMfa(newApi.DataLayer.Models.DTOs.DisableMfaRequestDto)">
             <summary>
-            ✅ SEGURIDAD 2025: Deshabilitar MFA (requiere contraseña + código TOTP)
+            ✅ SEGURIDAD 2025: Deshabilitar MFA (solo requiere código TOTP)
+            ✅ CORRECCIÓN: Eliminado parámetro password - todos los usuarios usan Google OAuth
             </summary>
         </member>
         <member name="M:newApi.Controllers.AuthController.GetMfaStatus">
@@ -279,6 +280,58 @@
             <summary>
             Obtener conversación directamente por SearchHireId
             Funciona incluso cuando el Search fue eliminado (cliente borró su cuenta)
+            </summary>
+        </member>
+        <member name="T:newApi.Controllers.ChatHub">
+            <summary>
+            ✅ MEJORAS 2025: ChatHub optimizado con mejores prácticas SignalR
+            - Reconexión automática mejorada
+            - Manejo robusto de errores
+            - Estado de usuario (online/offline, typing)
+            - Gestión eficiente de grupos y conexiones
+            - Logging detallado para debugging
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.#ctor(Microsoft.Extensions.DependencyInjection.IServiceScopeFactory)">
+            <summary>
+            Constructor del ChatHub
+            </summary>
+            <param name="serviceScopeFactory">Factory para crear scopes de servicios</param>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.OnConnectedAsync">
+            <summary>
+            ✅ MEJORA 2025: OnConnectedAsync mejorado con mejor manejo de errores y logging
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.OnDisconnectedAsync(System.Exception)">
+            <summary>
+            ✅ MEJORA 2025: OnDisconnectedAsync mejorado con limpieza de grupos y estado
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.JoinConversation(System.Int32)">
+            <summary>
+            ✅ MEJORA 2025: JoinConversation mejorado con notificación de usuario online
+            </summary>
+            <param name="conversationId">ID de la conversación a la que unirse</param>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.LeaveConversation(System.Int32)">
+            <summary>
+            ✅ MEJORA 2025: LeaveConversation mejorado con notificación de usuario offline
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.UserTyping(System.Int32,System.Boolean)">
+            <summary>
+            ✅ NUEVO 2025: Método para indicar que el usuario está escribiendo
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.GetOnlineUsers(System.Int32)">
+            <summary>
+            ✅ NUEVO 2025: Obtener usuarios online en una conversación
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.CleanupUserFromConversations(System.Int32)">
+            <summary>
+            ✅ MEJORA 2025: Limpiar usuario de todas las conversaciones al desconectarse
             </summary>
         </member>
         <member name="T:newApi.Controllers.DisputeController">
@@ -1184,6 +1237,7 @@
         <member name="T:newApi.DataLayer.Models.DTOs.DisableMfaRequestDto">
             <summary>
             DTO para deshabilitar MFA
+            ✅ CORRECCIÓN: Solo requiere código TOTP (todos los usuarios usan Google OAuth)
             </summary>
         </member>
         <member name="T:newApi.DataLayer.Models.DTOs.MfaStatusDto">
@@ -2942,9 +2996,10 @@
             Verifica un código MFA (TOTP o código de recuperación)
             </summary>
         </member>
-        <member name="M:newApi.Services.MfaService.DisableMfaAsync(System.Int32,System.String,System.String)">
+        <member name="M:newApi.Services.MfaService.DisableMfaAsync(System.Int32,System.String)">
             <summary>
-            Deshabilita MFA para un usuario (requiere contraseña + código TOTP)
+            Deshabilita MFA para un usuario (solo requiere código TOTP)
+            ✅ CORRECCIÓN: Eliminado parámetro password - todos los usuarios usan Google OAuth
             </summary>
         </member>
         <member name="M:newApi.Services.MfaService.GetMfaStatusAsync(System.Int32)">

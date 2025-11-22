@@ -420,8 +420,21 @@ if (isDevelopment)
     // NO usar Google Cloud Secret Manager en desarrollo
     // Probar múltiples puertos automáticamente hasta encontrar uno disponible
     
-    // Lista de puertos a probar en orden (igual que el script db-access.sh)
-    var dbPortsToTry = new[] { 5432, 15433, 25432, 35432, 45432, 55432, 65432 };
+    // Lista de puertos a probar en orden
+    // ✅ CORRECCIÓN: Priorizar 5433 (puerto por defecto del túnel SSH) sobre 5432 en desarrollo
+    // Esto acelera la detección cuando se usa el túnel SSH
+    var dbPortsToTry = new[] { 
+        5433,  // ✅ PRIORIDAD: Puerto por defecto del script db-access.sh (probar primero)
+        5432,  // Puerto estándar de PostgreSQL
+        5434,  // Puerto alternativo común para túneles
+        5435,  // Puerto alternativo común para túneles
+        15433, // Puerto alternativo (formato antiguo)
+        25432, // Puerto alternativo (formato antiguo)
+        35432, // Puerto alternativo (formato antiguo)
+        45432, // Puerto alternativo (formato antiguo)
+        55432, // Puerto alternativo (formato antiguo)
+        65432  // Puerto alternativo (formato antiguo)
+    };
     
     var existingConnectionString = builder.Configuration.GetConnectionString("PostgresConnection");
     string? baseConnectionString = null;
@@ -467,11 +480,12 @@ if (isDevelopment)
     }
     
     // Función para probar conexión a un puerto específico
+    // ✅ CORRECCIÓN: Timeout reducido a 1 segundo para detectar puertos más rápido
     bool TestConnection(int port)
     {
         try
         {
-            var testConnectionString = $"Host={dbHost};Port={port};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=3;CommandTimeout=3;";
+            var testConnectionString = $"Host={dbHost};Port={port};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=1;CommandTimeout=1;";
             using var testConn = new Npgsql.NpgsqlConnection(testConnectionString);
             testConn.Open();
             return true;
@@ -565,11 +579,13 @@ if (isDevelopment)
     else
     {
         // Connection string optimizado para desarrollo con túnel SSH
+        // ✅ CORRECCIÓN: Agregar parámetros para mejor manejo de conexiones y detección de desconexiones
         connectionString = $"Host={dbHost};Port={workingPort.Value};Username={dbUsername};Password={dbPassword};Database={dbName};" +
-                          $"Timeout=60;CommandTimeout=60;" +
-                          $"ConnectionIdleLifetime=300;ConnectionPruningInterval=10;" +
-                          $"Keepalive=30;TcpKeepalive=true;" +
-                          $"Pooling=true;MinPoolSize=1;MaxPoolSize=20;";
+                          $"Timeout=30;CommandTimeout=60;" +
+                          $"Connection Idle Lifetime=300;Connection Pruning Interval=10;" +
+                          $"Keepalive=30;Tcp Keepalive=true;" +
+                          $"Pooling=true;Minimum Pool Size=1;Maximum Pool Size=20;" +
+                          $"No Reset On Close=true;"; // ✅ MEJORA: No resetear conexión al cerrar para mejor manejo de errores
     }
     
     configLogger.LogInformation($"✅ Connection string configurado: Host={dbHost}, Port={workingPort.Value}, Database={dbName}, Username={dbUsername}");
@@ -676,44 +692,104 @@ builder.Services.AddRateLimiter(options =>
         return developmentIps.Contains(ip) || ip.StartsWith("127.") || ip.StartsWith("::1") || ip == "localhost";
     }
 
-    // 1. Política para autenticación: 5 intentos cada 5 minutos por IP
-    options.AddFixedWindowLimiter("auth", opt =>
+    // 1. Política para autenticación: Sin límites para localhost, 30 intentos cada 5 minutos para otros IPs
+    options.AddPolicy("auth", httpContext =>
     {
-        opt.PermitLimit = 5;
-        opt.Window = TimeSpan.FromMinutes(5);
-        opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
-        opt.QueueLimit = 0;
+        var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        
+        // Si es IP de desarrollo, sin límites
+        if (IsDevelopmentIp(remoteIp))
+        {
+            return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter(remoteIp);
+        }
+        
+        // Para otros IPs: 30 requests cada 5 minutos (ampliado de 5)
+        return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: remoteIp,
+            factory: partition => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 30, // Ampliado de 5 a 30
+                Window = TimeSpan.FromMinutes(5),
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                QueueLimit = 0
+            });
     });
 
-    // 2. Política para API general: 100 requests por minuto por IP
-    options.AddFixedWindowLimiter("api", opt =>
+    // 2. Política para API general: Sin límites para localhost, 200 requests por minuto para otros IPs
+    options.AddPolicy("api", httpContext =>
     {
-        opt.PermitLimit = 100;
-        opt.Window = TimeSpan.FromMinutes(1);
-        opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
-        opt.QueueLimit = 2; // Permitir 2 requests en cola
+        var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        
+        // Si es IP de desarrollo, sin límites
+        if (IsDevelopmentIp(remoteIp))
+        {
+            return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter(remoteIp);
+        }
+        
+        // Para otros IPs: 200 requests por minuto (ampliado de 100)
+        return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: remoteIp,
+            factory: partition => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 200, // Ampliado de 100 a 200
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                QueueLimit = 5 // Ampliado de 2 a 5
+            });
     });
 
-    // 3. Política para operaciones de pago: 10 por minuto por usuario
-    options.AddFixedWindowLimiter("payment", opt =>
+    // 3. Política para operaciones de pago: Sin límites para localhost, 30 por minuto para otros IPs
+    options.AddPolicy("payment", httpContext =>
     {
-        opt.PermitLimit = 10;
-        opt.Window = TimeSpan.FromMinutes(1);
-        opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
-        opt.QueueLimit = 0;
+        var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        
+        // Si es IP de desarrollo, sin límites
+        if (IsDevelopmentIp(remoteIp))
+        {
+            return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter(remoteIp);
+        }
+        
+        // Para otros IPs: 30 requests por minuto (ampliado de 10)
+        return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: remoteIp,
+            factory: partition => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 30, // Ampliado de 10 a 30
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                QueueLimit = 2 // Ampliado de 0 a 2
+            });
     });
 
-    // 4. Política para admin: 200 requests por minuto
-    options.AddFixedWindowLimiter("admin", opt =>
+    // 4. Política para admin: Sin límites para localhost, 500 requests por minuto para otros IPs
+    options.AddPolicy("admin", httpContext =>
     {
-        opt.PermitLimit = 200;
-        opt.Window = TimeSpan.FromMinutes(1);
-        opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
-        opt.QueueLimit = 5;
+        var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        
+        // Si es IP de desarrollo, sin límites
+        if (IsDevelopmentIp(remoteIp))
+        {
+            return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter(remoteIp);
+        }
+        
+        // Para otros IPs: 500 requests por minuto (ampliado de 200)
+        return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: remoteIp,
+            factory: partition => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 500, // Ampliado de 200 a 500
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                QueueLimit = 10 // Ampliado de 5 a 10
+            });
     });
 
-    // 5. Política global por IP: 1000 requests por hora
-    // En desarrollo o para IPs de desarrollo: sin límites (int.MaxValue)
+    // 5. Política global por IP: Sin límites para localhost, 5000 requests por hora para otros IPs
+    // En desarrollo o para IPs de desarrollo: sin límites
     options.GlobalLimiter = System.Threading.RateLimiting.PartitionedRateLimiter.Create<Microsoft.AspNetCore.Http.HttpContext, string>(httpContext =>
     {
         var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -724,13 +800,13 @@ builder.Services.AddRateLimiter(options =>
             return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter(remoteIp);
         }
         
-        // En producción, aplicar límite normal
+        // En producción, aplicar límite ampliado
         return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
             partitionKey: remoteIp,
             factory: partition => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
             {
                 AutoReplenishment = true,
-                PermitLimit = 1000,
+                PermitLimit = 5000, // Ampliado de 1000 a 5000 requests por hora
                 Window = TimeSpan.FromHours(1)
             });
     });
@@ -878,6 +954,9 @@ builder.Services.AddDbContext<AppDbContext>(options =>
             maxRetryCount: 5, // Aumentado de 3 a 5 reintentos
             maxRetryDelay: TimeSpan.FromSeconds(10), // Aumentado delay máximo
             errorCodesToAdd: null);
+        
+        // ✅ CORRECCIÓN: Los parámetros de conexión (Keepalive, Pooling, etc.) ya están en el connection string
+        // No es necesario configurarlos aquí, se aplican automáticamente desde el connection string
     }));
 
 // Configure Google Cloud Storage

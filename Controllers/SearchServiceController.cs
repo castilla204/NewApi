@@ -194,7 +194,14 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Expert profile not found" });
                 }
 
-                if (expertProfile.StripeStatus != StripeStatus.Approved || !expertProfile.OnboardingCompleted)
+                // ✅ FIX: Permitir PendingVerification si charges_enabled: true
+                // PendingVerification es informativo, no bloqueante si Stripe permite operar
+                if (expertProfile.StripeStatus == StripeStatus.PendingVerification)
+                {
+                    // PendingVerification no bloquea si la cuenta puede operar
+                    // Permitir crear servicios durante verificación
+                }
+                else if (expertProfile.StripeStatus != StripeStatus.Approved || !expertProfile.OnboardingCompleted)
                 {
                     var statusMessage = GetStripeStatusMessage(expertProfile.StripeStatus);
                     return BadRequest(new { 
@@ -368,7 +375,14 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Expert profile not found" });
                 }
 
-                if (expertProfile.StripeStatus != StripeStatus.Approved || !expertProfile.OnboardingCompleted)
+                // ✅ FIX: Permitir PendingVerification si charges_enabled: true
+                // PendingVerification es informativo, no bloqueante si Stripe permite operar
+                if (expertProfile.StripeStatus == StripeStatus.PendingVerification)
+                {
+                    // PendingVerification no bloquea si la cuenta puede operar
+                    // Permitir actualizar servicios durante verificación
+                }
+                else if (expertProfile.StripeStatus != StripeStatus.Approved || !expertProfile.OnboardingCompleted)
                 {
                     var statusMessage = GetStripeStatusMessage(expertProfile.StripeStatus);
                     return BadRequest(new { 

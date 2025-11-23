@@ -84,6 +84,44 @@ namespace newApi.Services
             var logStartTime = DateTime.UtcNow;
             var logStartTimeUnix = ((DateTimeOffset)logStartTime).ToUnixTimeMilliseconds();
             
+            // ✅ CONSOLE OUTPUT: Mostrar log en consola antes de guardarlo en BD
+            var consolePrefix = logLevel switch
+            {
+                "Critical" => "🔴 [CRITICAL]",
+                "Error" => "❌ [ERROR]",
+                "Warning" => "⚠️  [WARNING]",
+                "Information" => "ℹ️  [INFO]",
+                "Debug" => "🔍 [DEBUG]",
+                _ => "[LOG]"
+            };
+            
+            var consoleMessage = $"{consolePrefix} [{source}] {message}";
+            if (!string.IsNullOrEmpty(details))
+            {
+                consoleMessage += $"\n   Details: {details}";
+            }
+            if (userId.HasValue)
+            {
+                consoleMessage += $"\n   UserId: {userId}";
+            }
+            if (relatedEntityType != null && relatedEntityId.HasValue)
+            {
+                consoleMessage += $"\n   Related: {relatedEntityType} (ID: {relatedEntityId})";
+            }
+            if (additionalData != null)
+            {
+                try
+                {
+                    var dataJson = JsonSerializer.Serialize(additionalData, new JsonSerializerOptions { WriteIndented = false });
+                    consoleMessage += $"\n   Data: {dataJson}";
+                }
+                catch
+                {
+                    consoleMessage += "\n   Data: [Error serializing]";
+                }
+            }
+            Console.WriteLine(consoleMessage);
+            
             // ✅ BEST PRACTICE: Usar scope separado para logging independiente de transacciones externas
             // Esto asegura que los logs se guarden incluso si hay rollbacks en otras transacciones
             using var scope = _serviceScopeFactory.CreateScope();

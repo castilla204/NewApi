@@ -347,16 +347,40 @@ namespace newApi.Services
 
             if (user == null)
             {
+                await _loggingService.LogWarningAsync(
+                    message: "User not found in BecomeExpert request",
+                    details: $"User with ID {userId} not found in database",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 return (false, null, null, null);
             }
 
             if (user.Role == UserRole.Expert)
             {
+                await _loggingService.LogWarningAsync(
+                    message: "User already is Expert in BecomeExpert request",
+                    details: $"User {userId} ({user.Email}) attempted to become expert but is already an Expert",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 return (false, null, null, null);
             }
 
             if (user.ExpertProfile != null)
             {
+                await _loggingService.LogWarningAsync(
+                    message: "User already has ExpertProfile in BecomeExpert request",
+                    details: $"User {userId} ({user.Email}) attempted to become expert but already has ExpertProfile with ID {user.ExpertProfile.Id}",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 return (false, null, null, null);
             }
 
@@ -393,32 +417,80 @@ namespace newApi.Services
             // Validar Latitude y Longitude
             if (string.IsNullOrEmpty(request.Latitude) || string.IsNullOrEmpty(request.Longitude))
             {
+                await _loggingService.LogWarningAsync(
+                    message: "Latitude or Longitude missing in BecomeExpert request",
+                    details: $"User {userId} attempted to become expert but Latitude or Longitude is missing. Latitude: {request.Latitude}, Longitude: {request.Longitude}",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 return (false, null, null, null);
             }
 
             if (!decimal.TryParse(request.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var latitude))
             {
+                await _loggingService.LogWarningAsync(
+                    message: "Invalid Latitude format in BecomeExpert request",
+                    details: $"User {userId} attempted to become expert but Latitude format is invalid: {request.Latitude}",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 return (false, null, null, null);
             }
 
             if (!decimal.TryParse(request.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var longitude))
             {
+                await _loggingService.LogWarningAsync(
+                    message: "Invalid Longitude format in BecomeExpert request",
+                    details: $"User {userId} attempted to become expert but Longitude format is invalid: {request.Longitude}",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 return (false, null, null, null);
             }
 
             if (latitude < -90m || latitude > 90m)
             {
+                await _loggingService.LogWarningAsync(
+                    message: "Latitude out of range in BecomeExpert request",
+                    details: $"User {userId} attempted to become expert but Latitude is out of range: {latitude} (must be between -90 and 90)",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 return (false, null, null, null);
             }
 
             if (longitude < -180m || longitude > 180m)
             {
+                await _loggingService.LogWarningAsync(
+                    message: "Longitude out of range in BecomeExpert request",
+                    details: $"User {userId} attempted to become expert but Longitude is out of range: {longitude} (must be between -180 and 180)",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 return (false, null, null, null);
             }
 
             // Validar tamaño del archivo (5MB límite para imágenes de perfil)
             if (request.ProfilePicture.Length > 5 * 1024 * 1024)
             {
+                await _loggingService.LogWarningAsync(
+                    message: "Profile picture file too large in BecomeExpert request",
+                    details: $"User {userId} attempted to become expert but profile picture is too large: {request.ProfilePicture.Length} bytes (max 5MB)",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 return (false, null, null, null);
             }
 
@@ -426,13 +498,21 @@ namespace newApi.Services
             var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
             if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
             {
+                await _loggingService.LogWarningAsync(
+                    message: "Invalid profile picture file type in BecomeExpert request",
+                    details: $"User {userId} attempted to become expert but profile picture has invalid extension: {extension} (allowed: .jpg, .jpeg, .png). FileName: {request.ProfilePicture.FileName}",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 return (false, null, null, null);
             }
             // ✅ VALIDACIÓN: Verificar que StorageClient esté configurado
             if (_storageClient == null)
             {
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Google Cloud Storage client not configured",
+                await _loggingService.LogWarningAsync(
+                    message: "Google Cloud Storage client not configured",
                     details: $"StorageClient is null. Cannot upload profile picture for user {userId}.",
                     userId: userId,
                     source: "UserService.BecomeExpert",
@@ -450,8 +530,8 @@ namespace newApi.Services
             var bucketName = _configuration["GoogleCloud:BucketName"];
             if (string.IsNullOrEmpty(bucketName))
             {
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Google Cloud bucket name not configured",
+                await _loggingService.LogWarningAsync(
+                    message: "Google Cloud bucket name not configured",
                     details: $"Bucket name is null or empty. Cannot upload profile picture for user {userId}.",
                     userId: userId,
                     source: "UserService.BecomeExpert",
@@ -528,15 +608,33 @@ namespace newApi.Services
                                 return (false, null, null, null);
                             }
 
+                            // ✅ LOG: Intentando subir imagen a Google Cloud Storage
+                            await _loggingService.LogInfoAsync(
+                                message: "Attempting to upload profile picture to Google Cloud Storage",
+                                details: $"Uploading profile picture for user {userId} to bucket {bucketName}, object {objectName}. File size: {outputStream.Length} bytes",
+                                userId: userId,
+                                source: "UserService.BecomeExpert",
+                                relatedEntityType: "User",
+                                relatedEntityId: userId,
+                                additionalData: new { 
+                                    Action = "ProfilePictureUpload",
+                                    UserId = userId,
+                                    ObjectName = objectName,
+                                    BucketName = bucketName,
+                                    ContentType = "image/jpeg",
+                                    FileSize = outputStream.Length,
+                                    Status = "Uploading"
+                                }
+                            );
+
+                            // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
                             await _storageClient.UploadObjectAsync(
                                 bucket: bucketName,
                                 objectName: objectName,
                                 contentType: "image/jpeg",
-                                source: outputStream,
-                                options: new UploadObjectOptions
-                                {
-                                    PredefinedAcl = PredefinedObjectAcl.Private
-                                }
+                                source: outputStream
+                                // ✅ REMOVIDO: PredefinedAcl no es compatible con uniform bucket-level access
+                                // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
                             );
                         
                             // ✅ LOG INFORMATIVO: Imagen subida exitosamente
@@ -583,9 +681,9 @@ namespace newApi.Services
             }
             catch (Google.GoogleApiException ex)
             {
-                // ✅ LOG: Error específico de Google Cloud Storage
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Google Cloud Storage API error",
+                // ✅ LOG: Error específico de Google Cloud Storage (WARNING, no crítico)
+                await _loggingService.LogWarningAsync(
+                    message: "Google Cloud Storage API error",
                     details: $"Failed to upload profile picture to Google Cloud Storage for user {userId}: {ex.Message}. Status: {ex.HttpStatusCode}, Error: {ex.Error?.Message}",
                     userId: userId,
                     source: "UserService.BecomeExpert",
@@ -606,9 +704,9 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                // 🚨 LOG CRÍTICO: Error genérico en subida de imagen
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Profile picture upload failed",
+                // ✅ LOG: Error genérico en subida de imagen (WARNING, no crítico)
+                await _loggingService.LogWarningAsync(
+                    message: "Profile picture upload failed",
                     details: $"Profile picture upload failed for user {userId}: {ex.Message}. Exception type: {ex.GetType().Name}",
                     userId: userId,
                     source: "UserService.BecomeExpert",
@@ -632,8 +730,8 @@ namespace newApi.Services
             }
 
             var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-            user.Role = UserRole.Expert;
 
+            // ✅ MEJORA: Crear ExpertProfile ANTES de cambiar el rol
             var expertProfile = new ExpertProfile
             {
                 UserId = user.Id,
@@ -646,14 +744,92 @@ namespace newApi.Services
                 CreatedAt = DateTime.UtcNow
             };
 
-            _context.ExpertProfiles.Add(expertProfile);
-            await _context.SaveChangesAsync();
+            // ✅ MEJORA: Try-catch con logging detallado para guardar ExpertProfile
+            try
+            {
+                _context.ExpertProfiles.Add(expertProfile);
+                await _context.SaveChangesAsync();
+
+                // ✅ VALIDACIÓN: Verificar que el ID se haya generado correctamente
+                if (expertProfile.Id == 0)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "ExpertProfile ID not generated",
+                        details: $"ExpertProfile was created but ID is 0 for user {userId}. This indicates a database issue.",
+                        userId: userId,
+                        source: "UserService.BecomeExpert",
+                        relatedEntityType: "User",
+                        relatedEntityId: userId,
+                        additionalData: new { 
+                            Action = "CreateExpertProfile",
+                            UserId = userId,
+                            Error = "ExpertProfile.Id is 0"
+                        }
+                    );
+                    return (false, null, null, null);
+                }
+            }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateException dbEx)
+            {
+                // ✅ LOG: Error específico de base de datos (WARNING, no crítico)
+                var innerException = dbEx.InnerException;
+                var sqlState = (innerException as Npgsql.NpgsqlException)?.SqlState ?? "UNKNOWN";
+                var errorMessage = innerException?.Message ?? dbEx.Message;
+
+                await _loggingService.LogWarningAsync(
+                    message: "Database error creating ExpertProfile",
+                    details: $"Failed to create ExpertProfile for user {userId}: {errorMessage}. SQL State: {sqlState}",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "CreateExpertProfile",
+                        UserId = userId,
+                        ExceptionType = "DbUpdateException",
+                        ExceptionMessage = dbEx.Message,
+                        InnerExceptionMessage = errorMessage,
+                        SqlState = sqlState,
+                        StackTrace = dbEx.StackTrace
+                    }
+                );
+                return (false, null, null, null);
+            }
+            catch (Exception ex)
+            {
+                // ✅ LOG: Error genérico al crear ExpertProfile (WARNING, no crítico)
+                await _loggingService.LogWarningAsync(
+                    message: "Error creating ExpertProfile",
+                    details: $"Failed to create ExpertProfile for user {userId}: {ex.Message}. Exception type: {ex.GetType().Name}",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "CreateExpertProfile",
+                        UserId = userId,
+                        ExceptionType = ex.GetType().Name,
+                        ExceptionMessage = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+                return (false, null, null, null);
+            }
 
             // ✅ VALIDACIÓN: La disponibilidad horaria es OBLIGATORIA al crear un perfil de experto
+            // (Ya validado en controller, pero verificamos de nuevo por seguridad)
             if (request.AvailabilityDaysOfWeek == null || request.AvailabilityDaysOfWeek.Count == 0 ||
                 string.IsNullOrEmpty(request.AvailabilityStartTime) || string.IsNullOrEmpty(request.AvailabilityEndTime))
             {
                 // Eliminar el perfil creado si falta la disponibilidad
+                await _loggingService.LogWarningAsync(
+                    message: "Availability data missing after ExpertProfile creation",
+                    details: $"ExpertProfile {expertProfile.Id} was created but availability data is missing. Removing profile.",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 _context.ExpertProfiles.Remove(expertProfile);
                 await _context.SaveChangesAsync();
                 return (false, null, null, null);
@@ -664,6 +840,14 @@ namespace newApi.Services
                 !TimeSpan.TryParse(request.AvailabilityEndTime, out var endTime))
             {
                 // Eliminar el perfil creado si los tiempos son inválidos
+                await _loggingService.LogWarningAsync(
+                    message: "Invalid time format after ExpertProfile creation",
+                    details: $"ExpertProfile {expertProfile.Id} was created but time format is invalid. StartTime: {request.AvailabilityStartTime}, EndTime: {request.AvailabilityEndTime}. Removing profile.",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 _context.ExpertProfiles.Remove(expertProfile);
                 await _context.SaveChangesAsync();
                 return (false, null, null, null);
@@ -676,6 +860,14 @@ namespace newApi.Services
             if (invalidDays.Any())
             {
                 // Eliminar el perfil creado si los días son inválidos
+                await _loggingService.LogWarningAsync(
+                    message: "Invalid days of week after ExpertProfile creation",
+                    details: $"ExpertProfile {expertProfile.Id} was created but days are invalid: {string.Join(", ", invalidDays)}. Removing profile.",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 _context.ExpertProfiles.Remove(expertProfile);
                 await _context.SaveChangesAsync();
                 return (false, null, null, null);
@@ -684,6 +876,14 @@ namespace newApi.Services
             if (startTime >= endTime)
             {
                 // Eliminar el perfil creado si el rango de tiempo es inválido
+                await _loggingService.LogWarningAsync(
+                    message: "Invalid time range after ExpertProfile creation",
+                    details: $"ExpertProfile {expertProfile.Id} was created but time range is invalid (start >= end). Removing profile.",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId
+                );
                 _context.ExpertProfiles.Remove(expertProfile);
                 await _context.SaveChangesAsync();
                 return (false, null, null, null);
@@ -695,7 +895,7 @@ namespace newApi.Services
                 var now = DateTime.UtcNow;
                 var availability = new ExpertAvailability
                 {
-                    ExpertId = expertProfile.Id,
+                    ExpertId = expertProfile.Id, // ✅ Ya verificado que no es 0
                     DaysOfWeek = System.Text.Json.JsonSerializer.Serialize(request.AvailabilityDaysOfWeek),
                     StartTime = startTime,
                     EndTime = endTime,
@@ -709,12 +909,89 @@ namespace newApi.Services
                 _context.ExpertAvailabilities.Add(availability);
                 await _context.SaveChangesAsync();
             }
-            catch (Exception ex)
+            catch (Microsoft.EntityFrameworkCore.DbUpdateException dbEx)
             {
+                // ✅ LOG: Error específico de base de datos al crear disponibilidad (WARNING, no crítico)
+                var innerException = dbEx.InnerException;
+                var sqlState = (innerException as Npgsql.NpgsqlException)?.SqlState ?? "UNKNOWN";
+                var errorMessage = innerException?.Message ?? dbEx.Message;
+
+                await _loggingService.LogWarningAsync(
+                    message: "Database error creating ExpertAvailability",
+                    details: $"Failed to create ExpertAvailability for ExpertProfile {expertProfile.Id} (user {userId}): {errorMessage}. SQL State: {sqlState}. Removing ExpertProfile.",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "CreateExpertAvailability",
+                        UserId = userId,
+                        ExpertProfileId = expertProfile.Id,
+                        ExceptionType = "DbUpdateException",
+                        ExceptionMessage = dbEx.Message,
+                        InnerExceptionMessage = errorMessage,
+                        SqlState = sqlState,
+                        StackTrace = dbEx.StackTrace
+                    }
+                );
+
                 // Si falla la creación de disponibilidad, eliminar el perfil
                 _context.ExpertProfiles.Remove(expertProfile);
                 await _context.SaveChangesAsync();
                 return (false, null, null, null);
+            }
+            catch (Exception ex)
+            {
+                // ✅ LOG: Error genérico al crear disponibilidad (WARNING, no crítico)
+                await _loggingService.LogWarningAsync(
+                    message: "Error creating ExpertAvailability",
+                    details: $"Failed to create ExpertAvailability for ExpertProfile {expertProfile.Id} (user {userId}): {ex.Message}. Exception type: {ex.GetType().Name}. Removing ExpertProfile.",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "CreateExpertAvailability",
+                        UserId = userId,
+                        ExpertProfileId = expertProfile.Id,
+                        ExceptionType = ex.GetType().Name,
+                        ExceptionMessage = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+
+                // Si falla la creación de disponibilidad, eliminar el perfil
+                _context.ExpertProfiles.Remove(expertProfile);
+                await _context.SaveChangesAsync();
+                return (false, null, null, null);
+            }
+
+            // ✅ MEJORA: Cambiar el rol SOLO después de confirmar que todo salió bien
+            user.Role = UserRole.Expert;
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                // ✅ LOG: Error al actualizar el rol (WARNING, no crítico)
+                await _loggingService.LogWarningAsync(
+                    message: "Error updating user role to Expert",
+                    details: $"Failed to update user {userId} role to Expert after creating profile {expertProfile.Id}: {ex.Message}",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "UpdateUserRole",
+                        UserId = userId,
+                        ExpertProfileId = expertProfile.Id,
+                        ExceptionType = ex.GetType().Name,
+                        ExceptionMessage = ex.Message
+                    }
+                );
+                // Aunque falle, el perfil ya está creado, así que devolvemos éxito parcial
+                // El rol se puede actualizar manualmente si es necesario
             }
 
             var token = GenerateJwtToken(user);
@@ -865,15 +1142,15 @@ namespace newApi.Services
                             {
                                 image.SaveAsJpeg(outputStream);
                                 outputStream.Position = 0;
+                                // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
+                                // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
                                 await _storageClient.UploadObjectAsync(
                                     bucket: bucketName,
                                     objectName: objectName,
                                     contentType: "image/jpeg",
-                                    source: outputStream,
-                                    options: new UploadObjectOptions
-                                    {
-                                        PredefinedAcl = PredefinedObjectAcl.Private
-                                    }
+                                    source: outputStream
+                                    // ✅ REMOVIDO: PredefinedAcl no es compatible con uniform bucket-level access
+                                    // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
                                 );
                             }
                         }

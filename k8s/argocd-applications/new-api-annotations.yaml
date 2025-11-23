@@ -1,0 +1,21 @@
+# Anotaciones de ArgoCD Image Updater para new-api
+# Estas anotaciones deben agregarse a la Application de ArgoCD
+# para que Image Updater monitoree y actualice automáticamente
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: new-api
+  namespace: argocd
+  annotations:
+    # Configuración de Image Updater
+    argocd-image-updater.argoproj.io/image-list: new-api=erizo9/newapi
+    argocd-image-updater.argoproj.io/new-api.update-strategy: semver
+    argocd-image-updater.argoproj.io/new-api.allow-tags: "regexp:^v?[0-9]+\\.[0-9]+\\.[0-9]+$"
+    argocd-image-updater.argoproj.io/new-api.ignore-tags: latest,dev,test
+    argocd-image-updater.argoproj.io/write-back-method: git
+    argocd-image-updater.argoproj.io/git-branch: main
+spec:
+  # La spec se mantiene igual que la Application existente
+  # Solo se agregan las anotaciones arriba
+

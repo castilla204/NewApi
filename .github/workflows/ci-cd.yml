@@ -65,7 +65,7 @@ jobs:
 
       - name: Run Trivy vulnerability scanner
         id: trivy-scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.29
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -75,7 +75,7 @@ jobs:
       - name: Run Trivy vulnerability scanner (SARIF format)
         id: trivy-sarif
         continue-on-error: true  # No fallar si Code Scanning no está habilitado
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.29
         with:
           scan-type: 'fs'
           scan-ref: '.'

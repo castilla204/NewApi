@@ -62,5 +62,6 @@
     "renovate"
   ],
   "commitMessagePrefix": "chore(deps): ",
-  "rebaseWhen": "behind-base-branch"
+  "rebaseWhen": "behind-base-branch",
+  "automergeType": "pr"
 }

@@ -18,4 +18,5 @@ cloudcredential.json
 
 # Node modules
 **/node_modules/
-cursor-backend-logs/
+cursor-backend-logs/.env
+.cursor/.env

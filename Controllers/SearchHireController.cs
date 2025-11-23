@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using newApi.Services;
@@ -28,17 +28,18 @@ namespace newApi.Controllers
         private readonly ILoggingService _loggingService;
         private readonly IInvoiceService _invoiceService;
         private readonly IAppointmentService _appointmentService;
+        private readonly ISignedUrlService _signedUrlService;
 
         public SearchHireController(
             SearchHireService searchHireService,
             AppDbContext context,
-
             IConfiguration configuration,
             IAuthorizationServices authService,
             StripeRefundService refundService,
             ILoggingService loggingService,
             IInvoiceService invoiceService,
-            IAppointmentService appointmentService)
+            IAppointmentService appointmentService,
+            ISignedUrlService signedUrlService)
         {
             _searchHireService = searchHireService;
             _context = context;
@@ -48,6 +49,7 @@ namespace newApi.Controllers
             _loggingService = loggingService;
             _invoiceService = invoiceService;
             _appointmentService = appointmentService;
+            _signedUrlService = signedUrlService;
             StripeConfiguration.ApiKey = configuration["Stripe:SecretKey"];
         }
 
@@ -422,7 +424,10 @@ namespace newApi.Controllers
                             Email = reviewEntity.Reviewer!.Email,
                             ProfilePictureUrl = null
                         } : null,
-                        ImageUrls = reviewEntity.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>()
+                        ImageUrls = reviewEntity.ImagesCollection?
+                            .Select(img => ResolveReviewImageUrl(img))
+                            .Where(url => !string.IsNullOrEmpty(url))
+                            .ToList() ?? new List<string>()
                     };
                 }
 
@@ -453,7 +458,7 @@ namespace newApi.Controllers
                     expertProfileDto = new ExpertProfileDto
                     {
                         Id = expertProfile.Id,
-                        ProfilePictureUrl = expertProfile.ProfilePictureUrl ?? string.Empty,
+                        ProfilePictureUrl = ResolveProfilePictureUrl(expertProfile),
                         Description = expertProfile.Description ?? string.Empty,
                         StripeAccountId = expertProfile.StripeAccountId,
                         CreatedAt = expertProfile.CreatedAt,
@@ -567,7 +572,7 @@ namespace newApi.Controllers
                     {
                         Id = d.Id,
                         Type = d.Type,
-                        Url = d.Url,
+                        Url = ResolveDeliverableUrl(d),
                         CreatedAt = d.CreatedAt
                     }).ToList() ?? new List<DeliverableDto>(),
                     RequiredDeliverableTypes = searchHire.SearchService?.SelectedDeliverableTypes?
@@ -687,31 +692,6 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Expert)
-                    .ThenInclude(e => e.ExpertProfile)
-                    .Include(sh => sh.Client)
-                    .FirstOrDefaultAsync();
-
-                if (searchHire == null)
-                {
-                    return NotFound(new { message = "Service not found" });
-                }
-
-                if (searchHire.ClientId != userId)
-                {
-                    return Unauthorized(new { message = "Unauthorized to complete this service" });
-                }
-
-                if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue() && 
-                    searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
-                {
-                    return BadRequest(new { message = "Service cannot be approved in current state" });
-                }
-
                 if (request.ClientApproved == null)
                 {
                     return BadRequest(new { error = "ClientApproved is required" });
@@ -721,34 +701,64 @@ namespace newApi.Controllers
                 var strategy = _context.Database.CreateExecutionStrategy();
                 return await strategy.ExecuteAsync(async () =>
                 {
-                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    SearchHire? searchHire = null;
+                    await using var transaction = await _context.Database.BeginTransactionAsync();
                     try
                     {
+                        // 🔒 ROW-LEVEL LOCKING dentro de la transacción para que el candado se mantenga hasta el commit/rollback
+                        searchHire = await _context.SearchHires
+                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.Expert)
+                                .ThenInclude(e => e.ExpertProfile)
+                            .Include(sh => sh.Client)
+                            .FirstOrDefaultAsync();
+
+                        if (searchHire == null)
+                        {
+                            await transaction.RollbackAsync();
+                            return NotFound(new { message = "Service not found" });
+                        }
+
+                        if (searchHire.ClientId != userId)
+                        {
+                            await transaction.RollbackAsync();
+                            return Unauthorized(new { message = "Unauthorized to complete this service" });
+                        }
+
+                        if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue() &&
+                            searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                        {
+                            await transaction.RollbackAsync();
+                            return BadRequest(new { message = "Service cannot be approved in current state" });
+                        }
+
                         searchHire.ClientApproved = request.ClientApproved.Value;
+
                         if (!searchHire.ClientApproved.Value)
                         {
-                            // 🛡️ DISPUTA: Cliente rechaza servicio → Abrir disputa para revisión admin
                             var disputedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
                             searchHire.StatusId = disputedStatusId;
                             searchHire.UpdatedAt = DateTime.UtcNow;
+
+                            await _context.SaveChangesAsync();
+                            await ExpireClientDecisionTimersAsync(searchHire.Id);
                         }
                         else
                         {
+                            await _context.SaveChangesAsync();
+                            await ExpireClientDecisionTimersAsync(searchHire.Id);
+
                             var ok = await _refundService.ProcessMoneyDistributionAsync(
                                 searchHire.Id,
                                 SearchHireStatus.Completed.ToStringValue(),
                                 "Client approved service",
                                 userId);
+
                             if (!ok)
                             {
-                                await transaction.RollbackAsync();
-                                // ✅ MEJORA: NO duplicar log crítico - ProcessMoneyDistributionAsync ya lo registró
-                                // 🔍 Buscar el último log crítico relacionado DESPUÉS del rollback
-                                // IMPORTANTE: El log se crea ANTES de la transacción del controller
-                                // Limpiar el change tracker para forzar lectura fresca de la BD
                                 _context.ChangeTracker.Clear();
                                 
-                                // Usar FromSqlRaw con AsNoTracking para leer directamente de BD sin cache
                                 var lastCriticalLog = await _context.Logs
                                     .FromSqlRaw("SELECT * FROM \"Logs\" WHERE \"RelatedEntityType\" = {0} " +
                                                "AND \"RelatedEntityId\" = {1} " +
@@ -759,15 +769,6 @@ namespace newApi.Controllers
                                     .AsNoTracking()
                                     .FirstOrDefaultAsync();
                                 
-                                if (lastCriticalLog != null)
-                                {
-                                }
-                                else
-                                {
-                                    // Si no encontramos el log, puede ser un problema de timing o el log no se creó
-                                    // En este caso, logueamos un warning pero no duplicamos el log crítico
-                                }
-                                
                                 return StatusCode(500, new { 
                                     message = "Failed to process payment to expert",
                                     logId = lastCriticalLog?.Id,
@@ -776,51 +777,11 @@ namespace newApi.Controllers
                                 });
                             }
 
-                            var completedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Completed.ToStringValue());
-                            searchHire.StatusId = completedStatusId;
-                            searchHire.UpdatedAt = DateTime.UtcNow;
-                        }
-                        
-                        // ✅ Cancelar timer de client_decision cuando el cliente aprueba o disputa
-                        var appointment = await _context.Appointments
-                            .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
-                        
-                        if (appointment != null)
-                        {
-                            var clientDecisionTimers = await _context.AppointmentTimers
-                                .Where(t => t.AppointmentId == appointment.Id && 
-                                           t.TimerType == "client_decision" && 
-                                           !t.IsExpired)
-                                .ToListAsync();
-                            
-                            foreach (var timer in clientDecisionTimers)
-                            {
-                                timer.IsExpired = true;
-                                timer.ExpiredAt = DateTime.UtcNow;
-                                
-                                // Cancelar job de Hangfire si existe
-                                if (!string.IsNullOrEmpty(timer.HangfireJobId))
-                                {
-                                    try
-                                    {
-                                        BackgroundJob.Delete(timer.HangfireJobId);
-                                        timer.HangfireJobId = null;
-                                    }
-                                    catch
-                                    {
-                                        timer.HangfireJobId = null;
-                                    }
-                                }
-                            }
+                            await _context.Entry(searchHire).ReloadAsync();
                         }
 
-                        await _context.SaveChangesAsync();
-                        await transaction.CommitAsync();
-
-                        // ✅ Notificar a cliente y experto según el resultado
                         if (searchHire.ClientApproved.Value)
                         {
-                            // Cliente aprobó - notificar a ambos
                             await _loggingService.LogInfoAsync(
                                 message: "Servicio completado",
                                 details: $"Has aprobado el servicio #{searchHire.Id}. El experto recibirá el pago.",
@@ -846,7 +807,6 @@ namespace newApi.Controllers
                         }
                         else
                         {
-                            // Cliente rechazó - abrir disputa - notificar a ambos
                             await _loggingService.LogWarningAsync(
                                 message: "Disputa abierta",
                                 details: $"Has rechazado el servicio #{searchHire.Id}. Se ha abierto una disputa para revisión.",
@@ -875,9 +835,6 @@ namespace newApi.Controllers
                     }
                     catch (StripeException ex)
                     {
-                        await transaction.RollbackAsync();
-                        // 🚨 LOG CRÍTICO: Error de Stripe durante completado de servicio (una sola vez, antes de ProcessMoneyDistributionAsync)
-                        // Este error ocurre ANTES de llamar a ProcessMoneyDistributionAsync, por lo que debe loguearse aquí
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Stripe error during service completion - before money distribution",
                             details: $"Stripe exception occurred in CompleteService endpoint before calling ProcessMoneyDistributionAsync for SearchHire {searchHire.Id}. " +
@@ -906,8 +863,6 @@ namespace newApi.Controllers
                     }
                     catch (Exception ex)
                     {
-                        await transaction.RollbackAsync();
-                        // 🚨 LOG CRÍTICO: Error general durante completado de servicio (una sola vez, con información completa)
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Unexpected error completing service",
                             details: $"An unexpected exception occurred while completing service for SearchHire {searchHire.Id}. " +
@@ -973,6 +928,85 @@ namespace newApi.Controllers
                 
                 return StatusCode(500, new { message = "Failed to complete service" });
             }
+        }
+
+        private async Task ExpireClientDecisionTimersAsync(int searchHireId)
+        {
+            var appointment = await _context.Appointments
+                .FirstOrDefaultAsync(a => a.SearchHireId == searchHireId);
+
+            if (appointment == null)
+            {
+                return;
+            }
+
+            var clientDecisionTimers = await _context.AppointmentTimers
+                .Where(t => t.AppointmentId == appointment.Id &&
+                            t.TimerType == "client_decision" &&
+                            !t.IsExpired)
+                .ToListAsync();
+
+            if (clientDecisionTimers.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var timer in clientDecisionTimers)
+            {
+                timer.IsExpired = true;
+                timer.ExpiredAt = DateTime.UtcNow;
+
+                if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                {
+                    try
+                    {
+                        BackgroundJob.Delete(timer.HangfireJobId);
+                        timer.HangfireJobId = null;
+                    }
+                    catch
+                    {
+                        timer.HangfireJobId = null;
+                    }
+                }
+            }
+
+            await _context.SaveChangesAsync();
+        }
+
+        private string ResolveProfilePictureUrl(ExpertProfile? expertProfile)
+        {
+            if (expertProfile == null)
+            {
+                return "/default-avatar.png";
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(expertProfile.ProfilePictureUrl)
+                ? "/default-avatar.png"
+                : expertProfile.ProfilePictureUrl;
+
+            return _signedUrlService.GetSignedUrl(expertProfile.ProfilePictureObjectName ?? string.Empty) ?? fallback;
+        }
+
+        private string ResolveReviewImageUrl(ReviewImage? image)
+        {
+            if (image == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(image.ImageUrl) ? string.Empty : image.ImageUrl;
+            return _signedUrlService.GetSignedUrl(image.ImageObjectName ?? string.Empty) ?? fallback;
+        }
+
+        private string ResolveDeliverableUrl(SearchHireDeliverable? deliverable)
+        {
+            if (deliverable == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(deliverable.Url) ? string.Empty : deliverable.Url;
+            return _signedUrlService.GetSignedUrl(deliverable.ObjectName ?? string.Empty) ?? fallback;
         }
     }
 

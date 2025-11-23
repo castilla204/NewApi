@@ -5,7 +5,7 @@ const client = new Client({
   port: 30000,
   database: 'atrapo',
   user: 'admin',
-  password: '__REDACTED_CREDENTIAL__'
+  password: process.env.POSTGRES_PASSWORD || process.env.PGPASSWORD || (() => { console.error('ERROR: POSTGRES_PASSWORD or PGPASSWORD not set'); process.exit(1); })()
 });
 
 async function testAutoSubmitReport() {

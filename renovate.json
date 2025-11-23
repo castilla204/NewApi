@@ -6,7 +6,6 @@
   "packageRules": [
     {
       "description": "Auto-merge patch and minor updates for container images",
-<<<<<<< HEAD
       "matchManagers": [
         "dockerfile",
         "docker-compose",
@@ -29,41 +28,22 @@
       "matchUpdateTypes": [
         "patch"
       ],
-=======
-      "matchManagers": ["dockerfile", "docker-compose", "kubernetes"],
-      "matchUpdateTypes": ["patch", "minor", "digest"],
-      "automerge": true,
-      "automergeType": "pr"
-    },
-    {
-      "description": "Auto-merge security patches for dependencies",
-      "matchManagers": ["npm", "pip", "gomod"],
-      "matchUpdateTypes": ["patch"],
->>>>>>> 2bfa797dad2d03519b27c5fc685bb34a9eb84e9d
       "automerge": true
     },
     {
       "description": "Pin Docker image digests",
-<<<<<<< HEAD
       "matchManagers": [
         "dockerfile",
         "docker-compose",
         "kubernetes"
       ],
-=======
-      "matchManagers": ["dockerfile", "docker-compose", "kubernetes"],
->>>>>>> 2bfa797dad2d03519b27c5fc685bb34a9eb84e9d
       "pinDigests": true
     },
     {
       "description": "Require approval for major version updates",
-<<<<<<< HEAD
       "matchUpdateTypes": [
         "major"
       ],
-=======
-      "matchUpdateTypes": ["major"],
->>>>>>> 2bfa797dad2d03519b27c5fc685bb34a9eb84e9d
       "automerge": false
     }
   ],
@@ -87,8 +67,4 @@
   ],
   "commitMessagePrefix": "chore(deps): ",
   "rebaseWhen": "behind-base-branch"
-<<<<<<< HEAD
 }
-=======
-}
->>>>>>> 2bfa797dad2d03519b27c5fc685bb34a9eb84e9d

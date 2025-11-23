@@ -1,0 +1,91 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:base",
+    ":dependencyDashboard",
+    ":enableVulnerabilityAlertsWithLabel(security)"
+  ],
+  "packageRules": [
+    {
+      "description": "Auto-merge patch and minor updates for container images",
+      "matchManagers": ["dockerfile", "docker-compose", "kubernetes"],
+      "matchUpdateTypes": ["patch", "minor", "digest"],
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
+      "requiredStatusChecks": []
+    },
+    {
+      "description": "Auto-merge security patches for dependencies",
+      "matchManagers": ["npm", "pip", "gomod", "gradle", "maven"],
+      "matchUpdateTypes": ["patch"],
+      "matchDepTypes": ["dependencies", "devDependencies"],
+      "vulnerabilityAlerts": {
+        "enabled": true
+      },
+      "automerge": true,
+      "automergeType": "pr"
+    },
+    {
+      "description": "Pin Docker image digests for immutability",
+      "matchManagers": ["dockerfile", "docker-compose", "kubernetes"],
+      "matchPackagePatterns": [".*"],
+      "pinDigests": true
+    },
+    {
+      "description": "Replace :latest tags with specific versions",
+      "matchManagers": ["kubernetes"],
+      "matchFileNames": ["**/*.yaml", "**/*.yml"],
+      "matchPackagePatterns": [".*"],
+      "replaceStrings": {
+        ":latest": ":{{newVersion}}"
+      }
+    },
+    {
+      "description": "Require approval for major version updates",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "requiredApprovals": 1
+    },
+    {
+      "description": "Group Kubernetes updates together",
+      "matchManagers": ["kubernetes"],
+      "groupName": "Kubernetes manifests",
+      "groupSlug": "kubernetes-manifests",
+      "schedule": ["before 10am on monday"]
+    }
+  ],
+  "kubernetes": {
+    "fileMatch": [
+      "**/deployment.yaml",
+      "**/deployment.yml",
+      "**/statefulset.yaml",
+      "**/statefulset.yml",
+      "**/*deployment*.yaml",
+      "**/*deployment*.yml",
+      "k8s/**/*.yaml",
+      "k8s/**/*.yml"
+    ]
+  },
+  "docker": {
+    "pinDigests": true,
+    "replaceString": ":latest"
+  },
+  "schedule": [
+    "before 10am on monday"
+  ],
+  "timezone": "Europe/Madrid",
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "labels": [
+    "dependencies",
+    "renovate"
+  ],
+  "commitMessagePrefix": "chore(deps):",
+  "commitMessageAction": "update",
+  "commitMessageTopic": "{{depName}}",
+  "commitMessageExtra": "to {{newVersion}}",
+  "rebaseWhen": "behind-base-branch",
+  "platformAutomerge": true
+}
+

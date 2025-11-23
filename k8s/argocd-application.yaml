@@ -3,8 +3,6 @@ kind: Application
 metadata:
   name: new-api
   namespace: argocd
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
   source:
@@ -31,4 +29,14 @@ spec:
         duration: 5s
         factor: 2
         maxDuration: 3m
-
+  ignoreDifferences:
+  - group: external-secrets.io
+    kind: ExternalSecret
+    name: newapi-secrets
+    jsonPointers:
+    - /metadata/annotations
+  - group: ""
+    kind: Secret
+    name: newapi-secrets
+    jsonPointers:
+    - /data

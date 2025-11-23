@@ -451,20 +451,14 @@ namespace newApi.Services
         }
 
         /// <summary>
-        /// Deshabilita MFA para un usuario (requiere contraseña + código TOTP)
+        /// Deshabilita MFA para un usuario (solo requiere código TOTP)
+        /// ✅ CORRECCIÓN: Eliminado parámetro password - todos los usuarios usan Google OAuth
         /// </summary>
-        public async Task<bool> DisableMfaAsync(int userId, string password, string totpCode)
+        public async Task<bool> DisableMfaAsync(int userId, string totpCode)
         {
             var user = await _context.Users.FindAsync(userId);
             if (user == null)
                 return false;
-
-            // Verificar contraseña (si el usuario tiene contraseña - no OAuth)
-            if (!string.IsNullOrEmpty(user.Password))
-            {
-                if (!BCrypt.Net.BCrypt.Verify(password, user.Password))
-                    return false;
-            }
 
             var mfaSettings = await _context.UserMfaSettings
                 .FirstOrDefaultAsync(m => m.UserId == userId && m.IsEnabled);

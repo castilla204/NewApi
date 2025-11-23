@@ -23,15 +23,16 @@ namespace newApi.Controllers
         private readonly SystemStatusService _systemStatusService;
         private readonly StorageClient _storageClient;
         private readonly IConfiguration _configuration;
+        private readonly ISignedUrlService _signedUrlService;
 
         public AppointmentController(
             IAppointmentService appointmentService, 
- 
             IAuthorizationServices authService,
             AppDbContext context,
             SystemStatusService systemStatusService,
             StorageClient storageClient,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            ISignedUrlService signedUrlService)
         {
             _appointmentService = appointmentService;
             _authService = authService;
@@ -39,6 +40,7 @@ namespace newApi.Controllers
             _systemStatusService = systemStatusService;
             _storageClient = storageClient;
             _configuration = configuration;
+            _signedUrlService = signedUrlService;
         }
 
         /// <summary>
@@ -359,7 +361,7 @@ namespace newApi.Controllers
                         Id = d.Id,
                         FileName = d.Url.Split('/').Last(),
                         FileType = d.Type,
-                        Url = d.Url,
+                        Url = ResolveDeliverableUrl(d),
                         CreatedAt = d.CreatedAt
                     })
                     .ToList();
@@ -683,7 +685,11 @@ namespace newApi.Controllers
                                     bucket: bucketName,
                                     objectName: objectName,
                                     contentType: contentType,
-                                    source: inputStream
+                                    source: inputStream,
+                                    options: new UploadObjectOptions
+                                    {
+                                        PredefinedAcl = PredefinedObjectAcl.Private
+                                    }
                                 );
                             }
 
@@ -712,6 +718,17 @@ namespace newApi.Controllers
             {
                 return (false, "Error interno al subir archivos");
             }
+        }
+
+        private string ResolveDeliverableUrl(SearchHireDeliverable? deliverable)
+        {
+            if (deliverable == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(deliverable.Url) ? string.Empty : deliverable.Url;
+            return _signedUrlService.GetSignedUrl(deliverable.ObjectName ?? string.Empty) ?? fallback;
         }
 
         #endregion

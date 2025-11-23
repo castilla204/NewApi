@@ -6,7 +6,7 @@ const client = new Client({
   port: 30000,
   database: 'atrapo',
   user: 'admin',
-  password: 'Pedrohabo1//',
+  password: process.env.POSTGRES_PASSWORD || process.env.PGPASSWORD || (() => { console.error('ERROR: POSTGRES_PASSWORD or PGPASSWORD not set'); process.exit(1); })(),
   ssl: false // Cambia a true si necesitas SSL
 });
 

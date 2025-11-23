@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -24,20 +24,22 @@ namespace newApi.Services
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
         private readonly ILoggingService _loggingService;
+        private readonly ISignedUrlService _signedUrlService;
         private readonly string _twilioVerificationServiceSid;
         private readonly string _twilioauthToken;
 
         public UserService(
-     AppDbContext context,
-     IConfiguration configuration,
-
-     StorageClient storageClient,
-     ILoggingService loggingService)
+            AppDbContext context,
+            IConfiguration configuration,
+            StorageClient storageClient,
+            ILoggingService loggingService,
+            ISignedUrlService signedUrlService)
         {
             _context = context;
             _configuration = configuration;
             _storageClient = storageClient;
             _loggingService = loggingService;
+            _signedUrlService = signedUrlService;
             _twilioVerificationServiceSid = configuration["Twilio:VerificationServiceSid"];
             _twilioauthToken = configuration["Twilio:AuthToken"];
         }
@@ -426,58 +428,12 @@ namespace newApi.Services
             {
                 return (false, null, null, null);
             }
-            var bucketName = _configuration["GoogleCloud:BucketName"];
-            var uniqueFileName = $"{Guid.NewGuid()}{extension}";
-            var objectName = $"experts/{uniqueFileName}";
-
-            try
+            // ✅ VALIDACIÓN: Verificar que StorageClient esté configurado
+            if (_storageClient == null)
             {
-                using (var inputStream = request.ProfilePicture.OpenReadStream())
-                using (var image = Image.Load(inputStream))
-                {
-                    image.Mutate(x => x.Resize(new ResizeOptions
-                    {
-                        Size = new Size(200, 200),
-                        Mode = ResizeMode.Max
-                    }));
-
-                    using (var outputStream = new MemoryStream())
-                    {
-                        image.SaveAsJpeg(outputStream);
-                        outputStream.Position = 0;
-                        await _storageClient.UploadObjectAsync(
-                            bucket: bucketName,
-                            objectName: objectName,
-                            contentType: "image/jpeg",
-                            source: outputStream
-                        );
-                        
-                        // 🚨 LOG CRÍTICO: Imagen subida exitosamente
-                        await _loggingService.LogCriticalAsync(
-                            message: "CRITICAL: Profile picture uploaded successfully",
-                            details: $"Profile picture uploaded successfully for user {userId} to {objectName}",
-                            userId: userId,
-                            source: "UserService.BecomeExpert",
-                            relatedEntityType: "User",
-                            relatedEntityId: userId,
-                            additionalData: new { 
-                                Action = "ProfilePictureUpload",
-                                UserId = userId,
-                                ObjectName = objectName,
-                                BucketName = bucketName,
-                                ContentType = "image/jpeg",
-                                Success = true
-                            }
-                        );
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                // 🚨 LOG CRÍTICO: Error en subida de imagen
                 await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Profile picture upload failed",
-                    details: $"Profile picture upload failed for user {userId}: {ex.Message}",
+                    message: "CRITICAL: Google Cloud Storage client not configured",
+                    details: $"StorageClient is null. Cannot upload profile picture for user {userId}.",
                     userId: userId,
                     source: "UserService.BecomeExpert",
                     relatedEntityType: "User",
@@ -485,8 +441,189 @@ namespace newApi.Services
                     additionalData: new { 
                         Action = "ProfilePictureUpload",
                         UserId = userId,
-                        Exception = ex.Message,
+                        Error = "StorageClient is null"
+                    }
+                );
+                return (false, null, null, null);
+            }
+
+            var bucketName = _configuration["GoogleCloud:BucketName"];
+            if (string.IsNullOrEmpty(bucketName))
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Google Cloud bucket name not configured",
+                    details: $"Bucket name is null or empty. Cannot upload profile picture for user {userId}.",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "ProfilePictureUpload",
+                        UserId = userId,
+                        Error = "BucketName is null or empty"
+                    }
+                );
+                return (false, null, null, null);
+            }
+
+            var uniqueFileName = $"{Guid.NewGuid()}{extension}";
+            var objectName = $"experts/{uniqueFileName}";
+
+            try
+            {
+                // ✅ VALIDACIÓN: Verificar que el archivo sea válido
+                if (request.ProfilePicture == null || request.ProfilePicture.Length == 0)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Profile picture is null or empty",
+                        details: $"Profile picture file is null or has 0 length for user {userId}",
+                        userId: userId,
+                        source: "UserService.BecomeExpert",
+                        relatedEntityType: "User",
+                        relatedEntityId: userId
+                    );
+                    return (false, null, null, null);
+                }
+
+                using (var inputStream = request.ProfilePicture.OpenReadStream())
+                {
+                    // ✅ VALIDACIÓN: Verificar que el stream sea válido
+                    if (inputStream == null || inputStream.Length == 0)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Profile picture stream is null or empty",
+                            details: $"Profile picture stream is null or has 0 length for user {userId}",
+                            userId: userId,
+                            source: "UserService.BecomeExpert",
+                            relatedEntityType: "User",
+                            relatedEntityId: userId
+                        );
+                        return (false, null, null, null);
+                    }
+
+                    using (var image = Image.Load(inputStream))
+                    {
+                        image.Mutate(x => x.Resize(new ResizeOptions
+                        {
+                            Size = new Size(200, 200),
+                            Mode = ResizeMode.Max
+                        }));
+
+                        using (var outputStream = new MemoryStream())
+                        {
+                            image.SaveAsJpeg(outputStream);
+                            outputStream.Position = 0;
+
+                            // ✅ VALIDACIÓN: Verificar que el outputStream tenga datos
+                            if (outputStream.Length == 0)
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "Processed image stream is empty",
+                                    details: $"After processing, the image stream has 0 length for user {userId}",
+                                    userId: userId,
+                                    source: "UserService.BecomeExpert",
+                                    relatedEntityType: "User",
+                                    relatedEntityId: userId
+                                );
+                                return (false, null, null, null);
+                            }
+
+                            await _storageClient.UploadObjectAsync(
+                                bucket: bucketName,
+                                objectName: objectName,
+                                contentType: "image/jpeg",
+                                source: outputStream,
+                                options: new UploadObjectOptions
+                                {
+                                    PredefinedAcl = PredefinedObjectAcl.Private
+                                }
+                            );
+                        
+                            // ✅ LOG INFORMATIVO: Imagen subida exitosamente
+                            await _loggingService.LogInfoAsync(
+                                message: "Profile picture uploaded successfully",
+                                details: $"Profile picture uploaded successfully for user {userId} to {objectName}",
+                                userId: userId,
+                                source: "UserService.BecomeExpert",
+                                relatedEntityType: "User",
+                                relatedEntityId: userId,
+                                additionalData: new { 
+                                    Action = "ProfilePictureUpload",
+                                    UserId = userId,
+                                    ObjectName = objectName,
+                                    BucketName = bucketName,
+                                    ContentType = "image/jpeg",
+                                    FileSize = outputStream.Length,
+                                    Success = true
+                                }
+                            );
+                        }
+                    }
+                }
+            }
+            catch (ImageFormatException ex)
+            {
+                // ✅ LOG: Error específico de formato de imagen
+                await _loggingService.LogWarningAsync(
+                    message: "Invalid image format",
+                    details: $"Image format is not supported for user {userId}: {ex.Message}",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "ProfilePictureUpload",
+                        UserId = userId,
+                        ExceptionType = "ImageFormatException",
+                        ExceptionMessage = ex.Message,
+                        FileName = request.ProfilePicture?.FileName
+                    }
+                );
+                return (false, null, null, null);
+            }
+            catch (Google.GoogleApiException ex)
+            {
+                // ✅ LOG: Error específico de Google Cloud Storage
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Google Cloud Storage API error",
+                    details: $"Failed to upload profile picture to Google Cloud Storage for user {userId}: {ex.Message}. Status: {ex.HttpStatusCode}, Error: {ex.Error?.Message}",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "ProfilePictureUpload",
+                        UserId = userId,
+                        ExceptionType = "GoogleApiException",
+                        ExceptionMessage = ex.Message,
+                        HttpStatusCode = ex.HttpStatusCode.ToString(),
+                        ErrorCode = ex.Error?.Code,
+                        BucketName = bucketName,
+                        ObjectName = objectName
+                    }
+                );
+                return (false, null, null, null);
+            }
+            catch (Exception ex)
+            {
+                // 🚨 LOG CRÍTICO: Error genérico en subida de imagen
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Profile picture upload failed",
+                    details: $"Profile picture upload failed for user {userId}: {ex.Message}. Exception type: {ex.GetType().Name}",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { 
+                        Action = "ProfilePictureUpload",
+                        UserId = userId,
+                        ExceptionType = ex.GetType().Name,
+                        ExceptionMessage = ex.Message,
                         StackTrace = ex.StackTrace,
+                        FileName = request.ProfilePicture?.FileName,
+                        FileSize = request.ProfilePicture?.Length,
+                        BucketName = bucketName,
+                        ObjectName = objectName,
                         Success = false
                     }
                 );
@@ -637,7 +774,7 @@ namespace newApi.Services
             return new ExpertProfileDto
             {
                 Id = expertProfile.Id,
-                ProfilePictureUrl = expertProfile.ProfilePictureUrl,
+                ProfilePictureUrl = ResolveProfilePictureUrl(expertProfile),
                 StripeAccountId = expertProfile.StripeAccountId,
                 Description = expertProfile.Description,
                 CreatedAt = expertProfile.CreatedAt,
@@ -732,7 +869,11 @@ namespace newApi.Services
                                     bucket: bucketName,
                                     objectName: objectName,
                                     contentType: "image/jpeg",
-                                    source: outputStream
+                                    source: outputStream,
+                                    options: new UploadObjectOptions
+                                    {
+                                        PredefinedAcl = PredefinedObjectAcl.Private
+                                    }
                                 );
                             }
                         }
@@ -844,7 +985,7 @@ namespace newApi.Services
                 var updatedProfileDto = new ExpertProfileDto
                 {
                     Id = expertProfile.Id,
-                    ProfilePictureUrl = expertProfile.ProfilePictureUrl,
+                    ProfilePictureUrl = ResolveProfilePictureUrl(expertProfile),
                     StripeAccountId = expertProfile.StripeAccountId,
                     Description = expertProfile.Description,
                     CreatedAt = expertProfile.CreatedAt,
@@ -982,6 +1123,20 @@ namespace newApi.Services
         {
             // TODO: Implementar obteniendo el User-Agent del HttpContext
             return null;
+        }
+
+        private string ResolveProfilePictureUrl(ExpertProfile? expertProfile)
+        {
+            if (expertProfile == null)
+            {
+                return "/default-avatar.png";
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(expertProfile.ProfilePictureUrl)
+                ? "/default-avatar.png"
+                : expertProfile.ProfilePictureUrl;
+
+            return _signedUrlService.GetSignedUrl(expertProfile.ProfilePictureObjectName ?? string.Empty) ?? fallback;
         }
     }
 }

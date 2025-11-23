@@ -256,7 +256,8 @@
         </member>
         <member name="M:newApi.Controllers.AuthController.DisableMfa(newApi.DataLayer.Models.DTOs.DisableMfaRequestDto)">
             <summary>
-            ✅ SEGURIDAD 2025: Deshabilitar MFA (requiere contraseña + código TOTP)
+            ✅ SEGURIDAD 2025: Deshabilitar MFA (solo requiere código TOTP)
+            ✅ CORRECCIÓN: Eliminado parámetro password - todos los usuarios usan Google OAuth
             </summary>
         </member>
         <member name="M:newApi.Controllers.AuthController.GetMfaStatus">
@@ -281,12 +282,64 @@
             Funciona incluso cuando el Search fue eliminado (cliente borró su cuenta)
             </summary>
         </member>
+        <member name="T:newApi.Controllers.ChatHub">
+            <summary>
+            ✅ MEJORAS 2025: ChatHub optimizado con mejores prácticas SignalR
+            - Reconexión automática mejorada
+            - Manejo robusto de errores
+            - Estado de usuario (online/offline, typing)
+            - Gestión eficiente de grupos y conexiones
+            - Logging detallado para debugging
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.#ctor(Microsoft.Extensions.DependencyInjection.IServiceScopeFactory)">
+            <summary>
+            Constructor del ChatHub
+            </summary>
+            <param name="serviceScopeFactory">Factory para crear scopes de servicios</param>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.OnConnectedAsync">
+            <summary>
+            ✅ MEJORA 2025: OnConnectedAsync mejorado con mejor manejo de errores y logging
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.OnDisconnectedAsync(System.Exception)">
+            <summary>
+            ✅ MEJORA 2025: OnDisconnectedAsync mejorado con limpieza de grupos y estado
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.JoinConversation(System.Int32)">
+            <summary>
+            ✅ MEJORA 2025: JoinConversation mejorado con notificación de usuario online
+            </summary>
+            <param name="conversationId">ID de la conversación a la que unirse</param>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.LeaveConversation(System.Int32)">
+            <summary>
+            ✅ MEJORA 2025: LeaveConversation mejorado con notificación de usuario offline
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.UserTyping(System.Int32,System.Boolean)">
+            <summary>
+            ✅ NUEVO 2025: Método para indicar que el usuario está escribiendo
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.GetOnlineUsers(System.Int32)">
+            <summary>
+            ✅ NUEVO 2025: Obtener usuarios online en una conversación
+            </summary>
+        </member>
+        <member name="M:newApi.Controllers.ChatHub.CleanupUserFromConversations(System.Int32)">
+            <summary>
+            ✅ MEJORA 2025: Limpiar usuario de todas las conversaciones al desconectarse
+            </summary>
+        </member>
         <member name="T:newApi.Controllers.DisputeController">
             <summary>
             Controlador para la gestión de disputas por parte de administradores
             </summary>
         </member>
-        <member name="M:newApi.Controllers.DisputeController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Configuration.IConfiguration,Google.Cloud.Storage.V1.StorageClient,newApi.Services.IAuthorizationServices,newApi.Services.SystemStatusService,newApi.Services.StripeRefundService,newApi.Services.ILoggingService)">
+        <member name="M:newApi.Controllers.DisputeController.#ctor(newApi.DataLayer.Models.AppDbContext,Microsoft.Extensions.Configuration.IConfiguration,Google.Cloud.Storage.V1.StorageClient,newApi.Services.IAuthorizationServices,newApi.Services.SystemStatusService,newApi.Services.StripeRefundService,newApi.Services.ILoggingService,newApi.Services.ISignedUrlService)">
             <summary>
             Constructor del controlador de disputas
             </summary>
@@ -1184,6 +1237,7 @@
         <member name="T:newApi.DataLayer.Models.DTOs.DisableMfaRequestDto">
             <summary>
             DTO para deshabilitar MFA
+            ✅ CORRECCIÓN: Solo requiere código TOTP (todos los usuarios usan Google OAuth)
             </summary>
         </member>
         <member name="T:newApi.DataLayer.Models.DTOs.MfaStatusDto">
@@ -1803,6 +1857,17 @@
         <member name="P:newApi.ScrapperGateway.DataLayer.Models.DTOs.UpdateExpertProfileRequestDto.AvailabilityEndTime">
             <summary>
             Hora de fin de la franja horaria (formato "HH:mm", ej: "18:00")
+            </summary>
+        </member>
+        <member name="T:newApi.Middleware.RequireMfaMiddleware">
+            <summary>
+            ✅ SEGURIDAD 2025: Middleware para FORZAR MFA en Admin y Expertos
+            OWASP/NIST/PCI DSS: MFA obligatorio para cuentas privilegiadas
+            </summary>
+        </member>
+        <member name="T:newApi.Middleware.RequireMfaMiddlewareExtensions">
+            <summary>
+            Extensión para registrar el middleware
             </summary>
         </member>
         <member name="T:newApi.Migrations.AddServiceTypeCategoryTable">
@@ -2931,9 +2996,10 @@
             Verifica un código MFA (TOTP o código de recuperación)
             </summary>
         </member>
-        <member name="M:newApi.Services.MfaService.DisableMfaAsync(System.Int32,System.String,System.String)">
+        <member name="M:newApi.Services.MfaService.DisableMfaAsync(System.Int32,System.String)">
             <summary>
-            Deshabilita MFA para un usuario (requiere contraseña + código TOTP)
+            Deshabilita MFA para un usuario (solo requiere código TOTP)
+            ✅ CORRECCIÓN: Eliminado parámetro password - todos los usuarios usan Google OAuth
             </summary>
         </member>
         <member name="M:newApi.Services.MfaService.GetMfaStatusAsync(System.Int32)">
@@ -2974,7 +3040,7 @@
             <param name="updateState">Si true, cambia el estado de Appointment y SearchHire antes de procesar dinero (por defecto true)</param>
             <returns>True si refund y (si aplica) transfer se procesan correctamente</returns>
         </member>
-        <member name="M:newApi.Services.SearchHireService.GetStatusIdByValueAsync(System.String)">
+        <member name="M:newApi.Services.SearchHireService.FindStatusIdByValueAsync(System.String)">
             <summary>
             Helper method to get StatusId from StatusValue
             </summary>

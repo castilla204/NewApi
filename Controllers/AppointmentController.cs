@@ -685,11 +685,10 @@ namespace newApi.Controllers
                                     bucket: bucketName,
                                     objectName: objectName,
                                     contentType: contentType,
-                                    source: inputStream,
-                                    options: new UploadObjectOptions
-                                    {
-                                        PredefinedAcl = PredefinedObjectAcl.Private
-                                    }
+                                    source: inputStream
+                                    // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
+                                    // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
+                                    // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
                                 );
                             }
 

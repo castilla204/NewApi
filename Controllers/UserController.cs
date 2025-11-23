@@ -449,10 +449,9 @@ public class UserController : ControllerBase
             var (success, token, userResult, expertProfile) = await _userService.BecomeExpert(userId, request);
             if (!success)
             {
-                // 🚨 LOG CRÍTICO: Fallo al convertirse en experto (error inesperado)
-                // El servicio ya ha logueado el error específico, aquí solo devolvemos un mensaje genérico
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Failed to become expert - unexpected error",
+                // ✅ LOG: Fallo al convertirse en experto (WARNING, no crítico - el servicio ya logueó el error específico)
+                await _loggingService.LogWarningAsync(
+                    message: "Failed to become expert - unexpected error",
                     details: $"User {userId} failed to become expert after all validations passed. Check logs for specific error details.",
                     userId: userId,
                     source: "UserController.BecomeExpert",

@@ -357,22 +357,33 @@ builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password",
 builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key", null) ?? "";
 if (isDevelopment)
 {
-    // En desarrollo: usar variables de entorno o User Secrets
-    // NUNCA hardcodear secretos en el código
+    // En desarrollo: usar variables de entorno, User Secrets, o valor hardcodeado como fallback
     // Configurar con: dotnet user-secrets set "Stripe:SecretKey" "valor"
     // O usar variables de entorno: STRIPE_SECRET_KEY
     if (string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]))
     {
-        builder.Configuration["Stripe:SecretKey"] = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY") ?? "";
+        builder.Configuration["Stripe:SecretKey"] = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY") 
+            ?? "__REDACTED_STRIPE_SECRET__"; // ✅ DESARROLLO: Clave hardcodeada como fallback
     }
     if (string.IsNullOrEmpty(builder.Configuration["Stripe:WebhookSecret"]))
     {
-        builder.Configuration["Stripe:WebhookSecret"] = Environment.GetEnvironmentVariable("STRIPE_WEBHOOK_SECRET") ?? "";
+        builder.Configuration["Stripe:WebhookSecret"] = Environment.GetEnvironmentVariable("STRIPE_WEBHOOK_SECRET") 
+            ?? "__REDACTED_STRIPE_WEBHOOK__"; // ✅ DESARROLLO: Webhook secret para Connect events (account.updated, etc.)
     }
+    // ⚠️ IMPORTANTE: El WebhookSecret es único para cada endpoint de webhook en Stripe
+    // Para obtenerlo: Stripe Dashboard → Developers → Webhooks → Tu endpoint → Signing secret (whsec_...)
+    // Configurar con: dotnet user-secrets set "Stripe:WebhookSecret" "whsec_..."
+    // O variable de entorno: STRIPE_WEBHOOK_SECRET=whsec_...
+    
     if (string.IsNullOrEmpty(builder.Configuration["Stripe:GeneralWebhookSecret"]))
     {
-        builder.Configuration["Stripe:GeneralWebhookSecret"] = Environment.GetEnvironmentVariable("STRIPE_GENERAL_WEBHOOK_SECRET") ?? "";
+        builder.Configuration["Stripe:GeneralWebhookSecret"] = Environment.GetEnvironmentVariable("STRIPE_GENERAL_WEBHOOK_SECRET") 
+            ?? "__REDACTED_STRIPE_WEBHOOK__"; // ✅ DESARROLLO: Webhook secret para eventos generales (payment_intent.succeeded, checkout.session.completed, etc.)
     }
+    // ⚠️ IMPORTANTE: El GeneralWebhookSecret es para eventos generales (no Connect)
+    // Para obtenerlo: Stripe Dashboard → Developers → Webhooks → Tu endpoint → Signing secret (whsec_...)
+    // Configurar con: dotnet user-secrets set "Stripe:GeneralWebhookSecret" "whsec_..."
+    // O variable de entorno: STRIPE_GENERAL_WEBHOOK_SECRET=whsec_...
 }
 else
 {

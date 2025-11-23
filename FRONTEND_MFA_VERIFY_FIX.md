@@ -2,23 +2,23 @@
 
 ## 📋 ¿A QUIÉN SE LE OBLIGA EL MFA (OTP)?
 
-**MFA es OBLIGATORIO para:**
-- ✅ **Admin** (role = 2) - Administradores del sistema
-- ✅ **Expert** (role = 1) - Expertos que manejan dinero
-
-**MFA es OPCIONAL para:**
+**MFA es OPCIONAL para TODOS los usuarios:**
+- ⚠️ **Admin** (role = 2) - Administradores del sistema
+- ⚠️ **Expert** (role = 1) - Expertos que manejan dinero
 - ⚠️ **Client** (role = 0) - Clientes normales
 
 **Lógica del backend:**
 ```csharp
-// Si el usuario es Admin o Expert → MFA obligatorio
-var requiresMfa = userRole == UserRole.Admin || userRole == UserRole.Expert;
+// MFA es OPCIONAL - no se obliga a nadie a configurarlo
+// PERO si alguien lo activa, debe verificar el código para acceder
+var hasMfaEnabled = mfaSettings != null && mfaSettings.IsEnabled;
 ```
 
-**¿Qué significa "obligatorio"?**
-- Si un Admin o Expert NO tiene MFA habilitado → El backend bloquea TODAS las rutas (excepto las permitidas)
-- Si un Admin o Expert tiene MFA habilitado pero NO lo ha verificado en esta sesión → El backend bloquea TODAS las rutas (excepto las permitidas)
-- Los Clientes pueden usar la app sin MFA (es opcional para ellos)
+**¿Qué significa esto?**
+- ✅ Si un usuario NO tiene MFA habilitado → Puede acceder normalmente (sin restricciones)
+- ❌ Si un usuario tiene MFA habilitado pero NO lo ha verificado en esta sesión → El backend bloquea TODAS las rutas (excepto las permitidas para verificar)
+- ✅ Si un usuario tiene MFA habilitado y verificado → Puede acceder normalmente
+- 🔒 **Regla de seguridad:** Si activas MFA, debes verificar el código. No puedes tener MFA activado y acceder sin verificar.
 
 ---
 

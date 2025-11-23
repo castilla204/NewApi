@@ -656,6 +656,11 @@
             Crea una notificación para el experto cuando su cuenta es desautorizada
             </summary>
         </member>
+        <member name="M:newApi.Controllers.SubscriptionController.GetEventTypeFromJson(System.String)">
+            <summary>
+            Método auxiliar para extraer el tipo de evento desde el JSON del webhook
+            </summary>
+        </member>
         <member name="M:newApi.Controllers.SystemStatusController.GetStatuses(System.String)">
             <summary>
             Obtiene todos los estados del sistema por tipo
@@ -1861,8 +1866,9 @@
         </member>
         <member name="T:newApi.Middleware.RequireMfaMiddleware">
             <summary>
-            ✅ SEGURIDAD 2025: Middleware para FORZAR MFA en Admin y Expertos
-            OWASP/NIST/PCI DSS: MFA obligatorio para cuentas privilegiadas
+            ✅ SEGURIDAD 2025: Middleware para verificar MFA cuando está habilitado
+            Si un usuario tiene MFA activado, debe verificar el código para acceder
+            MFA es OPCIONAL para todos los usuarios (no obligatorio)
             </summary>
         </member>
         <member name="T:newApi.Middleware.RequireMfaMiddlewareExtensions">

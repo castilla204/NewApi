@@ -71,7 +71,8 @@ namespace newApi.Services
                 var query = _context.SearchServices
                     .AsNoTracking() // ✅ CORRECCIÓN: Forzar consulta desde BD, evitar tracking de EF Core
                     .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId && ss.IsActive && !ss.ExpertProfile.IsOnVacation
-                        && ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted)
+                        && (ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted
+                            || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)) // ✅ FIX: Permitir PendingVerification
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
@@ -149,7 +150,8 @@ namespace newApi.Services
                 var query = _context.SearchServices
                     .AsNoTracking() // ✅ CORRECCIÓN: Forzar consulta desde BD, evitar tracking de EF Core
                     .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId && ss.IsActive && !ss.ExpertProfile.IsOnVacation
-                        && ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted)
+                        && (ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted
+                            || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)) // ✅ FIX: Permitir PendingVerification
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
@@ -489,15 +491,15 @@ namespace newApi.Services
                             {
                                 image.SaveAsJpeg(outputStream);
                                 outputStream.Position = 0;
+                                // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
+                                // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
                                 await _storageClient.UploadObjectAsync(
                                     bucketName,
                                     objectName,
                                     "image/jpeg",
-                                    outputStream,
-                                    new UploadObjectOptions
-                                    {
-                                        PredefinedAcl = PredefinedObjectAcl.Private
-                                    }
+                                    outputStream
+                                    // ✅ REMOVIDO: PredefinedAcl no es compatible con uniform bucket-level access
+                                    // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
                                 );
                             }
                         }
@@ -892,15 +894,15 @@ namespace newApi.Services
                             {
                                 image.SaveAsJpeg(outputStream);
                                 outputStream.Position = 0;
+                                // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
+                                // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
                                 await _storageClient.UploadObjectAsync(
                                     bucketName,
                                     objectName,
                                     "image/jpeg",
-                                    outputStream,
-                                    new UploadObjectOptions
-                                    {
-                                        PredefinedAcl = PredefinedObjectAcl.Private
-                                    }
+                                    outputStream
+                                    // ✅ REMOVIDO: PredefinedAcl no es compatible con uniform bucket-level access
+                                    // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
                                 );
                             }
                         }

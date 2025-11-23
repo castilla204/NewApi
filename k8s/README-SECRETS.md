@@ -69,3 +69,17 @@ data:
 
 Pero **NUNCA** con valores reales.
 
+
+## 📝 Nota sobre postgres-host
+
+**IMPORTANTE:** El secret `postgres-host` en Google Cloud Secret Manager está configurado con la IP directa `10.43.68.18` en lugar del hostname `postgres-svc`.
+
+**Razón:** El DNS de Kubernetes no funciona correctamente en los pods, por lo que se usa la IP directa del ClusterIP del servicio.
+
+**ClusterIP fijo:** El servicio `postgres-svc` tiene un ClusterIP fijo (`10.43.68.18`) configurado en `k8s/postgres-service.yaml` para garantizar que la IP no cambie aunque se recree el servicio.
+
+**Para actualizar el secret en GCP:**
+```bash
+gcloud secrets versions add postgres-host --data-file=- <<< '10.43.68.18'
+```
+

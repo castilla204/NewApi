@@ -18,12 +18,8 @@
       "disabled": false,
       "alwaysAllow": [],
       "env": {
-        "POSTGRES_HOST": "${POSTGRES_HOST:-185.166.39.4}",
-        "POSTGRES_PORT": "${POSTGRES_PORT:-30000}",
-        "POSTGRES_DATABASE": "${POSTGRES_DATABASE:-atrapo}",
-        "POSTGRES_USER": "${POSTGRES_USER:-admin}",
-        "POSTGRES_PASSWORD": "${POSTGRES_PASSWORD}",
-        "PGPASSWORD": "${PGPASSWORD}",
+        "POSTGRES_CONNECTION_STRING": "postgresql://admin:Pedrohabo1%2F%2F@185.166.39.4:30000/atrapo",
+        "PGPASSWORD": "Pedrohabo1//",
         "DANGEROUSLY_ALLOW_WRITE_OPS": "true"
       }
     }

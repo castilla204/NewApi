@@ -66,6 +66,5 @@
     "renovate"
   ],
   "commitMessagePrefix": "chore(deps): ",
-  "rebaseWhen": "behind-base-branch",
-  "_trigger": "renovate-check"
+  "rebaseWhen": "behind-base-branch"
 }

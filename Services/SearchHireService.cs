@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Stripe.Checkout;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
@@ -86,7 +86,17 @@ namespace newApi.Services
                 hire.UpdatedAt = DateTime.UtcNow;
             }
 
-            hire.StatusId = await GetStatusIdByValueAsync(status);
+            var statusId = await FindStatusIdByValueAsync(status);
+            if (!statusId.HasValue)
+            {
+                return (false, $"Status '{status}' does not exist for SearchHire entities");
+            }
+
+            hire.StatusId = statusId.Value;
+            if (status != "completed")
+            {
+                hire.UpdatedAt = DateTime.UtcNow;
+            }
             await _context.SaveChangesAsync();
             return (true, string.Empty);
         }
@@ -141,18 +151,12 @@ namespace newApi.Services
         /// <summary>
         /// Helper method to get StatusId from StatusValue
         /// </summary>
-        private async Task<int> GetStatusIdByValueAsync(string statusValue)
+        private async Task<int?> FindStatusIdByValueAsync(string statusValue)
         {
             var systemStatus = await _context.SystemStatuses
                 .FirstOrDefaultAsync(s => s.StatusValue == statusValue && s.StatusType == "SearchHireStatus");
-            
-            if (systemStatus == null)
-            {
-                // Default to "pending" (ID = 1)
-                return 1;
-            }
-            
-            return systemStatus.Id;
+
+            return systemStatus?.Id;
         }
 
         private static SearchHireResponseDto MapToResponseDto(SearchHire hire)

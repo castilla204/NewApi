@@ -1039,10 +1039,7 @@ builder.Services.AddCors(options =>
 });
 
 
-// ⚠️  HANGFIRE TEMPORALMENTE DESHABILITADO
-// Causa problemas de agotamiento de recursos de socket en K3s
-// TODO: Habilitar cuando se optimice la configuración de PostgreSQL o se use Redis como backend
-/*
+// ✅ HANGFIRE HABILITADO
 builder.Services.AddHangfire(config => config
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
@@ -1065,7 +1062,6 @@ builder.Services.AddHangfireServer(options =>
     options.ServerCheckInterval = TimeSpan.FromMinutes(1);
     options.SchedulePollingInterval = TimeSpan.FromSeconds(30);
 });
-*/
 
 // Register Services
 builder.Services.AddScoped<IRabbitMQService, RabbitMQService>();
@@ -1172,12 +1168,10 @@ catch (Exception ex)
 }
 
 
-// Hangfire Dashboard - Comentado porque Hangfire está deshabilitado
-// app.UseHangfireDashboard("/hangfire");
+// ✅ Hangfire Dashboard habilitado
+app.UseHangfireDashboard("/hangfire");
 
-// ✅ SEGURIDAD 2025: Limpieza automática de refresh tokens - Comentado porque Hangfire está deshabilitado
-// TODO: Implementar con un servicio background alternativo o habilitar Hangfire con Redis
-/*
+// ✅ SEGURIDAD 2025: Limpieza automática de refresh tokens
 RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     "cleanup-expired-refresh-tokens",
     service => service.CleanupExpiredTokensAsync(),
@@ -1189,8 +1183,7 @@ RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
 );
 GlobalConfiguration.Configuration
     .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()))
-    .UseFilter(new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>()));
-*/ // ✅ Filtro para alertar a soporte cuando jobs fallan definitivamente
+    .UseFilter(new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>())); // ✅ Filtro para alertar a soporte cuando jobs fallan definitivamente
 
 // ✅ OPTIMIZADO: Usar solo scheduled jobs para eventos específicos
 // Los recurring jobs fueron eliminados porque:

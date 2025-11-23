@@ -18,8 +18,8 @@
       "disabled": false,
       "alwaysAllow": [],
       "env": {
-        "POSTGRES_CONNECTION_STRING": "postgresql://admin:Pedrohabo1%2F%2F@185.166.39.4:30000/atrapo",
-        "PGPASSWORD": "Pedrohabo1//",
+        "POSTGRES_CONNECTION_STRING": "${POSTGRES_CONNECTION_STRING}",
+        "PGPASSWORD": "${PGPASSWORD}",
         "DANGEROUSLY_ALLOW_WRITE_OPS": "true"
       }
     }

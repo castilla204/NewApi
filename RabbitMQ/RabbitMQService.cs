@@ -8,7 +8,7 @@ namespace newApi.RabbitMQ
     public class RabbitMQService : IRabbitMQService, IDisposable
     {
         private IConnection _connection;
-        private IChannel _channel;
+        private IModel _channel;
         private readonly Dictionary<string, TaskCompletionSource<string>> _pendingRequests;
         private const int DEFAULT_TIMEOUT = 120000; // 2 minutes default timeout
         private static readonly SemaphoreSlim _initSemaphore = new SemaphoreSlim(1, 1);

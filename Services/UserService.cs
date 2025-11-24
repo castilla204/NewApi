@@ -270,6 +270,21 @@ namespace newApi.Services
                 var settings = new GoogleJsonWebSignature.ValidationSettings { Audience = clientIds };
                 GoogleJsonWebSignature.Payload payload;
                 
+                // ✅ LOG: Información de validación antes de validar
+                await _loggingService.LogInfoAsync(
+                    message: "Attempting Google token validation",
+                    details: $"Validating token with Client IDs: {string.Join(", ", clientIds)}",
+                    userId: null,
+                    source: "UserService.GoogleAuth",
+                    relatedEntityType: "Auth",
+                    additionalData: new { 
+                        Action = "GoogleTokenValidationStart",
+                        ClientIds = clientIds,
+                        ClientIdsCount = clientIds.Length,
+                        TokenLength = request.AccessToken?.Length ?? 0
+                    }
+                );
+                
                 try
                 {
                     payload = await GoogleJsonWebSignature.ValidateAsync(request.AccessToken, settings);

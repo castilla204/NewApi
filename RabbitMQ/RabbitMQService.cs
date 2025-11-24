@@ -90,12 +90,10 @@ namespace newApi.RabbitMQ
             var json = JsonConvert.SerializeObject(message);
             var body = Encoding.UTF8.GetBytes(json);
 
-            var properties = _channel.CreateBasicProperties()
-            {
-                Persistent = false,
-                ContentType = "application/json",
-                DeliveryMode = 1
-            };
+            var properties = _channel.CreateBasicProperties();
+            properties.Persistent = false;
+            properties.ContentType = "application/json";
+            properties.DeliveryMode = 1;
 
             _channel.BasicPublish(
                 exchange: "",
@@ -142,13 +140,11 @@ namespace newApi.RabbitMQ
                     await Task.CompletedTask;
                 };
 
-                var props = _channel.CreateBasicProperties()
-                {
-                    CorrelationId = correlationId,
-                    ReplyTo = replyQueueName,
-                    ContentType = "application/json",
-                    DeliveryMode = 1
-                };
+                var props = _channel.CreateBasicProperties();
+                props.CorrelationId = correlationId;
+                props.ReplyTo = replyQueueName;
+                props.ContentType = "application/json";
+                props.DeliveryMode = 1;
 
                 var json = JsonConvert.SerializeObject(message);
                 var body = Encoding.UTF8.GetBytes(json);

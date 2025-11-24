@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
@@ -11,11 +12,10 @@ using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Google.Cloud.Storage.V1;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Processing;
 using System.IO;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using newApi.Services;
 
 namespace newApi.Controllers
@@ -33,8 +33,21 @@ namespace newApi.Controllers
         private readonly IConfiguration _configuration;
         private readonly IAuthorizationServices _authService;
         private readonly ILoggingService _loggingService;
+        private readonly ISignedUrlService _signedUrlService;
+        private static readonly HashSet<string> AllowedImageExtensions = new(StringComparer.OrdinalIgnoreCase) { ".jpg", ".jpeg", ".png" };
+        private static readonly HashSet<string> AllowedVideoExtensions = new(StringComparer.OrdinalIgnoreCase) { ".mp4" };
+        private static readonly HashSet<string> AllowedImageContentTypes = new(StringComparer.OrdinalIgnoreCase) { "image/jpeg", "image/png" };
+        private static readonly HashSet<string> AllowedVideoContentTypes = new(StringComparer.OrdinalIgnoreCase) { "video/mp4" };
+        private const long MaxAttachmentSizeBytes = 10 * 1024 * 1024;
 
-        public ChatController(AppDbContext context, IHubContext<ChatHub> hubContext, StorageClient storageClient, IConfiguration configuration, IAuthorizationServices authService, ILoggingService loggingService)
+        public ChatController(
+            AppDbContext context,
+            IHubContext<ChatHub> hubContext,
+            StorageClient storageClient,
+            IConfiguration configuration,
+            IAuthorizationServices authService,
+            ILoggingService loggingService,
+            ISignedUrlService signedUrlService)
         {
             _context = context;
             _hubContext = hubContext;
@@ -42,6 +55,7 @@ namespace newApi.Controllers
             _configuration = configuration;
             _authService = authService;
             _loggingService = loggingService;
+            _signedUrlService = signedUrlService;
         }
 
         [HttpGet("conversation")]
@@ -123,6 +137,7 @@ namespace newApi.Controllers
                 }
 
                 var conversationDto = ConversationDto.FromConversation(conversation);
+                PopulateSignedAttachmentUrls(conversation, conversationDto);
                 return Ok(conversationDto);
             }
             catch (Exception)
@@ -156,7 +171,15 @@ namespace newApi.Controllers
                     .OrderByDescending(c => c.UpdatedAt)
                     .ToListAsync();
 
-                var conversationDtos = conversations.Select(ConversationDto.FromConversation).ToList();
+                var conversationDtos = conversations
+                    .Select(c => ConversationDto.FromConversation(c))
+                    .ToList();
+
+                for (var i = 0; i < conversations.Count && i < conversationDtos.Count; i++)
+                {
+                    PopulateSignedAttachmentUrls(conversations[i], conversationDtos[i]);
+                }
+
                 return Ok(conversationDtos);
             }
             catch (Exception ex)
@@ -261,6 +284,7 @@ namespace newApi.Controllers
                 }
 
                 var conversationDto = ConversationDto.FromConversation(conversation);
+                PopulateSignedAttachmentUrls(conversation, conversationDto);
                 return Ok(conversationDto);
             }
             catch (Exception ex)
@@ -295,6 +319,7 @@ namespace newApi.Controllers
                 }
 
                 var conversationDto = ConversationDto.FromConversation(conversation);
+                PopulateSignedAttachmentUrls(conversation, conversationDto);
                 return Ok(conversationDto);
             }
             catch (Exception ex)
@@ -328,25 +353,32 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid or missing user ID in token" });
                 }
 
+                var isAdmin = _authService.IsAdmin(User);
                 var conversation = await _context.Conversations
                     .Include(c => c.Messages)
-                    .FirstOrDefaultAsync(c => c.Id == dto.ConversationId &&
-                                             ((c.ClientId.HasValue && c.ClientId.Value == userId) || 
-                                              (c.ExpertId.HasValue && c.ExpertId.Value == userId)));
+                    .FirstOrDefaultAsync(c => c.Id == dto.ConversationId);
 
                 if (conversation == null)
                 {
-                    return NotFound(new { message = "Conversation not found or you are not authorized" });
+                    return NotFound(new { message = "Conversation not found" });
                 }
 
-                if (string.IsNullOrEmpty(dto.Content) && (dto.Attachments == null || !dto.Attachments.Any()) &&
-                    string.IsNullOrEmpty(dto.LocationLatitude) && string.IsNullOrEmpty(dto.LocationLongitude))
+                if (!UserBelongsToConversation(conversation, userId, isAdmin))
+                {
+                    return Unauthorized(new { message = "You are not authorized to send messages to this conversation" });
+                }
+
+                var sanitizedContent = SanitizeMessageContent(dto.Content);
+                var hasAttachments = dto.Attachments != null && dto.Attachments.Any();
+                var hasLocation = !string.IsNullOrWhiteSpace(dto.LocationLatitude) && !string.IsNullOrWhiteSpace(dto.LocationLongitude);
+
+                if (string.IsNullOrEmpty(sanitizedContent) && !hasAttachments && !hasLocation)
                 {
                     return BadRequest(new { message = "At least one of content, attachments, or location must be provided" });
                 }
 
                 // Validate location data
-                if (!string.IsNullOrEmpty(dto.LocationLatitude) && !string.IsNullOrEmpty(dto.LocationLongitude))
+                if (hasLocation)
                 {
                     // Use InvariantCulture to handle both comma and period separators
                     if (!double.TryParse(dto.LocationLatitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var lat) ||
@@ -364,7 +396,7 @@ namespace newApi.Controllers
                 {
                     ConversationId = dto.ConversationId,
                     SenderId = userId,
-                    Content = string.IsNullOrEmpty(dto.Content) ? null : dto.Content, // Ensure nullable Content
+                    Content = string.IsNullOrEmpty(sanitizedContent) ? null : sanitizedContent,
                     SentAt = DateTime.UtcNow,
                     IsRead = false,
                     LocationLatitude = dto.LocationLatitude,
@@ -375,99 +407,154 @@ namespace newApi.Controllers
                 conversation.UpdatedAt = DateTime.UtcNow;
                 await _context.SaveChangesAsync();
 
-                var attachmentUrls = new List<string>();
+                    var attachmentUrls = new List<string>();
                 if (dto.Attachments != null && dto.Attachments.Any())
                 {
+                    // ✅ LOG: Inicio del proceso de subida de archivos
+                    await _loggingService.LogInfoAsync(
+                        message: "Starting file upload process",
+                        details: $"Starting upload of {dto.Attachments.Count} file(s) for conversation {dto.ConversationId}",
+                        userId: userId,
+                        source: "ChatController.SendMessage",
+                        relatedEntityType: "Message",
+                        relatedEntityId: dto.ConversationId,
+                        additionalData: new { 
+                            ConversationId = dto.ConversationId, 
+                            FileCount = dto.Attachments.Count,
+                            FileNames = dto.Attachments.Select(f => f.FileName).ToList()
+                        },
+                        notifyUser: false
+                    );
+
+                    // ✅ CORRECCIÓN: Validar que StorageClient esté disponible
+                    if (_storageClient == null)
+                    {
+                        await _loggingService.LogErrorAsync(
+                            message: "StorageClient not available for file upload",
+                            details: "Google Cloud Storage client is not configured. Cannot upload attachments.",
+                            userId: userId,
+                            source: "ChatController.SendMessage",
+                            relatedEntityType: "Message",
+                            relatedEntityId: dto.ConversationId,
+                            additionalData: new { ConversationId = dto.ConversationId, FileCount = dto.Attachments.Count }
+                        );
+                        return StatusCode(500, new { message = "File upload service is not available. Please contact support." });
+                    }
+
                     var bucketName = _configuration["GoogleCloud:BucketName"];
+                    if (string.IsNullOrEmpty(bucketName))
+                    {
+                        await _loggingService.LogErrorAsync(
+                            message: "Bucket name not configured",
+                            details: "GoogleCloud:BucketName is not configured in app settings.",
+                            userId: userId,
+                            source: "ChatController.SendMessage",
+                            relatedEntityType: "Message",
+                            relatedEntityId: dto.ConversationId,
+                            additionalData: new { ConversationId = dto.ConversationId }
+                        );
+                        return StatusCode(500, new { message = "File upload configuration error. Please contact support." });
+                    }
+
+                    // ✅ LOG: Configuración validada
+                    await _loggingService.LogInfoAsync(
+                        message: "File upload configuration validated",
+                        details: $"StorageClient available, bucket name: {bucketName}",
+                        userId: userId,
+                        source: "ChatController.SendMessage",
+                        relatedEntityType: "Message",
+                        relatedEntityId: dto.ConversationId,
+                        additionalData: new { BucketName = bucketName },
+                        notifyUser: false
+                    );
+
                     foreach (var file in dto.Attachments)
                     {
-                        var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
-                        if (!new[] { ".jpg", ".jpeg", ".png", ".mp4" }.Contains(extension))
-                        {
-                            return BadRequest(new { message = $"Invalid file type: {file.FileName}. Only JPG, PNG, and MP4 files are allowed" });
-                        }
-
-                        // Validate file size (10MB limit for messages)
-                        if (file.Length > 10 * 1024 * 1024)
-                        {
-                            return BadRequest(new { message = $"File {file.FileName} exceeds 10MB limit" });
-                        }
-
-                        var uniqueFileName = $"{Guid.NewGuid()}{extension}";
-                        var objectName = $"messages/{uniqueFileName}";
-                        var contentType = extension == ".mp4" ? "video/mp4" : "image/jpeg";
+                        // ✅ LOG: Inicio de subida de archivo individual
+                        await _loggingService.LogInfoAsync(
+                            message: "Starting individual file upload",
+                            details: $"Starting upload of file: {file.FileName}",
+                            userId: userId,
+                            source: "ChatController.SendMessage",
+                            relatedEntityType: "Message",
+                            relatedEntityId: dto.ConversationId,
+                            additionalData: new { 
+                                FileName = file.FileName,
+                                FileSize = file.Length,
+                                ContentType = file.ContentType,
+                                MessageId = message.Id
+                            },
+                            notifyUser: false
+                        );
 
                         try
                         {
-                            using (var inputStream = file.OpenReadStream())
-                            {
-                                if (extension == ".jpg" || extension == ".jpeg" || extension == ".png")
-                                {
-                                    using (var image = Image.Load(inputStream))
-                                    {
-                                        image.Mutate(x => x.Resize(new ResizeOptions
-                                        {
-                                            Size = new Size(200, 200),
-                                            Mode = ResizeMode.Max
-                                        }));
-
-                                        using (var outputStream = new MemoryStream())
-                                        {
-                                            image.SaveAsJpeg(outputStream);
-                                            outputStream.Position = 0;
-                                            await _storageClient.UploadObjectAsync(
-                                                bucket: bucketName,
-                                                objectName: objectName,
-                                                contentType: contentType,
-                                                source: outputStream
-                                            );
-                                        }
-                                    }
-                                }
-                                else
-                                {
-                                    await _storageClient.UploadObjectAsync(
-                                        bucket: bucketName,
-                                        objectName: objectName,
-                                        contentType: contentType,
-                                        source: inputStream
-                                    );
-                                }
-                            }
-
-                            var attachmentUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-                            attachmentUrls.Add(attachmentUrl);
+                            var uploadResult = await ValidateAndUploadAttachmentAsync(file, bucketName, dto.ConversationId, userId);
+                            
+                            // ✅ LOG: Archivo validado y subido exitosamente
+                            await _loggingService.LogInfoAsync(
+                                message: "File uploaded successfully",
+                                details: $"File {file.FileName} uploaded successfully to {uploadResult.ObjectName}",
+                                userId: userId,
+                                source: "ChatController.SendMessage",
+                                relatedEntityType: "Message",
+                                relatedEntityId: message.Id,
+                                additionalData: new { 
+                                    FileName = file.FileName,
+                                    ObjectName = uploadResult.ObjectName,
+                                    Url = uploadResult.Url,
+                                    Type = uploadResult.Type
+                                },
+                                notifyUser: false
+                            );
 
                             var attachment = new MessageAttachment
                             {
                                 MessageId = message.Id,
-                                Url = attachmentUrl,
-                                ObjectName = objectName,
-                                Type = extension == ".mp4" ? "video" : "image",
+                                Url = uploadResult.Url,
+                                ObjectName = uploadResult.ObjectName,
+                                Type = uploadResult.Type,
                                 CreatedAt = DateTime.UtcNow
                             };
                             _context.MessageAttachments.Add(attachment);
+                            attachmentUrls.Add(ResolveAttachmentUrl(attachment));
                         }
-                        catch (Exception ex)
+                        catch (InvalidOperationException ex)
                         {
-                            // ✅ LOG EN BD: Error al subir archivo
-                            await _loggingService.LogErrorAsync(
-                                message: "Error uploading file for message",
-                                details: $"Error uploading file {file.FileName} for message. UserId: {userId}, ConversationId: {dto.ConversationId}, Error: {ex.Message}",
+                            await _loggingService.LogWarningAsync(
+                                message: "Invalid file upload attempt",
+                                details: $"Invalid file upload: {ex.Message}",
                                 userId: userId,
                                 source: "ChatController.SendMessage",
                                 relatedEntityType: "Message",
                                 relatedEntityId: dto.ConversationId,
                                 additionalData: new { 
+                                    FileName = file.FileName, 
+                                    FileSize = file.Length,
+                                    Exception = ex.Message
+                                }
+                            );
+                            return BadRequest(new { message = ex.Message });
+                        }
+                        catch (Exception ex)
+                        {
+                            await _loggingService.LogErrorAsync(
+                                message: "Error uploading file for message",
+                                details: $"Failed to upload file {file.FileName}: {ex.Message}",
+                                userId: userId,
+                                source: "ChatController.SendMessage",
+                                relatedEntityType: "Message",
+                                relatedEntityId: dto.ConversationId,
+                                additionalData: new
+                                {
                                     FileName = file.FileName,
                                     FileSize = file.Length,
-                                    ConversationId = dto.ConversationId,
+                                    ContentType = file.ContentType,
                                     Exception = ex.Message,
                                     StackTrace = ex.StackTrace
                                 }
                             );
-                            
-                            return StatusCode(500, new { message = $"Failed to upload file {file.FileName}: {ex.Message}" });
+                            return StatusCode(500, new { message = $"Failed to upload file {file.FileName}. Please try again or contact support." });
                         }
                     }
                     await _context.SaveChangesAsync();
@@ -501,20 +588,48 @@ namespace newApi.Controllers
                     AttachmentUrls = attachmentUrls
                 };
 
-                var options = new JsonSerializerOptions
-                {
-                    ReferenceHandler = ReferenceHandler.IgnoreCycles,
-                    MaxDepth = 64
-                };
-                var serializedMessage = JsonSerializer.Serialize(messageDto, options);
+                // ✅ CORRECCIÓN: Enviar mensaje a través de SignalR con mejor manejo de errores
                 try
                 {
+                    // Enviar a todos los usuarios en el grupo de la conversación
                     await _hubContext.Clients.Group($"conversation-{dto.ConversationId}")
                         .SendAsync("ReceiveMessage", messageDto);
+                    
+                    // ✅ LOG: Confirmar que el mensaje se envió por SignalR
+                    await _loggingService.LogInfoAsync(
+                        message: "Message sent via SignalR",
+                        details: $"Message {messageDto.Id} sent to conversation {dto.ConversationId} via SignalR",
+                        userId: userId,
+                        source: "ChatController.SendMessage",
+                        relatedEntityType: "Message",
+                        relatedEntityId: messageDto.Id,
+                        additionalData: new { 
+                            MessageId = messageDto.Id,
+                            ConversationId = dto.ConversationId,
+                            HasAttachments = messageDto.AttachmentUrls.Any()
+                        },
+                        notifyUser: false
+                    );
                 }
-                catch (Exception)
+                catch (Exception signalREx)
                 {
-                    // Silently ignore SignalR errors - message is already saved
+                    // ✅ MEJORA: Loggear error de SignalR pero no fallar la petición
+                    // El mensaje ya está guardado en la BD, así que el usuario puede verlo al recargar
+                    await _loggingService.LogWarningAsync(
+                        message: "SignalR error sending message",
+                        details: $"Message {messageDto.Id} was saved but SignalR broadcast failed: {signalREx.Message}",
+                        userId: userId,
+                        source: "ChatController.SendMessage",
+                        relatedEntityType: "Message",
+                        relatedEntityId: messageDto.Id,
+                        additionalData: new { 
+                            MessageId = messageDto.Id,
+                            ConversationId = dto.ConversationId,
+                            Exception = signalREx.Message,
+                            StackTrace = signalREx.StackTrace
+                        }
+                    );
+                    // No lanzar excepción - el mensaje ya está guardado
                 }
 
                 return Ok(messageDto);
@@ -553,13 +668,17 @@ namespace newApi.Controllers
 
                 var message = await _context.Messages
                     .Include(m => m.Conversation)
-                    .FirstOrDefaultAsync(m => m.Id == messageId &&
-                                            ((m.Conversation.ClientId.HasValue && m.Conversation.ClientId.Value == userId) || 
-                                             (m.Conversation.ExpertId.HasValue && m.Conversation.ExpertId.Value == userId)));
+                    .FirstOrDefaultAsync(m => m.Id == messageId);
 
                 if (message == null)
                 {
-                    return NotFound(new { message = "Message not found or you are not authorized" });
+                    return NotFound(new { message = "Message not found" });
+                }
+
+                var isAdmin = _authService.IsAdmin(User);
+                if (message.Conversation == null || !UserBelongsToConversation(message.Conversation, userId, isAdmin))
+                {
+                    return Unauthorized(new { message = "You are not authorized to read this message" });
                 }
 
                 if (message.SenderId == userId)
@@ -639,16 +758,16 @@ namespace newApi.Controllers
 
                         using (var inputStream = file.OpenReadStream())
                         {
+                            // ✅ CORRECCIÓN: No usar PredefinedAcl si el bucket tiene uniform bucket-level access habilitado
+                            // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
                             await _storageClient.UploadObjectAsync(
                                 bucket: bucketName,
                                 objectName: objectName,
                                 contentType: contentType,
-                                source: inputStream
-                            );
+                                source: inputStream);
                         }
 
                         var deliverableUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-                        deliverableUrls.Add(deliverableUrl);
 
                         var deliverable = new SearchHireDeliverable
                         {
@@ -659,6 +778,7 @@ namespace newApi.Controllers
                             CreatedAt = DateTime.UtcNow
                         };
                         _context.SearchHireDeliverables.Add(deliverable);
+                        deliverableUrls.Add(ResolveDeliverableUrl(deliverable));
                     }
                     await _context.SaveChangesAsync();
                 }
@@ -729,15 +849,18 @@ namespace newApi.Controllers
                     return NotFound(new { message = "SearchHire not found or you are not authorized" });
                 }
 
-                var deliverables = await _context.SearchHireDeliverables
-                    .Where(d => d.SearchHireId == searchHireId)
-                    .Select(d => new DeliverableResponseDto
-                    {
-                        SearchHireId = d.SearchHireId,
-                        DeliverableUrls = new List<string> { d.Url },
-                        CreatedAt = d.CreatedAt
-                    })
-                    .ToListAsync();
+                    var deliverableEntities = await _context.SearchHireDeliverables
+                        .Where(d => d.SearchHireId == searchHireId)
+                        .ToListAsync();
+
+                    var deliverables = deliverableEntities
+                        .Select(d => new DeliverableResponseDto
+                        {
+                            SearchHireId = d.SearchHireId,
+                            DeliverableUrls = new List<string> { ResolveDeliverableUrl(d) },
+                            CreatedAt = d.CreatedAt
+                        })
+                        .ToList();
 
                 if (!deliverables.Any())
                 {
@@ -774,6 +897,319 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "An error occurred while retrieving deliverables" });
             }
         }
+
+        private bool UserBelongsToConversation(Conversation conversation, int userId, bool isAdmin)
+        {
+            if (isAdmin)
+            {
+                return true;
+            }
+
+            if (conversation == null)
+            {
+                return false;
+            }
+
+            if (conversation.ClientId.HasValue && conversation.ClientId.Value == userId)
+            {
+                return true;
+            }
+
+            if (conversation.ExpertId.HasValue && conversation.ExpertId.Value == userId)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static string SanitizeMessageContent(string? content)
+        {
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                return string.Empty;
+            }
+
+            var trimmed = content.Trim();
+            return Regex.Replace(trimmed, @"[\u0000-\u001F\u007F]", string.Empty);
+        }
+
+        private async Task<(string Url, string ObjectName, string Type)> ValidateAndUploadAttachmentAsync(
+            IFormFile file,
+            string bucketName,
+            int conversationId,
+            int userId)
+        {
+            // ✅ LOG: Inicio de validación
+            await _loggingService.LogInfoAsync(
+                message: "Starting file validation",
+                details: $"Validating file: {file?.FileName ?? "null"}",
+                userId: userId,
+                source: "ChatController.ValidateAndUploadAttachmentAsync",
+                relatedEntityType: "Message",
+                relatedEntityId: conversationId,
+                additionalData: new { 
+                    FileName = file?.FileName,
+                    FileSize = file?.Length ?? 0,
+                    ContentType = file?.ContentType
+                },
+                notifyUser: false
+            );
+
+            // ✅ CORRECCIÓN: Validaciones mejoradas
+            if (file == null || file.Length == 0)
+            {
+                await _loggingService.LogErrorAsync(
+                    message: "File validation failed: empty file",
+                    details: "File is null or has zero length",
+                    userId: userId,
+                    source: "ChatController.ValidateAndUploadAttachmentAsync",
+                    relatedEntityType: "Message",
+                    relatedEntityId: conversationId,
+                    additionalData: new { FileName = file?.FileName }
+                );
+                throw new InvalidOperationException("Attachment is empty");
+            }
+
+            if (file.Length > MaxAttachmentSizeBytes)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "File validation failed: file too large",
+                    details: $"File {file.FileName} size {file.Length} exceeds limit {MaxAttachmentSizeBytes}",
+                    userId: userId,
+                    source: "ChatController.ValidateAndUploadAttachmentAsync",
+                    relatedEntityType: "Message",
+                    relatedEntityId: conversationId,
+                    additionalData: new { 
+                        FileName = file.FileName,
+                        FileSize = file.Length,
+                        MaxSize = MaxAttachmentSizeBytes
+                    }
+                );
+                throw new InvalidOperationException($"File {file.FileName} exceeds 10MB limit");
+            }
+
+            var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+            var providedContentType = (file.ContentType ?? string.Empty).ToLowerInvariant();
+            
+            // ✅ LOG: Información del archivo
+            await _loggingService.LogInfoAsync(
+                message: "File information extracted",
+                details: $"File extension: {extension}, ContentType: {providedContentType}",
+                userId: userId,
+                source: "ChatController.ValidateAndUploadAttachmentAsync",
+                relatedEntityType: "Message",
+                relatedEntityId: conversationId,
+                additionalData: new { 
+                    FileName = file.FileName,
+                    Extension = extension,
+                    ProvidedContentType = providedContentType
+                },
+                notifyUser: false
+            );
+
+            // ✅ CORRECCIÓN: Validación más flexible - aceptar por extensión principalmente
+            // Algunos navegadores envían "application/octet-stream" o ContentType incorrecto
+            // Si la extensión es válida, aceptamos el archivo y inferimos el ContentType correcto
+            var isImageByExtension = AllowedImageExtensions.Contains(extension);
+            var isVideoByExtension = AllowedVideoExtensions.Contains(extension);
+
+            if (!isImageByExtension && !isVideoByExtension)
+            {
+                throw new InvalidOperationException($"Unsupported file type: {file.FileName} (extension: {extension}). Allowed types: {string.Join(", ", AllowedImageExtensions)} for images, {string.Join(", ", AllowedVideoExtensions)} for videos");
+            }
+
+            // Si la extensión es válida pero el ContentType no coincide, solo logueamos una advertencia
+            // pero aceptamos el archivo (confiamos en la extensión)
+            var isImageByContentType = AllowedImageContentTypes.Contains(providedContentType);
+            var isVideoByContentType = AllowedVideoContentTypes.Contains(providedContentType);
+            
+            if (isImageByExtension && !isImageByContentType && !string.IsNullOrEmpty(providedContentType) && providedContentType != "application/octet-stream")
+            {
+                // Loguear advertencia pero continuar
+                await _loggingService.LogWarningAsync(
+                    message: "ContentType mismatch for image file",
+                    details: $"File {file.FileName} has valid extension {extension} but ContentType is {providedContentType}. Accepting based on extension.",
+                    userId: userId,
+                    source: "ChatController.ValidateAndUploadAttachmentAsync",
+                    relatedEntityType: "Message",
+                    relatedEntityId: conversationId,
+                    additionalData: new { FileName = file.FileName, Extension = extension, ContentType = providedContentType }
+                );
+            }
+            
+            if (isVideoByExtension && !isVideoByContentType && !string.IsNullOrEmpty(providedContentType) && providedContentType != "application/octet-stream")
+            {
+                // Loguear advertencia pero continuar
+                await _loggingService.LogWarningAsync(
+                    message: "ContentType mismatch for video file",
+                    details: $"File {file.FileName} has valid extension {extension} but ContentType is {providedContentType}. Accepting based on extension.",
+                    userId: userId,
+                    source: "ChatController.ValidateAndUploadAttachmentAsync",
+                    relatedEntityType: "Message",
+                    relatedEntityId: conversationId,
+                    additionalData: new { FileName = file.FileName, Extension = extension, ContentType = providedContentType }
+                );
+            }
+
+            var isImage = isImageByExtension;
+            var isVideo = isVideoByExtension;
+
+            // ✅ CORRECCIÓN: Inferir ContentType correcto basándose en la extensión si no está presente o es incorrecto
+            string contentType;
+            if (isImage)
+            {
+                if (extension == ".png")
+                    contentType = "image/png";
+                else if (extension == ".jpg" || extension == ".jpeg")
+                    contentType = "image/jpeg";
+                else
+                    contentType = providedContentType; // Fallback al proporcionado
+            }
+            else if (isVideo)
+            {
+                contentType = "video/mp4";
+            }
+            else
+            {
+                contentType = providedContentType; // No debería llegar aquí, pero por seguridad
+            }
+
+            // ✅ CORRECCIÓN: Validar que StorageClient esté disponible
+            if (_storageClient == null)
+            {
+                throw new InvalidOperationException("File upload service is not available. Please contact support.");
+            }
+
+            var uniqueFileName = $"{Guid.NewGuid()}{extension}";
+            var objectName = $"messages/{uniqueFileName}";
+
+            // ✅ LOG: Preparando subida a Google Cloud Storage
+            await _loggingService.LogInfoAsync(
+                message: "Preparing Google Cloud Storage upload",
+                details: $"Uploading to bucket: {bucketName}, object: {objectName}",
+                userId: userId,
+                source: "ChatController.ValidateAndUploadAttachmentAsync",
+                relatedEntityType: "Message",
+                relatedEntityId: conversationId,
+                additionalData: new { 
+                    BucketName = bucketName,
+                    ObjectName = objectName,
+                    ContentType = contentType,
+                    FileSize = file.Length
+                },
+                notifyUser: false
+            );
+
+            try
+            {
+                using var inputStream = file.OpenReadStream();
+                
+                // ✅ LOG: Iniciando upload
+                await _loggingService.LogInfoAsync(
+                    message: "Starting Google Cloud Storage upload",
+                    details: $"Uploading file stream to {objectName}",
+                    userId: userId,
+                    source: "ChatController.ValidateAndUploadAttachmentAsync",
+                    relatedEntityType: "Message",
+                    relatedEntityId: conversationId,
+                    additionalData: new { ObjectName = objectName },
+                    notifyUser: false
+                );
+
+                // ✅ CORRECCIÓN: No usar PredefinedAcl si el bucket tiene uniform bucket-level access habilitado
+                // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
+                await _storageClient.UploadObjectAsync(
+                    bucket: bucketName,
+                    objectName: objectName,
+                    contentType: contentType,
+                    source: inputStream);
+                
+                // ✅ LOG: Upload completado exitosamente
+                await _loggingService.LogInfoAsync(
+                    message: "Google Cloud Storage upload completed",
+                    details: $"File successfully uploaded to {objectName}",
+                    userId: userId,
+                    source: "ChatController.ValidateAndUploadAttachmentAsync",
+                    relatedEntityType: "Message",
+                    relatedEntityId: conversationId,
+                    additionalData: new { ObjectName = objectName },
+                    notifyUser: false
+                );
+            }
+            catch (Exception ex)
+            {
+                // ✅ MEJORA: Logging más detallado del error
+                await _loggingService.LogErrorAsync(
+                    message: "Error uploading file for message",
+                    details: $"Error uploading file {file.FileName} for conversation {conversationId}: {ex.Message}",
+                    userId: userId,
+                    source: "ChatController.ValidateAndUploadAttachmentAsync",
+                    relatedEntityType: "Message",
+                    relatedEntityId: conversationId,
+                    additionalData: new
+                    {
+                        FileName = file.FileName,
+                        FileSize = file.Length,
+                        ContentType = contentType,
+                        Extension = extension,
+                        BucketName = bucketName,
+                        ObjectName = objectName,
+                        ConversationId = conversationId,
+                        Exception = ex.Message,
+                        ExceptionType = ex.GetType().Name,
+                        StackTrace = ex.StackTrace
+                    });
+
+                throw new InvalidOperationException($"Failed to upload file {file.FileName}: {ex.Message}");
+            }
+
+            var url = $"https://storage.googleapis.com/{bucketName}/{objectName}";
+            return (url, objectName, isVideo ? "video" : "image");
+        }
+
+        private string ResolveAttachmentUrl(MessageAttachment? attachment)
+        {
+            if (attachment == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(attachment.Url) ? string.Empty : attachment.Url;
+            return _signedUrlService.GetSignedUrl(attachment.ObjectName ?? string.Empty) ?? fallback;
+        }
+
+        private string ResolveDeliverableUrl(SearchHireDeliverable? deliverable)
+        {
+            if (deliverable == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(deliverable.Url) ? string.Empty : deliverable.Url;
+            return _signedUrlService.GetSignedUrl(deliverable.ObjectName ?? string.Empty) ?? fallback;
+        }
+
+        private void PopulateSignedAttachmentUrls(Conversation conversation, ConversationDto conversationDto)
+        {
+            if (conversation?.Messages == null || conversationDto?.Messages == null)
+            {
+                return;
+            }
+
+            var messageLookup = conversation.Messages.ToDictionary(m => m.Id);
+            foreach (var messageDto in conversationDto.Messages)
+            {
+                if (messageLookup.TryGetValue(messageDto.Id, out var message))
+                {
+                    messageDto.AttachmentUrls = message.Attachments?
+                        .Select(ResolveAttachmentUrl)
+                        .Where(url => !string.IsNullOrEmpty(url))
+                        .ToList() ?? new List<string>();
+                }
+            }
+        }
+
     }
 
     public class SendMessageDto

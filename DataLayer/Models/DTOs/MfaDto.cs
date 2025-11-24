@@ -48,13 +48,12 @@ namespace newApi.DataLayer.Models.DTOs
 
     /// <summary>
     /// DTO para deshabilitar MFA
+    /// ✅ CORRECCIÓN: Solo requiere código TOTP (todos los usuarios usan Google OAuth)
     /// </summary>
     public class DisableMfaRequestDto
     {
         [Required]
-        public string Password { get; set; } = string.Empty;
-
-        [Required]
+        [StringLength(6, MinimumLength = 6, ErrorMessage = "El código debe tener 6 dígitos")]
         public string TotpCode { get; set; } = string.Empty;
     }
 

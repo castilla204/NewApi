@@ -52,7 +52,7 @@
           "dependencies": {
             "AutoMapper": {
               "target": "Package",
-              "version": "[14.0.0, )"
+              "version": "[15.0.0, )"
             },
             "BCrypt.Net-Next": {
               "target": "Package",
@@ -60,19 +60,19 @@
             },
             "Google.Apis.Auth": {
               "target": "Package",
-              "version": "[1.68.0, )"
+              "version": "[1.73.0, )"
             },
             "Google.Cloud.SecretManager.V1": {
               "target": "Package",
-              "version": "[2.5.0, )"
+              "version": "[2.7.0, )"
             },
             "Google.Cloud.Storage.V1": {
               "target": "Package",
-              "version": "[4.10.0, )"
+              "version": "[4.13.0, )"
             },
             "Hangfire.AspNetCore": {
               "target": "Package",
-              "version": "[1.8.20, )"
+              "version": "[1.8.22, )"
             },
             "Hangfire.PostgreSql": {
               "target": "Package",
@@ -80,7 +80,7 @@
             },
             "Microsoft.AspNetCore.Authentication.JwtBearer": {
               "target": "Package",
-              "version": "[8.0.10, )"
+              "version": "[8.0.11, )"
             },
             "Microsoft.AspNetCore.SignalR.Core": {
               "target": "Package",
@@ -88,31 +88,31 @@
             },
             "Microsoft.AspNetCore.SignalR.StackExchangeRedis": {
               "target": "Package",
-              "version": "[8.0.0, )"
+              "version": "[8.0.11, )"
             },
             "Microsoft.EntityFrameworkCore": {
               "target": "Package",
-              "version": "[8.0.4, )"
+              "version": "[8.0.11, )"
             },
             "Microsoft.EntityFrameworkCore.Design": {
               "include": "Runtime, Build, Native, ContentFiles, Analyzers, BuildTransitive",
               "suppressParent": "All",
               "target": "Package",
-              "version": "[8.0.4, )"
+              "version": "[8.0.11, )"
             },
             "Microsoft.EntityFrameworkCore.Tools": {
               "include": "Runtime, Build, Native, ContentFiles, Analyzers, BuildTransitive",
               "suppressParent": "All",
               "target": "Package",
-              "version": "[8.0.4, )"
+              "version": "[8.0.11, )"
             },
             "Microsoft.IdentityModel.Tokens": {
               "target": "Package",
-              "version": "[7.3.1, )"
+              "version": "[8.3.1, )"
             },
             "Newtonsoft.Json": {
               "target": "Package",
-              "version": "[13.0.3, )"
+              "version": "[13.0.4, )"
             },
             "Npgsql.EntityFrameworkCore.PostgreSQL": {
               "target": "Package",
@@ -132,7 +132,7 @@
             },
             "QuestPDF": {
               "target": "Package",
-              "version": "[2024.6.0, )"
+              "version": "[2024.12.3, )"
             },
             "RabbitMQ.Client": {
               "target": "Package",
@@ -140,19 +140,19 @@
             },
             "SixLabors.ImageSharp": {
               "target": "Package",
-              "version": "[3.1.11, )"
+              "version": "[3.1.12, )"
             },
             "Stripe.net": {
               "target": "Package",
-              "version": "[47.3.0, )"
+              "version": "[47.4.0, )"
             },
             "Swashbuckle.AspNetCore": {
               "target": "Package",
-              "version": "[6.4.0, )"
+              "version": "[6.9.0, )"
             },
             "Twilio": {
               "target": "Package",
-              "version": "[7.8.3, )"
+              "version": "[7.13.7, )"
             }
           },
           "imports": [

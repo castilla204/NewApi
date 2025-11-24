@@ -663,12 +663,12 @@ builder.Services.Configure<FormOptions>(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
-    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.OpenApiSecurityScheme
     {
         Description = "JWT Authorization header (optional for Swagger testing)",
         Name = "Authorization",
-        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
-        Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey
+        In = Microsoft.OpenApi.ParameterLocation.Header,
+        Type = Microsoft.OpenApi.SecuritySchemeType.ApiKey
     });
 });
 
@@ -845,10 +845,12 @@ builder.Services.AddRateLimiter(options =>
     };
 });
 
-builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly,
-    typeof(PlatformMappingProfile).Assembly,
-    typeof(CategoryMappingProfile).Assembly,
-    typeof(UserMappingProfile).Assembly);
+builder.Services.AddAutoMapper(cfg => {
+    cfg.AddMaps(typeof(AdMappingProfile).Assembly);
+    cfg.AddMaps(typeof(PlatformMappingProfile).Assembly);
+    cfg.AddMaps(typeof(CategoryMappingProfile).Assembly);
+    cfg.AddMaps(typeof(UserMappingProfile).Assembly);
+});
 
 // ✅ MEJORAS 2025: Configure SignalR con mejores prácticas
 // - Timeouts optimizados para conexiones estables
@@ -1099,8 +1101,7 @@ builder.Services.AddHttpClient();
 // Add Health Checks
 builder.Services.AddHealthChecks();
 
-// Register AutoMapper
-builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly, typeof(PlatformMappingProfile).Assembly, typeof(CategoryMappingProfile).Assembly);
+// AutoMapper ya está registrado arriba (línea 848), no es necesario duplicarlo
 
 var app = builder.Build();
 

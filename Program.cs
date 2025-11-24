@@ -1,4 +1,5 @@
 using Google.Cloud.SecretManager.V1;
+using Swashbuckle.AspNetCore.SwaggerGen;
 using Google.Api.Gax.Grpc;
 using Grpc.Core;
 using Microsoft.AspNetCore.Authentication.JwtBearer;

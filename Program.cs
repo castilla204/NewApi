@@ -254,11 +254,71 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
     return defaultValue;
 }
 
-// Cargar secretos de Google Cloud Secret Manager
-var googleClientIds = GetSecretValue("google-client-ids", null)
-                      ?.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                      .Select(id => id.Trim())
-                      .ToArray();
+// Cargar Google Client IDs: Prioridad 1) Variable de entorno, 2) Secret Manager
+string[]? googleClientIds = null;
+
+// Intentar leer de variable de entorno primero (formato JSON array o separado por comas)
+var googleClientIdsFromEnv = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_IDS");
+if (!string.IsNullOrEmpty(googleClientIdsFromEnv))
+{
+    try
+    {
+        // Intentar parsear como JSON array primero
+        if (googleClientIdsFromEnv.TrimStart().StartsWith("["))
+        {
+            googleClientIds = System.Text.Json.JsonSerializer.Deserialize<string[]>(googleClientIdsFromEnv);
+        }
+        else
+        {
+            // Si no es JSON, tratar como separado por comas
+            googleClientIds = googleClientIdsFromEnv
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(id => id.Trim().Trim('"', '[', ']'))
+                .ToArray();
+        }
+    }
+    catch
+    {
+        // Si falla el parseo JSON, intentar como separado por comas
+        googleClientIds = googleClientIdsFromEnv
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(id => id.Trim().Trim('"', '[', ']'))
+            .ToArray();
+    }
+}
+
+// Si no hay en variable de entorno, intentar desde Secret Manager
+if (googleClientIds == null || googleClientIds.Length == 0)
+{
+    var googleClientIdsFromSecret = GetSecretValue("google-client-ids", null);
+    if (!string.IsNullOrEmpty(googleClientIdsFromSecret))
+    {
+        try
+        {
+            // Intentar parsear como JSON array primero
+            if (googleClientIdsFromSecret.TrimStart().StartsWith("["))
+            {
+                googleClientIds = System.Text.Json.JsonSerializer.Deserialize<string[]>(googleClientIdsFromSecret);
+            }
+            else
+            {
+                // Si no es JSON, tratar como separado por comas
+                googleClientIds = googleClientIdsFromSecret
+                    ?.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(id => id.Trim().Trim('"', '[', ']'))
+                    .ToArray();
+            }
+        }
+        catch
+        {
+            // Si falla el parseo JSON, intentar como separado por comas
+            googleClientIds = googleClientIdsFromSecret
+                ?.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(id => id.Trim().Trim('"', '[', ']'))
+                .ToArray();
+        }
+    }
+}
 
 if (googleClientIds != null && googleClientIds.Length > 0)
 {
@@ -268,6 +328,9 @@ if (googleClientIds != null && googleClientIds.Length > 0)
         configDict[$"Google:ClientIds:{i}"] = googleClientIds[i];
     }
     builder.Configuration.AddInMemoryCollection(configDict);
+    
+    var configLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    configLogger.LogInformation($"Google Client IDs configurados: {googleClientIds.Length} ID(s) encontrado(s)");
 }
 
 // JWT - Leer de variables de entorno primero, luego de Secret Manager como fallback

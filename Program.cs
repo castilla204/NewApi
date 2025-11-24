@@ -58,20 +58,98 @@ string GetSecretValue(string secretName)
     return secretVersion.Payload.Data.ToStringUtf8();
 }
 
-// Cargar secretos de Google Cloud Secret Manager
-var googleClientIds = GetSecretValue("google-client-ids")
-                      ?.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                      .Select(id => id.Trim())
-                      .ToArray();
+// ✅ FIX: Cargar Google Client IDs como array JSON compatible con GetSection().Get<string[]>()
+var googleClientIdsFromEnv = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_IDS");
+string[]? googleClientIds = null;
+
+if (!string.IsNullOrEmpty(googleClientIdsFromEnv))
+{
+    try
+    {
+        // Intentar parsear como JSON array primero
+        if (googleClientIdsFromEnv.TrimStart().StartsWith("["))
+        {
+            googleClientIds = System.Text.Json.JsonSerializer.Deserialize<string[]>(googleClientIdsFromEnv);
+        }
+        else
+        {
+            // Si no es JSON, tratar como separado por comas
+            googleClientIds = googleClientIdsFromEnv
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(id => id.Trim().Trim('"', '[', ']'))
+                .ToArray();
+        }
+    }
+    catch
+    {
+        // Si falla el parseo JSON, intentar como separado por comas
+        googleClientIds = googleClientIdsFromEnv
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(id => id.Trim().Trim('"', '[', ']'))
+            .ToArray();
+    }
+}
+
+// Si no hay en variable de entorno, intentar desde Secret Manager
+if (googleClientIds == null || googleClientIds.Length == 0)
+{
+    var googleClientIdsFromSecret = GetSecretValue("google-client-ids");
+    if (!string.IsNullOrEmpty(googleClientIdsFromSecret))
+    {
+        try
+        {
+            // Intentar parsear como JSON array primero
+            if (googleClientIdsFromSecret.TrimStart().StartsWith("["))
+            {
+                googleClientIds = System.Text.Json.JsonSerializer.Deserialize<string[]>(googleClientIdsFromSecret);
+            }
+            else
+            {
+                // Si no es JSON, tratar como separado por comas
+                googleClientIds = googleClientIdsFromSecret
+                    ?.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(id => id.Trim().Trim('"', '[', ']'))
+                    .ToArray();
+            }
+        }
+        catch
+        {
+            // Si falla el parseo JSON, intentar como separado por comas
+            googleClientIds = googleClientIdsFromSecret
+                ?.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(id => id.Trim().Trim('"', '[', ']'))
+                .ToArray();
+        }
+    }
+}
 
 if (googleClientIds != null && googleClientIds.Length > 0)
 {
-    var configDict = new Dictionary<string, string>();
+    // ✅ FIX: Configurar como array JSON compatible con GetSection().Get<string[]>()
+    // En lugar de solo claves indexadas, también configuramos como JSON string
+    var configDict = new Dictionary<string, string?>();
+    
+    // Opción A: Configurar como array JSON (más compatible con GetSection().Get<string[]>())
+    var clientIdsJson = System.Text.Json.JsonSerializer.Serialize(googleClientIds);
+    configDict["Google:ClientIds"] = clientIdsJson;
+    
+    // Opción B: También configurar como claves indexadas para compatibilidad
     for (int i = 0; i < googleClientIds.Length; i++)
     {
         configDict[$"Google:ClientIds:{i}"] = googleClientIds[i];
     }
+    
     builder.Configuration.AddInMemoryCollection(configDict);
+    
+    var googleConfigLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    googleConfigLogger.LogInformation($"✅ Google Client IDs configurados: {googleClientIds.Length} ID(s) encontrado(s)");
+    googleConfigLogger.LogInformation($"✅ Client IDs: {string.Join(", ", googleClientIds)}");
+    googleConfigLogger.LogInformation($"✅ Client IDs JSON: {clientIdsJson}");
+}
+else
+{
+    var googleConfigLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    googleConfigLogger.LogWarning("⚠️ No se encontraron Google Client IDs en variables de entorno ni en Secret Manager");
 }
 
 builder.Configuration["Jwt:Key"] = GetSecretValue("jwt-key");
@@ -432,7 +510,21 @@ builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<SearchServiceService>();
 builder.Services.AddScoped<SearchHireService>();
 
-builder.Services.AddHttpClient();
+// Configure HttpClient with IPv4 preference and increased timeout
+// This helps with DNS resolution issues in Kubernetes pods
+// Note: Google.Apis.Auth uses its own HttpClient, but this configuration
+// helps with general HTTP requests and may be picked up by some libraries
+builder.Services.AddHttpClient()
+    .ConfigurePrimaryHttpMessageHandler(() => new System.Net.Http.SocketsHttpHandler
+    {
+        ConnectTimeout = TimeSpan.FromSeconds(30),
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+        PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2)
+    });
+
+// Configure .NET to prefer IPv4 for DNS resolution
+// This is a global setting that affects all HttpClient instances
+AppContext.SetSwitch("System.Net.Sockets.Socket.ForceIPv4", true);
 
 // Add Health Checks
 builder.Services.AddHealthChecks();

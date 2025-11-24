@@ -21,6 +21,7 @@ using Microsoft.AspNetCore.Server.IIS;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.OpenApi;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -269,12 +270,12 @@ builder.Services.Configure<FormOptions>(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
-    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.OpenApiSecurityScheme
     {
         Description = "JWT Authorization header (optional for Swagger testing)",
         Name = "Authorization",
-        In = ParameterLocation.Header,
-        Type = SecuritySchemeType.ApiKey
+        In = Microsoft.OpenApi.ParameterLocation.Header,
+        Type = Microsoft.OpenApi.SecuritySchemeType.ApiKey
     });
 });
 
@@ -511,7 +512,7 @@ builder.Services.AddScoped<SearchHireService>();
 // This helps with DNS resolution issues in Kubernetes pods
 // Note: Google.Apis.Auth uses its own HttpClient, but this configuration
 // helps with general HTTP requests and may be picked up by some libraries
-builder.Services.AddHttpClient()
+builder.Services.AddHttpClient("default")
     .ConfigurePrimaryHttpMessageHandler(() => new System.Net.Http.SocketsHttpHandler
     {
         ConnectTimeout = TimeSpan.FromSeconds(30),
@@ -528,11 +529,12 @@ builder.Services.AddHealthChecks();
 
 // Register AutoMapper with all mapping profiles
 // AutoMapper will scan the assemblies for profiles
-builder.Services.AddAutoMapper(
-    typeof(AdMappingProfile).Assembly,
-    typeof(PlatformMappingProfile).Assembly,
-    typeof(CategoryMappingProfile).Assembly,
-    typeof(UserMappingProfile).Assembly);
+builder.Services.AddAutoMapper(cfg => {
+    cfg.AddMaps(typeof(AdMappingProfile).Assembly);
+    cfg.AddMaps(typeof(PlatformMappingProfile).Assembly);
+    cfg.AddMaps(typeof(CategoryMappingProfile).Assembly);
+    cfg.AddMaps(typeof(UserMappingProfile).Assembly);
+});
 
 var app = builder.Build();
 

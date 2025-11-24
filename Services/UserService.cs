@@ -204,12 +204,148 @@ namespace newApi.Services
 
         public async Task<(bool success, string token, User user)> GoogleAuth(GoogleAuthDto request)
         {
-            var clientIds = _configuration.GetSection("Google:ClientIds").Get<string[]>();
-            var settings = new GoogleJsonWebSignature.ValidationSettings { Audience = clientIds };
-            var payload = await GoogleJsonWebSignature.ValidateAsync(request.AccessToken, settings);
+            string? googleId = null;
+            string? email = null;
+            string? name = null;
+            string[]? clientIds = null;
+            
+            try
+            {
+                // ✅ LOG: Inicio de autenticación Google
+                await _loggingService.LogInfoAsync(
+                    message: "Google Auth request received",
+                    details: $"Google authentication attempt. Email from request: {request.Email}, Name: {request.Name}, GoogleId: {request.GoogleId}",
+                    userId: null,
+                    source: "UserService.GoogleAuth",
+                    relatedEntityType: "Auth",
+                    additionalData: new { 
+                        Action = "GoogleAuthStart",
+                        RequestEmail = request.Email,
+                        RequestName = request.Name,
+                        RequestGoogleId = request.GoogleId,
+                        HasAccessToken = !string.IsNullOrEmpty(request.AccessToken),
+                        AccessTokenLength = request.AccessToken?.Length ?? 0
+                    }
+                );
 
-            // ✅ MEJORA: Buscar primero usuarios activos (sin IgnoreQueryFilters)
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.GoogleId == payload.Subject);
+                // ✅ VALIDACIÓN: Verificar que el AccessToken no esté vacío
+                if (string.IsNullOrWhiteSpace(request.AccessToken))
+                {
+                    await _loggingService.LogErrorAsync(
+                        message: "Google Auth failed: Empty access token",
+                        details: "AccessToken is null or empty in Google Auth request",
+                        userId: null,
+                        source: "UserService.GoogleAuth",
+                        relatedEntityType: "Auth",
+                        additionalData: new { 
+                            Action = "GoogleAuthValidation",
+                            RequestEmail = request.Email,
+                            RequestName = request.Name,
+                            RequestGoogleId = request.GoogleId,
+                            Error = "AccessToken is null or empty"
+                        }
+                    );
+                    return (false, string.Empty, null!);
+                }
+
+                // ✅ CONFIGURACIÓN: Obtener Client IDs de configuración
+                clientIds = _configuration.GetSection("Google:ClientIds").Get<string[]>();
+                if (clientIds == null || clientIds.Length == 0)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Google Client IDs not configured",
+                        details: "Google:ClientIds configuration is missing or empty. Google Auth cannot work without this configuration.",
+                        userId: null,
+                        source: "UserService.GoogleAuth",
+                        relatedEntityType: "Configuration",
+                        additionalData: new { 
+                            Action = "GoogleAuthConfiguration",
+                            Error = "Google:ClientIds not found in configuration"
+                        }
+                    );
+                    return (false, string.Empty, null!);
+                }
+
+                // ✅ VALIDACIÓN: Validar token con Google
+                var settings = new GoogleJsonWebSignature.ValidationSettings { Audience = clientIds };
+                GoogleJsonWebSignature.Payload payload;
+                
+                try
+                {
+                    payload = await GoogleJsonWebSignature.ValidateAsync(request.AccessToken, settings);
+                    googleId = payload.Subject;
+                    email = payload.Email;
+                    name = payload.Name;
+                    
+                    // ✅ LOG: Token validado exitosamente
+                    await _loggingService.LogInfoAsync(
+                        message: "Google token validated successfully",
+                        details: $"Google token validated. Subject: {googleId}, Email: {email}, Name: {name}",
+                        userId: null,
+                        source: "UserService.GoogleAuth",
+                        relatedEntityType: "Auth",
+                        additionalData: new { 
+                            Action = "GoogleTokenValidation",
+                            GoogleId = googleId,
+                            Email = email,
+                            Name = name,
+                            Issuer = payload.Issuer,
+                            Audience = payload.Audience
+                        }
+                    );
+                }
+                catch (InvalidJwtException jwtEx)
+                {
+                    // ✅ LOG CRÍTICO: Token JWT inválido
+                    await _loggingService.LogErrorAsync(
+                        message: "Google Auth failed: Invalid JWT token",
+                        details: $"Google token validation failed. Error: {jwtEx.Message}. InnerException: {jwtEx.InnerException?.Message}. " +
+                                $"Token length: {request.AccessToken?.Length ?? 0}, ClientIds configured: {clientIds.Length}",
+                        userId: null,
+                        source: "UserService.GoogleAuth",
+                        relatedEntityType: "Auth",
+                        additionalData: new { 
+                            Action = "GoogleTokenValidation",
+                            Error = jwtEx.Message,
+                            InnerException = jwtEx.InnerException?.Message,
+                            StackTrace = jwtEx.StackTrace,
+                            RequestEmail = request.Email,
+                            RequestName = request.Name,
+                            RequestGoogleId = request.GoogleId,
+                            AccessTokenLength = request.AccessToken?.Length ?? 0,
+                            ClientIdsCount = clientIds.Length,
+                            ClientIds = clientIds
+                        }
+                    );
+                    return (false, string.Empty, null!);
+                }
+                catch (Exception tokenEx)
+                {
+                    // ✅ LOG CRÍTICO: Error inesperado validando token
+                    await _loggingService.LogErrorAsync(
+                        message: "Google Auth failed: Unexpected error validating token",
+                        details: $"Unexpected error during Google token validation. Error: {tokenEx.Message}. Type: {tokenEx.GetType().Name}. " +
+                                $"Token length: {request.AccessToken?.Length ?? 0}",
+                        userId: null,
+                        source: "UserService.GoogleAuth",
+                        relatedEntityType: "Auth",
+                        additionalData: new { 
+                            Action = "GoogleTokenValidation",
+                            Error = tokenEx.Message,
+                            ErrorType = tokenEx.GetType().Name,
+                            InnerException = tokenEx.InnerException?.Message,
+                            StackTrace = tokenEx.StackTrace,
+                            RequestEmail = request.Email,
+                            RequestName = request.Name,
+                            RequestGoogleId = request.GoogleId,
+                            AccessTokenLength = request.AccessToken?.Length ?? 0
+                        }
+                    );
+                    return (false, string.Empty, null!);
+                }
+
+                // ✅ MEJORA: Buscar primero usuarios activos (sin IgnoreQueryFilters)
+                var user = await _context.Users.FirstOrDefaultAsync(u => u.GoogleId == payload.Subject);
 
             // ✅ MEJORA: Si no se encuentra usuario activo, buscar usuarios eliminados (soft deleted)
             // Esto permite restaurar cuentas eliminadas cuando el usuario se vuelve a registrar
@@ -327,14 +463,86 @@ namespace newApi.Services
                 );
             }
 
-            // ✅ SEGURIDAD 2025: Generar Access Token + Refresh Token
-            var accessToken = GenerateJwtToken(user);
-            var refreshToken = await GenerateRefreshTokenAsync(user.Id, "GoogleAuth");
-            
-            // Devolver ambos tokens separados por pipe (el frontend los separará)
-            var combinedToken = $"{accessToken}|{refreshToken}";
-            
-            return (true, combinedToken, user);
+                // ✅ SEGURIDAD 2025: Generar Access Token + Refresh Token
+                var accessToken = GenerateJwtToken(user);
+                var refreshToken = await GenerateRefreshTokenAsync(user.Id, "GoogleAuth");
+                
+                // Devolver ambos tokens separados por pipe (el frontend los separará)
+                var combinedToken = $"{accessToken}|{refreshToken}";
+                
+                // ✅ LOG: Autenticación exitosa
+                await _loggingService.LogInfoAsync(
+                    message: "Google Auth completed successfully",
+                    details: $"Google authentication completed. UserId: {user.Id}, Email: {user.Email}, Role: {user.Role}",
+                    userId: user.Id,
+                    source: "UserService.GoogleAuth",
+                    relatedEntityType: "User",
+                    relatedEntityId: user.Id,
+                    additionalData: new { 
+                        Action = "GoogleAuthSuccess",
+                        UserId = user.Id,
+                        Email = user.Email,
+                        Name = user.Name,
+                        Role = user.Role.ToString(),
+                        GoogleId = user.GoogleId
+                    }
+                );
+                
+                return (true, combinedToken, user);
+            }
+            catch (DbUpdateException dbEx)
+            {
+                // ✅ LOG CRÍTICO: Error de base de datos
+                await _loggingService.LogErrorAsync(
+                    message: "Google Auth failed: Database error",
+                    details: $"Database error during Google authentication. Error: {dbEx.Message}. InnerException: {dbEx.InnerException?.Message}. " +
+                            $"GoogleId: {googleId}, Email: {email}",
+                    userId: null,
+                    source: "UserService.GoogleAuth",
+                    relatedEntityType: "Database",
+                    additionalData: new { 
+                        Action = "GoogleAuthDatabaseError",
+                        Error = dbEx.Message,
+                        ErrorType = dbEx.GetType().Name,
+                        InnerException = dbEx.InnerException?.Message,
+                        StackTrace = dbEx.StackTrace,
+                        GoogleId = googleId,
+                        Email = email,
+                        Name = name,
+                        RequestEmail = request.Email,
+                        RequestName = request.Name,
+                        RequestGoogleId = request.GoogleId
+                    }
+                );
+                return (false, string.Empty, null!);
+            }
+            catch (Exception ex)
+            {
+                // ✅ LOG CRÍTICO: Error inesperado
+                await _loggingService.LogErrorAsync(
+                    message: "Google Auth failed: Unexpected error",
+                    details: $"Unexpected error during Google authentication. Error: {ex.Message}. Type: {ex.GetType().Name}. " +
+                            $"GoogleId: {googleId}, Email: {email}",
+                    userId: null,
+                    source: "UserService.GoogleAuth",
+                    relatedEntityType: "Auth",
+                    additionalData: new { 
+                        Action = "GoogleAuthUnexpectedError",
+                        Error = ex.Message,
+                        ErrorType = ex.GetType().Name,
+                        InnerException = ex.InnerException?.Message,
+                        StackTrace = ex.StackTrace,
+                        GoogleId = googleId,
+                        Email = email,
+                        Name = name,
+                        RequestEmail = request.Email,
+                        RequestName = request.Name,
+                        RequestGoogleId = request.GoogleId,
+                        ClientIdsCount = clientIds?.Length ?? 0
+                    }
+                );
+                return (false, string.Empty, null!);
+            }
         }
 
         public async Task<(bool success, string token, User user, ExpertProfile expertProfile)> BecomeExpert(

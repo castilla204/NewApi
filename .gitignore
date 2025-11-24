@@ -2,6 +2,7 @@
 **/appsettings.Development.json
 **/appsettings.Production.json
 **/appsettings.Local.json
+**/appsettings.*.json
 k8s/regcred-secret.yaml
 k8s/*-secret.yaml
 *.pem
@@ -10,13 +11,146 @@ k8s/*-secret.yaml
 *.pfx
 credentials.json
 cloudcredential.json
+*.env
+.env
+.env.local
+.env.*.local
+
+# Build results
 **/bin/
 **/obj/
+**/[Bb]uild/
+**/[Bb]uild[Bb]in/
+**/[Oo]ut/
+**/[Dd]ebug/
+**/[Rr]elease/
+**/[Rr]eleases/
+**/x64/
+**/x86/
+**/arm/
+**/arm64/
+**/bld/
+**/[Bb]in/
+**/[Oo]bj/
+**/[Ll]og/
+**/[Ll]ogs/
+
+# Visual Studio files
 *.user
 *.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+*.vs/
+.vs/
+*.vscode/
+.vs/
+*.swp
 *.cache
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Rider
+.idea/
+*.sln.iml
+
+# .NET Core
+project.lock.json
+project.fragment.lock.json
+artifacts/
+*.nupkg
+*.snupkg
+*.pdb
+*.dll
+*.exe
+
+# Test results
+**/[Tt]est[Rr]esult*/
+**/[Bb]uild[Ll]og.*
+**/*.trx
+**/*.coverage
+**/*.coveragexml
+**/TestResults/
+
+# NuGet
+**/packages/
+**/*.nupkg
+**/*.snupkg
+**/project.lock.json
+**/project.fragment.lock.json
+**/artifacts/
+**/packages/
+*.nuget.props
+*.nuget.targets
 
 # Node modules
 **/node_modules/
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Logs
+**/logs/
+**/*.log
+**/*.log.*
+*.log
+logs/
+*.log.*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.bak
+*.cache
+*~
+*.orig
+
+# Cursor/IDE specific
+.cursor/
+.cursorrules
 cursor-backend-logs/.env
 .cursor/.env
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+*.mdf
+*.ldf
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Kubernetes
+*.kubeconfig
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Misc
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z

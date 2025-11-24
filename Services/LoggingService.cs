@@ -9,6 +9,17 @@ namespace newApi.Services
 {
     public interface ILoggingService
     {
+        /// <summary>
+        /// Logs a critical error message with optional details and metadata.
+        /// </summary>
+        /// <param name="message">The main error message.</param>
+        /// <param name="details">Optional detailed description of the error.</param>
+        /// <param name="userId">Optional ID of the user associated with the error.</param>
+        /// <param name="source">Optional source location (e.g., class name, method name).</param>
+        /// <param name="relatedEntityType">Optional type of related entity (e.g., "User", "Order").</param>
+        /// <param name="relatedEntityId">Optional ID of the related entity.</param>
+        /// <param name="additionalData">Optional additional data object to include in the log.</param>
+        /// <param name="notifyUser">Whether to notify the user about this critical error.</param>
         Task LogCriticalAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false);
         Task LogErrorAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false);
         Task LogWarningAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false);

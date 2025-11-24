@@ -1,12 +1,15 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Security.Claims;
+using System.Globalization;
 using newApi.Services;
 using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models;
+using newApi.DataLayer.Models.PostGresModels;
 using Microsoft.EntityFrameworkCore;
+using Google.Apis.Auth;
 
 [Route("api/[controller]")]
 [ApiController]
@@ -17,17 +20,20 @@ public class UserController : ControllerBase
         private readonly IAuthorizationServices _authService;
         private readonly ILoggingService _loggingService;
         private readonly AppDbContext _context;
+        private readonly ISignedUrlService _signedUrlService;
 
     public UserController(
         UserService userService,
         IAuthorizationServices authService,
         ILoggingService loggingService,
-        AppDbContext context)
+        AppDbContext context,
+        ISignedUrlService signedUrlService)
     {
         _userService = userService;
         _authService = authService;
         _loggingService = loggingService;
         _context = context;
+        _signedUrlService = signedUrlService;
     }
 
     [Authorize]
@@ -281,13 +287,108 @@ public class UserController : ControllerBase
     [EnableRateLimiting("auth")] // ✅ SEGURIDAD: 5 intentos cada 5 minutos por IP (sobrescribe "api")
     public async Task<IActionResult> GoogleAuth([FromBody] GoogleAuthDto request)
     {
+        var requestId = Guid.NewGuid().ToString();
+        var remoteIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        
         try
         {
+            // ✅ VALIDACIÓN: Verificar que el request no sea null
+            if (request == null)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Google Auth request is null",
+                    details: $"Google Auth request is null. RequestId: {requestId}, IP: {remoteIp}",
+                    userId: null,
+                    source: "UserController.GoogleAuth",
+                    relatedEntityType: "Auth",
+                    additionalData: new { RequestId = requestId, RemoteIp = remoteIp }
+                );
+                return BadRequest(new { 
+                    message = "Invalid request", 
+                    error = "Request body is required",
+                    requestId = requestId
+                });
+            }
+
+            // ✅ VALIDACIÓN: Verificar campos requeridos
+            if (string.IsNullOrWhiteSpace(request.AccessToken))
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Google Auth request missing AccessToken",
+                    details: $"Google Auth request missing AccessToken. RequestId: {requestId}, IP: {remoteIp}, Email: {request.Email}",
+                    userId: null,
+                    source: "UserController.GoogleAuth",
+                    relatedEntityType: "Auth",
+                    additionalData: new { RequestId = requestId, RemoteIp = remoteIp, RequestEmail = request.Email }
+                );
+                return BadRequest(new { 
+                    message = "Invalid request", 
+                    error = "AccessToken is required",
+                    requestId = requestId
+                });
+            }
+
+            // ✅ LOG: Inicio de request
+            await _loggingService.LogInfoAsync(
+                message: "Google Auth request received",
+                details: $"Google Auth request received. RequestId: {requestId}, IP: {remoteIp}, Email: {request.Email}, GoogleId: {request.GoogleId}",
+                userId: null,
+                source: "UserController.GoogleAuth",
+                relatedEntityType: "Auth",
+                additionalData: new { 
+                    RequestId = requestId,
+                    RemoteIp = remoteIp,
+                    RequestEmail = request.Email,
+                    RequestGoogleId = request.GoogleId
+                }
+            );
+
             var (success, token, user) = await _userService.GoogleAuth(request);
+            
             if (!success)
             {
-                return BadRequest(new { message = "Authentication failed" });
+                await _loggingService.LogWarningAsync(
+                    message: "Google Auth failed",
+                    details: $"Google Auth failed. RequestId: {requestId}, IP: {remoteIp}, Email: {request.Email}, GoogleId: {request.GoogleId}",
+                    userId: null,
+                    source: "UserController.GoogleAuth",
+                    relatedEntityType: "Auth",
+                    additionalData: new { RequestId = requestId, RemoteIp = remoteIp, RequestEmail = request.Email, RequestGoogleId = request.GoogleId }
+                );
+                return BadRequest(new { 
+                    message = "Authentication failed", 
+                    error = "Invalid Google token or authentication error",
+                    requestId = requestId
+                });
             }
+
+            if (user == null)
+            {
+                await _loggingService.LogErrorAsync(
+                    message: "Google Auth returned success but user is null",
+                    details: $"Google Auth returned success but user is null. RequestId: {requestId}, IP: {remoteIp}",
+                    userId: null,
+                    source: "UserController.GoogleAuth",
+                    relatedEntityType: "Auth",
+                    additionalData: new { RequestId = requestId, RemoteIp = remoteIp }
+                );
+                return StatusCode(500, new { 
+                    message = "Internal server error", 
+                    error = "User object is null after successful authentication",
+                    requestId = requestId
+                });
+            }
+
+            // ✅ LOG: Autenticación exitosa
+            await _loggingService.LogInfoAsync(
+                message: "Google Auth successful",
+                details: $"Google Auth successful. RequestId: {requestId}, UserId: {user.Id}, Email: {user.Email}, IP: {remoteIp}",
+                userId: user.Id,
+                source: "UserController.GoogleAuth",
+                relatedEntityType: "User",
+                relatedEntityId: user.Id,
+                additionalData: new { RequestId = requestId, UserId = user.Id, Email = user.Email, RemoteIp = remoteIp }
+            );
 
             return Ok(new
             {
@@ -299,12 +400,63 @@ public class UserController : ControllerBase
                     user.Email,
                     user.PhoneVerified,
                     Role = user.Role.ToString()
+                },
+                requestId = requestId
+            });
+        }
+        catch (InvalidJwtException jwtEx)
+        {
+            // ✅ LOG: Error específico de JWT inválido
+            await _loggingService.LogErrorAsync(
+                message: "Invalid JWT token in Google Auth",
+                details: $"Invalid JWT token in Google Auth. RequestId: {requestId}, IP: {remoteIp}, Email: {request?.Email}, Error: {jwtEx.Message}",
+                userId: null,
+                source: "UserController.GoogleAuth",
+                relatedEntityType: "Auth",
+                additionalData: new { 
+                    RequestId = requestId,
+                    RemoteIp = remoteIp,
+                    RequestEmail = request?.Email,
+                    Error = jwtEx.Message,
+                    ErrorType = jwtEx.GetType().Name,
+                    StackTrace = jwtEx.StackTrace
                 }
+            );
+            
+            return BadRequest(new { 
+                message = "Invalid Google token", 
+                error = "The provided Google token is invalid or expired",
+                details = jwtEx.Message,
+                requestId = requestId
             });
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { message = "An error occurred during authentication" });
+            // ✅ LOG CRÍTICO: Error inesperado con toda la información
+            await _loggingService.LogErrorAsync(
+                message: "Unexpected error during Google authentication",
+                details: $"Unexpected error during Google authentication. RequestId: {requestId}, IP: {remoteIp}, Email: {request?.Email}, GoogleId: {request?.GoogleId}, ErrorType: {ex.GetType().Name}, Error: {ex.Message}",
+                userId: null,
+                source: "UserController.GoogleAuth",
+                relatedEntityType: "Auth",
+                additionalData: new { 
+                    RequestId = requestId,
+                    RemoteIp = remoteIp,
+                    RequestEmail = request?.Email,
+                    RequestGoogleId = request?.GoogleId,
+                    Error = ex.Message,
+                    ErrorType = ex.GetType().Name,
+                    InnerException = ex.InnerException?.Message,
+                    StackTrace = ex.StackTrace
+                }
+            );
+            
+            return StatusCode(500, new { 
+                message = "An error occurred during authentication", 
+                error = ex.Message,
+                errorType = ex.GetType().Name,
+                requestId = requestId
+            });
         }
     }
 
@@ -338,28 +490,116 @@ public class UserController : ControllerBase
                 return BadRequest(new { message = "Profile picture must be a JPG or PNG image" });
             }
 
-            var (success, token, user, expertProfile) = await _userService.BecomeExpert(userId, request);
+            // ✅ MEJORA: Validaciones adicionales antes de llamar al servicio
+            var user = await _context.Users
+                .Include(u => u.ExpertProfile)
+                .FirstOrDefaultAsync(u => u.Id == userId);
+
+            if (user == null)
+            {
+                return BadRequest(new { message = "User not found" });
+            }
+
+            if (user.Role == UserRole.Expert)
+            {
+                return BadRequest(new { message = "You are already an expert" });
+            }
+
+            if (user.ExpertProfile != null)
+            {
+                return BadRequest(new { message = "You already have an expert profile" });
+            }
+
+            // Validar Latitude y Longitude
+            if (string.IsNullOrEmpty(request.Latitude) || string.IsNullOrEmpty(request.Longitude))
+            {
+                return BadRequest(new { message = "Latitude and Longitude are required" });
+            }
+
+            if (!decimal.TryParse(request.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var latitude))
+            {
+                return BadRequest(new { message = "Invalid latitude format. Must be a valid number." });
+            }
+
+            if (!decimal.TryParse(request.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var longitude))
+            {
+                return BadRequest(new { message = "Invalid longitude format. Must be a valid number." });
+            }
+
+            if (latitude < -90m || latitude > 90m)
+            {
+                return BadRequest(new { message = "Latitude must be between -90 and 90 degrees" });
+            }
+
+            if (longitude < -180m || longitude > 180m)
+            {
+                return BadRequest(new { message = "Longitude must be between -180 and 180 degrees" });
+            }
+
+            // Verificar contrataciones activas
+            var activeContractsAsClient = await _context.SearchHires
+                .Include(sh => sh.Status)
+                .Where(sh => sh.ClientId == userId && sh.Status != null && !sh.Status.IsFinalizationStatus)
+                .ToListAsync();
+
+            if (activeContractsAsClient.Any())
+            {
+                return BadRequest(new { 
+                    message = $"No puedes convertirte en experto mientras tengas contrataciones activas como cliente. " +
+                             $"Tienes {activeContractsAsClient.Count} contratación(es) activa(s) que deben estar finalizadas antes de convertirte en experto. " +
+                             $"Debes usar una cuenta distinta (no registrada como experto) para contratar servicios."
+                });
+            }
+
+            // ✅ Validar disponibilidad horaria (obligatoria)
+            if (request.AvailabilityDaysOfWeek == null || request.AvailabilityDaysOfWeek.Count == 0)
+            {
+                return BadRequest(new { message = "Availability days of week are required. Please select at least one day." });
+            }
+
+            if (string.IsNullOrEmpty(request.AvailabilityStartTime))
+            {
+                return BadRequest(new { message = "Availability start time is required (format: HH:mm, e.g., 09:00)" });
+            }
+
+            if (string.IsNullOrEmpty(request.AvailabilityEndTime))
+            {
+                return BadRequest(new { message = "Availability end time is required (format: HH:mm, e.g., 18:00)" });
+            }
+
+            // Validar formato de tiempos
+            if (!TimeSpan.TryParse(request.AvailabilityStartTime, out var startTime))
+            {
+                return BadRequest(new { message = "Invalid availability start time format. Must be HH:mm (e.g., 09:00)" });
+            }
+
+            if (!TimeSpan.TryParse(request.AvailabilityEndTime, out var endTime))
+            {
+                return BadRequest(new { message = "Invalid availability end time format. Must be HH:mm (e.g., 18:00)" });
+            }
+
+            if (startTime >= endTime)
+            {
+                return BadRequest(new { message = "Availability start time must be before end time" });
+            }
+
+            // Validar días válidos
+            var validDays = new[] { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
+            var invalidDays = request.AvailabilityDaysOfWeek.Except(validDays, StringComparer.OrdinalIgnoreCase).ToList();
+            if (invalidDays.Any())
+            {
+                return BadRequest(new { 
+                    message = $"Invalid days of week: {string.Join(", ", invalidDays)}. Valid days are: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday" 
+                });
+            }
+
+            var (success, token, userResult, expertProfile) = await _userService.BecomeExpert(userId, request);
             if (!success)
             {
-                // Verificar si el error es por contrataciones activas
-                var activeContractsAsClient = await _context.SearchHires
-                    .Include(sh => sh.Status)
-                    .Where(sh => sh.ClientId == userId && sh.Status != null && !sh.Status.IsFinalizationStatus)
-                    .ToListAsync();
-
-                if (activeContractsAsClient.Any())
-                {
-                    return BadRequest(new { 
-                        message = $"No puedes convertirte en experto mientras tengas contrataciones activas como cliente. " +
-                                 $"Tienes {activeContractsAsClient.Count} contratación(es) activa(s) que deben estar finalizadas antes de convertirte en experto. " +
-                                 $"Debes usar una cuenta distinta (no registrada como experto) para contratar servicios."
-                    });
-                }
-
-                // 🚨 LOG CRÍTICO: Fallo al convertirse en experto
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Failed to become expert",
-                    details: $"User {userId} failed to become expert - validation or processing error",
+                // ✅ LOG: Fallo al convertirse en experto (WARNING, no crítico - el servicio ya logueó el error específico)
+                await _loggingService.LogWarningAsync(
+                    message: "Failed to become expert - unexpected error",
+                    details: $"User {userId} failed to become expert after all validations passed. Check logs for specific error details.",
                     userId: userId,
                     source: "UserController.BecomeExpert",
                     relatedEntityType: "User",
@@ -370,39 +610,49 @@ public class UserController : ControllerBase
                         Success = false,
                         RequestData = new {
                             Description = request.Description,
-                            ProfilePictureSize = request.ProfilePicture?.Length ?? 0
+                            ProfilePictureSize = request.ProfilePicture?.Length ?? 0,
+                            ProfilePictureFileName = request.ProfilePicture?.FileName,
+                            Latitude = request.Latitude,
+                            Longitude = request.Longitude,
+                            AvailabilityDaysOfWeek = request.AvailabilityDaysOfWeek?.Count ?? 0,
+                            AvailabilityStartTime = request.AvailabilityStartTime,
+                            AvailabilityEndTime = request.AvailabilityEndTime
                         }
                     }
                 );
-                return BadRequest(new { message = "Failed to become expert" });
+                
+                // Mensaje más específico basado en posibles causas
+                return BadRequest(new { 
+                    message = "Failed to become expert. This could be due to: 1) Profile picture upload failed (check image format and size), 2) Google Cloud Storage configuration issue, or 3) Database error. Please check the logs for details and try again." 
+                });
             }
 
-            var response = new BecomeExpertResponseDto
-            {
-                Message = "Successfully became an expert",
-                Token = token,
-                User = new UserInfoDto
-                {
-                    Id = user.Id,
-                    Name = user.Name,
-                    Email = user.Email,
-                    PhoneVerified = user.PhoneVerified,
-                    Role = user.Role.ToString(),
-                    ExpertProfile = new ExpertProfileInfoDto
-                    {
-                        Id = expertProfile.Id,
-                        ProfilePictureUrl = expertProfile.ProfilePictureUrl,
-                        Description = expertProfile.Description,
-                        StripeAccountId = expertProfile.StripeAccountId,
-                        CreatedAt = expertProfile.CreatedAt,
-                        Latitude = expertProfile.Latitude,
-                        Longitude = expertProfile.Longitude,
-                        StripeStatus = expertProfile.StripeStatus,
-                        StripeStatusDetails = expertProfile.StripeStatusDetails,
-                        OnboardingCompleted = expertProfile.OnboardingCompleted
-                    }
-                }
-            };
+              var response = new BecomeExpertResponseDto
+              {
+                  Message = "Successfully became an expert",
+                  Token = token,
+                  User = new UserInfoDto
+                  {
+                      Id = user.Id,
+                      Name = user.Name,
+                      Email = user.Email,
+                      PhoneVerified = user.PhoneVerified,
+                      Role = user.Role.ToString(),
+                      ExpertProfile = new ExpertProfileInfoDto
+                      {
+                          Id = expertProfile.Id,
+                          ProfilePictureUrl = ResolveProfilePictureUrl(expertProfile),
+                          Description = expertProfile.Description,
+                          StripeAccountId = expertProfile.StripeAccountId,
+                          CreatedAt = expertProfile.CreatedAt,
+                          Latitude = expertProfile.Latitude,
+                          Longitude = expertProfile.Longitude,
+                          StripeStatus = expertProfile.StripeStatus,
+                          StripeStatusDetails = expertProfile.StripeStatusDetails,
+                          OnboardingCompleted = expertProfile.OnboardingCompleted
+                      }
+                  }
+              };
 
             // ✅ LOG INFORMATIVO: Usuario se convirtió en experto exitosamente
             await _loggingService.LogInfoAsync(
@@ -558,6 +808,20 @@ public class UserController : ControllerBase
         {
             return StatusCode(500, new { message = "Failed to toggle vacation mode" });
         }
+    }
+
+    private string ResolveProfilePictureUrl(ExpertProfile? expertProfile)
+    {
+        if (expertProfile == null)
+        {
+            return "/default-avatar.png";
+        }
+
+        var fallback = string.IsNullOrWhiteSpace(expertProfile.ProfilePictureUrl)
+            ? "/default-avatar.png"
+            : expertProfile.ProfilePictureUrl;
+
+        return _signedUrlService.GetSignedUrl(expertProfile.ProfilePictureObjectName ?? string.Empty) ?? fallback;
     }
 
     public class GoogleAuthDto

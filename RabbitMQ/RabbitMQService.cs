@@ -35,11 +35,11 @@ namespace newApi.RabbitMQ
                 factory.AutomaticRecoveryEnabled = true;
                 factory.RequestedConnectionTimeout = TimeSpan.FromSeconds(30);
 
-                _connection = await factory.CreateConnection();
-                _channel = await _connection.CreateModel();
+                _connection = factory.CreateConnection();
+                _channel = _connection.CreateModel();
 
                 // Configure QoS
-                await _channel.BasicQos(prefetchSize: 0, prefetchCount: 1, global: false);
+                _channel.BasicQos(prefetchSize: 0, prefetchCount: 1, global: false);
 
                 _initialized = true;
             }
@@ -58,7 +58,7 @@ namespace newApi.RabbitMQ
             try
             {
                 // Declare queue without any special arguments to ensure compatibility
-                await _channel.QueueDeclare(
+                _channel.QueueDeclare(
                     queue: queueName,
                     durable: false,
                     exclusive: false,
@@ -90,14 +90,14 @@ namespace newApi.RabbitMQ
             var json = JsonConvert.SerializeObject(message);
             var body = Encoding.UTF8.GetBytes(json);
 
-            var properties = new BasicProperties
+            var properties = _channel.CreateBasicProperties()
             {
                 Persistent = false,
                 ContentType = "application/json",
-                DeliveryMode = DeliveryModes.Transient
+                DeliveryMode = 1
             };
 
-            await _channel.BasicPublish(
+            _channel.BasicPublish(
                 exchange: "",
                 routingKey: queueName,
                 mandatory: false,
@@ -119,8 +119,8 @@ namespace newApi.RabbitMQ
 
                 _pendingRequests[correlationId] = replyEvent;
 
-                var consumer = new AsyncEventingBasicConsumer(_channel);
-                consumerTag = await _channel.BasicConsume(
+                var consumer = new EventingBasicConsumer(_channel);
+                consumerTag = _channel.BasicConsume(
                     queue: replyQueueName,
                     autoAck: true,
                     consumer: consumer);
@@ -142,18 +142,18 @@ namespace newApi.RabbitMQ
                     await Task.CompletedTask;
                 };
 
-                var props = new BasicProperties
+                var props = _channel.CreateBasicProperties()
                 {
                     CorrelationId = correlationId,
                     ReplyTo = replyQueueName,
                     ContentType = "application/json",
-                    DeliveryMode = DeliveryModes.Transient
+                    DeliveryMode = 1
                 };
 
                 var json = JsonConvert.SerializeObject(message);
                 var body = Encoding.UTF8.GetBytes(json);
 
-                await _channel.BasicPublish(
+                _channel.BasicPublish(
                     exchange: "",
                     routingKey: requestQueueName,
                     mandatory: false,
@@ -188,7 +188,7 @@ namespace newApi.RabbitMQ
                 {
                     try
                     {
-                        await _channel.BasicCancel(consumerTag);
+                        _channel.BasicCancel(consumerTag);
                     }
                     catch (Exception ex)
                     {
@@ -203,13 +203,13 @@ namespace newApi.RabbitMQ
             {
                 if (_channel?.IsOpen == true)
                 {
-                    _channel.Close().GetAwaiter().GetResult();
+                    _channel.Close();
                 }
                 _channel?.Dispose();
 
                 if (_connection?.IsOpen == true)
                 {
-                    _connection.Close().GetAwaiter().GetResult();
+                    _connection.Close();
                 }
                 _connection?.Dispose();
             }

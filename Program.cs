@@ -21,6 +21,7 @@ using Microsoft.AspNetCore.Server.IIS;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -269,12 +270,12 @@ builder.Services.Configure<FormOptions>(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
-    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Description = "JWT Authorization header (optional for Swagger testing)",
         Name = "Authorization",
-        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
-        Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.ApiKey
     });
 });
 
@@ -351,10 +352,7 @@ builder.Services.AddRateLimiter(options =>
     };
 });
 
-builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly,
-    typeof(PlatformMappingProfile).Assembly,
-    typeof(CategoryMappingProfile).Assembly,
-    typeof(UserMappingProfile).Assembly);
+// AutoMapper will be registered later with all assemblies
 
 // Configure SignalR
 builder.Services.AddSignalR(options =>
@@ -529,8 +527,13 @@ AppContext.SetSwitch("System.Net.Sockets.Socket.ForceIPv4", true);
 // Add Health Checks
 builder.Services.AddHealthChecks();
 
-// Register AutoMapper
-builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly, typeof(PlatformMappingProfile).Assembly, typeof(CategoryMappingProfile).Assembly);
+// Register AutoMapper with all mapping profiles
+// AutoMapper will scan the assemblies for profiles
+builder.Services.AddAutoMapper(
+    typeof(AdMappingProfile).Assembly,
+    typeof(PlatformMappingProfile).Assembly,
+    typeof(CategoryMappingProfile).Assembly,
+    typeof(UserMappingProfile).Assembly);
 
 var app = builder.Build();
 

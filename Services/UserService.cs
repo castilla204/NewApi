@@ -202,7 +202,86 @@ namespace newApi.Services
 
         public async Task<(bool success, string token, User user)> GoogleAuth(GoogleAuthDto request)
         {
-            var clientIds = _configuration.GetSection("Google:ClientIds").Get<string[]>();
+            // ✅ FIX: Leer Client IDs de múltiples formas para compatibilidad
+            string[]? clientIds = null;
+            
+            // Opción 1: Intentar leer como array JSON (formato preferido)
+            var clientIdsJson = _configuration["Google:ClientIds"];
+            if (!string.IsNullOrEmpty(clientIdsJson) && clientIdsJson.TrimStart().StartsWith("["))
+            {
+                try
+                {
+                    clientIds = System.Text.Json.JsonSerializer.Deserialize<string[]>(clientIdsJson);
+                }
+                catch (Exception ex)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Failed to parse Google Client IDs as JSON",
+                        details: $"Error parsing Client IDs JSON: {ex.Message}",
+                        userId: null,
+                        source: "UserService.GoogleAuth",
+                        relatedEntityType: "Auth",
+                        additionalData: new { ClientIdsJson = clientIdsJson, Error = ex.Message }
+                    );
+                }
+            }
+            
+            // Opción 2: Si no funciona como JSON, intentar con GetSection().Get<string[]>()
+            if (clientIds == null || clientIds.Length == 0)
+            {
+                clientIds = _configuration.GetSection("Google:ClientIds").Get<string[]>();
+            }
+            
+            // Opción 3: Si aún no funciona, leer claves indexadas manualmente
+            if (clientIds == null || clientIds.Length == 0)
+            {
+                var clientIdsList = new List<string>();
+                int index = 0;
+                while (true)
+                {
+                    var clientId = _configuration[$"Google:ClientIds:{index}"];
+                    if (string.IsNullOrEmpty(clientId))
+                        break;
+                    clientIdsList.Add(clientId);
+                    index++;
+                }
+                if (clientIdsList.Count > 0)
+                {
+                    clientIds = clientIdsList.ToArray();
+                }
+            }
+            
+            // ✅ LOG: Verificar que se cargaron los Client IDs correctamente
+            if (clientIds == null || clientIds.Length == 0)
+            {
+                await _loggingService.LogErrorAsync(
+                    message: "Google Client IDs not found in configuration",
+                    details: "No Google Client IDs were found in configuration. Check Program.cs and Secret Manager.",
+                    userId: null,
+                    source: "UserService.GoogleAuth",
+                    relatedEntityType: "Auth",
+                    additionalData: new { 
+                        Action = "GoogleClientIdsNotFound",
+                        ConfigKeys = new[] { "Google:ClientIds", "Google:ClientIds:0", "GOOGLE_CLIENT_IDS" }
+                    }
+                );
+                throw new InvalidOperationException("Google Client IDs not configured");
+            }
+            
+            // ✅ LOG: Mostrar los Client IDs que se están usando
+            await _loggingService.LogInfoAsync(
+                message: "Google Client IDs loaded successfully",
+                details: $"Loaded {clientIds.Length} Client ID(s) for token validation",
+                userId: null,
+                source: "UserService.GoogleAuth",
+                relatedEntityType: "Auth",
+                additionalData: new { 
+                    Action = "GoogleClientIdsLoaded",
+                    ClientIdsCount = clientIds.Length,
+                    ClientIds = clientIds // ✅ LOG: Mostrar los Client IDs reales
+                }
+            );
+            
             var settings = new GoogleJsonWebSignature.ValidationSettings { Audience = clientIds };
             var payload = await GoogleJsonWebSignature.ValidateAsync(request.AccessToken, settings);
 

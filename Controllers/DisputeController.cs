@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
@@ -28,6 +28,7 @@ namespace newApi.Controllers
         private readonly SystemStatusService _systemStatusService;
         private readonly StripeRefundService _refundService;
         private readonly ILoggingService _loggingService;
+        private readonly ISignedUrlService _signedUrlService;
 
         /// <summary>
         /// Constructor del controlador de disputas
@@ -36,7 +37,15 @@ namespace newApi.Controllers
         /// <param name="logger">Logger para registro de eventos</param>
         /// <param name="configuration">Configuración de la aplicación</param>
         /// <param name="storageClient">Cliente de Google Cloud Storage</param>
-        public DisputeController(AppDbContext context, IConfiguration configuration, StorageClient storageClient, IAuthorizationServices authService, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService)
+        public DisputeController(
+            AppDbContext context,
+            IConfiguration configuration,
+            StorageClient storageClient,
+            IAuthorizationServices authService,
+            SystemStatusService systemStatusService,
+            StripeRefundService refundService,
+            ILoggingService loggingService,
+            ISignedUrlService signedUrlService)
         {
             _context = context;
             _configuration = configuration;
@@ -45,6 +54,7 @@ namespace newApi.Controllers
             _systemStatusService = systemStatusService;
             _refundService = refundService;
             _loggingService = loggingService;
+            _signedUrlService = signedUrlService;
         }
 
         /// <summary>
@@ -275,21 +285,25 @@ namespace newApi.Controllers
                         CreatedAt = d.SearchHire.Search.CreatedAt
                     },
                     // ✅ NUEVO: Archivos adjuntos
-                    Files = d.Files.Select(f => new DisputeFileDto
-                    {
-                        Id = f.Id,
-                        FileName = f.FileName,
-                        FileType = f.FileType,
-                        FileSize = f.FileSize,
-                        CreatedAt = f.CreatedAt,
-                        FilePath = f.FilePath,
-                        FileUrl = f.FilePath,
-                        UploadedByUserId = f.UploadedByUserId,
-                        UploadedByUserName = f.UploadedByUser?.Name ?? "Usuario desconocido",
-                        UploadedByUserEmail = f.UploadedByUser?.Email ?? "",
-                        FileCategory = f.FileCategory,
-                        FileCategoryLabel = f.FileCategory == "client" ? "Archivo del Cliente" : "Archivo del Experto"
-                    }).ToList()
+                      Files = d.Files.Select(f =>
+                      {
+                          var signedFileUrl = ResolveDisputeFileUrl(f);
+                          return new DisputeFileDto
+                          {
+                              Id = f.Id,
+                              FileName = f.FileName,
+                              FileType = f.FileType,
+                              FileSize = f.FileSize,
+                              CreatedAt = f.CreatedAt,
+                              FilePath = signedFileUrl,
+                              FileUrl = signedFileUrl,
+                              UploadedByUserId = f.UploadedByUserId,
+                              UploadedByUserName = f.UploadedByUser?.Name ?? "Usuario desconocido",
+                              UploadedByUserEmail = f.UploadedByUser?.Email ?? "",
+                              FileCategory = f.FileCategory,
+                              FileCategoryLabel = f.FileCategory == "client" ? "Archivo del Cliente" : "Archivo del Experto"
+                          };
+                      }).ToList()
                 }).ToList();
 
                 // Calcular estadísticas
@@ -358,14 +372,12 @@ namespace newApi.Controllers
                 var strategy = _context.Database.CreateExecutionStrategy();
                 return await strategy.ExecuteAsync(async () =>
                 {
-                    using var transaction = await _context.Database.BeginTransactionAsync();
                     try
                     {
-                        // Actualizar la disputa
                         dispute.Status = "Resolved";
                         dispute.ResolutionComments = request.ResolutionComments;
+                        await _context.SaveChangesAsync();
 
-                        // Procesar la acción según el tipo
                         switch (request.Action.ToLower())
                         {
                             case "refund_client":
@@ -379,10 +391,8 @@ namespace newApi.Controllers
                                             refundReason);
                                         if (!refundSuccess)
                                         {
-                                            // 🚨 LOG CRÍTICO: Error procesando reembolso al cliente
                                             var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
                                             
-                                            // Obtener el último log crítico relacionado para obtener más detalles
                                             var lastCriticalLog = await _context.Logs
                                                 .Include(l => l.LogType)
                                                 .Where(l => l.RelatedEntityType == "SearchHire" && 
@@ -420,9 +430,7 @@ namespace newApi.Controllers
                                                     LastErrorLogId = lastCriticalLog?.Id
                                                 }
                                             );
-                                            await transaction.RollbackAsync();
                                             
-                                            // Devolver mensaje de error detallado
                                             var errorMessage = lastCriticalLog != null
                                                 ? $"Failed to process client refund: {lastCriticalLog.Message}. Check logs for details (LogId: {lastCriticalLog.Id})"
                                                 : $"Failed to process client refund. Possible causes: Missing money distribution config for status '{SearchHireStatus.DisputeResolvedClient.ToStringValue()}', Stripe payment intent not found, or insufficient balance. Check logs for details.";
@@ -440,7 +448,6 @@ namespace newApi.Controllers
                                     }
                                     catch (Exception ex)
                                     {
-                                        // 🚨 LOG CRÍTICO: Excepción durante reembolso al cliente
                                         var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
                                         await _loggingService.LogCriticalAsync(
                                             message: "CRITICAL: Exception during client refund in dispute resolution",
@@ -463,7 +470,6 @@ namespace newApi.Controllers
                                                 InnerException = ex.InnerException?.Message
                                             }
                                         );
-                                        await transaction.RollbackAsync();
                                         return StatusCode(500, new { 
                                             message = $"Failed to process client refund: {ex.Message}",
                                             errorCode = "CLIENT_REFUND_EXCEPTION",
@@ -471,8 +477,6 @@ namespace newApi.Controllers
                                             searchHireId = dispute.SearchHire.Id
                                         });
                                     }
-                                    dispute.SearchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedClient.ToStringValue());
-                                    dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
                                     break;
                                 }
 
@@ -486,10 +490,8 @@ namespace newApi.Controllers
                                             "Dispute resolved in favor of expert");
                                         if (!transferSuccess)
                                         {
-                                            // 🚨 LOG CRÍTICO: Error procesando transferencia al experto
                                             var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
                                             
-                                            // Obtener el último log crítico relacionado para obtener más detalles
                                             var lastCriticalLog = await _context.Logs
                                                 .Include(l => l.LogType)
                                                 .Where(l => l.RelatedEntityType == "SearchHire" && 
@@ -529,9 +531,7 @@ namespace newApi.Controllers
                                                     LastErrorLogId = lastCriticalLog?.Id
                                                 }
                                             );
-                                            await transaction.RollbackAsync();
                                             
-                                            // Devolver mensaje de error detallado
                                             var errorMessage = lastCriticalLog != null
                                                 ? $"Failed to process expert transfer: {lastCriticalLog.Message}. Check logs for details (LogId: {lastCriticalLog.Id})"
                                                 : $"Failed to process expert transfer. Possible causes: Missing money distribution config for status '{SearchHireStatus.DisputeResolvedExpert.ToStringValue()}', Stripe account not configured, or insufficient balance. Check logs for details.";
@@ -548,7 +548,6 @@ namespace newApi.Controllers
                                     }
                                     catch (Exception ex)
                                     {
-                                        // 🚨 LOG CRÍTICO: Excepción durante transferencia al experto
                                         var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
                                         await _loggingService.LogCriticalAsync(
                                             message: "CRITICAL: Exception during expert transfer in dispute resolution",
@@ -571,7 +570,6 @@ namespace newApi.Controllers
                                                 InnerException = ex.InnerException?.Message
                                             }
                                         );
-                                        await transaction.RollbackAsync();
                                         return StatusCode(500, new { 
                                             message = $"Failed to process expert transfer: {ex.Message}",
                                             errorCode = "EXPERT_TRANSFER_EXCEPTION",
@@ -579,8 +577,6 @@ namespace newApi.Controllers
                                             searchHireId = dispute.SearchHire.Id
                                         });
                                     }
-                                    dispute.SearchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedExpert.ToStringValue());
-                                    dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
                                     break;
                                 }
 
@@ -588,13 +584,8 @@ namespace newApi.Controllers
                                 return BadRequest(new { message = "Invalid action. Valid actions: refund_client, pay_expert" });
                         }
 
-                        await _context.SaveChangesAsync();
-                        await transaction.CommitAsync();
-
-                        // ✅ Notificar a cliente y experto según la resolución
                         if (request.Action.ToLower() == "refund_client")
                         {
-                            // Disputa resuelta a favor del cliente
                             await _loggingService.LogInfoAsync(
                                 message: "Disputa resuelta a tu favor",
                                 details: $"La disputa del servicio #{dispute.SearchHire.Id} se resolvió a tu favor. Se procesará tu reembolso de {dispute.SearchHire.Amount:F2}€.",
@@ -649,8 +640,6 @@ namespace newApi.Controllers
                     }
                     catch (Exception ex)
                     {
-                        await transaction.RollbackAsync();
-                        // 🚨 LOG CRÍTICO: Excepción durante resolución de disputa
                         var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Exception during dispute resolution",
@@ -1076,6 +1065,9 @@ namespace newApi.Controllers
                                         objectName: objectName,
                                         contentType: file.ContentType,
                                         source: inputStream
+                                        // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
+                                        // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
+                                        // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
                                     );
                                 }
 
@@ -1257,20 +1249,24 @@ namespace newApi.Controllers
                         Description = dispute.SearchHire.Search.Description ?? "",
                         CreatedAt = dispute.SearchHire.Search.CreatedAt
                     },
-                    Files = dispute.Files.Select(f => new DisputeFileDto
+                    Files = dispute.Files.Select(f =>
                     {
-                        Id = f.Id,
-                        FileName = f.FileName,
-                        FileType = f.FileType,
-                        FileSize = f.FileSize,
-                        CreatedAt = f.CreatedAt,
-                        FilePath = f.FilePath,
-                        FileUrl = f.FilePath,
-                        UploadedByUserId = f.UploadedByUserId,
-                        UploadedByUserName = f.UploadedByUser?.Name ?? "Usuario desconocido",
-                        UploadedByUserEmail = f.UploadedByUser?.Email ?? "",
-                        FileCategory = f.FileCategory,
-                        FileCategoryLabel = f.FileCategory == "client" ? "Archivo del Cliente" : "Archivo del Experto"
+                        var signedFileUrl = ResolveDisputeFileUrl(f);
+                        return new DisputeFileDto
+                        {
+                            Id = f.Id,
+                            FileName = f.FileName,
+                            FileType = f.FileType,
+                            FileSize = f.FileSize,
+                            CreatedAt = f.CreatedAt,
+                            FilePath = signedFileUrl,
+                            FileUrl = signedFileUrl,
+                            UploadedByUserId = f.UploadedByUserId,
+                            UploadedByUserName = f.UploadedByUser?.Name ?? "Usuario desconocido",
+                            UploadedByUserEmail = f.UploadedByUser?.Email ?? "",
+                            FileCategory = f.FileCategory,
+                            FileCategoryLabel = f.FileCategory == "client" ? "Archivo del Cliente" : "Archivo del Experto"
+                        };
                     }).ToList()
                 }).ToList();
 
@@ -1462,7 +1458,15 @@ namespace newApi.Controllers
                             await file.CopyToAsync(memoryStream);
                             memoryStream.Position = 0;
 
-                            await _storageClient.UploadObjectAsync(bucketName, fileName, null, memoryStream);
+                            await _storageClient.UploadObjectAsync(
+                                bucketName,
+                                fileName,
+                                file.ContentType,
+                                memoryStream
+                                // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
+                                // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
+                                // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
+                                );
 
                             // Crear URL del archivo
                             var fileUrl = $"https://storage.googleapis.com/{bucketName}/{fileName}";
@@ -1497,6 +1501,51 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
+        private string ResolveDisputeFileUrl(DisputeFile? file)
+        {
+            if (file == null)
+            {
+                return string.Empty;
+            }
+
+            var fallback = string.IsNullOrWhiteSpace(file.FilePath) ? string.Empty : file.FilePath;
+            var objectName = ExtractObjectNameFromUrl(file.FilePath);
+            if (string.IsNullOrEmpty(objectName))
+            {
+                return fallback;
+            }
+
+            return _signedUrlService.GetSignedUrl(objectName) ?? fallback;
+        }
+
+        private string? ExtractObjectNameFromUrl(string? filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                return null;
+            }
+
+            try
+            {
+                var bucketName = _configuration["GoogleCloud:BucketName"];
+                if (!string.IsNullOrWhiteSpace(bucketName))
+                {
+                    var prefix = $"https://storage.googleapis.com/{bucketName}/";
+                    if (filePath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return filePath[prefix.Length..];
+                    }
+                }
+
+                var uri = new Uri(filePath);
+                return uri.AbsolutePath.TrimStart('/');
+            }
+            catch
+            {
+                return null;
             }
         }
 

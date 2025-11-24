@@ -1,12 +1,19 @@
-﻿namespace newApi.DataLayer.Models.PostGresModels
+namespace newApi.DataLayer.Models.PostGresModels
 {
     public enum StripeStatus
     {
-        NotRequested = 0,    // Usuario nunca ha solicitado cuenta Stripe
-        Pending = 1,         // Solicitud enviada, esperando aprobación
-        Approved = 2,        // Cuenta aprobada por Stripe
-        Rejected = 3,        // Cuenta rechazada por Stripe
-        Deauthorized = 4     // Cuenta desautorizada después de ser aprobada
+        NotRequested = 0,        // Usuario nunca ha solicitado cuenta Stripe
+        Pending = 1,             // Onboarding inicial en Stripe Connect
+        Approved = 2,            // Cuenta aprobada por Stripe (charges/payouts activos)
+        Rejected = 3,            // Cuenta rechazada por Stripe (rejection definitiva)
+        Deauthorized = 4,        // Cuenta desautorizada después de ser aprobada
+        ActionRequired = 5,      // Stripe requiere datos adicionales (requirements.currently_due)
+        PendingVerification = 6, // Stripe está verificando documentación enviada (requirements.pending_verification)
+        RequirementsDue = 7,     // Hay requisitos con fecha próxima de vencimiento (future_requirements.eventually_due)
+        RequirementsPastDue = 8, // Hay requisitos vencidos (requirements.past_due o future_requirements.past_due)
+        RestrictedSoon = 9,      // Stripe marcará la cuenta como limitada pronto (restricted soon / future restriction)
+        Restricted = 10,         // Cuenta restringida (restricted_forever, disabled_reason no fatal)
+        Disabled = 11            // Stripe deshabilitó pagos/cobros (disabled_reason crítico no rechazado)
     }
 
     public class ExpertProfile

@@ -35,11 +35,11 @@ namespace newApi.RabbitMQ
                 factory.AutomaticRecoveryEnabled = true;
                 factory.RequestedConnectionTimeout = TimeSpan.FromSeconds(30);
 
-                _connection = await factory.CreateConnectionAsync();
-                _channel = await _connection.CreateChannelAsync();
+                _connection = await factory.CreateConnection();
+                _channel = await _connection.CreateModel();
 
                 // Configure QoS
-                await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 1, global: false);
+                await _channel.BasicQos(prefetchSize: 0, prefetchCount: 1, global: false);
 
                 _initialized = true;
             }
@@ -58,7 +58,7 @@ namespace newApi.RabbitMQ
             try
             {
                 // Declare queue without any special arguments to ensure compatibility
-                await _channel.QueueDeclareAsync(
+                await _channel.QueueDeclare(
                     queue: queueName,
                     durable: false,
                     exclusive: false,
@@ -97,7 +97,7 @@ namespace newApi.RabbitMQ
                 DeliveryMode = DeliveryModes.Transient
             };
 
-            await _channel.BasicPublishAsync(
+            await _channel.BasicPublish(
                 exchange: "",
                 routingKey: queueName,
                 mandatory: false,
@@ -120,12 +120,12 @@ namespace newApi.RabbitMQ
                 _pendingRequests[correlationId] = replyEvent;
 
                 var consumer = new AsyncEventingBasicConsumer(_channel);
-                consumerTag = await _channel.BasicConsumeAsync(
+                consumerTag = await _channel.BasicConsume(
                     queue: replyQueueName,
                     autoAck: true,
                     consumer: consumer);
 
-                consumer.ReceivedAsync += async (model, ea) =>
+                consumer.Received += (model, ea) =>
                 {
                     try
                     {
@@ -153,7 +153,7 @@ namespace newApi.RabbitMQ
                 var json = JsonConvert.SerializeObject(message);
                 var body = Encoding.UTF8.GetBytes(json);
 
-                await _channel.BasicPublishAsync(
+                await _channel.BasicPublish(
                     exchange: "",
                     routingKey: requestQueueName,
                     mandatory: false,
@@ -188,7 +188,7 @@ namespace newApi.RabbitMQ
                 {
                     try
                     {
-                        await _channel.BasicCancelAsync(consumerTag);
+                        await _channel.BasicCancel(consumerTag);
                     }
                     catch (Exception ex)
                     {
@@ -203,13 +203,13 @@ namespace newApi.RabbitMQ
             {
                 if (_channel?.IsOpen == true)
                 {
-                    _channel.CloseAsync().GetAwaiter().GetResult();
+                    _channel.Close().GetAwaiter().GetResult();
                 }
                 _channel?.Dispose();
 
                 if (_connection?.IsOpen == true)
                 {
-                    _connection.CloseAsync().GetAwaiter().GetResult();
+                    _connection.Close().GetAwaiter().GetResult();
                 }
                 _connection?.Dispose();
             }

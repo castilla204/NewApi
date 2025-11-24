@@ -123,7 +123,7 @@ namespace newApi.RabbitMQ
                     autoAck: true,
                     consumer: consumer);
 
-                consumer.Received += (model, ea) =>
+                consumer.Received += async (model, ea) =>
                 {
                     try
                     {

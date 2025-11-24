@@ -329,8 +329,8 @@ if (googleClientIds != null && googleClientIds.Length > 0)
     }
     builder.Configuration.AddInMemoryCollection(configDict);
     
-    var configLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-    configLogger.LogInformation($"Google Client IDs configurados: {googleClientIds.Length} ID(s) encontrado(s)");
+    var googleConfigLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    googleConfigLogger.LogInformation($"Google Client IDs configurados: {googleClientIds.Length} ID(s) encontrado(s)");
 }
 
 // JWT - Leer de variables de entorno primero, luego de Secret Manager como fallback

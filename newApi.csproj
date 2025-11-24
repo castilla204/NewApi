@@ -11,7 +11,7 @@
   </PropertyGroup>
 
 	<ItemGroup>
-		<PackageReference Include="AutoMapper" Version="15.0.0" />
+		<PackageReference Include="AutoMapper" Version="15.1.0" />
 		<PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
 		<PackageReference Include="Google.Cloud.SecretManager.V1" Version="2.7.0" />
 		<PackageReference Include="Google.Cloud.Storage.V1" Version="4.13.0" />
@@ -36,12 +36,12 @@
 		<PackageReference Include="OpenAI" Version="2.7.0" />
 		<PackageReference Include="Otp.NET" Version="1.4.0" />
 		<PackageReference Include="QRCoder" Version="1.7.0" />
-		<PackageReference Include="RabbitMQ.Client" Version="6.8.1" />
+		<PackageReference Include="RabbitMQ.Client" Version="7.0.0" />
 		<PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
 		<PackageReference Include="Stripe.net" Version="50.0.0" />
-		<PackageReference Include="Swashbuckle.AspNetCore" Version="10.0.0" />
+		<PackageReference Include="Swashbuckle.AspNetCore" Version="10.0.1" />
 		<PackageReference Include="Google.Apis.Auth" Version="1.73.0" />
-		<PackageReference Include="QuestPDF" Version="2025.1.0" />
+		<PackageReference Include="QuestPDF" Version="2025.7.4" />
 		<PackageReference Include="Twilio" Version="7.13.7" />
 	</ItemGroup>
 

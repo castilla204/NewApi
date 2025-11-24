@@ -309,7 +309,8 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { message = "An error occurred during authentication" });
+            _logger.LogError(ex, "Error during Google authentication: {Message}", ex.Message);
+            return StatusCode(500, new { message = "An error occurred during authentication", error = ex.Message });
         }
     }
 

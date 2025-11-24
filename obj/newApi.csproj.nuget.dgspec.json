@@ -53,7 +53,7 @@
           "dependencies": {
             "AutoMapper": {
               "target": "Package",
-              "version": "[15.0.0, )"
+              "version": "[15.1.0, )"
             },
             "BCrypt.Net-Next": {
               "target": "Package",
@@ -137,11 +137,11 @@
             },
             "QuestPDF": {
               "target": "Package",
-              "version": "[2025.1.0, )"
+              "version": "[2025.7.4, )"
             },
             "RabbitMQ.Client": {
               "target": "Package",
-              "version": "[6.8.1, )"
+              "version": "[7.0.0, )"
             },
             "SixLabors.ImageSharp": {
               "target": "Package",
@@ -153,7 +153,7 @@
             },
             "Swashbuckle.AspNetCore": {
               "target": "Package",
-              "version": "[10.0.0, )"
+              "version": "[10.0.1, )"
             },
             "Twilio": {
               "target": "Package",

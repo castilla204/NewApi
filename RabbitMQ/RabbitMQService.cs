@@ -7,41 +7,58 @@ namespace newApi.RabbitMQ
 {
     public class RabbitMQService : IRabbitMQService, IDisposable
     {
-        private readonly IConnection _connection;
-        private readonly IModel _channel;
+        private IConnection _connection;
+        private IChannel _channel;
         private readonly Dictionary<string, TaskCompletionSource<string>> _pendingRequests;
         private const int DEFAULT_TIMEOUT = 120000; // 2 minutes default timeout
+        private static readonly SemaphoreSlim _initSemaphore = new SemaphoreSlim(1, 1);
+        private bool _initialized = false;
 
         public RabbitMQService(IConnectionFactory connectionFactory)
         {
             _pendingRequests = new Dictionary<string, TaskCompletionSource<string>>();
+            
+            // Initialize asynchronously - use GetAwaiter().GetResult() to make it synchronous in constructor
+            InitializeAsync(connectionFactory).GetAwaiter().GetResult();
+        }
 
+        private async Task InitializeAsync(IConnectionFactory connectionFactory)
+        {
+            await _initSemaphore.WaitAsync();
             try
             {
+                if (_initialized) return;
+
                 var factory = (ConnectionFactory)connectionFactory;
                 factory.RequestedHeartbeat = TimeSpan.FromSeconds(60);
                 factory.NetworkRecoveryInterval = TimeSpan.FromSeconds(10);
                 factory.AutomaticRecoveryEnabled = true;
                 factory.RequestedConnectionTimeout = TimeSpan.FromSeconds(30);
 
-                _connection = factory.CreateConnection();
-                _channel = _connection.CreateModel();
+                _connection = await factory.CreateConnectionAsync();
+                _channel = await _connection.CreateChannelAsync();
 
                 // Configure QoS
-                _channel.BasicQos(prefetchSize: 0, prefetchCount: 1, global: false);
+                await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 1, global: false);
+
+                _initialized = true;
             }
             catch (Exception ex)
             {
                 throw;
             }
+            finally
+            {
+                _initSemaphore.Release();
+            }
         }
 
-        private void EnsureQueueExists(string queueName)
+        private async Task EnsureQueueExistsAsync(string queueName)
         {
             try
             {
                 // Declare queue without any special arguments to ensure compatibility
-                _channel.QueueDeclare(
+                await _channel.QueueDeclareAsync(
                     queue: queueName,
                     durable: false,
                     exclusive: false,
@@ -58,26 +75,34 @@ namespace newApi.RabbitMQ
         {
             try
             {
-                EnsureQueueExists(queueName);
-
-                var json = JsonConvert.SerializeObject(message);
-                var body = Encoding.UTF8.GetBytes(json);
-
-                var properties = _channel.CreateBasicProperties();
-                properties.Persistent = false;
-                properties.ContentType = "application/json";
-                properties.DeliveryMode = 1; // Non-persistent
-
-                _channel.BasicPublish(
-                    exchange: "",
-                    routingKey: queueName,
-                    basicProperties: properties,
-                    body: body);
+                PublishMessageAsync(queueName, message).GetAwaiter().GetResult();
             }
             catch (Exception ex)
             {
                 throw;
             }
+        }
+
+        private async Task PublishMessageAsync<T>(string queueName, T message)
+        {
+            await EnsureQueueExistsAsync(queueName);
+
+            var json = JsonConvert.SerializeObject(message);
+            var body = Encoding.UTF8.GetBytes(json);
+
+            var properties = new BasicProperties
+            {
+                Persistent = false,
+                ContentType = "application/json",
+                DeliveryMode = DeliveryModes.Transient
+            };
+
+            await _channel.BasicPublishAsync(
+                exchange: "",
+                routingKey: queueName,
+                mandatory: false,
+                basicProperties: properties,
+                body: body);
         }
 
         public async Task<T> SendAndReceiveAsync<T>(string requestQueueName, string replyQueueName, object message, int timeout = DEFAULT_TIMEOUT)
@@ -89,18 +114,18 @@ namespace newApi.RabbitMQ
             try
             {
                 // Ensure both queues exist
-                EnsureQueueExists(requestQueueName);
-                EnsureQueueExists(replyQueueName);
+                await EnsureQueueExistsAsync(requestQueueName);
+                await EnsureQueueExistsAsync(replyQueueName);
 
                 _pendingRequests[correlationId] = replyEvent;
 
-                var consumer = new EventingBasicConsumer(_channel);
-                consumerTag = _channel.BasicConsume(
+                var consumer = new AsyncEventingBasicConsumer(_channel);
+                consumerTag = await _channel.BasicConsumeAsync(
                     queue: replyQueueName,
                     autoAck: true,
                     consumer: consumer);
 
-                consumer.Received += (model, ea) =>
+                consumer.ReceivedAsync += async (model, ea) =>
                 {
                     try
                     {
@@ -114,20 +139,24 @@ namespace newApi.RabbitMQ
                     {
                         replyEvent.TrySetException(ex);
                     }
+                    await Task.CompletedTask;
                 };
 
-                var props = _channel.CreateBasicProperties();
-                props.CorrelationId = correlationId;
-                props.ReplyTo = replyQueueName;
-                props.ContentType = "application/json";
-                props.DeliveryMode = 1; // Non-persistent
+                var props = new BasicProperties
+                {
+                    CorrelationId = correlationId,
+                    ReplyTo = replyQueueName,
+                    ContentType = "application/json",
+                    DeliveryMode = DeliveryModes.Transient
+                };
 
                 var json = JsonConvert.SerializeObject(message);
                 var body = Encoding.UTF8.GetBytes(json);
 
-                _channel.BasicPublish(
+                await _channel.BasicPublishAsync(
                     exchange: "",
                     routingKey: requestQueueName,
+                    mandatory: false,
                     basicProperties: props,
                     body: body);
                 using var cts = new CancellationTokenSource(timeout);
@@ -159,7 +188,7 @@ namespace newApi.RabbitMQ
                 {
                     try
                     {
-                        _channel.BasicCancel(consumerTag);
+                        await _channel.BasicCancelAsync(consumerTag);
                     }
                     catch (Exception ex)
                     {
@@ -174,13 +203,13 @@ namespace newApi.RabbitMQ
             {
                 if (_channel?.IsOpen == true)
                 {
-                    _channel.Close();
+                    _channel.CloseAsync().GetAwaiter().GetResult();
                 }
                 _channel?.Dispose();
 
                 if (_connection?.IsOpen == true)
                 {
-                    _connection.Close();
+                    _connection.CloseAsync().GetAwaiter().GetResult();
                 }
                 _connection?.Dispose();
             }

@@ -1,5 +1,4 @@
 using Google.Cloud.SecretManager.V1;
-using Swashbuckle.AspNetCore.SwaggerGen;
 using Google.Api.Gax.Grpc;
 using Grpc.Core;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -324,6 +323,7 @@ if (googleClientIds == null || googleClientIds.Length == 0)
 if (googleClientIds != null && googleClientIds.Length > 0)
 {
     var configDict = new Dictionary<string, string?>();
+    // Configurar como array para que GetSection("Google:ClientIds").Get<string[]>() funcione
     for (int i = 0; i < googleClientIds.Length; i++)
     {
         configDict[$"Google:ClientIds:{i}"] = googleClientIds[i];
@@ -332,6 +332,7 @@ if (googleClientIds != null && googleClientIds.Length > 0)
     
     var googleConfigLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
     googleConfigLogger.LogInformation($"Google Client IDs configurados: {googleClientIds.Length} ID(s) encontrado(s)");
+    googleConfigLogger.LogInformation($"Client IDs: {string.Join(", ", googleClientIds)}");
 }
 
 // JWT - Leer de variables de entorno primero, luego de Secret Manager como fallback

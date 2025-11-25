@@ -416,6 +416,9 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 // Configure Google Cloud Storage
 builder.Services.AddSingleton(StorageClient.Create());
 
+// Register Google Signed URL Service
+builder.Services.AddScoped<newApi.Services.ISignedUrlService, newApi.Services.GoogleSignedUrlService>();
+
 // Configure RabbitMQ
 builder.Services.AddSingleton<RabbitMQ.Client.IConnectionFactory>(sp =>
 {
@@ -704,3 +707,4 @@ app.MapHub<ChatHub>("/chatHub");
 app.Urls.Add("http://0.0.0.0:7124");
 
 app.Run();
+

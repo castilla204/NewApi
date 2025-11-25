@@ -8,7 +8,7 @@ metadata:
     version: v1
     managed-by: argocd
   annotations:
-    deployment.kubernetes.io/revision-history-limit: "10"
+    deployment.kubernetes.io/revision-history-limit: '10'
 spec:
   replicas: 2
   strategy:
@@ -29,7 +29,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
-      imagePullSecrets:
+      imagePullSecrets: null
       volumes:
       - name: google-credentials
         secret:
@@ -44,28 +44,23 @@ spec:
           containerPort: 7124
           protocol: TCP
         env:
-        # RabbitMQ - valores directos para servicios internos
         - name: RABBITMQ_HOSTNAME
-          value: "rabbitmq-svc"
+          value: rabbitmq-svc
         - name: RABBITMQ_PORT
-          value: "5672"
+          value: '5672'
         - name: RABBITMQ_USERNAME
-          value: "admin"
+          value: admin
         - name: RABBITMQ_PASSWORD
           valueFrom:
             secretKeyRef:
               name: newapi-secrets
               key: rabbitmq-password
-        
-        # Configuración de .NET
         - name: ASPNETCORE_ENVIRONMENT
-          value: "Production"
+          value: Production
         - name: GRPC_VERBOSITY
-          value: "ERROR"
+          value: ERROR
         - name: GRPC_TRACE
-          value: ""
-        
-        # PostgreSQL - TODO desde Secret sincronizado por ESO
+          value: ''
         - name: POSTGRES_HOST
           valueFrom:
             secretKeyRef:
@@ -91,8 +86,6 @@ spec:
             secretKeyRef:
               name: newapi-secrets
               key: postgres-database
-        
-        # JWT - desde Secret sincronizado por ESO
         - name: JWT_KEY
           valueFrom:
             secretKeyRef:
@@ -108,77 +101,16 @@ spec:
             secretKeyRef:
               name: newapi-secrets
               key: jwt-audience
-        
-        # Google OAuth - desde Secret sincronizado por ESO
         - name: GOOGLE_CLIENT_IDS
           valueFrom:
             secretKeyRef:
               name: newapi-secrets
               key: google-client-ids
-        
-        # OpenAI - desde Secret sincronizado por ESO
         - name: OPENAI_API_KEY
-        
-        # Google Cloud Credentials
         - name: GOOGLE_APPLICATION_CREDENTIALS
-          value: "/etc/google/cloudcredential.json"
-        
-        # MFA Encryption Key
+          value: /etc/google/cloudcredential.json
         - name: Mfa:EncryptionKey
-          valueFrom:
-            secretKeyRef:
-              name: newapi-secrets
-              key: mfa-encryption-key
-          valueFrom:
-        
-        # Google Cloud Credentials
-        - name: GOOGLE_APPLICATION_CREDENTIALS
-          value: "/etc/google/cloudcredential.json"
-        
-        # MFA Encryption Key
-        - name: Mfa:EncryptionKey
-          valueFrom:
-            secretKeyRef:
-              name: newapi-secrets
-              key: mfa-encryption-key
-            secretKeyRef:
-        
-        # Google Cloud Credentials
-        - name: GOOGLE_APPLICATION_CREDENTIALS
-          value: "/etc/google/cloudcredential.json"
-        
-        # MFA Encryption Key
-        - name: Mfa:EncryptionKey
-          valueFrom:
-            secretKeyRef:
-              name: newapi-secrets
-              key: mfa-encryption-key
-              name: newapi-secrets
-        
-        # Google Cloud Credentials
-        - name: GOOGLE_APPLICATION_CREDENTIALS
-          value: "/etc/google/cloudcredential.json"
-        
-        # MFA Encryption Key
-        - name: Mfa:EncryptionKey
-          valueFrom:
-            secretKeyRef:
-              name: newapi-secrets
-              key: mfa-encryption-key
-              key: openai-api-key
-        
-        # Google Cloud Credentials
-        - name: GOOGLE_APPLICATION_CREDENTIALS
-          value: "/etc/google/cloudcredential.json"
-        
-        # MFA Encryption Key
-        - name: Mfa:EncryptionKey
-          valueFrom:
-            secretKeyRef:
-              name: newapi-secrets
-              key: mfa-encryption-key
-        
-        # Email - desde Secret sincronizado por ESO
+          valueFrom: null
         - name: EMAIL_FROM_EMAIL
           valueFrom:
             secretKeyRef:
@@ -209,8 +141,6 @@ spec:
             secretKeyRef:
               name: newapi-secrets
               key: email-smtp-password
-        
-        # Stripe - desde Secret sincronizado por ESO
         - name: STRIPE_SECRET_KEY
           valueFrom:
             secretKeyRef:
@@ -226,8 +156,6 @@ spec:
             secretKeyRef:
               name: newapi-secrets
               key: stripe-general-webhook-secret
-        
-        # Twilio - desde Secret sincronizado por ESO
         - name: TWILIO_ACCOUNT_SID
           valueFrom:
             secretKeyRef:
@@ -249,11 +177,11 @@ spec:
           readOnly: true
         resources:
           requests:
-            memory: "256Mi"
-            cpu: "50m"
+            memory: 256Mi
+            cpu: 50m
           limits:
-            memory: "512Mi"
-            cpu: "2000m"
+            memory: 512Mi
+            cpu: 2000m
         livenessProbe:
           httpGet:
             path: /health
@@ -364,12 +292,12 @@ metadata:
     managed-by: argocd
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
-    nginx.ingress.kubernetes.io/rate-limit: "200"
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: 10m
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: '60'
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '60'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '60'
+    nginx.ingress.kubernetes.io/rate-limit: '200'
+    cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: nginx
   rules:
@@ -387,5 +315,3 @@ spec:
   - hosts:
     - api.atrapo.io
     secretName: new-api-ssl
-
-

@@ -163,26 +163,14 @@ builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key");
 var isDevelopment = builder.Environment.IsDevelopment();
 if (isDevelopment)
 {
-    // En desarrollo: usar variables de entorno o User Secrets
-    // NUNCA hardcodear secretos en el código
-    // Configurar con: dotnet user-secrets set "Stripe:SecretKey" "valor"
-    // O usar variables de entorno: STRIPE_SECRET_KEY
-    if (string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]))
-    {
-        builder.Configuration["Stripe:SecretKey"] = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY") ?? "";
-    }
-    if (string.IsNullOrEmpty(builder.Configuration["Stripe:WebhookSecret"]))
-    {
-        builder.Configuration["Stripe:WebhookSecret"] = Environment.GetEnvironmentVariable("STRIPE_WEBHOOK_SECRET") ?? "";
-    }
-    if (string.IsNullOrEmpty(builder.Configuration["Stripe:GeneralWebhookSecret"]))
-    {
-        builder.Configuration["Stripe:GeneralWebhookSecret"] = Environment.GetEnvironmentVariable("STRIPE_GENERAL_WEBHOOK_SECRET") ?? "";
-    }
+    // En desarrollo: valores desde Google Cloud Secret Manager (modo test)
+    builder.Configuration["Stripe:SecretKey"] = GetSecretValue("stripe-secret-key-dev");
+    builder.Configuration["Stripe:WebhookSecret"] = GetSecretValue("stripe-webhook-secret-dev");
+    builder.Configuration["Stripe:GeneralWebhookSecret"] = GetSecretValue("stripe-general-webhook-secret-dev");
 }
 else
 {
-    // En producción: valores desde Google Cloud Secret Manager
+    // En producción: valores desde Google Cloud Secret Manager (modo live)
     builder.Configuration["Stripe:SecretKey"] = GetSecretValue("stripe-secret-key");
     builder.Configuration["Stripe:WebhookSecret"] = GetSecretValue("stripe-webhook-secret");
     builder.Configuration["Stripe:GeneralWebhookSecret"] = GetSecretValue("stripe-general-webhook-secret");
@@ -647,6 +635,20 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("AllowSpecificOrigin"); // Aplicar CORS antes de otros middleware
+
+// ✅ SEGURIDAD 2025: Content Security Policy (CSP)
+app.Use(async (context, next) =>
+{
+    context.Response.Headers.Append("Content-Security-Policy",
+        "default-src 'self'; " +
+        "script-src 'self' 'unsafe-inline' https://accounts.google.com; " +
+        "style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data: https:; " +
+        "font-src 'self' data:; " +
+        "connect-src 'self' https://api.atrapo.io https://accounts.google.com;");
+    
+    await next();
+});
 
 // ✅ SEGURIDAD 2025: Aplicar Rate Limiting
 app.UseRateLimiter();

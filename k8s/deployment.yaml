@@ -30,6 +30,10 @@ spec:
         runAsUser: 1000
         fsGroup: 1000
       imagePullSecrets:
+      volumes:
+      - name: google-credentials
+        secret:
+          secretName: newapi-credentials
       - name: regcred
       containers:
       - name: new-api
@@ -114,10 +118,65 @@ spec:
         
         # OpenAI - desde Secret sincronizado por ESO
         - name: OPENAI_API_KEY
+        
+        # Google Cloud Credentials
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: "/etc/google/cloudcredential.json"
+        
+        # MFA Encryption Key
+        - name: Mfa:EncryptionKey
           valueFrom:
             secretKeyRef:
               name: newapi-secrets
+              key: mfa-encryption-key
+          valueFrom:
+        
+        # Google Cloud Credentials
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: "/etc/google/cloudcredential.json"
+        
+        # MFA Encryption Key
+        - name: Mfa:EncryptionKey
+          valueFrom:
+            secretKeyRef:
+              name: newapi-secrets
+              key: mfa-encryption-key
+            secretKeyRef:
+        
+        # Google Cloud Credentials
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: "/etc/google/cloudcredential.json"
+        
+        # MFA Encryption Key
+        - name: Mfa:EncryptionKey
+          valueFrom:
+            secretKeyRef:
+              name: newapi-secrets
+              key: mfa-encryption-key
+              name: newapi-secrets
+        
+        # Google Cloud Credentials
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: "/etc/google/cloudcredential.json"
+        
+        # MFA Encryption Key
+        - name: Mfa:EncryptionKey
+          valueFrom:
+            secretKeyRef:
+              name: newapi-secrets
+              key: mfa-encryption-key
               key: openai-api-key
+        
+        # Google Cloud Credentials
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: "/etc/google/cloudcredential.json"
+        
+        # MFA Encryption Key
+        - name: Mfa:EncryptionKey
+          valueFrom:
+            secretKeyRef:
+              name: newapi-secrets
+              key: mfa-encryption-key
         
         # Email - desde Secret sincronizado por ESO
         - name: EMAIL_FROM_EMAIL
@@ -184,6 +243,10 @@ spec:
             secretKeyRef:
               name: newapi-secrets
               key: twilio-verification-service-sid
+        volumeMounts:
+        - name: google-credentials
+          mountPath: /etc/google
+          readOnly: true
         resources:
           requests:
             memory: "256Mi"
@@ -324,3 +387,4 @@ spec:
   - hosts:
     - api.atrapo.io
     secretName: new-api-ssl
+

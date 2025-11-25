@@ -30,7 +30,7 @@
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 		</PackageReference>
 		<PackageReference Include="Microsoft.IdentityModel.Tokens" Version="8.15.0" />
-		<PackageReference Include="Microsoft.OpenApi" Version="2.3.0" />
+		<PackageReference Include="Microsoft.OpenApi" Version="2.3.10" />
 		<PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
 		<PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
 		<PackageReference Include="OpenAI" Version="2.7.0" />

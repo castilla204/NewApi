@@ -21,6 +21,7 @@ using Microsoft.AspNetCore.Server.IIS;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Authorization;
+using newApi.Middleware;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -690,6 +691,9 @@ context.Request.Headers.ContainsKey("X-Bypass-Auth"))
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+// ✅ SEGURIDAD 2025: Verificar MFA cuando está habilitado
+app.UseRequireMfa();
 
 // Add health check endpoint
 app.MapHealthChecks("/health");

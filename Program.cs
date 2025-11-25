@@ -21,7 +21,6 @@ using Microsoft.AspNetCore.Server.IIS;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.OpenApi;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -270,22 +269,15 @@ builder.Services.Configure<FormOptions>(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
-<<<<<<< HEAD
-    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
-    {
-        Description = "JWT Authorization header (optional for Swagger testing)",
-        Name = "Authorization",
-        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
-        Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey
-=======
-    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.OpenApiSecurityScheme
-    {
-        Description = "JWT Authorization header (optional for Swagger testing)",
-        Name = "Authorization",
-        In = Microsoft.OpenApi.ParameterLocation.Header,
-        Type = Microsoft.OpenApi.SecuritySchemeType.ApiKey
->>>>>>> 70037ae77d5bcc854fadad49afa3ca8dbf79169e
-    });
+    // TODO: Fix Microsoft.OpenApi.Models namespace issue
+    // Temporarily commented out until we resolve the package reference
+    // c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+    // {
+    //     Description = "JWT Authorization header (optional for Swagger testing)",
+    //     Name = "Authorization",
+    //     In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+    //     Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey
+    // });
 });
 
 // ✅ SEGURIDAD 2025: Configurar Rate Limiting nativo de .NET 8

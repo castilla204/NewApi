@@ -108,10 +108,12 @@ spec:
               key: google-client-ids
         - name: OPENAI_API_KEY
         - name: GOOGLE_APPLICATION_CREDENTIALS
-          value: /etc/google/cloudcredential.json
         - name: Mfa:EncryptionKey
           valueFrom:
             secretKeyRef:
+              name: newapi-secrets
+              key: mfa-encryption-key
+          value: /etc/google/cloudcredential.json
               name: newapi-secrets
               key: mfa-encryption-key
             secretKeyRef:
@@ -316,5 +318,6 @@ spec:
   - hosts:
     - api.atrapo.io
     secretName: new-api-ssl
+
 
 

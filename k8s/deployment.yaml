@@ -37,7 +37,7 @@ spec:
       - name: regcred
       containers:
       - name: new-api
-        image: erizo9/newapi@sha256:e0c9e22e401a250e80ce81fe25cfd667030372b58669abbdee1dbb2f7eff84b6
+        image: erizo9/newapi@sha256:94c4b879420f6e49a739d16b2ac07f092459a8cb732d59279a93c1973bbedc29
         imagePullPolicy: Always
         ports:
         - name: http
@@ -315,3 +315,4 @@ spec:
   - hosts:
     - api.atrapo.io
     secretName: new-api-ssl
+

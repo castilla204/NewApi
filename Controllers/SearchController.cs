@@ -385,7 +385,7 @@ namespace newApi.Controllers
                         // ✅ All payments are now processed through Stripe - no internal balance system
                         var amountToCharge = service.Price;
 
-                        var domain = "https://atrapo.io";
+                        var domain = "https://inspecciono.com";
                         var options = new SessionCreateOptions
                         {
                             PaymentMethodTypes = new List<string> { "card" },

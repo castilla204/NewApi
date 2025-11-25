@@ -11,7 +11,7 @@ namespace newApi.Services
     public class SearchHireService : ISearchHireService
     {
         private readonly AppDbContext _context;
-        private readonly string _domain = "https://atrapo.io";
+        private readonly string _domain = "https://inspecciono.com";
 
         public SearchHireService(AppDbContext context)
         {

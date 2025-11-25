@@ -113,12 +113,6 @@ spec:
             secretKeyRef:
               name: newapi-secrets
               key: mfa-encryption-key
-          value: /etc/google/cloudcredential.json
-              name: newapi-secrets
-              key: mfa-encryption-key
-            secretKeyRef:
-              name: newapi-secrets
-              key: email-from-email
         - name: EMAIL_FROM_NAME
           valueFrom:
             secretKeyRef:
@@ -318,6 +312,7 @@ spec:
   - hosts:
     - api.atrapo.io
     secretName: new-api-ssl
+
 
 
 

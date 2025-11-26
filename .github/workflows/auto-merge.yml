@@ -57,9 +57,15 @@ jobs:
               skip = true;
             }
             
-            core.setOutput('pr-number', prNumber || '');
-            core.setOutput('skip', skip.toString());
-            return prNumber;
+            if (skip || !prNumber) {
+              core.setOutput('skip', 'true');
+              core.setOutput('pr-number', '');
+            } else {
+              core.setOutput('pr-number', prNumber.toString());
+              core.setOutput('skip', 'false');
+            }
+            
+            return prNumber || null;
 
       - name: Get PR info
         id: pr-info
@@ -67,13 +73,23 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const prNumber = parseInt('${{ steps.pr-number.outputs.pr-number }}');
+            const prNumberStr = '${{ steps.pr-number.outputs.pr-number }}';
             
-            if (!prNumber || isNaN(prNumber)) {
-              console.log('Invalid PR number, skipping');
+            if (!prNumberStr || prNumberStr === '') {
+              console.log('PR number is empty, skipping');
               core.setOutput('skip', 'true');
               return;
             }
+            
+            const prNumber = parseInt(prNumberStr);
+            
+            if (!prNumber || isNaN(prNumber)) {
+              console.log(`Invalid PR number: ${prNumberStr}, skipping`);
+              core.setOutput('skip', 'true');
+              return;
+            }
+            
+            console.log(`Getting info for PR #${prNumber}`);
             
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
@@ -111,7 +127,8 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const prNumber = parseInt('${{ steps.pr-number.outputs.pr-number }}');
+            const prNumberStr = '${{ steps.pr-number.outputs.pr-number }}';
+            const prNumber = parseInt(prNumberStr);
             const headSha = '${{ steps.pr-info.outputs.head-sha }}';
             const maxWait = 600; // 10 minutos
             const checkInterval = 15;
@@ -176,7 +193,8 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const prNumber = parseInt('${{ steps.pr-number.outputs.pr-number }}');
+            const prNumberStr = '${{ steps.pr-number.outputs.pr-number }}';
+            const prNumber = parseInt(prNumberStr);
             
             console.log(`Attempting to merge PR #${prNumber}`);
             

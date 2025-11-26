@@ -727,10 +727,14 @@ context.Request.Headers.ContainsKey("X-Bypass-Auth"))
 });
 */
 
+// Hangfire Dashboard - debe estar ANTES de UseAuthentication para que funcione
+app.UseHangfireDashboard("/hangfire", new Hangfire.DashboardOptions
+{
+    Authorization = new[] { new HangfireAuthorizationFilter() }
+});
 app.UseAuthentication();
 app.UseAuthorization();
 // Hangfire Dashboard - debe estar después de UseAuthorization
-app.UseHangfireDashboard("/hangfire", new Hangfire.DashboardOptions
 {
     Authorization = new[] { new HangfireAuthorizationFilter() }
 });

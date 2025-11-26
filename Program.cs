@@ -596,7 +596,6 @@ catch (Exception ex)
 
 
 // Schedule recurring job with Hangfire
-app.UseHangfireDashboard("/hangfire");
 
 // ✅ SEGURIDAD 2025: Configurar limpieza automática de refresh tokens
 // Se ejecuta todos los días a las 3:00 AM
@@ -707,6 +706,14 @@ context.Request.Headers.ContainsKey("X-Bypass-Auth"))
 app.UseAuthentication();
 app.UseAuthorization();
 
+// Hangfire Dashboard - debe estar después de UseAuthorization
+app.UseHangfireDashboard("/hangfire", new Hangfire.DashboardOptions
+{
+    Authorization = new[] { new Hangfire.DashboardAuthorizationFilter(
+        context => context.User.Identity?.IsAuthenticated == true &&
+                   context.User.IsInRole("Admin"))
+    }
+});
 // ✅ SEGURIDAD 2025: Verificar MFA cuando está habilitado
 app.UseRequireMfa();
 

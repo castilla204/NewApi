@@ -637,15 +637,25 @@ if (app.Environment.IsDevelopment())
 app.UseCors("AllowSpecificOrigin"); // Aplicar CORS antes de otros middleware
 
 // ✅ SEGURIDAD 2025: Content Security Policy (CSP)
+// NOTA: El CSP debe configurarse principalmente en el servidor del frontend (inspecciono.com)
+// Este CSP solo se aplica a las respuestas de la API, no al documento HTML del frontend
+// El frontend necesita configurar su propio CSP en su servidor web (nginx, etc.) con:
+// connect-src 'self' https://api.atrapo.io https://accounts.google.com;
 app.Use(async (context, next) =>
 {
-    context.Response.Headers.Append("Content-Security-Policy",
-        "default-src 'self'; " +
-        "script-src 'self' 'unsafe-inline' https://accounts.google.com; " +
-        "style-src 'self' 'unsafe-inline'; " +
-        "img-src 'self' data: https:; " +
-        "font-src 'self' data:; " +
-        "connect-src 'self' https://api.atrapo.io https://accounts.google.com;");
+    // Solo aplicar CSP a rutas que sirven contenido HTML (como Swagger)
+    // No aplicar a rutas API para evitar interferir con el CSP del frontend
+    if (context.Request.Path.StartsWithSegments("/swagger") || 
+        context.Request.Path.StartsWithSegments("/hangfire"))
+    {
+        context.Response.Headers.Append("Content-Security-Policy",
+            "default-src 'self'; " +
+            "script-src 'self' 'unsafe-inline' https://accounts.google.com; " +
+            "style-src 'self' 'unsafe-inline'; " +
+            "img-src 'self' data: https:; " +
+            "font-src 'self' data:; " +
+            "connect-src 'self' https://api.atrapo.io https://accounts.google.com;");
+    }
     
     await next();
 });

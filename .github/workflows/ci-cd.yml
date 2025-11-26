@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-and-test
     permissions:
-      contents: read
+      contents: write
       security-events: write
     
     steps:
@@ -62,6 +62,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-and-test, security-scan]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+
     
     steps:
       - name: Checkout code
@@ -86,3 +89,44 @@ jobs:
             erizo9/newapi:${{ github.sha }}
           cache-from: type=registry,ref=erizo9/newapi:buildcache
           cache-to: type=registry,ref=erizo9/newapi:buildcache,mode=max
+      - name: Get image digest
+        id: image-digest
+        run: |
+          # Obtener el digest de la imagen latest
+          IMAGE_TAG="erizo9/newapi:latest"
+          DIGEST=$(docker buildx imagetools inspect $IMAGE_TAG --format '{{json .}}' | jq -r '.manifest.digest')
+          
+          # Si no empieza con sha256:, agregarlo
+          if [[ ! "$DIGEST" =~ ^sha256: ]]; then
+            DIGEST="sha256:$DIGEST"
+          fi
+          
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "Image digest: $DIGEST"
+
+      - name: Update deployment.yaml
+        if: github.ref == 'refs/heads/main'
+        run: |
+          DIGEST="${{ steps.image-digest.outputs.digest }}"
+          echo "Updating deployment.yaml with digest: $DIGEST"
+          
+          # Actualizar la línea de image en deployment.yaml
+          sed -i "s|image: erizo9/newapi@sha256:[a-f0-9]*|image: erizo9/newapi@$DIGEST|g" k8s/deployment.yaml
+          
+          # Verificar
+          if grep -q "$DIGEST" k8s/deployment.yaml; then
+            echo "✅ deployment.yaml actualizado"
+            grep "image:" k8s/deployment.yaml
+          else
+            echo "❌ Error actualizando deployment.yaml"
+            exit 1
+          fi
+
+      - name: Commit and push deployment update
+        if: github.ref == 'refs/heads/main'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: Update deployment image digest [skip ci]'
+          file_pattern: 'k8s/deployment.yaml'
+          skip_dirty_check: true
+

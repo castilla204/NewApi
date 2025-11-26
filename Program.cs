@@ -727,14 +727,6 @@ context.Request.Headers.ContainsKey("X-Bypass-Auth"))
 });
 */
 
-// Excluir /hangfire del middleware de autenticación para que Hangfire lo maneje
-app.MapWhen(context => !context.Request.Path.StartsWithSegments("/hangfire"), appBuilder =>
-{
-    appBuilder.UseAuthentication();
-    appBuilder.UseAuthorization();
-});
-app.UseAuthentication();
-app.UseAuthorization();
 // Hangfire Dashboard - debe estar después de UseAuthorization
 app.UseHangfireDashboard("/hangfire", new Hangfire.DashboardOptions
 {

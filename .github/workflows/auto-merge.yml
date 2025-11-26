@@ -29,24 +29,24 @@ jobs:
             const eventName = process.env.GITHUB_EVENT_NAME || github.event_name || context.eventName;
             
             console.log(`Event name: ${eventName}`);
-            console.log(`GitHub event: ${JSON.stringify(github.event, null, 2).substring(0, 500)}`);
             
             if (eventName === 'workflow_run') {
               console.log('Event: workflow_run');
-              console.log(`Head branch: ${github.event.workflow_run?.head_branch || 'N/A'}`);
-              console.log(`Head SHA: ${github.event.workflow_run?.head_sha || 'N/A'}`);
-              console.log(`Conclusion: ${github.event.workflow_run?.conclusion || 'N/A'}`);
+              const workflowRun = github.event.workflow_run || {};
+              console.log(`Head branch: ${workflowRun.head_branch || 'N/A'}`);
+              console.log(`Head SHA: ${workflowRun.head_sha || 'N/A'}`);
+              console.log(`Conclusion: ${workflowRun.conclusion || 'N/A'}`);
               
               // NO ejecutar si es un merge commit
-              if (github.event.workflow_run?.head_commit?.message?.includes('Merge pull request')) {
+              if (workflowRun.head_commit?.message?.includes('Merge pull request')) {
                 console.log('This is a merge commit, skipping auto-merge');
                 skip = true;
-              } else if (github.event.workflow_run?.conclusion !== 'success') {
-                console.log(`Workflow run conclusion is ${github.event.workflow_run?.conclusion}, skipping`);
+              } else if (workflowRun.conclusion !== 'success') {
+                console.log(`Workflow run conclusion is ${workflowRun.conclusion}, skipping`);
                 skip = true;
               } else {
                 // Buscar PRs abiertos que coincidan con el branch
-                const headBranch = github.event.workflow_run?.head_branch;
+                const headBranch = workflowRun.head_branch;
                 if (!headBranch) {
                   console.log('No head branch found in workflow_run event');
                   skip = true;
@@ -73,22 +73,27 @@ jobs:
               prNumber = context.issue?.number || github.event.pull_request?.number;
               console.log(`Event: pull_request, PR #${prNumber}`);
             } else if (eventName === 'check_suite') {
-              // Para check_suite, buscar el PR asociado
-              const headSha = github.event.check_suite?.head_sha;
-              if (headSha) {
+              // Para check_suite, buscar el PR asociado usando el head_sha completo
+              const checkSuite = github.event.check_suite || {};
+              const headSha = checkSuite.head_sha;
+              if (headSha && typeof headSha === 'string') {
+                // Buscar PRs que tengan este SHA como head
                 const { data: prs } = await github.rest.pulls.list({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   state: 'open',
-                  head: headSha.substring(0, 7),
                 });
-                if (prs.length > 0) {
-                  prNumber = prs[0].number;
-                  console.log(`Found PR #${prNumber} from check_suite`);
+                // Filtrar PRs que coincidan con el SHA
+                const matchingPR = prs.find(pr => pr.head.sha === headSha);
+                if (matchingPR) {
+                  prNumber = matchingPR.number;
+                  console.log(`Found PR #${prNumber} from check_suite with SHA ${headSha}`);
                 } else {
+                  console.log(`No PR found for check_suite with SHA ${headSha}`);
                   skip = true;
                 }
               } else {
+                console.log('No head_sha found in check_suite event');
                 skip = true;
               }
             } else {

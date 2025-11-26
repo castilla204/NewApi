@@ -124,7 +124,7 @@ jobs:
 
       - name: Commit and push deployment update
         if: github.ref == 'refs/heads/main'
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: 'chore: Update deployment image digest [skip ci]'
           file_pattern: 'k8s/deployment.yaml'

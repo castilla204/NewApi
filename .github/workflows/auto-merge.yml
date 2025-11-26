@@ -18,6 +18,11 @@ jobs:
   auto-merge:
     name: Auto Merge PR
     runs-on: ubuntu-latest
+    # NO ejecutar si el workflow_run es de un merge commit
+    if: |
+      github.event_name != 'workflow_run' || 
+      (github.event.workflow_run.conclusion == 'success' && 
+       !contains(github.event.workflow_run.head_commit.message, 'Merge pull request'))
     steps:
       - name: Get PR number
         id: pr-number
@@ -31,23 +36,31 @@ jobs:
               console.log('Event: workflow_run');
               console.log(`Head branch: ${github.event.workflow_run.head_branch}`);
               console.log(`Head SHA: ${github.event.workflow_run.head_sha}`);
+              console.log(`Conclusion: ${github.event.workflow_run.conclusion}`);
               
-              // Buscar PRs abiertos que coincidan con el branch
-              const { data: prs } = await github.rest.pulls.list({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                state: 'open',
-                head: `${context.repo.owner}:${github.event.workflow_run.head_branch}`,
-              });
-              
-              console.log(`Found ${prs.length} open PR(s) for branch ${github.event.workflow_run.head_branch}`);
-              
-              if (prs.length === 0) {
-                console.log('No PR found for this workflow run, skipping');
+              // NO ejecutar si es un merge commit
+              if (github.event.workflow_run.head_commit && 
+                  github.event.workflow_run.head_commit.message.includes('Merge pull request')) {
+                console.log('This is a merge commit, skipping auto-merge');
                 skip = true;
               } else {
-                prNumber = prs[0].number;
-                console.log(`Found PR #${prNumber}`);
+                // Buscar PRs abiertos que coincidan con el branch
+                const { data: prs } = await github.rest.pulls.list({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  state: 'open',
+                  head: `${context.repo.owner}:${github.event.workflow_run.head_branch}`,
+                });
+                
+                console.log(`Found ${prs.length} open PR(s) for branch ${github.event.workflow_run.head_branch}`);
+                
+                if (prs.length === 0) {
+                  console.log('No PR found for this workflow run, skipping');
+                  skip = true;
+                } else {
+                  prNumber = prs[0].number;
+                  console.log(`Found PR #${prNumber}`);
+                }
               }
             } else if (github.event_name === 'pull_request') {
               prNumber = context.issue.number;
@@ -96,6 +109,13 @@ jobs:
               repo: context.repo.repo,
               pull_number: prNumber,
             });
+            
+            // Verificar que el PR sigue abierto
+            if (pr.state !== 'open') {
+              console.log(`PR #${prNumber} is ${pr.state}, skipping`);
+              core.setOutput('skip', 'true');
+              return;
+            }
             
             console.log(`PR #${prNumber}: User: ${pr.user.login}, Type: ${pr.user.type}`);
             
@@ -158,6 +178,13 @@ jobs:
                 pull_number: prNumber,
               });
 
+              // Si el PR ya está cerrado, salir
+              if (pr.state !== 'open') {
+                console.log(`PR #${prNumber} is ${pr.state}, stopping`);
+                core.setOutput('skip', 'true');
+                return;
+              }
+
               const allChecksPassed = 
                 status.state === 'success' &&
                 checks.check_runs.every(check => 
@@ -198,11 +225,17 @@ jobs:
             
             console.log(`Attempting to merge PR #${prNumber}`);
             
+            // Verificar una última vez que el PR sigue abierto
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber,
             });
+            
+            if (pr.state !== 'open') {
+              console.log(`PR #${prNumber} is already ${pr.state}, skipping merge`);
+              return;
+            }
             
             try {
               const result = await github.rest.pulls.merge({
@@ -219,7 +252,8 @@ jobs:
               console.error('Error merging PR:', error.message);
               console.error('Error status:', error.status);
               if (error.status === 405) {
-                core.setFailed('PR cannot be merged - may need manual intervention');
+                console.log('PR cannot be merged - may need manual intervention');
+                // No fallar, solo loguear
               } else {
                 throw error;
               }

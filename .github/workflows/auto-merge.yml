@@ -31,9 +31,12 @@ jobs:
             console.log(`=== AUTO MERGE DEBUG ===`);
             console.log(`Event name: ${eventName}`);
             
+            // Usar context.payload para workflow_run ya que github.event puede ser undefined
+            const eventPayload = context.payload || github.event || {};
+            const workflowRun = eventPayload.workflow_run || {};
+            
             if (eventName === 'workflow_run') {
               console.log('Event: workflow_run');
-              const workflowRun = github.event.workflow_run || {};
               const headBranch = workflowRun.head_branch;
               const headSha = workflowRun.head_sha;
               const conclusion = workflowRun.conclusion;
@@ -99,10 +102,10 @@ jobs:
                 }
               }
             } else if (eventName === 'pull_request') {
-              prNumber = context.issue?.number || github.event.pull_request?.number || context.payload?.pull_request?.number;
+              prNumber = context.issue?.number || eventPayload.pull_request?.number || context.payload?.pull_request?.number;
               console.log(`Event: pull_request, PR #${prNumber}`);
             } else if (eventName === 'check_suite') {
-              const checkSuite = github.event.check_suite || {};
+              const checkSuite = eventPayload.check_suite || {};
               const headSha = checkSuite.head_sha;
               console.log(`Event: check_suite, Head SHA: ${headSha || 'N/A'}`);
               

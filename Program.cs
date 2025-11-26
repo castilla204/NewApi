@@ -1,27 +1,51 @@
 using Google.Cloud.SecretManager.V1;
+using newApi.Filters;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using newApi.Filters;
 using Microsoft.AspNetCore.RateLimiting;
+using newApi.Filters;
 using Microsoft.EntityFrameworkCore;
+using newApi.Filters;
 using Microsoft.IdentityModel.Tokens;
+using newApi.Filters;
 using Stripe;
+using newApi.Filters;
 using System.Text;
+using newApi.Filters;
 using System.Threading.RateLimiting;
+using newApi.Filters;
 using RabbitMQ.Client;
+using newApi.Filters;
 using newApi.RabbitMQ;
+using newApi.Filters;
 using newApi.Services;
+using newApi.Filters;
 using Google.Apis.Auth.OAuth2;
+using newApi.Filters;
 using Google.Cloud.Storage.V1;
+using newApi.Filters;
 using newApi.DataLayer;
+using newApi.Filters;
 using newApi.DataLayer.Models;
+using newApi.Filters;
 using Hangfire;
+using newApi.Filters;
 using Hangfire.PostgreSql;
+using newApi.Filters;
 using Microsoft.Extensions.DependencyInjection;
+using newApi.Filters;
 using newApi.Controllers;
+using newApi.Filters;
 using Microsoft.AspNetCore.Server.IIS;
+using newApi.Filters;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using newApi.Filters;
 using Microsoft.AspNetCore.Http.Features;
+using newApi.Filters;
 using Microsoft.AspNetCore.Authorization;
+using newApi.Filters;
 using newApi.Middleware;
+using newApi.Filters;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -708,7 +732,7 @@ app.UseAuthorization();
 // Hangfire Dashboard - debe estar después de UseAuthorization
 app.UseHangfireDashboard("/hangfire", new Hangfire.DashboardOptions
 {
-    Authorization = new[] { new newApi.Filters.HangfireAuthorizationFilter() }
+    Authorization = new[] { new HangfireAuthorizationFilter() }
 });
 
 // ✅ SEGURIDAD 2025: Verificar MFA cuando está habilitado

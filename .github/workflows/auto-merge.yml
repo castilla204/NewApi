@@ -18,11 +18,6 @@ jobs:
   auto-merge:
     name: Auto Merge PR
     runs-on: ubuntu-latest
-    # NO ejecutar si el workflow_run es de un merge commit
-    if: |
-      github.event_name != 'workflow_run' || 
-      (github.event.workflow_run.conclusion == 'success' && 
-       !contains(github.event.workflow_run.head_commit.message, 'Merge pull request'))
     steps:
       - name: Get PR number
         id: pr-number
@@ -31,42 +26,73 @@ jobs:
           script: |
             let prNumber;
             let skip = false;
+            const eventName = process.env.GITHUB_EVENT_NAME || github.event_name || context.eventName;
             
-            if (github.event_name === 'workflow_run') {
+            console.log(`Event name: ${eventName}`);
+            console.log(`GitHub event: ${JSON.stringify(github.event, null, 2).substring(0, 500)}`);
+            
+            if (eventName === 'workflow_run') {
               console.log('Event: workflow_run');
-              console.log(`Head branch: ${github.event.workflow_run.head_branch}`);
-              console.log(`Head SHA: ${github.event.workflow_run.head_sha}`);
-              console.log(`Conclusion: ${github.event.workflow_run.conclusion}`);
+              console.log(`Head branch: ${github.event.workflow_run?.head_branch || 'N/A'}`);
+              console.log(`Head SHA: ${github.event.workflow_run?.head_sha || 'N/A'}`);
+              console.log(`Conclusion: ${github.event.workflow_run?.conclusion || 'N/A'}`);
               
               // NO ejecutar si es un merge commit
-              if (github.event.workflow_run.head_commit && 
-                  github.event.workflow_run.head_commit.message.includes('Merge pull request')) {
+              if (github.event.workflow_run?.head_commit?.message?.includes('Merge pull request')) {
                 console.log('This is a merge commit, skipping auto-merge');
+                skip = true;
+              } else if (github.event.workflow_run?.conclusion !== 'success') {
+                console.log(`Workflow run conclusion is ${github.event.workflow_run?.conclusion}, skipping`);
                 skip = true;
               } else {
                 // Buscar PRs abiertos que coincidan con el branch
+                const headBranch = github.event.workflow_run?.head_branch;
+                if (!headBranch) {
+                  console.log('No head branch found in workflow_run event');
+                  skip = true;
+                } else {
+                  const { data: prs } = await github.rest.pulls.list({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    state: 'open',
+                    head: `${context.repo.owner}:${headBranch}`,
+                  });
+                  
+                  console.log(`Found ${prs.length} open PR(s) for branch ${headBranch}`);
+                  
+                  if (prs.length === 0) {
+                    console.log('No PR found for this workflow run, skipping');
+                    skip = true;
+                  } else {
+                    prNumber = prs[0].number;
+                    console.log(`Found PR #${prNumber}`);
+                  }
+                }
+              }
+            } else if (eventName === 'pull_request') {
+              prNumber = context.issue?.number || github.event.pull_request?.number;
+              console.log(`Event: pull_request, PR #${prNumber}`);
+            } else if (eventName === 'check_suite') {
+              // Para check_suite, buscar el PR asociado
+              const headSha = github.event.check_suite?.head_sha;
+              if (headSha) {
                 const { data: prs } = await github.rest.pulls.list({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   state: 'open',
-                  head: `${context.repo.owner}:${github.event.workflow_run.head_branch}`,
+                  head: headSha.substring(0, 7),
                 });
-                
-                console.log(`Found ${prs.length} open PR(s) for branch ${github.event.workflow_run.head_branch}`);
-                
-                if (prs.length === 0) {
-                  console.log('No PR found for this workflow run, skipping');
-                  skip = true;
-                } else {
+                if (prs.length > 0) {
                   prNumber = prs[0].number;
-                  console.log(`Found PR #${prNumber}`);
+                  console.log(`Found PR #${prNumber} from check_suite`);
+                } else {
+                  skip = true;
                 }
+              } else {
+                skip = true;
               }
-            } else if (github.event_name === 'pull_request') {
-              prNumber = context.issue.number;
-              console.log(`Event: pull_request, PR #${prNumber}`);
             } else {
-              console.log(`Event: ${github.event_name}, skipping`);
+              console.log(`Event: ${eventName}, skipping - not a supported event`);
               skip = true;
             }
             

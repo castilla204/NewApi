@@ -705,12 +705,12 @@ context.Request.Headers.ContainsKey("X-Bypass-Auth"))
 
 app.UseAuthentication();
 app.UseAuthorization();
-
 // Hangfire Dashboard - debe estar después de UseAuthorization
 app.UseHangfireDashboard("/hangfire", new Hangfire.DashboardOptions
 {
     Authorization = new[] { new newApi.Filters.HangfireAuthorizationFilter() }
 });
+
 // ✅ SEGURIDAD 2025: Verificar MFA cuando está habilitado
 app.UseRequireMfa();
 

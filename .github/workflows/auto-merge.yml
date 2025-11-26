@@ -18,13 +18,6 @@ jobs:
   auto-merge:
     name: Auto Merge PR
     runs-on: ubuntu-latest
-    # Solo para PRs de bots
-    if: |
-      (github.event.pull_request.user.type == 'Bot' ||
-       contains(github.event.pull_request.user.login, 'bot') ||
-       github.event.pull_request.user.login == 'renovate[bot]' ||
-       github.event.pull_request.user.login == 'dependabot[bot]') &&
-      (github.event_name == 'workflow_run' || github.event.pull_request)
     steps:
       - name: Get PR number
         id: pr-number
@@ -45,7 +38,8 @@ jobs:
               if (prs.length > 0) {
                 prNumber = prs[0].number;
               } else {
-                core.setFailed('No PR found for this workflow run');
+                console.log('No PR found for this workflow run, skipping');
+                core.setOutput('skip', 'true');
                 return;
               }
             } else {
@@ -57,6 +51,7 @@ jobs:
 
       - name: Get PR info
         id: pr-info
+        if: steps.pr-number.outputs.skip != 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -70,7 +65,8 @@ jobs:
             
             // Verificar que es un bot
             if (pr.user.type !== 'Bot' && !pr.user.login.includes('bot')) {
-              core.setFailed('PR is not from a bot, skipping auto-merge');
+              console.log('PR is not from a bot, skipping auto-merge');
+              core.setOutput('skip', 'true');
               return;
             }
             
@@ -87,7 +83,7 @@ jobs:
             };
 
       - name: Wait for all checks to pass
-        if: steps.pr-info.outputs.draft == 'false' && steps.pr-info.outputs.mergeable == 'true'
+        if: steps.pr-info.outputs.skip != 'true' && steps.pr-info.outputs.draft == 'false' && steps.pr-info.outputs.mergeable == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -149,7 +145,7 @@ jobs:
             }
 
       - name: Merge PR
-        if: steps.pr-info.outputs.draft == 'false' && steps.pr-info.outputs.mergeable == 'true'
+        if: steps.pr-info.outputs.skip != 'true' && steps.pr-info.outputs.draft == 'false' && steps.pr-info.outputs.mergeable == 'true'
         uses: actions/github-script@v7
         with:
           script: |

@@ -28,63 +28,94 @@ jobs:
             let skip = false;
             const eventName = process.env.GITHUB_EVENT_NAME || github.event_name || context.eventName;
             
+            console.log(`=== AUTO MERGE DEBUG ===`);
             console.log(`Event name: ${eventName}`);
+            console.log(`Context eventName: ${context.eventName}`);
+            console.log(`GitHub event_name: ${github.event_name}`);
             
             if (eventName === 'workflow_run') {
               console.log('Event: workflow_run');
               const workflowRun = github.event.workflow_run || {};
-              console.log(`Head branch: ${workflowRun.head_branch || 'N/A'}`);
-              console.log(`Head SHA: ${workflowRun.head_sha || 'N/A'}`);
-              console.log(`Conclusion: ${workflowRun.conclusion || 'N/A'}`);
+              const headBranch = workflowRun.head_branch;
+              const headSha = workflowRun.head_sha;
+              const conclusion = workflowRun.conclusion;
               
+              console.log(`Head branch: ${headBranch || 'N/A'}`);
+              console.log(`Head SHA: ${headSha || 'N/A'}`);
+              console.log(`Conclusion: ${conclusion || 'N/A'}`);
+              
+              // NO ejecutar si no es success
+              if (conclusion !== 'success') {
+                console.log(`Workflow run conclusion is ${conclusion}, skipping`);
+                skip = true;
+              }
               // NO ejecutar si es un merge commit
-              if (workflowRun.head_commit?.message?.includes('Merge pull request')) {
+              else if (workflowRun.head_commit?.message?.includes('Merge pull request')) {
                 console.log('This is a merge commit, skipping auto-merge');
                 skip = true;
-              } else if (workflowRun.conclusion !== 'success') {
-                console.log(`Workflow run conclusion is ${workflowRun.conclusion}, skipping`);
+              }
+              // Buscar PRs
+              else if (!headBranch) {
+                console.log('No head branch found in workflow_run event');
                 skip = true;
               } else {
-                // Buscar PRs abiertos que coincidan con el branch
-                const headBranch = workflowRun.head_branch;
-                if (!headBranch) {
-                  console.log('No head branch found in workflow_run event');
-                  skip = true;
-                } else {
-                  const { data: prs } = await github.rest.pulls.list({
+                console.log(`Searching for PRs with head: castilla204:${headBranch}`);
+                
+                // Intentar buscar por branch
+                let prs = [];
+                try {
+                  const response = await github.rest.pulls.list({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
                     state: 'open',
                     head: `${context.repo.owner}:${headBranch}`,
                   });
-                  
-                  console.log(`Found ${prs.length} open PR(s) for branch ${headBranch}`);
-                  
-                  if (prs.length === 0) {
-                    console.log('No PR found for this workflow run, skipping');
-                    skip = true;
-                  } else {
-                    prNumber = prs[0].number;
-                    console.log(`Found PR #${prNumber}`);
+                  prs = response.data;
+                } catch (error) {
+                  console.log(`Error searching PRs by branch: ${error.message}`);
+                }
+                
+                // Si no se encuentra, buscar por SHA
+                if (prs.length === 0 && headSha) {
+                  console.log(`No PRs found by branch, searching by SHA: ${headSha}`);
+                  try {
+                    const allPRs = await github.rest.pulls.list({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      state: 'open',
+                    });
+                    prs = allPRs.data.filter(pr => pr.head.sha === headSha);
+                  } catch (error) {
+                    console.log(`Error searching PRs by SHA: ${error.message}`);
                   }
+                }
+                
+                console.log(`Found ${prs.length} open PR(s)`);
+                
+                if (prs.length === 0) {
+                  console.log('No PR found for this workflow run, skipping');
+                  skip = true;
+                } else {
+                  prNumber = prs[0].number;
+                  console.log(`Found PR #${prNumber}: ${prs[0].title}`);
                 }
               }
             } else if (eventName === 'pull_request') {
-              prNumber = context.issue?.number || github.event.pull_request?.number;
+              prNumber = context.issue?.number || github.event.pull_request?.number || context.payload?.pull_request?.number;
               console.log(`Event: pull_request, PR #${prNumber}`);
             } else if (eventName === 'check_suite') {
-              // Para check_suite, buscar el PR asociado usando el head_sha completo
               const checkSuite = github.event.check_suite || {};
               const headSha = checkSuite.head_sha;
+              console.log(`Event: check_suite, Head SHA: ${headSha || 'N/A'}`);
+              
               if (headSha && typeof headSha === 'string') {
-                // Buscar PRs que tengan este SHA como head
-                const { data: prs } = await github.rest.pulls.list({
+                // Buscar todos los PRs abiertos y filtrar por SHA
+                const { data: allPRs } = await github.rest.pulls.list({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   state: 'open',
                 });
-                // Filtrar PRs que coincidan con el SHA
-                const matchingPR = prs.find(pr => pr.head.sha === headSha);
+                const matchingPR = allPRs.find(pr => pr.head.sha === headSha);
                 if (matchingPR) {
                   prNumber = matchingPR.number;
                   console.log(`Found PR #${prNumber} from check_suite with SHA ${headSha}`);
@@ -102,9 +133,11 @@ jobs:
             }
             
             if (skip || !prNumber) {
+              console.log('=== SKIPPING AUTO MERGE ===');
               core.setOutput('skip', 'true');
               core.setOutput('pr-number', '');
             } else {
+              console.log(`=== PROCEEDING WITH PR #${prNumber} ===`);
               core.setOutput('pr-number', prNumber.toString());
               core.setOutput('skip', 'false');
             }
@@ -141,6 +174,13 @@ jobs:
               pull_number: prNumber,
             });
             
+            console.log(`PR #${prNumber} details:`);
+            console.log(`  State: ${pr.state}`);
+            console.log(`  User: ${pr.user.login} (${pr.user.type})`);
+            console.log(`  Draft: ${pr.draft}`);
+            console.log(`  Mergeable: ${pr.mergeable}`);
+            console.log(`  Mergeable state: ${pr.mergeable_state}`);
+            
             // Verificar que el PR sigue abierto
             if (pr.state !== 'open') {
               console.log(`PR #${prNumber} is ${pr.state}, skipping`);
@@ -148,17 +188,12 @@ jobs:
               return;
             }
             
-            console.log(`PR #${prNumber}: User: ${pr.user.login}, Type: ${pr.user.type}`);
-            
             // Verificar que es un bot
             if (pr.user.type !== 'Bot' && !pr.user.login.includes('bot')) {
               console.log('PR is not from a bot, skipping auto-merge');
               core.setOutput('skip', 'true');
               return;
             }
-            
-            console.log(`PR is from bot: ${pr.user.login}`);
-            console.log(`Mergeable: ${pr.mergeable}, Draft: ${pr.draft}, State: ${pr.mergeable_state}`);
             
             core.setOutput('mergeable', pr.mergeable);
             core.setOutput('mergeable_state', pr.mergeable_state);
@@ -181,8 +216,8 @@ jobs:
             const prNumberStr = '${{ steps.pr-number.outputs.pr-number }}';
             const prNumber = parseInt(prNumberStr);
             const headSha = '${{ steps.pr-info.outputs.head-sha }}';
-            const maxWait = 600; // 10 minutos
-            const checkInterval = 15;
+            const maxWait = 300; // 5 minutos (reducido para PRs que ya pasaron CI/CD)
+            const checkInterval = 10;
             let waited = 0;
 
             console.log(`Waiting for checks to pass for PR #${prNumber} (SHA: ${headSha})`);
@@ -254,7 +289,7 @@ jobs:
             const prNumberStr = '${{ steps.pr-number.outputs.pr-number }}';
             const prNumber = parseInt(prNumberStr);
             
-            console.log(`Attempting to merge PR #${prNumber}`);
+            console.log(`=== ATTEMPTING TO MERGE PR #${prNumber} ===`);
             
             // Verificar una última vez que el PR sigue abierto
             const { data: pr } = await github.rest.pulls.get({
@@ -284,7 +319,7 @@ jobs:
               console.error('Error status:', error.status);
               if (error.status === 405) {
                 console.log('PR cannot be merged - may need manual intervention');
-                // No fallar, solo loguear
+                core.setFailed('PR cannot be merged');
               } else {
                 throw error;
               }

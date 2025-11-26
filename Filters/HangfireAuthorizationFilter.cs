@@ -9,24 +9,21 @@ namespace newApi.Filters
         {
             var httpContext = context.GetHttpContext();
             
-            // Permitir acceso si hay un usuario (autenticado o no)
-            // Hangfire manejará la autenticación internamente
-            if (httpContext.User?.Identity?.IsAuthenticated == true)
+            // Si no hay usuario o no está autenticado, denegar
+            if (httpContext.User?.Identity?.IsAuthenticated != true)
             {
-                // Usuario autenticado - verificar rol Admin
-                var isAdmin = httpContext.User.IsInRole("Admin") || 
-                             httpContext.User.IsInRole("1") || 
-                             httpContext.User.HasClaim("Role", "Admin") ||
-                             httpContext.User.HasClaim("Role", "1") ||
-                             httpContext.User.HasClaim(ClaimTypes.Role, "Admin") ||
-                             httpContext.User.HasClaim(ClaimTypes.Role, "1");
-                
-                return isAdmin;
+                return false;
             }
             
-            // No autenticado - permitir que Hangfire muestre su página
-            // El usuario necesitará autenticarse para ver el contenido
-            return true;
+            // Usuario autenticado - verificar rol Admin
+            var isAdmin = httpContext.User.IsInRole("Admin") || 
+                         httpContext.User.IsInRole("1") || 
+                         httpContext.User.HasClaim("Role", "Admin") ||
+                         httpContext.User.HasClaim("Role", "1") ||
+                         httpContext.User.HasClaim(ClaimTypes.Role, "Admin") ||
+                         httpContext.User.HasClaim(ClaimTypes.Role, "1");
+            
+            return isAdmin;
         }
     }
 }

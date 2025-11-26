@@ -35,14 +35,6 @@ jobs:
             
             if (github.event_name === 'workflow_run') {
               // Si viene de workflow_run, necesitamos encontrar el PR
-              const { data: runs } = await github.rest.actions.listWorkflowRuns({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: github.event.workflow_run.workflow_id,
-                head_sha: github.event.workflow_run.head_sha,
-              });
-              
-              // Buscar el PR asociado
               const { data: prs } = await github.rest.pulls.list({
                 owner: context.repo.owner,
                 repo: context.repo.repo,

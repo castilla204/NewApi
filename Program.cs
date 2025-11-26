@@ -706,10 +706,10 @@ context.Request.Headers.ContainsKey("X-Bypass-Auth"))
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Hangfire Dashboard - debe estar después de UseAuthorization
+// Hangfire Dashboard - debe estar después de UseAuthorization para que funcione con autenticación
 app.UseHangfireDashboard("/hangfire", new Hangfire.DashboardOptions
 {
-    Authorization = new[] { new Hangfire.DashboardAuthorizationFilter(
+    Authorization = new[] { new Hangfire.DashboardOptions.DashboardAuthorizationFilter(
         context => context.User.Identity?.IsAuthenticated == true &&
                    context.User.IsInRole("Admin"))
     }

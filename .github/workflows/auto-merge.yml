@@ -25,9 +25,14 @@ jobs:
         with:
           script: |
             let prNumber;
+            let skip = false;
             
             if (github.event_name === 'workflow_run') {
-              // Si viene de workflow_run, necesitamos encontrar el PR
+              console.log('Event: workflow_run');
+              console.log(`Head branch: ${github.event.workflow_run.head_branch}`);
+              console.log(`Head SHA: ${github.event.workflow_run.head_sha}`);
+              
+              // Buscar PRs abiertos que coincidan con el branch
               const { data: prs } = await github.rest.pulls.list({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -35,33 +40,48 @@ jobs:
                 head: `${context.repo.owner}:${github.event.workflow_run.head_branch}`,
               });
               
-              if (prs.length > 0) {
-                prNumber = prs[0].number;
-              } else {
+              console.log(`Found ${prs.length} open PR(s) for branch ${github.event.workflow_run.head_branch}`);
+              
+              if (prs.length === 0) {
                 console.log('No PR found for this workflow run, skipping');
-                core.setOutput('skip', 'true');
-                return;
+                skip = true;
+              } else {
+                prNumber = prs[0].number;
+                console.log(`Found PR #${prNumber}`);
               }
-            } else {
+            } else if (github.event_name === 'pull_request') {
               prNumber = context.issue.number;
+              console.log(`Event: pull_request, PR #${prNumber}`);
+            } else {
+              console.log(`Event: ${github.event_name}, skipping`);
+              skip = true;
             }
             
-            core.setOutput('pr-number', prNumber);
+            core.setOutput('pr-number', prNumber || '');
+            core.setOutput('skip', skip.toString());
             return prNumber;
 
       - name: Get PR info
         id: pr-info
-        if: steps.pr-number.outputs.skip != 'true'
+        if: steps.pr-number.outputs.skip != 'true' && steps.pr-number.outputs['pr-number'] != ''
         uses: actions/github-script@v7
         with:
           script: |
-            const prNumber = ${{ steps.pr-number.outputs.pr-number }};
+            const prNumber = parseInt('${{ steps.pr-number.outputs.pr-number }}');
+            
+            if (!prNumber || isNaN(prNumber)) {
+              console.log('Invalid PR number, skipping');
+              core.setOutput('skip', 'true');
+              return;
+            }
             
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber,
             });
+            
+            console.log(`PR #${prNumber}: User: ${pr.user.login}, Type: ${pr.user.type}`);
             
             // Verificar que es un bot
             if (pr.user.type !== 'Bot' && !pr.user.login.includes('bot')) {
@@ -70,10 +90,14 @@ jobs:
               return;
             }
             
+            console.log(`PR is from bot: ${pr.user.login}`);
+            console.log(`Mergeable: ${pr.mergeable}, Draft: ${pr.draft}, State: ${pr.mergeable_state}`);
+            
             core.setOutput('mergeable', pr.mergeable);
             core.setOutput('mergeable_state', pr.mergeable_state);
             core.setOutput('draft', pr.draft);
             core.setOutput('head-sha', pr.head.sha);
+            core.setOutput('skip', 'false');
             
             return {
               mergeable: pr.mergeable,
@@ -87,11 +111,13 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const prNumber = ${{ steps.pr-number.outputs.pr-number }};
+            const prNumber = parseInt('${{ steps.pr-number.outputs.pr-number }}');
             const headSha = '${{ steps.pr-info.outputs.head-sha }}';
             const maxWait = 600; // 10 minutos
             const checkInterval = 15;
             let waited = 0;
+
+            console.log(`Waiting for checks to pass for PR #${prNumber} (SHA: ${headSha})`);
 
             while (waited < maxWait) {
               // Verificar estado combinado
@@ -130,11 +156,12 @@ jobs:
               }
 
               if (status.state === 'failure' || pr.mergeable === false) {
+                console.log(`Checks failed or PR not mergeable. Status: ${status.state}, Mergeable: ${pr.mergeable}`);
                 core.setFailed('Checks failed or PR is not mergeable');
                 return;
               }
 
-              console.log(`⏳ Waiting... (${waited}s/${maxWait}s) - Status: ${status.state}`);
+              console.log(`⏳ Waiting... (${waited}s/${maxWait}s) - Status: ${status.state}, Checks: ${checks.check_runs.length}`);
               await new Promise(resolve => setTimeout(resolve, checkInterval * 1000));
               waited += checkInterval;
             }
@@ -149,7 +176,9 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const prNumber = ${{ steps.pr-number.outputs.pr-number }};
+            const prNumber = parseInt('${{ steps.pr-number.outputs.pr-number }}');
+            
+            console.log(`Attempting to merge PR #${prNumber}`);
             
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
@@ -170,6 +199,7 @@ jobs:
               console.log(`   SHA: ${result.data.sha}`);
             } catch (error) {
               console.error('Error merging PR:', error.message);
+              console.error('Error status:', error.status);
               if (error.status === 405) {
                 core.setFailed('PR cannot be merged - may need manual intervention');
               } else {

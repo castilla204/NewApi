@@ -17,6 +17,13 @@ jobs:
   build-and-test:
     name: Build and Test
     runs-on: ubuntu-latest
+    # NO ejecutar en PRs de renovate/dependabot para ahorrar costos
+    if: |
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.user.login != 'renovate[bot]' &&
+       github.event.pull_request.user.login != 'dependabot[bot]' &&
+       !startsWith(github.event.pull_request.head.ref, 'renovate/') &&
+       !startsWith(github.event.pull_request.head.ref, 'dependabot/'))
     
     steps:
       - name: Checkout code
@@ -41,6 +48,15 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-latest
     needs: build-and-test
+    # NO ejecutar en PRs de renovate/dependabot para ahorrar costos
+    if: |
+      (github.event_name != 'pull_request' ||
+       (github.event.pull_request.user.login != 'renovate[bot]' &&
+        github.event.pull_request.user.login != 'dependabot[bot]' &&
+        !startsWith(github.event.pull_request.head.ref, 'renovate/') &&
+        !startsWith(github.event.pull_request.head.ref, 'dependabot/'))) &&
+      always() &&
+      (needs.build-and-test.result == 'success' || needs.build-and-test.result == 'skipped')
     permissions:
       contents: read
       security-events: write
@@ -65,7 +81,10 @@ jobs:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
     needs: [build-and-test, security-scan]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: |
+      github.event_name == 'push' && 
+      github.ref == 'refs/heads/main' &&
+      (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped')
     
     steps:
       - name: Checkout code

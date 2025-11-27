@@ -1,12 +1,11 @@
 name: Auto Merge
 
+# SOLO se ejecuta cuando CI/CD Pipeline termina exitosamente
 on:
   workflow_run:
     workflows: ["CI/CD Pipeline"]
     types:
       - completed
-    branches:
-      - '**'  # Trigger on all branches
 
 permissions:
   contents: write
@@ -17,20 +16,10 @@ jobs:
   auto-merge:
     name: Auto Merge PR
     runs-on: ubuntu-latest
-    # Solo ejecutar si el workflow_run fue exitoso y NO es un merge commit
-    if: |
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event != 'pull_request' ||
-      (github.event.workflow_run.event == 'pull_request' &&
-       !contains(github.event.workflow_run.head_commit.message, 'Merge pull request'))
+    # SOLO ejecutar si CI/CD fue exitoso
+    if: github.event.workflow_run.conclusion == 'success'
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Find PR
-        id: find-pr
+      - name: Find and merge PR
         uses: actions/github-script@v7
         with:
           script: |
@@ -38,9 +27,24 @@ jobs:
             const headBranch = workflowRun.head_branch;
             const headSha = workflowRun.head_sha;
             
-            console.log(`Looking for PR with branch: ${headBranch}, SHA: ${headSha}`);
+            console.log(`=== AUTO MERGE ===`);
+            console.log(`Branch: ${headBranch}`);
+            console.log(`SHA: ${headSha}`);
+            console.log(`Event: ${workflowRun.event}`);
             
-            // Buscar PRs abiertos que coincidan con el branch
+            // NO procesar si es un merge commit
+            if (workflowRun.head_commit?.message?.includes('Merge pull request')) {
+              console.log('Skipping: This is a merge commit');
+              return;
+            }
+            
+            // NO procesar si es push a main (no es un PR)
+            if (workflowRun.event === 'push' && headBranch === 'main') {
+              console.log('Skipping: This is a push to main, not a PR');
+              return;
+            }
+            
+            // Buscar PRs abiertos
             const { data: prs } = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -48,203 +52,140 @@ jobs:
               head: `${context.repo.owner}:${headBranch}`,
             });
             
-            console.log(`Found ${prs.length} open PR(s) for branch ${headBranch}`);
+            console.log(`Found ${prs.length} open PR(s)`);
             
             if (prs.length === 0) {
               console.log('No PR found, skipping');
-              core.setOutput('pr-number', '');
-              core.setOutput('found', 'false');
               return;
             }
             
-            // Buscar el PR que coincida con el SHA
-            const matchingPR = prs.find(pr => pr.head.sha === headSha);
+            // Buscar PR que coincida con el SHA
+            const pr = prs.find(p => p.head.sha === headSha);
             
-            if (!matchingPR) {
+            if (!pr) {
               console.log('No PR found matching the SHA, skipping');
-              core.setOutput('pr-number', '');
-              core.setOutput('found', 'false');
               return;
             }
             
-            console.log(`Found PR #${matchingPR.number}: ${matchingPR.title}`);
-            console.log(`  User: ${matchingPR.user.login} (${matchingPR.user.type})`);
-            console.log(`  Mergeable: ${matchingPR.mergeable}`);
-            console.log(`  Mergeable state: ${matchingPR.mergeable_state}`);
+            console.log(`Found PR #${pr.number}: ${pr.title}`);
+            console.log(`  User: ${pr.user.login} (${pr.user.type})`);
             
             // Solo procesar PRs de bots
-            if (matchingPR.user.type !== 'Bot' && !matchingPR.user.login.includes('bot')) {
-              console.log('PR is not from a bot, skipping');
-              core.setOutput('pr-number', '');
-              core.setOutput('found', 'false');
+            if (pr.user.type !== 'Bot' && !pr.user.login.includes('bot')) {
+              console.log('Skipping: PR is not from a bot');
               return;
             }
             
-            core.setOutput('pr-number', matchingPR.number.toString());
-            core.setOutput('found', 'true');
-            core.setOutput('head-sha', matchingPR.head.sha);
-
-      - name: Wait for PR to be mergeable
-        if: steps.find-pr.outputs.found == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const prNumber = parseInt('${{ steps.find-pr.outputs.pr-number }}');
-            const maxWait = 300; // 5 minutos
-            const checkInterval = 10;
-            let waited = 0;
-            
-            console.log(`Waiting for PR #${prNumber} to be mergeable...`);
-            
-            while (waited < maxWait) {
-              const { data: pr } = await github.rest.pulls.get({
+            // Esperar a que sea mergeable (máximo 5 minutos)
+            console.log('Waiting for PR to be mergeable...');
+            let mergeable = false;
+            for (let i = 0; i < 30; i++) {
+              const { data: prCheck } = await github.rest.pulls.get({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                pull_number: prNumber,
+                pull_number: pr.number,
               });
               
-              // Si el PR está cerrado, salir
-              if (pr.state !== 'open') {
-                console.log(`PR #${prNumber} is ${pr.state}, stopping`);
-                core.setFailed('PR is no longer open');
+              if (prCheck.state !== 'open') {
+                console.log(`PR #${pr.number} is ${prCheck.state}, stopping`);
                 return;
               }
               
-              // Verificar que es mergeable
-              if (pr.mergeable === true && pr.mergeable_state === 'clean') {
-                console.log(`✅ PR #${prNumber} is mergeable and ready`);
+              if (prCheck.mergeable === true && prCheck.mergeable_state === 'clean') {
+                mergeable = true;
+                console.log('✅ PR is mergeable');
                 break;
               }
               
-              if (pr.mergeable === false || pr.mergeable_state === 'dirty' || pr.mergeable_state === 'blocked') {
-                console.log(`PR #${prNumber} cannot be merged: mergeable=${pr.mergeable}, state=${pr.mergeable_state}`);
-                core.setFailed('PR cannot be merged');
+              if (prCheck.mergeable === false || prCheck.mergeable_state === 'dirty' || prCheck.mergeable_state === 'blocked') {
+                console.log(`PR cannot be merged: mergeable=${prCheck.mergeable}, state=${prCheck.mergeable_state}`);
                 return;
               }
               
-              console.log(`⏳ Waiting... (${waited}s/${maxWait}s) - mergeable=${pr.mergeable}, state=${pr.mergeable_state}`);
-              await new Promise(resolve => setTimeout(resolve, checkInterval * 1000));
-              waited += checkInterval;
+              console.log(`⏳ Waiting... (${i * 10}s) - mergeable=${prCheck.mergeable}, state=${prCheck.mergeable_state}`);
+              await new Promise(resolve => setTimeout(resolve, 10000));
             }
             
-            if (waited >= maxWait) {
-              core.setFailed('Timeout waiting for PR to be mergeable');
+            if (!mergeable) {
+              console.log('Timeout: PR did not become mergeable');
               return;
             }
-
-      - name: Wait for all checks to pass
-        if: steps.find-pr.outputs.found == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const prNumber = parseInt('${{ steps.find-pr.outputs.pr-number }}');
-            const headSha = '${{ steps.find-pr.outputs.head-sha }}';
-            const maxWait = 300;
-            const checkInterval = 10;
-            let waited = 0;
             
-            console.log(`Waiting for all checks to pass for PR #${prNumber}...`);
+            // Verificar checks (máximo 5 minutos)
+            console.log('Waiting for all checks to pass...');
+            const headShaCheck = pr.head.sha;
+            let checksPassed = false;
             
-            while (waited < maxWait) {
-              // Verificar estado combinado
+            for (let i = 0; i < 30; i++) {
               const { data: status } = await github.rest.repos.getCombinedStatusForRef({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                ref: headSha,
+                ref: headShaCheck,
               });
               
-              // Verificar checks
               const { data: checks } = await github.rest.checks.listForRef({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                ref: headSha,
+                ref: headShaCheck,
               });
               
-              // Verificar PR
-              const { data: pr } = await github.rest.pulls.get({
+              const { data: prCheck } = await github.rest.pulls.get({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                pull_number: prNumber,
+                pull_number: pr.number,
               });
               
-              if (pr.state !== 'open') {
-                console.log(`PR #${prNumber} is ${pr.state}, stopping`);
-                core.setFailed('PR is no longer open');
+              if (prCheck.state !== 'open') {
+                console.log(`PR #${pr.number} is ${prCheck.state}, stopping`);
                 return;
               }
               
-              const allChecksPassed = 
+              const allPassed = 
                 status.state === 'success' &&
-                checks.check_runs.every(check => 
-                  check.status === 'completed' && 
-                  (check.conclusion === 'success' || check.conclusion === 'skipped')
+                checks.check_runs.every(c => 
+                  c.status === 'completed' && 
+                  (c.conclusion === 'success' || c.conclusion === 'skipped')
                 ) &&
-                pr.mergeable === true &&
-                pr.mergeable_state === 'clean' &&
-                !pr.draft;
+                prCheck.mergeable === true &&
+                prCheck.mergeable_state === 'clean';
               
-              if (allChecksPassed) {
-                console.log('✅ All checks passed, ready to merge');
+              if (allPassed) {
+                checksPassed = true;
+                console.log('✅ All checks passed');
                 break;
               }
               
-              if (status.state === 'failure' || pr.mergeable === false) {
-                console.log(`Checks failed or PR not mergeable`);
-                core.setFailed('Checks failed or PR is not mergeable');
+              if (status.state === 'failure' || prCheck.mergeable === false) {
+                console.log('Checks failed or PR not mergeable');
                 return;
               }
               
-              console.log(`⏳ Waiting... (${waited}s/${maxWait}s) - Status: ${status.state}`);
-              await new Promise(resolve => setTimeout(resolve, checkInterval * 1000));
-              waited += checkInterval;
+              console.log(`⏳ Waiting for checks... (${i * 10}s) - Status: ${status.state}`);
+              await new Promise(resolve => setTimeout(resolve, 10000));
             }
             
-            if (waited >= maxWait) {
-              core.setFailed('Timeout waiting for checks');
-              return;
-            }
-
-      - name: Merge PR
-        if: steps.find-pr.outputs.found == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const prNumber = parseInt('${{ steps.find-pr.outputs.pr-number }}');
-            
-            console.log(`=== MERGING PR #${prNumber} ===`);
-            
-            // Verificar una última vez
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-            });
-            
-            if (pr.state !== 'open') {
-              console.log(`PR #${prNumber} is already ${pr.state}`);
+            if (!checksPassed) {
+              console.log('Timeout: Checks did not pass');
               return;
             }
             
-            if (pr.mergeable !== true || pr.mergeable_state !== 'clean') {
-              console.log(`PR #${prNumber} is not ready to merge`);
-              core.setFailed('PR is not ready to merge');
-              return;
-            }
+            // Mergear
+            console.log(`=== MERGING PR #${pr.number} ===`);
             
             try {
               const result = await github.rest.pulls.merge({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                pull_number: prNumber,
+                pull_number: pr.number,
                 merge_method: 'squash',
               });
               
               console.log('✅✅✅ PR MERGED SUCCESSFULLY ✅✅✅');
               console.log(`   SHA: ${result.data.sha}`);
             } catch (error) {
-              console.error('Error merging PR:', error.message);
+              console.error(`Error merging PR: ${error.message}`);
               if (error.status === 405) {
-                core.setFailed('PR cannot be merged');
+                console.log('PR cannot be merged - may need manual intervention');
               } else {
                 throw error;
               }

@@ -15,7 +15,7 @@ jobs:
   auto-merge:
     name: Auto Merge PR
     runs-on: ubuntu-latest
-    # Verificar que el evento existe y fue exitoso
+    # Validación en el nivel del job - usar context en lugar de github
     if: |
       github.event_name == 'workflow_run' &&
       github.event.workflow_run != null &&
@@ -24,24 +24,38 @@ jobs:
       - name: Find and merge PR
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            // Validación segura del evento
-            if (!github.event || !github.event.workflow_run) {
-              console.log('ERROR: github.event.workflow_run is not available');
-              console.log('github.event:', JSON.stringify(github.event, null, 2));
-              core.setFailed('Workflow run event is not available');
+            // MÚLTIPLES FORMAS DE ACCEDER AL EVENTO - para máxima compatibilidad
+            const eventName = process.env.GITHUB_EVENT_NAME || github.event_name || context.eventName;
+            const workflowRun = github.event?.workflow_run || context.payload?.workflow_run || null;
+            
+            console.log(`=== AUTO MERGE DEBUG ===`);
+            console.log(`Event name: ${eventName}`);
+            console.log(`github.event_name: ${github.event_name}`);
+            console.log(`context.eventName: ${context.eventName}`);
+            console.log(`GITHUB_EVENT_NAME env: ${process.env.GITHUB_EVENT_NAME}`);
+            
+            // Si workflowRun es null después de todos los intentos, fallar
+            if (!workflowRun) {
+              console.error('ERROR: No se pudo acceder a workflow_run desde ninguna fuente');
+              console.error('github.event:', JSON.stringify(github.event, null, 2));
+              console.error('context.payload:', JSON.stringify(context.payload, null, 2));
+              console.error('github object keys:', Object.keys(github));
+              console.error('context object keys:', Object.keys(context));
+              core.setFailed('Workflow run event is not available from any source');
               return;
             }
             
-            const workflowRun = github.event.workflow_run;
             const headBranch = workflowRun.head_branch;
             const headSha = workflowRun.head_sha;
             const conclusion = workflowRun.conclusion;
+            const eventType = workflowRun.event;
             
             console.log(`=== AUTO MERGE ===`);
             console.log(`Branch: ${headBranch || 'N/A'}`);
             console.log(`SHA: ${headSha || 'N/A'}`);
-            console.log(`Event: ${workflowRun.event || 'N/A'}`);
+            console.log(`Event: ${eventType || 'N/A'}`);
             console.log(`Conclusion: ${conclusion || 'N/A'}`);
             
             // Verificar que fue exitoso
@@ -57,7 +71,7 @@ jobs:
             }
             
             // NO procesar si es push a main (no es un PR)
-            if (workflowRun.event === 'push' && headBranch === 'main') {
+            if (eventType === 'push' && headBranch === 'main') {
               console.log('Skipping: This is a push to main, not a PR');
               return;
             }

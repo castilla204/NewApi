@@ -1,6 +1,5 @@
 name: Auto Merge
 
-# SOLO se ejecuta cuando CI/CD Pipeline termina exitosamente
 on:
   workflow_run:
     workflows: ["CI/CD Pipeline"]
@@ -16,21 +15,40 @@ jobs:
   auto-merge:
     name: Auto Merge PR
     runs-on: ubuntu-latest
-    # SOLO ejecutar si CI/CD fue exitoso
-    if: github.event.workflow_run.conclusion == 'success'
+    # Verificar que el evento existe y fue exitoso
+    if: |
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run != null &&
+      github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Find and merge PR
         uses: actions/github-script@v7
         with:
           script: |
+            // Validación segura del evento
+            if (!github.event || !github.event.workflow_run) {
+              console.log('ERROR: github.event.workflow_run is not available');
+              console.log('github.event:', JSON.stringify(github.event, null, 2));
+              core.setFailed('Workflow run event is not available');
+              return;
+            }
+            
             const workflowRun = github.event.workflow_run;
             const headBranch = workflowRun.head_branch;
             const headSha = workflowRun.head_sha;
+            const conclusion = workflowRun.conclusion;
             
             console.log(`=== AUTO MERGE ===`);
-            console.log(`Branch: ${headBranch}`);
-            console.log(`SHA: ${headSha}`);
-            console.log(`Event: ${workflowRun.event}`);
+            console.log(`Branch: ${headBranch || 'N/A'}`);
+            console.log(`SHA: ${headSha || 'N/A'}`);
+            console.log(`Event: ${workflowRun.event || 'N/A'}`);
+            console.log(`Conclusion: ${conclusion || 'N/A'}`);
+            
+            // Verificar que fue exitoso
+            if (conclusion !== 'success') {
+              console.log(`Skipping: Workflow run conclusion is '${conclusion}', not 'success'`);
+              return;
+            }
             
             // NO procesar si es un merge commit
             if (workflowRun.head_commit?.message?.includes('Merge pull request')) {
@@ -44,15 +62,28 @@ jobs:
               return;
             }
             
-            // Buscar PRs abiertos
-            const { data: prs } = await github.rest.pulls.list({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              head: `${context.repo.owner}:${headBranch}`,
-            });
+            if (!headBranch) {
+              console.log('Skipping: No head branch found');
+              return;
+            }
             
-            console.log(`Found ${prs.length} open PR(s)`);
+            // Buscar PRs abiertos
+            let prs = [];
+            try {
+              const response = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                head: `${context.repo.owner}:${headBranch}`,
+              });
+              prs = response.data;
+            } catch (error) {
+              console.error('Error searching PRs:', error.message);
+              core.setFailed(`Error searching PRs: ${error.message}`);
+              return;
+            }
+            
+            console.log(`Found ${prs.length} open PR(s) for branch ${headBranch}`);
             
             if (prs.length === 0) {
               console.log('No PR found, skipping');
@@ -72,10 +103,9 @@ jobs:
             console.log(`  Base branch: ${pr.base.ref}`);
             console.log(`  Head branch: ${pr.head.ref}`);
             
-            // ✅ CRÍTICO: SOLO mergear PRs que apunten a 'main'
+            // ✅ SOLO mergear PRs que apunten a 'main'
             if (pr.base.ref !== 'main' && pr.base.ref !== 'master') {
               console.log(`Skipping: PR targets branch '${pr.base.ref}', not 'main' or 'master'`);
-              console.log(`Only PRs targeting 'main' or 'master' are auto-merged`);
               return;
             }
             

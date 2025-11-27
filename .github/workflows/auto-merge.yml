@@ -69,12 +69,23 @@ jobs:
             
             console.log(`Found PR #${pr.number}: ${pr.title}`);
             console.log(`  User: ${pr.user.login} (${pr.user.type})`);
+            console.log(`  Base branch: ${pr.base.ref}`);
+            console.log(`  Head branch: ${pr.head.ref}`);
+            
+            // ✅ CRÍTICO: SOLO mergear PRs que apunten a 'main'
+            if (pr.base.ref !== 'main' && pr.base.ref !== 'master') {
+              console.log(`Skipping: PR targets branch '${pr.base.ref}', not 'main' or 'master'`);
+              console.log(`Only PRs targeting 'main' or 'master' are auto-merged`);
+              return;
+            }
             
             // Solo procesar PRs de bots
             if (pr.user.type !== 'Bot' && !pr.user.login.includes('bot')) {
               console.log('Skipping: PR is not from a bot');
               return;
             }
+            
+            console.log(`✅ PR #${pr.number} is from bot and targets 'main' - proceeding to merge`);
             
             // Esperar a que sea mergeable (máximo 5 minutos)
             console.log('Waiting for PR to be mergeable...');
@@ -88,6 +99,12 @@ jobs:
               
               if (prCheck.state !== 'open') {
                 console.log(`PR #${pr.number} is ${prCheck.state}, stopping`);
+                return;
+              }
+              
+              // Verificar que sigue apuntando a main
+              if (prCheck.base.ref !== 'main' && prCheck.base.ref !== 'master') {
+                console.log(`PR #${pr.number} base branch changed to '${prCheck.base.ref}', stopping`);
                 return;
               }
               
@@ -140,6 +157,12 @@ jobs:
                 return;
               }
               
+              // Verificar que sigue apuntando a main
+              if (prCheck.base.ref !== 'main' && prCheck.base.ref !== 'master') {
+                console.log(`PR #${pr.number} base branch changed, stopping`);
+                return;
+              }
+              
               const allPassed = 
                 status.state === 'success' &&
                 checks.check_runs.every(c => 
@@ -172,6 +195,28 @@ jobs:
             // Mergear
             console.log(`=== MERGING PR #${pr.number} ===`);
             
+            // Verificación final
+            const { data: prFinal } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+            });
+            
+            if (prFinal.state !== 'open') {
+              console.log(`PR #${pr.number} is already ${prFinal.state}`);
+              return;
+            }
+            
+            if (prFinal.base.ref !== 'main' && prFinal.base.ref !== 'master') {
+              console.log(`PR #${pr.number} base branch is '${prFinal.base.ref}', not 'main'`);
+              return;
+            }
+            
+            if (prFinal.mergeable !== true || prFinal.mergeable_state !== 'clean') {
+              console.log(`PR #${pr.number} is not ready to merge`);
+              return;
+            }
+            
             try {
               const result = await github.rest.pulls.merge({
                 owner: context.repo.owner,
@@ -182,6 +227,7 @@ jobs:
               
               console.log('✅✅✅ PR MERGED SUCCESSFULLY ✅✅✅');
               console.log(`   SHA: ${result.data.sha}`);
+              console.log(`   Base branch: ${prFinal.base.ref}`);
             } catch (error) {
               console.error(`Error merging PR: ${error.message}`);
               if (error.status === 405) {

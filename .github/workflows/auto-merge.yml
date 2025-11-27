@@ -122,14 +122,16 @@ jobs:
               console.log(`Skipping: PR targets branch '${pr.base.ref}', not 'main' or 'master'`);
               return;
             }
+            // NO mergear PRs de renovate/dependabot para ahorrar costos
+            if (pr.user.login === 'renovate[bot]' || pr.user.login === 'dependabot[bot]' || pr.head.ref.startsWith('renovate/') || pr.head.ref.startsWith('dependabot/')) {
+              console.log(`Skipping: PR is from renovate/dependabot - not auto-merging to save costs`);
+              return;
+            }
             
-            // Permitir PRs de bots conocidos y renovate/dependabot
+            // Permitir PRs de otros bots conocidos
             const isBot = pr.user.type === 'Bot' || 
-                         pr.user.login.includes('bot') || 
-                         pr.user.login === 'renovate[bot]' ||
-                         pr.user.login === 'dependabot[bot]' ||
+                         (pr.user.login.includes('bot') && pr.user.login !== 'renovate[bot]' && pr.user.login !== 'dependabot[bot]') || 
                          pr.user.login === 'github-actions[bot]';
-            
             if (!isBot) {
               console.log('Skipping: PR is not from a bot');
               return;

@@ -130,7 +130,27 @@ app.UseHangfireDashboard("/hangfire", new DashboardOptions
     // Permitir iframes desde el frontend
     IsReadOnlyFunc = (DashboardContext context) => false,
     // Configurar para permitir iframes
-    IgnoreAntiforgeryToken = true
+    IgnoreAntiforgeryToken = true,
+    // Configurar headers para permitir iframes
+    AppPath = null // Usar ruta relativa
+});
+
+// Agregar headers CORS y X-Frame-Options para Hangfire (permitir iframes)
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/hangfire"))
+    {
+        // Permitir iframes desde el frontend
+        context.Response.Headers.Remove("X-Frame-Options");
+        context.Response.Headers.Add("X-Frame-Options", "SAMEORIGIN");
+        
+        // Agregar CORS headers si es necesario
+        if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Origin"))
+        {
+            context.Response.Headers.Add("Access-Control-Allow-Origin", frontendUrl);
+        }
+    }
+    await next();
 });
 
 app.MapControllers();

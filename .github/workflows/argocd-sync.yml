@@ -56,7 +56,7 @@ jobs:
           kubectl rollout restart deployment/new-api -n default || true
 
       - name: Skip sync (no configuration)
-        if: ${{ secrets.ARGOCD_SERVER == '' || secrets.ARGOCD_TOKEN == '' }} && ${{ secrets.KUBECONFIG == '' }}
+        if: ${{ (secrets.ARGOCD_SERVER == '' || secrets.ARGOCD_TOKEN == '') && secrets.KUBECONFIG == '' }}
         run: |
           echo "⚠️ No ArgoCD or kubectl configuration found"
           echo "ℹ️ Skipping sync. ArgoCD will sync automatically when it detects changes."

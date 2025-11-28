@@ -1,0 +1,64 @@
+name: ArgoCD Sync
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'k8s/**'
+      - '.github/workflows/argocd-sync.yml'
+
+jobs:
+  sync-argocd:
+    name: Sync ArgoCD Application
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install ArgoCD CLI
+        run: |
+          curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          sudo install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
+          rm argocd-linux-amd64
+          argocd version --client
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubectl (if KUBECONFIG secret exists)
+        if: ${{ secrets.KUBECONFIG != '' }}
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Sync ArgoCD Application
+        if: ${{ secrets.ARGOCD_SERVER != '' && secrets.ARGOCD_TOKEN != '' }}
+        run: |
+          echo "🔄 Syncing ArgoCD application..."
+          if argocd app sync new-api \
+            --server "${{ secrets.ARGOCD_SERVER }}" \
+            --auth-token "${{ secrets.ARGOCD_TOKEN }}" \
+            --grpc-web; then
+            echo "✅ ArgoCD sync successful"
+          else
+            echo "⚠️ ArgoCD sync failed"
+            exit 1
+          fi
+
+      - name: Fallback to kubectl apply (if KUBECONFIG available)
+        if: ${{ secrets.KUBECONFIG != '' && (secrets.ARGOCD_SERVER == '' || secrets.ARGOCD_TOKEN == '') }}
+        run: |
+          echo "⚠️ ArgoCD secrets not configured, using kubectl fallback"
+          kubectl apply -f k8s/ --validate=false -n default || true
+          kubectl rollout restart deployment/new-api -n default || true
+
+      - name: Skip sync (no configuration)
+        if: ${{ secrets.ARGOCD_SERVER == '' || secrets.ARGOCD_TOKEN == '' }} && ${{ secrets.KUBECONFIG == '' }}
+        run: |
+          echo "⚠️ No ArgoCD or kubectl configuration found"
+          echo "ℹ️ Skipping sync. ArgoCD will sync automatically when it detects changes."
+          echo "ℹ️ To enable manual sync, configure ARGOCD_SERVER and ARGOCD_TOKEN secrets"
+

@@ -117,13 +117,27 @@ namespace newApi.Filters
                 {
                     ValidateIssuerSigningKey = true,
                     IssuerSigningKey = new SymmetricSecurityKey(key),
+                    // Solo validar issuer/audience si están configurados
+                    // Si no están configurados, el token puede tener valores diferentes
                     ValidateIssuer = !string.IsNullOrEmpty(jwtIssuer),
                     ValidIssuer = jwtIssuer,
                     ValidateAudience = !string.IsNullOrEmpty(jwtAudience),
                     ValidAudience = jwtAudience,
                     ValidateLifetime = true,
-                    ClockSkew = TimeSpan.Zero
+                    ClockSkew = TimeSpan.Zero,
+                    // Permitir tokens con issuer/audience diferentes si no están configurados
+                    RequireExpirationTime = true,
+                    RequireSignedTokens = true
                 };
+                
+                // Si issuer/audience no están configurados, no validarlos
+                // Esto permite tokens con "YourIssuer"/"YourAudience" si la configuración no está establecida
+                if (string.IsNullOrEmpty(jwtIssuer) && string.IsNullOrEmpty(jwtAudience))
+                {
+                    validationParameters.ValidateIssuer = false;
+                    validationParameters.ValidateAudience = false;
+                    Console.WriteLine("[HangfireAuth] Issuer/Audience not configured, skipping validation");
+                }
 
                 var principal = tokenHandler.ValidateToken(token, validationParameters, out SecurityToken validatedToken);
                 return principal;

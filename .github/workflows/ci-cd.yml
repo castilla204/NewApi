@@ -207,3 +207,26 @@ jobs:
           skip_checkout: true
           # Forzar push si es necesario (solo para este caso específico)
           push_options: '--force-with-lease'
+
+      - name: Trigger ArgoCD Sync
+        if: github.ref == 'refs/heads/main'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Esperar un momento para que el commit se propague
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Disparar el workflow de ArgoCD sync
+            try {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'argocd-sync.yml',
+                ref: 'main'
+              });
+              console.log('✅ ArgoCD sync workflow triggered');
+            } catch (error) {
+              console.log('⚠️ Could not trigger ArgoCD sync workflow:', error.message);
+              console.log('ℹ️ ArgoCD should sync automatically if auto-sync is enabled');
+            }

@@ -109,3 +109,95 @@ jobs:
             erizo9/newapi:${{ github.sha }}
           cache-from: type=registry,ref=erizo9/newapi:buildcache
           cache-to: type=registry,ref=erizo9/newapi:buildcache,mode=max
+
+      - name: Get image digest
+        id: image-digest
+        run: |
+          # Obtener el digest de la imagen latest
+          IMAGE_TAG="erizo9/newapi:latest"
+          DIGEST=$(docker buildx imagetools inspect $IMAGE_TAG --format '{{json .}}' | jq -r '.manifest.digest')
+          
+          # Si no empieza con sha256:, agregarlo
+          if [[ ! "$DIGEST" =~ ^sha256: ]]; then
+            DIGEST="sha256:$DIGEST"
+          fi
+          
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "Image digest: $DIGEST"
+
+      - name: Update deployment.yaml
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # Verificar que el archivo existe
+          if [ ! -f "k8s/deployment.yaml" ]; then
+            echo "⚠️ k8s/deployment.yaml no existe en esta rama, saltando actualización"
+            echo "Esto es normal en PRs o ramas que no tienen el archivo"
+            exit 0
+          fi
+          
+          DIGEST="${{ steps.image-digest.outputs.digest }}"
+          echo "Updating deployment.yaml with digest: $DIGEST"
+          echo "Current image line in deployment.yaml:"
+          grep "image:" k8s/deployment.yaml || echo "No image line found"
+          
+          # Intentar múltiples formatos de imagen
+          UPDATED=false
+          
+          # Formato 1: docker.io/erizo9/newapi@sha256:...
+          if grep -q "image: docker.io/erizo9/newapi@sha256:" k8s/deployment.yaml; then
+            sed -i "s|image: docker.io/erizo9/newapi@sha256:[a-f0-9]*|image: docker.io/erizo9/newapi@$DIGEST|g" k8s/deployment.yaml
+            UPDATED=true
+            echo "✅ Updated with format: docker.io/erizo9/newapi@sha256:..."
+          # Formato 2: erizo9/newapi@sha256:... (formato actual)
+          elif grep -q "image: erizo9/newapi@sha256:" k8s/deployment.yaml; then
+            sed -i "s|image: erizo9/newapi@sha256:[a-f0-9]*|image: erizo9/newapi@$DIGEST|g" k8s/deployment.yaml
+            UPDATED=true
+            echo "✅ Updated with format: erizo9/newapi@sha256:..."
+          # Formato 3: docker.io/erizo9/newapi:latest@sha256:...
+          elif grep -q "image: docker.io/erizo9/newapi:latest@sha256:" k8s/deployment.yaml; then
+            sed -i "s|image: docker.io/erizo9/newapi:latest@sha256:[a-f0-9]*|image: docker.io/erizo9/newapi:latest@$DIGEST|g" k8s/deployment.yaml
+            UPDATED=true
+            echo "✅ Updated with format: docker.io/erizo9/newapi:latest@sha256:..."
+          # Formato 4: erizo9/newapi:latest@sha256:...
+          elif grep -q "image: erizo9/newapi:latest@sha256:" k8s/deployment.yaml; then
+            sed -i "s|image: erizo9/newapi:latest@sha256:[a-f0-9]*|image: erizo9/newapi:latest@$DIGEST|g" k8s/deployment.yaml
+            UPDATED=true
+            echo "✅ Updated with format: erizo9/newapi:latest@sha256:..."
+          fi
+          
+          if [ "$UPDATED" = "false" ]; then
+            echo "❌ No matching image pattern found in deployment.yaml"
+            echo "Available image lines:"
+            grep "image:" k8s/deployment.yaml || echo "No image line found"
+            exit 1
+          fi
+          
+          # Verificar que se actualizó correctamente
+          if grep -q "$DIGEST" k8s/deployment.yaml; then
+            echo "✅ deployment.yaml actualizado correctamente"
+            echo "Updated line:"
+            grep "image:" k8s/deployment.yaml | grep "$DIGEST"
+          else
+            echo "❌ Error: digest no encontrado en deployment.yaml después de actualizar"
+            echo "Digest buscado: $DIGEST"
+            echo "Contenido actual:"
+            grep "image:" k8s/deployment.yaml || echo "No image line found"
+            exit 1
+          fi
+
+      - name: Pull latest changes before commit
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull origin main --rebase || git pull origin main --no-rebase || true
+
+      - name: Commit and push deployment update
+        if: github.ref == 'refs/heads/main'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: Update deployment image digest [skip ci]'
+          file_pattern: 'k8s/deployment.yaml'
+          skip_dirty_check: true
+          skip_fetch: true
+          skip_checkout: true

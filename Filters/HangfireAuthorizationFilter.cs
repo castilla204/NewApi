@@ -4,6 +4,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using Microsoft.Extensions.Configuration;
+using System.Linq;
 
 namespace newApi.Filters
 {
@@ -32,6 +33,11 @@ namespace newApi.Filters
             // 3. Usar token de query o header
             var token = tokenFromQuery ?? tokenFromHeader;
             
+            // Log para debugging
+            Console.WriteLine($"[HangfireAuth] Request to: {httpContext.Request.Path}");
+            Console.WriteLine($"[HangfireAuth] Token from query: {(string.IsNullOrEmpty(tokenFromQuery) ? "None" : "Present")}");
+            Console.WriteLine($"[HangfireAuth] Token from header: {(string.IsNullOrEmpty(tokenFromHeader) ? "None" : "Present")}");
+            
             // 4. Si hay token, validarlo y extraer claims
             if (!string.IsNullOrEmpty(token))
             {
@@ -42,18 +48,29 @@ namespace newApi.Filters
                     {
                         // Establecer el usuario en el contexto HTTP
                         httpContext.User = principal;
+                        Console.WriteLine($"[HangfireAuth] Token validated successfully. User: {principal.Identity?.Name}, Roles: {string.Join(", ", principal.Claims.Where(c => c.Type == ClaimTypes.Role).Select(c => c.Value))}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("[HangfireAuth] Token validation returned null");
                     }
                 }
                 catch (Exception ex)
                 {
-                    // Log del error si es necesario
-                    Console.WriteLine($"Error validating JWT token in Hangfire: {ex.Message}");
+                    // Log del error
+                    Console.WriteLine($"[HangfireAuth] Error validating JWT token: {ex.Message}");
+                    Console.WriteLine($"[HangfireAuth] Stack trace: {ex.StackTrace}");
                 }
+            }
+            else
+            {
+                Console.WriteLine("[HangfireAuth] No token provided in query parameter or header");
             }
             
             // 5. Verificar autenticación
             if (httpContext.User?.Identity?.IsAuthenticated != true)
             {
+                Console.WriteLine("[HangfireAuth] User not authenticated");
                 return false;
             }
             
@@ -64,6 +81,8 @@ namespace newApi.Filters
                          httpContext.User.HasClaim("Role", "1") ||
                          httpContext.User.HasClaim(ClaimTypes.Role, "Admin") ||
                          httpContext.User.HasClaim(ClaimTypes.Role, "1");
+            
+            Console.WriteLine($"[HangfireAuth] Is Admin: {isAdmin}");
             
             return isAdmin;
         }

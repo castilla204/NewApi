@@ -192,6 +192,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Hacer pull con rebase para integrar cambios remotos
+          git fetch origin main
           git pull origin main --rebase || git pull origin main --no-rebase || true
 
       - name: Commit and push deployment update
@@ -201,5 +203,7 @@ jobs:
           commit_message: 'chore: Update deployment image digest [skip ci]'
           file_pattern: 'k8s/deployment.yaml'
           skip_dirty_check: true
-          skip_fetch: true
+          skip_fetch: false  # Permitir fetch para obtener cambios remotos
           skip_checkout: true
+          # Forzar push si es necesario (solo para este caso específico)
+          push_options: '--force-with-lease'

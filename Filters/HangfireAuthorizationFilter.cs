@@ -113,30 +113,51 @@ namespace newApi.Filters
                 var tokenHandler = new JwtSecurityTokenHandler();
                 var key = Encoding.UTF8.GetBytes(jwtKey);
 
+                // Decodificar el token para ver qué issuer/audience tiene
+                var tokenHandler = new JwtSecurityTokenHandler();
+                var jsonToken = tokenHandler.ReadJwtToken(token);
+                var tokenIssuer = jsonToken.Issuer;
+                var tokenAudience = jsonToken.Audiences?.FirstOrDefault();
+                
+                Console.WriteLine($"[HangfireAuth] Token issuer: {tokenIssuer}, audience: {tokenAudience}");
+                Console.WriteLine($"[HangfireAuth] Config issuer: {jwtIssuer ?? "null"}, audience: {jwtAudience ?? "null"}");
+                
                 var validationParameters = new TokenValidationParameters
                 {
                     ValidateIssuerSigningKey = true,
                     IssuerSigningKey = new SymmetricSecurityKey(key),
-                    // Solo validar issuer/audience si están configurados
-                    // Si no están configurados, el token puede tener valores diferentes
-                    ValidateIssuer = !string.IsNullOrEmpty(jwtIssuer),
-                    ValidIssuer = jwtIssuer,
-                    ValidateAudience = !string.IsNullOrEmpty(jwtAudience),
-                    ValidAudience = jwtAudience,
                     ValidateLifetime = true,
                     ClockSkew = TimeSpan.Zero,
-                    // Permitir tokens con issuer/audience diferentes si no están configurados
                     RequireExpirationTime = true,
                     RequireSignedTokens = true
                 };
                 
-                // Si issuer/audience no están configurados, no validarlos
-                // Esto permite tokens con "YourIssuer"/"YourAudience" si la configuración no está establecida
-                if (string.IsNullOrEmpty(jwtIssuer) && string.IsNullOrEmpty(jwtAudience))
+                // Configurar validación de issuer/audience de forma flexible
+                // Si el token tiene "YourIssuer"/"YourAudience" y la config no está establecida, no validar
+                // Si la config está establecida, validar contra ella
+                // Si el token tiene valores diferentes pero la config no está establecida, aceptar el token
+                if (!string.IsNullOrEmpty(jwtIssuer))
+                {
+                    validationParameters.ValidateIssuer = true;
+                    validationParameters.ValidIssuer = jwtIssuer;
+                    Console.WriteLine($"[HangfireAuth] Validating issuer against: {jwtIssuer}");
+                }
+                else
                 {
                     validationParameters.ValidateIssuer = false;
+                    Console.WriteLine("[HangfireAuth] Issuer not configured, skipping issuer validation");
+                }
+                
+                if (!string.IsNullOrEmpty(jwtAudience))
+                {
+                    validationParameters.ValidateAudience = true;
+                    validationParameters.ValidAudience = jwtAudience;
+                    Console.WriteLine($"[HangfireAuth] Validating audience against: {jwtAudience}");
+                }
+                else
+                {
                     validationParameters.ValidateAudience = false;
-                    Console.WriteLine("[HangfireAuth] Issuer/Audience not configured, skipping validation");
+                    Console.WriteLine("[HangfireAuth] Audience not configured, skipping audience validation");
                 }
 
                 var principal = tokenHandler.ValidateToken(token, validationParameters, out SecurityToken validatedToken);

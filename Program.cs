@@ -3,7 +3,6 @@ using Hangfire.PostgreSql;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using Microsoft.OpenApi.Models;
 using newApi.DataLayer.Models;
 using newApi.Filters;
 using newApi.Services;
@@ -14,10 +13,7 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(c =>
-{
-    c.SwaggerDoc("v1", new OpenApiInfo { Title = "NewApi", Version = "v1" });
-});
+builder.Services.AddSwaggerGen();
 
 // Database
 var connectionString = builder.Configuration.GetConnectionString("PostgresConnection") 

@@ -114,14 +114,13 @@ namespace newApi.Filters
                 var key = Encoding.UTF8.GetBytes(jwtKey);
 
                 // Decodificar el token para ver qué issuer/audience tiene
-                var tokenHandler = new JwtSecurityTokenHandler();
                 var jsonToken = tokenHandler.ReadJwtToken(token);
                 var tokenIssuer = jsonToken.Issuer;
                 var tokenAudience = jsonToken.Audiences?.FirstOrDefault();
                 
                 Console.WriteLine($"[HangfireAuth] Token issuer: {tokenIssuer}, audience: {tokenAudience}");
                 Console.WriteLine($"[HangfireAuth] Config issuer: {jwtIssuer ?? "null"}, audience: {jwtAudience ?? "null"}");
-                
+
                 var validationParameters = new TokenValidationParameters
                 {
                     ValidateIssuerSigningKey = true,
@@ -133,10 +132,13 @@ namespace newApi.Filters
                 };
                 
                 // Configurar validación de issuer/audience de forma flexible
-                // Si el token tiene "YourIssuer"/"YourAudience" y la config no está establecida, no validar
-                // Si la config está establecida, validar contra ella
+                // Si el token tiene "YourIssuer"/"YourAudience" (valores placeholder), no validar issuer/audience
+                // Si la config tiene valores reales, validar contra ellos
                 // Si el token tiene valores diferentes pero la config no está establecida, aceptar el token
-                if (!string.IsNullOrEmpty(jwtIssuer))
+                var isPlaceholderIssuer = tokenIssuer == "YourIssuer" || string.IsNullOrEmpty(tokenIssuer);
+                var isPlaceholderAudience = tokenAudience == "YourAudience" || string.IsNullOrEmpty(tokenAudience);
+                
+                if (!string.IsNullOrEmpty(jwtIssuer) && !isPlaceholderIssuer)
                 {
                     validationParameters.ValidateIssuer = true;
                     validationParameters.ValidIssuer = jwtIssuer;
@@ -145,10 +147,10 @@ namespace newApi.Filters
                 else
                 {
                     validationParameters.ValidateIssuer = false;
-                    Console.WriteLine("[HangfireAuth] Issuer not configured, skipping issuer validation");
+                    Console.WriteLine($"[HangfireAuth] Skipping issuer validation (token: {tokenIssuer}, config: {jwtIssuer ?? "null"})");
                 }
                 
-                if (!string.IsNullOrEmpty(jwtAudience))
+                if (!string.IsNullOrEmpty(jwtAudience) && !isPlaceholderAudience)
                 {
                     validationParameters.ValidateAudience = true;
                     validationParameters.ValidAudience = jwtAudience;
@@ -157,7 +159,7 @@ namespace newApi.Filters
                 else
                 {
                     validationParameters.ValidateAudience = false;
-                    Console.WriteLine("[HangfireAuth] Audience not configured, skipping audience validation");
+                    Console.WriteLine($"[HangfireAuth] Skipping audience validation (token: {tokenAudience}, config: {jwtAudience ?? "null"})");
                 }
 
                 var principal = tokenHandler.ValidateToken(token, validationParameters, out SecurityToken validatedToken);

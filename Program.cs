@@ -521,9 +521,25 @@ if (isDevelopment)
         dbUsername = Environment.GetEnvironmentVariable("POSTGRES_USERNAME") 
             ?? GetSecretValue("postgres-username", null) 
             ?? "admin";
-        dbPassword = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD") 
-            ?? GetSecretValue("postgres-password", null) 
-            ?? "";
+        // ✅ OBTENER CONTRASEÑA 100% DEL SECRET MANAGER (prioridad sobre variables de entorno)
+        var dbPasswordFromSecret = GetSecretValue("postgres-password", null);
+        var dbPasswordFromEnv = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
+        dbPassword = dbPasswordFromSecret ?? dbPasswordFromEnv ?? "";
+        
+        // Logging para debugging: mostrar origen y longitud de la contraseña
+        if (!string.IsNullOrEmpty(dbPassword))
+        {
+            var passwordSource = !string.IsNullOrEmpty(dbPasswordFromSecret) 
+                ? "Secret Manager" 
+                : (!string.IsNullOrEmpty(dbPasswordFromEnv) 
+                    ? "Environment Variable" 
+                    : "Default/Empty");
+            configLogger.LogInformation($"🔐 DB Password obtenida desde: {passwordSource} (longitud: {dbPassword.Length})");
+        }
+        else
+        {
+            configLogger.LogWarning("⚠️ DB Password está vacía - la conexión fallará");
+        }
         dbName = Environment.GetEnvironmentVariable("POSTGRES_DATABASE") 
             ?? GetSecretValue("postgres-database", null) 
             ?? "atrapo";
@@ -656,12 +672,30 @@ if (isDevelopment)
 }
 else
 {
-    // En producción: Leer de variables de entorno PRIMERO, luego Secret Manager como fallback
+    // En producción: Leer de Secret Manager PRIMERO, luego variables de entorno como fallback
     // Esto permite que la app funcione aunque Secret Manager no esté disponible temporalmente
     var dbHost = Environment.GetEnvironmentVariable("POSTGRES_HOST") ?? GetSecretValue("postgres-host", null) ?? "postgres-svc";
     var dbPort = Environment.GetEnvironmentVariable("POSTGRES_PORT") ?? GetSecretValue("postgres-port", null) ?? "5432";
     var dbUsername = Environment.GetEnvironmentVariable("POSTGRES_USERNAME") ?? GetSecretValue("postgres-username", null);
-    var dbPassword = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD") ?? GetSecretValue("postgres-password", null);
+    // ✅ OBTENER CONTRASEÑA 100% DEL SECRET MANAGER (prioridad sobre variables de entorno)
+    var dbPasswordFromSecret = GetSecretValue("postgres-password", null);
+    var dbPasswordFromEnv = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
+    var dbPassword = dbPasswordFromSecret ?? dbPasswordFromEnv;
+    
+    // Logging para debugging: mostrar origen y longitud de la contraseña
+    if (!string.IsNullOrEmpty(dbPassword))
+    {
+        var passwordSource = !string.IsNullOrEmpty(dbPasswordFromSecret) 
+            ? "Secret Manager" 
+            : (!string.IsNullOrEmpty(dbPasswordFromEnv) 
+                ? "Environment Variable" 
+                : "Default/Empty");
+        configLogger.LogInformation($"🔐 DB Password obtenida desde: {passwordSource} (longitud: {dbPassword.Length})");
+    }
+    else
+    {
+        configLogger.LogWarning("⚠️ DB Password está vacía - la conexión fallará");
+    }
     var dbName = Environment.GetEnvironmentVariable("POSTGRES_DATABASE") ?? GetSecretValue("postgres-database", null) ?? "newapi";
     
     // Si no hay credenciales de DB, lanzar error claro

@@ -506,12 +506,29 @@ if (isDevelopment)
         
         dbHost = hostMatch.Success ? hostMatch.Groups[1].Value : "localhost";
         dbUsername = userMatch.Success ? userMatch.Groups[1].Value : "admin";
-        dbPassword = passMatch.Success ? passMatch.Groups[1].Value : "";
+        // ⚠️ IGNORAR contraseña del connection string - se obtendrá SOLO del Secret Manager más abajo
+        var passwordFromConnectionString = passMatch.Success ? passMatch.Groups[1].Value : "";
+        if (!string.IsNullOrEmpty(passwordFromConnectionString))
+        {
+            configLogger.LogWarning($"⚠️ Contraseña encontrada en connection string pero IGNORADA (valor: [{passwordFromConnectionString}], longitud: {passwordFromConnectionString.Length}) - Solo usando Secret Manager");
+        }
         dbName = dbMatch.Success ? dbMatch.Groups[1].Value : "atrapo";
         
         // Forzar valores en desarrollo: admin y atrapo
         dbUsername = "admin";
         dbName = "atrapo";
+        
+        // ✅ OBTENER contraseña SOLO del Secret Manager (ignorando connection string)
+        configLogger.LogInformation("🔍 FORZANDO obtención de contraseña SOLO desde Secret Manager (ignorando connection string)...");
+        var dbPasswordFromSecret = GetSecretValue("postgres-password", null);
+        if (string.IsNullOrEmpty(dbPasswordFromSecret))
+        {
+            throw new InvalidOperationException(
+                "ERROR CRÍTICO: No se pudo obtener la contraseña de PostgreSQL desde Secret Manager. " +
+                "El secreto 'postgres-password' debe existir en Google Cloud Secret Manager.");
+        }
+        dbPassword = dbPasswordFromSecret;
+        configLogger.LogInformation($"✅ Contraseña OBLIGATORIAMENTE obtenida del Secret Manager: [{dbPassword}] (longitud: {dbPassword.Length})");
     }
     else
     {
@@ -523,42 +540,29 @@ if (isDevelopment)
         dbUsername = Environment.GetEnvironmentVariable("POSTGRES_USERNAME") 
             ?? GetSecretValue("postgres-username", null) 
             ?? "admin";
-        // ✅ OBTENER CONTRASEÑA 100% DEL SECRET MANAGER (prioridad sobre variables de entorno)
-        configLogger.LogInformation("🔍 Obteniendo contraseña de PostgreSQL desde Secret Manager...");
+        // ✅ FORZAR: Contraseña SOLO desde Secret Manager - NO usar variables de entorno
+        configLogger.LogInformation("🔍 FORZANDO obtención de contraseña SOLO desde Secret Manager (ignorando variables de entorno)...");
         var dbPasswordFromSecret = GetSecretValue("postgres-password", null);
+        
+        // IGNORAR variables de entorno - solo usar Secret Manager
         var dbPasswordFromEnv = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
-        
-        // Logging detallado ANTES de asignar
-        if (!string.IsNullOrEmpty(dbPasswordFromSecret))
-        {
-            configLogger.LogInformation($"✅ Contraseña obtenida del Secret Manager: [{dbPasswordFromSecret}] (longitud: {dbPasswordFromSecret.Length})");
-        }
-        else
-        {
-            configLogger.LogWarning("⚠️ Secret Manager NO devolvió contraseña (postgres-password)");
-        }
-        
         if (!string.IsNullOrEmpty(dbPasswordFromEnv))
         {
-            configLogger.LogInformation($"ℹ️ Variable de entorno POSTGRES_PASSWORD encontrada: [{dbPasswordFromEnv}] (longitud: {dbPasswordFromEnv.Length})");
+            configLogger.LogWarning($"⚠️ Variable de entorno POSTGRES_PASSWORD encontrada pero IGNORADA (valor: [{dbPasswordFromEnv}], longitud: {dbPasswordFromEnv.Length}) - Solo usando Secret Manager");
         }
         
-        dbPassword = dbPasswordFromSecret ?? dbPasswordFromEnv ?? "";
+        // FORZAR uso SOLO del Secret Manager
+        if (string.IsNullOrEmpty(dbPasswordFromSecret))
+        {
+            throw new InvalidOperationException(
+                "ERROR CRÍTICO: No se pudo obtener la contraseña de PostgreSQL desde Secret Manager. " +
+                "El secreto 'postgres-password' debe existir en Google Cloud Secret Manager. " +
+                "NO se usarán variables de entorno como fallback.");
+        }
         
-        // Logging final
-        if (!string.IsNullOrEmpty(dbPassword))
-        {
-            var passwordSource = !string.IsNullOrEmpty(dbPasswordFromSecret) 
-                ? "Secret Manager" 
-                : (!string.IsNullOrEmpty(dbPasswordFromEnv) 
-                    ? "Environment Variable" 
-                    : "Default/Empty");
-            configLogger.LogInformation($"🔐 DB Password FINAL obtenida desde: {passwordSource} - Valor COMPLETO: [{dbPassword}] (longitud: {dbPassword.Length})");
-        }
-        else
-        {
-            configLogger.LogWarning("⚠️ DB Password está vacía - la conexión fallará");
-        }
+        dbPassword = dbPasswordFromSecret;
+        configLogger.LogInformation($"✅ Contraseña OBLIGATORIAMENTE obtenida del Secret Manager: [{dbPassword}] (longitud: {dbPassword.Length})");
+        configLogger.LogInformation($"🔐 DB Password FINAL (SOLO Secret Manager): [{dbPassword}] (longitud: {dbPassword.Length})");
         dbName = Environment.GetEnvironmentVariable("POSTGRES_DATABASE") 
             ?? GetSecretValue("postgres-database", null) 
             ?? "atrapo";
@@ -696,25 +700,29 @@ else
     var dbHost = Environment.GetEnvironmentVariable("POSTGRES_HOST") ?? GetSecretValue("postgres-host", null) ?? "postgres-svc";
     var dbPort = Environment.GetEnvironmentVariable("POSTGRES_PORT") ?? GetSecretValue("postgres-port", null) ?? "5432";
     var dbUsername = Environment.GetEnvironmentVariable("POSTGRES_USERNAME") ?? GetSecretValue("postgres-username", null);
-    // ✅ OBTENER CONTRASEÑA 100% DEL SECRET MANAGER (prioridad sobre variables de entorno)
+    // ✅ FORZAR: Contraseña SOLO desde Secret Manager - NO usar variables de entorno
+    configLogger.LogInformation("🔍 FORZANDO obtención de contraseña SOLO desde Secret Manager (ignorando variables de entorno)...");
     var dbPasswordFromSecret = GetSecretValue("postgres-password", null);
-    var dbPasswordFromEnv = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
-    var dbPassword = dbPasswordFromSecret ?? dbPasswordFromEnv;
     
-    // Logging para debugging: mostrar origen y longitud de la contraseña
-    if (!string.IsNullOrEmpty(dbPassword))
+    // IGNORAR variables de entorno - solo usar Secret Manager
+    var dbPasswordFromEnv = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
+    if (!string.IsNullOrEmpty(dbPasswordFromEnv))
     {
-        var passwordSource = !string.IsNullOrEmpty(dbPasswordFromSecret) 
-            ? "Secret Manager" 
-            : (!string.IsNullOrEmpty(dbPasswordFromEnv) 
-                ? "Environment Variable" 
-                : "Default/Empty");
-        configLogger.LogInformation($"🔐 DB Password obtenida desde: {passwordSource} - Valor COMPLETO: [{dbPassword}] (longitud: {dbPassword.Length})");
+        configLogger.LogWarning($"⚠️ Variable de entorno POSTGRES_PASSWORD encontrada pero IGNORADA (valor: [{dbPasswordFromEnv}], longitud: {dbPasswordFromEnv.Length}) - Solo usando Secret Manager");
     }
-    else
+    
+    // FORZAR uso SOLO del Secret Manager
+    if (string.IsNullOrEmpty(dbPasswordFromSecret))
     {
-        configLogger.LogWarning("⚠️ DB Password está vacía - la conexión fallará");
+        throw new InvalidOperationException(
+            "ERROR CRÍTICO: No se pudo obtener la contraseña de PostgreSQL desde Secret Manager. " +
+            "El secreto 'postgres-password' debe existir en Google Cloud Secret Manager. " +
+            "NO se usarán variables de entorno como fallback.");
     }
+    
+    var dbPassword = dbPasswordFromSecret;
+    configLogger.LogInformation($"✅ Contraseña OBLIGATORIAMENTE obtenida del Secret Manager: [{dbPassword}] (longitud: {dbPassword.Length})");
+    configLogger.LogInformation($"🔐 DB Password FINAL (SOLO Secret Manager): [{dbPassword}] (longitud: {dbPassword.Length})");
     var dbName = Environment.GetEnvironmentVariable("POSTGRES_DATABASE") ?? GetSecretValue("postgres-database", null) ?? "newapi";
     
     // Si no hay credenciales de DB, lanzar error claro

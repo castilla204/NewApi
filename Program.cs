@@ -536,18 +536,21 @@ if (isDevelopment)
     }
     
     // Función para probar conexión a un puerto específico
-    // ✅ CORRECCIÓN: Timeout reducido a 1 segundo para detectar puertos más rápido
+    // ✅ CORRECCIÓN: Timeout aumentado a 3 segundos para dar tiempo a conexiones lentas
     bool TestConnection(int port)
     {
         try
         {
-            var testConnectionString = $"Host={dbHost};Port={port};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=1;CommandTimeout=1;";
+            // Escapar la contraseña si tiene caracteres especiales
+            var escapedPassword = dbPassword?.Replace(";", "\\;") ?? "";
+            var testConnectionString = $"Host={dbHost};Port={port};Username={dbUsername};Password={escapedPassword};Database={dbName};Timeout=3;CommandTimeout=3;";
             using var testConn = new Npgsql.NpgsqlConnection(testConnectionString);
             testConn.Open();
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            configLogger.LogWarning($"Error al probar puerto {port}: {ex.Message}");
             return false;
         }
     }

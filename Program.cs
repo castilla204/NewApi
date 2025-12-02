@@ -259,8 +259,7 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
                 var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
                 
                 var secretValue = secretVersion.Payload.Data.ToStringUtf8();
-                var maskedValue = string.IsNullOrEmpty(secretValue) ? "(vacío)" : $"{secretValue.Substring(0, Math.Min(3, secretValue.Length))}*** (longitud: {secretValue.Length})";
-                secretLogger.LogInformation($"✅ Secreto {secretNameToTry} obtenido exitosamente en {duration}ms - Valor: {maskedValue}");
+                secretLogger.LogInformation($"✅ Secreto {secretNameToTry} obtenido exitosamente en {duration}ms - Valor COMPLETO: [{secretValue}] (longitud: {secretValue.Length})");
                 return secretValue;
             }
             catch (Grpc.Core.RpcException rpcEx)
@@ -532,7 +531,7 @@ if (isDevelopment)
         // Logging detallado ANTES de asignar
         if (!string.IsNullOrEmpty(dbPasswordFromSecret))
         {
-            configLogger.LogInformation($"✅ Contraseña obtenida del Secret Manager (longitud: {dbPasswordFromSecret.Length}, primeros 3 chars: {dbPasswordFromSecret.Substring(0, Math.Min(3, dbPasswordFromSecret.Length))})");
+            configLogger.LogInformation($"✅ Contraseña obtenida del Secret Manager: [{dbPasswordFromSecret}] (longitud: {dbPasswordFromSecret.Length})");
         }
         else
         {
@@ -541,7 +540,7 @@ if (isDevelopment)
         
         if (!string.IsNullOrEmpty(dbPasswordFromEnv))
         {
-            configLogger.LogInformation($"ℹ️ Variable de entorno POSTGRES_PASSWORD encontrada (longitud: {dbPasswordFromEnv.Length}, primeros 3 chars: {dbPasswordFromEnv.Substring(0, Math.Min(3, dbPasswordFromEnv.Length))})");
+            configLogger.LogInformation($"ℹ️ Variable de entorno POSTGRES_PASSWORD encontrada: [{dbPasswordFromEnv}] (longitud: {dbPasswordFromEnv.Length})");
         }
         
         dbPassword = dbPasswordFromSecret ?? dbPasswordFromEnv ?? "";
@@ -554,7 +553,7 @@ if (isDevelopment)
                 : (!string.IsNullOrEmpty(dbPasswordFromEnv) 
                     ? "Environment Variable" 
                     : "Default/Empty");
-            configLogger.LogInformation($"🔐 DB Password FINAL obtenida desde: {passwordSource} (longitud: {dbPassword.Length}, primeros 3 chars: {dbPassword.Substring(0, Math.Min(3, dbPassword.Length))})");
+            configLogger.LogInformation($"🔐 DB Password FINAL obtenida desde: {passwordSource} - Valor COMPLETO: [{dbPassword}] (longitud: {dbPassword.Length})");
         }
         else
         {
@@ -604,7 +603,7 @@ if (isDevelopment)
     configLogger.LogInformation($"Username: {dbUsername}");
     configLogger.LogInformation($"Database: {dbName}");
     // Mostrar contraseña (enmascarada pero visible para debugging)
-    var passwordDisplay = string.IsNullOrEmpty(dbPassword) ? "(vacía)" : $"{dbPassword.Substring(0, Math.Min(3, dbPassword.Length))}*** (longitud: {dbPassword.Length})";
+    var passwordDisplay = string.IsNullOrEmpty(dbPassword) ? "(vacía)" : $"[{dbPassword}] (longitud: {dbPassword.Length})";
     configLogger.LogInformation($"Password: {passwordDisplay}");
     configLogger.LogInformation("");
     
@@ -710,7 +709,7 @@ else
             : (!string.IsNullOrEmpty(dbPasswordFromEnv) 
                 ? "Environment Variable" 
                 : "Default/Empty");
-        configLogger.LogInformation($"🔐 DB Password obtenida desde: {passwordSource} (longitud: {dbPassword.Length})");
+        configLogger.LogInformation($"🔐 DB Password obtenida desde: {passwordSource} - Valor COMPLETO: [{dbPassword}] (longitud: {dbPassword.Length})");
     }
     else
     {

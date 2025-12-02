@@ -459,12 +459,9 @@ else
 builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password", null) ?? "";
 builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key", null) ?? "";
 // Configurar Stripe desde Secret Manager
-// GetSecretValue ya maneja la lógica de desarrollo (-dev) vs producción
-// En desarrollo: intenta stripe-secret-key-dev -> stripe-secret-key
-// En producción: usa stripe-secret-key
-builder.Configuration["Stripe:SecretKey"] = GetSecretValue("stripe-secret-key", null) ?? "";
-builder.Configuration["Stripe:WebhookSecret"] = GetSecretValue("stripe-webhook-secret", null) ?? "";
-builder.Configuration["Stripe:GeneralWebhookSecret"] = GetSecretValue("stripe-general-webhook-secret", null) ?? "";
+// Las claves se cargarán dinámicamente según el modo configurado en SystemSetting
+// Por defecto se cargan las de producción, pero se pueden cambiar desde el panel admin
+// NOTA: El modo se carga después de inicializar la base de datos, ver más abajo
 
 builder.Configuration["Twilio:AccountSid"] = GetSecretValue("twilio-account-sid", null) ?? "";
 builder.Configuration["Twilio:AuthToken"] = GetSecretValue("twilio-auth-token", null) ?? "";
@@ -1233,7 +1230,8 @@ builder.Services.AddHangfireServer(options =>
 
 // Register Services
 builder.Services.AddScoped<IRabbitMQService, RabbitMQService>();
-builder.Services.AddScoped<IWebMixerService, WebMixerService>();
+
+builder.Services.AddScoped<IStripeConfigService, StripeConfigService>();builder.Services.AddScoped<IWebMixerService, WebMixerService>();
 builder.Services.AddScoped<IScrapperService, ScrapperService>();
 builder.Services.AddScoped<ILikeService, LikeService>();
 builder.Services.AddScoped<IUserService, UserService>();
@@ -1269,8 +1267,37 @@ builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
-// Configure Stripe
-StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"];
+// ✅ Cargar claves Stripe según el modo configurado en SystemSetting
+try
+{
+    using (var scope = app.Services.CreateScope())
+    {
+        var stripeConfigService = scope.ServiceProvider.GetRequiredService<IStripeConfigService>();
+        var mode = await stripeConfigService.GetStripeModeAsync();
+        var (secretKey, webhookSecret, generalWebhookSecret) = await stripeConfigService.GetStripeKeysForModeAsync(
+            mode, 
+            GetSecretValue);
+        
+        builder.Configuration["Stripe:SecretKey"] = secretKey;
+        builder.Configuration["Stripe:WebhookSecret"] = webhookSecret;
+        builder.Configuration["Stripe:GeneralWebhookSecret"] = generalWebhookSecret;
+        
+        StripeConfiguration.ApiKey = secretKey;
+        
+        var stripeLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        stripeLogger.LogInformation($"✅ Claves Stripe cargadas en modo: {mode}");
+        stripeLogger.LogInformation($"   SecretKey presente: {!string.IsNullOrEmpty(secretKey)}");
+        stripeLogger.LogInformation($"   WebhookSecret presente: {!string.IsNullOrEmpty(webhookSecret)}");
+    }
+}
+catch (Exception ex)
+{
+    var stripeLogger = app.Services.GetRequiredService<ILogger<Program>>();
+    stripeLogger.LogError(ex, "Error cargando claves Stripe según modo, usando configuración por defecto");
+}
+
+// Configure Stripe - se configurará dinámicamente según el modo en SystemSetting
+// La configuración inicial se hace después de inicializar la base de datos (ver más abajo)
 
 // 🚨 LOG CRÍTICO: Configuración de Stripe
 var logger = app.Services.GetRequiredService<ILogger<Program>>();

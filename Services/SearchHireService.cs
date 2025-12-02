@@ -18,9 +18,9 @@ namespace newApi.Services
             _context = context;
         }
 
-        public async Task<IEnumerable<SearchHireResponseDto>> GetClientHires(int userId)
+        public async Task<(IEnumerable<SearchHireResponseDto> hires, int totalCount)> GetClientHires(int userId, int page, int pageSize)
         {
-            var hires = await _context.SearchHires
+            var query = _context.SearchHires
                 .Include(h => h.Client)
                 .Include(h => h.Expert)
                 .Include(h => h.Status)
@@ -31,16 +31,22 @@ namespace newApi.Services
                 .Include(h => h.SearchService)
                     .ThenInclude(s => s.SelectedDeliverableTypes)
                         .ThenInclude(sdt => sdt.DeliverableType)
-                .Where(h => h.ClientId.HasValue && h.ClientId.Value == userId)
+                .Where(h => h.ClientId.HasValue && h.ClientId.Value == userId);
+
+            var totalCount = await query.CountAsync();
+
+            var hires = await query
                 .OrderByDescending(h => h.CreatedAt)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
                 .ToListAsync();
 
-            return hires.Select(MapToResponseDto).ToList();
+            return (hires.Select(MapToResponseDto).ToList(), totalCount);
         }
 
-        public async Task<IEnumerable<SearchHireResponseDto>> GetExpertHires(int userId)
+        public async Task<(IEnumerable<SearchHireResponseDto> hires, int totalCount)> GetExpertHires(int userId, int page, int pageSize)
         {
-            var hires = await _context.SearchHires
+            var query = _context.SearchHires
                 .Include(h => h.Client)
                 .Include(h => h.Expert)
                 .Include(h => h.Status)
@@ -54,11 +60,17 @@ namespace newApi.Services
                 .Include(h => h.Search) // Incluir datos de Search para título y descripción
                 .Include(h => h.Conversations)
                     .ThenInclude(c => c.Messages) // Incluir mensajes para contar pendientes
-                .Where(h => h.ExpertId == userId)
+                .Where(h => h.ExpertId == userId);
+
+            var totalCount = await query.CountAsync();
+
+            var hires = await query
                 .OrderByDescending(h => h.CreatedAt)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
                 .ToListAsync();
 
-            return hires.Select(MapToResponseDto).ToList();
+            return (hires.Select(MapToResponseDto).ToList(), totalCount);
         }
 
         public async Task<(bool Success, string ErrorMessage)> UpdateHireStatus(int userId, int hireId, string status)

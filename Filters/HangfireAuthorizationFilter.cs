@@ -20,71 +20,177 @@ namespace newApi.Filters
         public bool Authorize(DashboardContext context)
         {
             var httpContext = context.GetHttpContext();
+            var path = httpContext.Request.Path.Value ?? "";
             
-            // 1. Intentar obtener token desde query parameter (para iframes)
+            // ✅ PERMITIR recursos estáticos sin autenticación (CSS, JS, imágenes, fuentes)
+            // Estos recursos no exponen información sensible y son necesarios para que el dashboard funcione
+            if (path.Contains("/css") || 
+                path.Contains("/js") || 
+                path.Contains("/img") || 
+                path.Contains("/fonts") ||
+                path.Contains("/font") ||
+                path.EndsWith(".css") ||
+                path.EndsWith(".js") ||
+                path.EndsWith(".png") ||
+                path.EndsWith(".jpg") ||
+                path.EndsWith(".jpeg") ||
+                path.EndsWith(".gif") ||
+                path.EndsWith(".svg") ||
+                path.EndsWith(".woff") ||
+                path.EndsWith(".woff2") ||
+                path.EndsWith(".ttf") ||
+                path.EndsWith(".eot"))
+            {
+                // Permitir recursos estáticos sin autenticación (son archivos públicos)
+                // No necesitan validación de token ya que no exponen información sensible
+                return true;
+            }
+            
+            // ✅ 1. PRIMERO: Verificar cookie de sesión (para mantener autenticación durante navegación)
+            var tokenFromCookie = httpContext.Request.Cookies["HangfireAuthToken"];
+            
+            // 2. Intentar obtener token desde query parameter (para iframes y primera carga)
             var tokenFromQuery = httpContext.Request.Query["token"].FirstOrDefault();
             
-            // 2. Intentar obtener token desde Authorization header
+            // 3. Intentar obtener token desde Authorization header
             var authHeader = httpContext.Request.Headers["Authorization"].FirstOrDefault();
             var tokenFromHeader = authHeader?.StartsWith("Bearer ") == true 
                 ? authHeader.Substring("Bearer ".Length).Trim() 
                 : null;
             
-            // 3. Usar token de query o header
-            var token = tokenFromQuery ?? tokenFromHeader;
-            
-            // Log para debugging
-            Console.WriteLine($"[HangfireAuth] Request to: {httpContext.Request.Path}");
-            Console.WriteLine($"[HangfireAuth] Token from query: {(string.IsNullOrEmpty(tokenFromQuery) ? "None" : "Present")}");
-            Console.WriteLine($"[HangfireAuth] Token from header: {(string.IsNullOrEmpty(tokenFromHeader) ? "None" : "Present")}");
-            
-            // 4. Si hay token, validarlo y extraer claims
-            if (!string.IsNullOrEmpty(token))
+            // 4. ✅ INTENTAR EXTRAER TOKEN DEL REFERRER (para navegación dentro del dashboard)
+            string? tokenFromReferer = null;
+            var referer = httpContext.Request.Headers["Referer"].FirstOrDefault();
+            if (!string.IsNullOrEmpty(referer) && string.IsNullOrEmpty(tokenFromQuery) && string.IsNullOrEmpty(tokenFromHeader) && string.IsNullOrEmpty(tokenFromCookie))
             {
                 try
                 {
-                    var principal = ValidateJwtToken(token);
-                    if (principal != null)
+                    var refererUri = new Uri(referer);
+                    tokenFromReferer = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(refererUri.Query)["token"].FirstOrDefault();
+                }
+                catch
+                {
+                    // Si falla parsear el referrer, continuar sin token del referrer
+                }
+            }
+            
+            // 5. Intentar validar tokens en orden de prioridad: cookie primero, luego query/header/referrer
+            // Si la cookie es inválida, intentar con el token del query parameter
+            string? validToken = null;
+            ClaimsPrincipal? validPrincipal = null;
+            
+            // Log para debugging
+            Console.WriteLine($"[HangfireAuth] Request to: {httpContext.Request.Path}");
+            Console.WriteLine($"[HangfireAuth] Token from cookie: {(string.IsNullOrEmpty(tokenFromCookie) ? "None" : "Present")}");
+            Console.WriteLine($"[HangfireAuth] Token from query: {(string.IsNullOrEmpty(tokenFromQuery) ? "None" : "Present")}");
+            Console.WriteLine($"[HangfireAuth] Token from header: {(string.IsNullOrEmpty(tokenFromHeader) ? "None" : "Present")}");
+            Console.WriteLine($"[HangfireAuth] Token from referer: {(string.IsNullOrEmpty(tokenFromReferer) ? "None" : "Present")}");
+            
+            // Intentar validar token de cookie primero
+            if (!string.IsNullOrEmpty(tokenFromCookie))
+            {
+                try
+                {
+                    var principal = ValidateJwtToken(tokenFromCookie);
+                    if (principal != null && IsAdmin(principal))
                     {
-                        // Establecer el usuario en el contexto HTTP
-                        httpContext.User = principal;
-                        Console.WriteLine($"[HangfireAuth] Token validated successfully. User: {principal.Identity?.Name}, Roles: {string.Join(", ", principal.Claims.Where(c => c.Type == ClaimTypes.Role).Select(c => c.Value))}");
+                        validToken = tokenFromCookie;
+                        validPrincipal = principal;
+                        Console.WriteLine("[HangfireAuth] ✅ Token de cookie válido");
                     }
                     else
                     {
-                        Console.WriteLine("[HangfireAuth] Token validation returned null");
+                        Console.WriteLine("[HangfireAuth] ⚠️ Token de cookie inválido o expirado, intentando con query parameter...");
+                        // Eliminar cookie inválida
+                        httpContext.Response.Cookies.Delete("HangfireAuthToken");
                     }
                 }
                 catch (Exception ex)
                 {
-                    // Log del error
-                    Console.WriteLine($"[HangfireAuth] Error validating JWT token: {ex.Message}");
-                    Console.WriteLine($"[HangfireAuth] Stack trace: {ex.StackTrace}");
+                    Console.WriteLine($"[HangfireAuth] ⚠️ Error validando token de cookie: {ex.Message}, intentando con query parameter...");
+                    // Eliminar cookie con error
+                    httpContext.Response.Cookies.Delete("HangfireAuthToken");
                 }
             }
-            else
+            
+            // Si la cookie no fue válida, intentar con query/header/referrer
+            if (validToken == null)
             {
-                Console.WriteLine("[HangfireAuth] No token provided in query parameter or header");
+                var fallbackToken = tokenFromQuery ?? tokenFromHeader ?? tokenFromReferer;
+                if (!string.IsNullOrEmpty(fallbackToken))
+                {
+                    try
+                    {
+                        var principal = ValidateJwtToken(fallbackToken);
+                        if (principal != null && IsAdmin(principal))
+                        {
+                            validToken = fallbackToken;
+                            validPrincipal = principal;
+                            Console.WriteLine("[HangfireAuth] ✅ Token de query/header/referrer válido");
+                        }
+                        else
+                        {
+                            Console.WriteLine("[HangfireAuth] ❌ Token de query/header/referrer inválido o usuario no es Admin");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[HangfireAuth] ❌ Error validando token de query/header/referrer: {ex.Message}");
+                    }
+                }
             }
             
-            // 5. Verificar autenticación
-            if (httpContext.User?.Identity?.IsAuthenticated != true)
+            // 6. Si tenemos un token válido, establecer usuario y cookie
+            if (validToken != null && validPrincipal != null)
             {
-                Console.WriteLine("[HangfireAuth] User not authenticated");
-                return false;
+                // Establecer el usuario en el contexto HTTP
+                httpContext.User = validPrincipal;
+                
+                // ✅ ESTABLECER/ACTUALIZAR COOKIE DE SESIÓN si el token viene de query/header/referrer
+                // O si la cookie anterior era inválida (para renovarla)
+                if (string.IsNullOrEmpty(tokenFromCookie) || tokenFromCookie != validToken)
+                {
+                    // Establecer cookie HttpOnly y SameSite para seguridad
+                    // ✅ PRODUCCIÓN: SameSite=None con Secure=true para iframes cross-origin
+                    var isHttps = httpContext.Request.IsHttps || 
+                                 httpContext.Request.Headers["X-Forwarded-Proto"].ToString().Equals("https", StringComparison.OrdinalIgnoreCase);
+                    
+                    var cookieOptions = new Microsoft.AspNetCore.Http.CookieOptions
+                    {
+                        HttpOnly = true, // Previene acceso desde JavaScript (seguridad)
+                        // SameSite=None es necesario para iframes cross-origin (inspecciono.com -> api.atrapo.io)
+                        // Secure=true es obligatorio cuando SameSite=None
+                        SameSite = isHttps ? Microsoft.AspNetCore.Http.SameSiteMode.None : Microsoft.AspNetCore.Http.SameSiteMode.Lax,
+                        Secure = isHttps, // Obligatorio en producción (HTTPS), opcional en desarrollo
+                        Expires = DateTimeOffset.UtcNow.AddHours(1), // Expira en 1 hora (o cuando expire el token)
+                        Path = "/hangfire", // Solo válida para rutas de Hangfire
+                        // Domain no se establece para permitir que funcione en subdominios
+                    };
+                    httpContext.Response.Cookies.Append("HangfireAuthToken", validToken, cookieOptions);
+                    Console.WriteLine($"[HangfireAuth] Session cookie set/updated for Hangfire dashboard (SameSite={cookieOptions.SameSite}, Secure={cookieOptions.Secure})");
+                }
+                
+                Console.WriteLine($"[HangfireAuth] Token validated successfully. User: {validPrincipal.Identity?.Name}, Roles: {string.Join(", ", validPrincipal.Claims.Where(c => c.Type == ClaimTypes.Role).Select(c => c.Value))}");
+                return true; // Usuario autenticado y es Admin
             }
             
-            // 6. Verificar rol Admin
-            var isAdmin = httpContext.User.IsInRole("Admin") || 
-                         httpContext.User.IsInRole("1") || 
-                         httpContext.User.HasClaim("Role", "Admin") ||
-                         httpContext.User.HasClaim("Role", "1") ||
-                         httpContext.User.HasClaim(ClaimTypes.Role, "Admin") ||
-                         httpContext.User.HasClaim(ClaimTypes.Role, "1");
+            Console.WriteLine("[HangfireAuth] ❌ No se encontró token válido en ningún lugar");
             
-            Console.WriteLine($"[HangfireAuth] Is Admin: {isAdmin}");
+            // 7. Si llegamos aquí, el usuario no está autenticado
+            Console.WriteLine("[HangfireAuth] User not authenticated");
+            return false;
+        }
+
+        private bool IsAdmin(ClaimsPrincipal? principal)
+        {
+            if (principal == null) return false;
             
-            return isAdmin;
+            return principal.IsInRole("Admin") || 
+                   principal.IsInRole("1") || 
+                   principal.HasClaim("Role", "Admin") ||
+                   principal.HasClaim("Role", "1") ||
+                   principal.HasClaim(ClaimTypes.Role, "Admin") ||
+                   principal.HasClaim(ClaimTypes.Role, "1");
         }
 
         private ClaimsPrincipal? ValidateJwtToken(string token)

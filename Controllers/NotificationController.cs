@@ -24,7 +24,7 @@ namespace newApi.Controllers
         }
 
         [HttpGet]
-        public async Task<IActionResult> GetUserNotifications()
+        public async Task<IActionResult> GetUserNotifications([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
@@ -34,14 +34,36 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
                 // ✅ Solo administradores pueden ver notificaciones globales (UserId == null)
                 var isAdmin = _authService.IsAdmin(User);
-                var notifications = await _context.Notifications
-                    .Where(n => n.UserId == userId || (n.UserId == null && isAdmin))
+                var query = _context.Notifications
+                    .Where(n => n.UserId == userId || (n.UserId == null && isAdmin));
+
+                var totalCount = await query.CountAsync();
+
+                var notifications = await query
                     .OrderByDescending(n => n.CreatedAt)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
                     .ToListAsync();
 
-                return Ok(notifications);
+                return Ok(new
+                {
+                    notifications,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
+                });
             }
             catch (Exception ex)
             {

@@ -47,9 +47,9 @@ namespace newApi.Services
             return await _context.Users.FindAsync(userId);
         }
 
-        public async Task<IEnumerable<object>> GetAllUsers()
+        public async Task<(IEnumerable<object> users, int totalCount)> GetAllUsers(int page, int pageSize)
         {
-            return await _context.Users
+            var query = _context.Users
                 .Select(u => new
                 {
                     u.Id,
@@ -62,8 +62,17 @@ namespace newApi.Services
                     SearchCount = u.Searches.Count(s => s.IsActive),
                     SubscriptionPlan = u.SubscriptionPlan.Name,
                     Role = u.Role.ToString()
-                })
+                });
+
+            var totalCount = await query.CountAsync();
+            
+            var users = await query
+                .OrderByDescending(u => u.CreatedAt)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
                 .ToListAsync();
+
+            return (users, totalCount);
         }
 
         public async Task<bool> BlockUser(int userId)

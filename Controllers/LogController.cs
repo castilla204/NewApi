@@ -44,7 +44,7 @@ namespace newApi.Controllers
         }
 
         [HttpGet("critical")]
-        public async Task<IActionResult> GetCriticalLogs()
+        public async Task<IActionResult> GetCriticalLogs([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
@@ -54,15 +54,36 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
-                var criticalLogs = await _context.Logs
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+                var query = _context.Logs
                     .Include(l => l.LogType)
                     .Include(l => l.User)
-                    .Where(l => l.LogType != null && l.LogType.Name == "Critical")
+                    .Where(l => l.LogType != null && l.LogType.Name == "Critical");
+
+                var totalCount = await query.CountAsync();
+
+                var criticalLogs = await query
                     .OrderByDescending(l => l.CreatedAt)
-                    .Take(100)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
                     .ToListAsync();
 
-                return Ok(criticalLogs);
+                return Ok(new
+                {
+                    logs = criticalLogs,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
+                });
             }
             catch (Exception ex)
             {

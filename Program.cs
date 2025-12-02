@@ -308,19 +308,71 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
 }
 
 // Cargar secretos de Google Cloud Secret Manager
-var googleClientIds = GetSecretValue("google-client-ids", null)
-                      ?.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                      .Select(id => id.Trim())
-                      .ToArray();
+var googleClientIdsSecret = GetSecretValue("google-client-ids", null);
+var initLogger2 = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
 
-if (googleClientIds != null && googleClientIds.Length > 0)
+if (!string.IsNullOrEmpty(googleClientIdsSecret))
 {
-    var configDict = new Dictionary<string, string?>();
-    for (int i = 0; i < googleClientIds.Length; i++)
+    initLogger2.LogInformation($"✅ Secreto google-client-ids obtenido (longitud: {googleClientIdsSecret.Length})");
+    initLogger2.LogInformation($"📋 Contenido completo del secreto: [{googleClientIdsSecret}]");
+    
+    string[]? googleClientIds = null;
+    
+    // Intentar parsear como JSON primero (formato: ["id1", "id2"])
+    var trimmedSecret = googleClientIdsSecret.Trim();
+    if (trimmedSecret.StartsWith("[") && trimmedSecret.EndsWith("]"))
     {
-        configDict[$"Google:ClientIds:{i}"] = googleClientIds[i];
+        try
+        {
+            initLogger2.LogInformation("🔍 Detectado formato JSON, intentando parsear...");
+            googleClientIds = System.Text.Json.JsonSerializer.Deserialize<string[]>(trimmedSecret);
+            if (googleClientIds != null && googleClientIds.Length > 0)
+            {
+                initLogger2.LogInformation($"✅ Parseado como JSON exitosamente: {googleClientIds.Length} Client ID(s) encontrados");
+            }
+        }
+        catch (Exception jsonEx)
+        {
+            initLogger2.LogWarning($"⚠️ Error al parsear como JSON: {jsonEx.Message}, intentando formato separado por comas...");
+        }
     }
-    builder.Configuration.AddInMemoryCollection(configDict);
+    
+    // Si no es JSON o falló el parseo, intentar formato separado por comas
+    if (googleClientIds == null || googleClientIds.Length == 0)
+    {
+        initLogger2.LogInformation("🔍 Intentando parsear como lista separada por comas...");
+        googleClientIds = googleClientIdsSecret
+                          .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                          .Select(id => id.Trim().Trim('"').Trim(''')) // Remover comillas si las hay
+                          .Where(id => !string.IsNullOrWhiteSpace(id))
+                          .ToArray();
+        
+        if (googleClientIds.Length > 0)
+        {
+            initLogger2.LogInformation($"✅ Parseado como lista separada por comas: {googleClientIds.Length} Client ID(s) encontrados");
+        }
+    }
+
+    if (googleClientIds != null && googleClientIds.Length > 0)
+    {
+        initLogger2.LogInformation($"✅ Se cargaron {googleClientIds.Length} Google Client ID(s):");
+        var configDict = new Dictionary<string, string?>();
+        for (int i = 0; i < googleClientIds.Length; i++)
+        {
+            configDict[$"Google:ClientIds:{i}"] = googleClientIds[i];
+            initLogger2.LogInformation($"  [{i}] Google:ClientIds:{i} = [{googleClientIds[i]}]");
+        }
+        builder.Configuration.AddInMemoryCollection(configDict);
+        initLogger2.LogInformation($"✅ Google Client IDs configurados correctamente en la configuración");
+    }
+    else
+    {
+        initLogger2.LogError("❌ ERROR: No se pudieron parsear los Google Client IDs del secreto");
+    }
+}
+else
+{
+    initLogger2.LogError("❌ ERROR: No se pudo obtener el secreto google-client-ids del Secret Manager");
 }
 
 // JWT - Leer de variables de entorno primero, luego de Secret Manager como fallback

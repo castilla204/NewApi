@@ -313,12 +313,44 @@ if (!string.IsNullOrEmpty(googleClientIdsSecret))
     initLogger2.LogInformation($"✅ Secreto google-client-ids obtenido (longitud: {googleClientIdsSecret.Length})");
     initLogger2.LogInformation($"📋 Contenido completo del secreto: [{googleClientIdsSecret}]");
     
-    var googleClientIds = googleClientIdsSecret
+    string[]? googleClientIds = null;
+    
+    // Intentar parsear como JSON primero (formato: ["id1", "id2"])
+    var trimmedSecret = googleClientIdsSecret.Trim();
+    if (trimmedSecret.StartsWith("[") && trimmedSecret.EndsWith("]"))
+    {
+        try
+        {
+            initLogger2.LogInformation("🔍 Detectado formato JSON, intentando parsear...");
+            googleClientIds = System.Text.Json.JsonSerializer.Deserialize<string[]>(trimmedSecret);
+            if (googleClientIds != null && googleClientIds.Length > 0)
+            {
+                initLogger2.LogInformation($"✅ Parseado como JSON exitosamente: {googleClientIds.Length} Client ID(s) encontrados");
+            }
+        }
+        catch (Exception jsonEx)
+        {
+            initLogger2.LogWarning($"⚠️ Error al parsear como JSON: {jsonEx.Message}, intentando formato separado por comas...");
+        }
+    }
+    
+    // Si no es JSON o falló el parseo, intentar formato separado por comas
+    if (googleClientIds == null || googleClientIds.Length == 0)
+    {
+        initLogger2.LogInformation("🔍 Intentando parsear como lista separada por comas...");
+        googleClientIds = googleClientIdsSecret
                           .Split(',', StringSplitOptions.RemoveEmptyEntries)
-                          .Select(id => id.Trim())
+                          .Select(id => id.Trim().Trim('"').Trim(''')) // Remover comillas si las hay
+                          .Where(id => !string.IsNullOrWhiteSpace(id))
                           .ToArray();
+        
+        if (googleClientIds.Length > 0)
+        {
+            initLogger2.LogInformation($"✅ Parseado como lista separada por comas: {googleClientIds.Length} Client ID(s) encontrados");
+        }
+    }
 
-    if (googleClientIds.Length > 0)
+    if (googleClientIds != null && googleClientIds.Length > 0)
     {
         initLogger2.LogInformation($"✅ Se cargaron {googleClientIds.Length} Google Client ID(s):");
         var configDict = new Dictionary<string, string?>();
@@ -332,7 +364,7 @@ if (!string.IsNullOrEmpty(googleClientIdsSecret))
     }
     else
     {
-        initLogger2.LogWarning("⚠️ Secreto google-client-ids está vacío o no contiene Client IDs válidos");
+        initLogger2.LogError("❌ ERROR: No se pudieron parsear los Google Client IDs del secreto");
     }
 }
 else

@@ -21,6 +21,7 @@ using newApi.DataLayer.Models;
 using AutoMapper;
 using Hangfire;
 using Hangfire.PostgreSql;
+using Hangfire.Dashboard;
 using Microsoft.Extensions.DependencyInjection;
 using newApi.Controllers;
 using Microsoft.AspNetCore.Server.IIS;
@@ -1203,10 +1204,9 @@ builder.Services.AddCors(options =>
 });
 
 
-// ⚠️  HANGFIRE TEMPORALMENTE DESHABILITADO
-// Causa problemas de agotamiento de recursos de socket en K3s
-// TODO: Habilitar cuando se optimice la configuración de PostgreSQL o se use Redis como backend
-/*
+// ✅ HANGFIRE HABILITADO: Dashboard habilitado para visualización
+// ⚠️ NOTA: El servidor de Hangfire está deshabilitado para evitar problemas de recursos en K3s
+// Solo se habilita el Dashboard para visualización y monitoreo
 builder.Services.AddHangfire(config => config
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
@@ -1221,6 +1221,9 @@ builder.Services.AddHangfire(config => config
     .UseDefaultTypeResolver()
     .UseDefaultTypeSerializer());
 
+// ⚠️ Servidor de Hangfire deshabilitado para evitar problemas de recursos
+// Descomentar solo si se necesita procesar jobs en background
+/*
 builder.Services.AddHangfireServer(options =>
 {
     options.WorkerCount = 2;
@@ -1333,8 +1336,13 @@ catch (Exception ex)
 }
 
 
-// Hangfire Dashboard - Comentado porque Hangfire está deshabilitado
-// app.UseHangfireDashboard("/hangfire");
+// ✅ HANGFIRE DASHBOARD: Habilitado con autenticación JWT
+app.UseHangfireDashboard("/hangfire", new DashboardOptions
+{
+    Authorization = new[] { new newApi.Filters.HangfireAuthorizationFilter(app.Configuration) },
+    // Configurar para permitir iframes
+    IsReadOnlyFunc = (DashboardContext context) => false
+});
 
 // ✅ SEGURIDAD 2025: Limpieza automática de refresh tokens - Comentado porque Hangfire está deshabilitado
 // TODO: Implementar con un servicio background alternativo o habilitar Hangfire con Redis
@@ -1373,6 +1381,36 @@ if (app.Environment.IsDevelopment())
         c.OAuthUseBasicAuthenticationWithAccessCodeGrant();
     });
 }
+
+// ✅ HANGFIRE IFRAME SUPPORT: Configurar headers para permitir iframes en Hangfire Dashboard
+app.Use(async (context, next) =>
+{
+    // Si es una ruta de Hangfire, configurar headers para permitir iframes
+    if (context.Request.Path.StartsWithSegments("/hangfire", StringComparison.OrdinalIgnoreCase))
+    {
+        // Permitir que se cargue en iframes desde el mismo origen o desde orígenes permitidos
+        context.Response.Headers["X-Frame-Options"] = "SAMEORIGIN";
+        
+        // Configurar Content-Security-Policy para permitir iframes
+        // frame-ancestors permite especificar qué orígenes pueden embeber esta página
+        var allowedOrigins = new[] { "https://inspecciono.com", "https://www.inspecciono.com", "http://localhost:3000", "http://localhost:5173" };
+        var frameAncestors = string.Join(" ", allowedOrigins.Select(o => o));
+        context.Response.Headers["Content-Security-Policy"] = $"frame-ancestors {frameAncestors} 'self';";
+        
+        // Asegurar que CORS permita las credenciales (CORS middleware lo manejará, pero esto es un fallback)
+        var origin = context.Request.Headers["Origin"].FirstOrDefault();
+        if (!string.IsNullOrEmpty(origin) && allowedOrigins.Any(o => origin.StartsWith(o, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Origin"))
+            {
+                context.Response.Headers["Access-Control-Allow-Origin"] = origin;
+            }
+            context.Response.Headers["Access-Control-Allow-Credentials"] = "true";
+        }
+    }
+    
+    await next();
+});
 
 app.UseCors("AllowSpecificOrigin"); // Aplicar CORS antes de otros middleware
 

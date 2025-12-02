@@ -3749,7 +3749,7 @@ namespace newApi.Controllers
         }
 
         [HttpGet("all-money-distribution-configs")]
-        public async Task<IActionResult> GetAllMoneyDistributionConfigs()
+        public async Task<IActionResult> GetAllMoneyDistributionConfigs([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
@@ -3759,14 +3759,15 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
-                var configs = await _context.StatusConfigurations
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+                var query = _context.StatusConfigurations
                     .Include(sc => sc.Status)
                     .Include(sc => sc.Category)
                     .Include(sc => sc.ServiceTypeCategory)
                     .Where(c => c.IsActive)
-                    .OrderBy(c => c.CategoryId)
-                    .ThenBy(c => c.ServiceTypeCategoryId)
-                    .ThenBy(c => c.Status.StatusValue)
                     .Select(c => new
                     {
                         StatusId = c.StatusId,
@@ -3782,13 +3783,30 @@ namespace newApi.Controllers
                         IsActive = c.IsActive,
                         CreatedAt = c.CreatedAt,
                         UpdatedAt = c.UpdatedAt
-                    })
+                    });
+
+                var totalCount = await query.CountAsync();
+
+                var configs = await query
+                    .OrderBy(c => c.CategoryId)
+                    .ThenBy(c => c.ServiceTypeCategoryId)
+                    .ThenBy(c => c.StatusValue)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
                     .ToListAsync();
 
                 return Ok(new { 
                     message = "All money distribution configurations",
-                    count = configs.Count,
-                    configs 
+                    configs,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
                 });
             }
             catch (Exception ex)

@@ -38,7 +38,7 @@ public class UserController : ControllerBase
 
     [Authorize]
     [HttpGet("all")]
-    public async Task<IActionResult> GetAllUsers()
+    public async Task<IActionResult> GetAllUsers([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     {
         try
         {
@@ -48,8 +48,25 @@ public class UserController : ControllerBase
                 return Unauthorized(new { message = "Admin access required" });
             }
 
-            var users = await _userService.GetAllUsers();
-            return Ok(users);
+            // Validar parámetros
+            if (page < 1) page = 1;
+            if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+            var (users, totalCount) = await _userService.GetAllUsers(page, pageSize);
+            
+            return Ok(new
+            {
+                users,
+                pagination = new
+                {
+                    page,
+                    pageSize,
+                    totalCount,
+                    totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                    hasNextPage = page * pageSize < totalCount,
+                    hasPreviousPage = page > 1
+                }
+            });
         }
         catch (Exception ex)
         {

@@ -615,7 +615,7 @@ namespace newApi.Controllers
 
         // GET: api/searchhire/client
         [HttpGet("client")]
-        public async Task<IActionResult> GetClientHires()
+        public async Task<IActionResult> GetClientHires([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
@@ -625,8 +625,25 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                var hires = await _searchHireService.GetClientHires(userId);
-                return Ok(hires);
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+                var (hires, totalCount) = await _searchHireService.GetClientHires(userId, page, pageSize);
+                
+                return Ok(new
+                {
+                    hires,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
+                });
             }
             catch (Exception ex)
             {
@@ -636,7 +653,7 @@ namespace newApi.Controllers
 
         // GET: api/searchhire/expert
         [HttpGet("expert")]
-        public async Task<IActionResult> GetExpertHires()
+        public async Task<IActionResult> GetExpertHires([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
@@ -646,8 +663,25 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                var hires = await _searchHireService.GetExpertHires(userId);
-                return Ok(hires);
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+                var (hires, totalCount) = await _searchHireService.GetExpertHires(userId, page, pageSize);
+                
+                return Ok(new
+                {
+                    hires,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
+                });
             }
             catch (Exception ex)
             {

@@ -469,13 +469,13 @@ if (isDevelopment)
     // Probar múltiples puertos automáticamente hasta encontrar uno disponible
     
     // Lista de puertos a probar en orden
-    // ✅ CORRECCIÓN: Priorizar 5433 (puerto por defecto del túnel SSH) sobre 5432 en desarrollo
+    // ✅ CORRECCIÓN: Priorizar puertos comunes del túnel SSH
     // Esto acelera la detección cuando se usa el túnel SSH
     var dbPortsToTry = new[] { 
-        5433,  // ✅ PRIORIDAD: Puerto por defecto del script db-access.sh (probar primero)
+        5435,  // ✅ PRIORIDAD: Puerto del túnel SSH (db-access.sh)
+        5433,  // Puerto alternativo común del túnel SSH
         5432,  // Puerto estándar de PostgreSQL
         5434,  // Puerto alternativo común para túneles
-        5435,  // Puerto alternativo común para túneles
         15433, // Puerto alternativo (formato antiguo)
         25432, // Puerto alternativo (formato antiguo)
         35432, // Puerto alternativo (formato antiguo)
@@ -513,12 +513,20 @@ if (isDevelopment)
     }
     else
     {
-        // Construir desde variables de entorno individuales (para túnel local)
+        // Construir desde variables de entorno individuales o Google Cloud Secret Manager
         // Valores por defecto para desarrollo: admin y atrapo
-        dbHost = Environment.GetEnvironmentVariable("DB_HOST") ?? "localhost";
-        dbUsername = Environment.GetEnvironmentVariable("DB_USERNAME") ?? "admin";
-        dbPassword = Environment.GetEnvironmentVariable("DB_PASSWORD") ?? "";
-        dbName = Environment.GetEnvironmentVariable("DB_NAME") ?? "atrapo";
+        dbHost = Environment.GetEnvironmentVariable("POSTGRES_HOST") 
+            ?? GetSecretValue("postgres-host", null) 
+            ?? "localhost";
+        dbUsername = Environment.GetEnvironmentVariable("POSTGRES_USERNAME") 
+            ?? GetSecretValue("postgres-username", null) 
+            ?? "admin";
+        dbPassword = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD") 
+            ?? GetSecretValue("postgres-password", null) 
+            ?? "";
+        dbName = Environment.GetEnvironmentVariable("POSTGRES_DATABASE") 
+            ?? GetSecretValue("postgres-database", null) 
+            ?? "atrapo";
     }
     
     // Validar que tenemos password

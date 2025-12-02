@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Stripe;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -57,21 +58,29 @@ var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CRE
 
 // En desarrollo: usar fallback a ubicación estándar si la variable no está configurada
 // En producción: solo usar variable de entorno (sin fallback)
+// Si no hay variable configurada, usaremos Application Default Credentials (ADC)
+// que gcloud auth application-default login configura automáticamente
 if (string.IsNullOrEmpty(credentialsPath) && isDevelopment)
 {
     // Fallback solo en desarrollo: usar ubicación estándar
-    credentialsPath = "C:\\cloudcredential.json";
+    var fallbackPath = "C:\\cloudcredential.json";
     
-    // Configurar la variable de entorno para esta sesión en desarrollo
-    // Esto asegura que Google Cloud SDK y otras librerías también la usen
-    try
+    // Solo usar fallback si el archivo existe
+    if (System.IO.File.Exists(fallbackPath))
     {
-        Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", credentialsPath, EnvironmentVariableTarget.Process);
+        credentialsPath = fallbackPath;
+        // Configurar la variable de entorno para esta sesión en desarrollo
+        try
+        {
+            Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", credentialsPath, EnvironmentVariableTarget.Process);
+        }
+        catch
+        {
+            // Si falla, continuar sin configurar la variable (no crítico)
+        }
     }
-    catch
-    {
-        // Si falla, continuar sin configurar la variable (no crítico)
-    }
+    // Si no existe el archivo fallback, credentialsPath seguirá siendo null
+    // y el cliente usará Application Default Credentials automáticamente
 }
 
 builder.Logging.AddConsole();
@@ -79,15 +88,39 @@ var initLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program
 
 initLogger.LogInformation($"=== INICIALIZANDO SECRET MANAGER ===");
 initLogger.LogInformation($"Entorno: {(isDevelopment ? "Development" : "Production")}");
-initLogger.LogInformation($"GOOGLE_APPLICATION_CREDENTIALS: {Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS") ?? "NO CONFIGURADO"}");
-initLogger.LogInformation($"Ruta de credenciales a usar: {credentialsPath}");
+initLogger.LogInformation($"GOOGLE_APPLICATION_CREDENTIALS: {Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS") ?? "NO CONFIGURADO (usará Application Default Credentials)"}");
+initLogger.LogInformation($"Ruta de credenciales a usar: {credentialsPath ?? "Application Default Credentials (ADC)"}");
 
+// Intentar inicializar Secret Manager
+// Si credentialsPath está configurado, verificar que el archivo existe
+// Si no está configurado, usar Application Default Credentials (ADC)
+bool shouldInitialize = true;
 if (!string.IsNullOrEmpty(credentialsPath))
 {
     var fileExists = System.IO.File.Exists(credentialsPath);
     initLogger.LogInformation($"Archivo de credenciales existe: {fileExists}");
     
     if (fileExists)
+    {
+        shouldInitialize = true;
+    }
+    else
+    {
+        initLogger.LogWarning($"El archivo de credenciales no existe en: {credentialsPath}");
+        initLogger.LogInformation("Intentando usar Application Default Credentials (ADC) en su lugar...");
+        credentialsPath = null; // Limpiar para usar ADC
+        shouldInitialize = true; // Intentar con ADC
+    }
+}
+else
+{
+    initLogger.LogInformation("No hay archivo de credenciales configurado. Usando Application Default Credentials (ADC)...");
+    shouldInitialize = true; // Usar ADC
+}
+
+if (shouldInitialize)
+{
+    try
         {
             try
             {
@@ -148,15 +181,14 @@ if (!string.IsNullOrEmpty(credentialsPath))
                 initLogger.LogWarning("Usando solo variables de entorno como fallback.");
             }
         }
-        else
-        {
-            initLogger.LogWarning($"El archivo de credenciales no existe en la ruta: {credentialsPath}");
-            initLogger.LogWarning("Secret Manager no estará disponible. Usando solo variables de entorno como fallback.");
-        }
-}
-else
-{
-    initLogger.LogWarning("No se pudo determinar la ruta de credenciales. Secret Manager no estará disponible.");
+    }
+    catch (Exception ex)
+    {
+        secretManagerAvailable = false;
+        initLogger.LogError($"ERROR al inicializar Secret Manager: {ex.GetType().Name} - {ex.Message}");
+        initLogger.LogError($"Stack trace: {ex.StackTrace}");
+        initLogger.LogWarning("Secret Manager no estará disponible. Usando solo variables de entorno como fallback.");
+    }
 }
 
 initLogger.LogInformation($"Secret Manager disponible: {secretManagerAvailable}");
@@ -170,87 +202,103 @@ else
 }
 
 // Función para obtener secretos
-// Funciona igual en desarrollo y producción: intenta Secret Manager si está disponible
+// En desarrollo: intenta secretos con sufijo -dev, luego sin sufijo
+// En producción: usa secretos sin sufijo
 string? GetSecretValue(string secretName, string? defaultValue = null)
 {
     // Intentar usar Secret Manager si está disponible (tanto en desarrollo como producción)
     if (secretClient != null && secretManagerAvailable)
     {
-        try
+        var projectId = "grup-441318";
+        var secretLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+        
+        // Determinar qué nombres de secretos intentar según el entorno
+        var secretNamesToTry = new List<string>();
+        
+        if (isDevelopment)
         {
-            var projectId = "grup-441318";
-            var secretPath = $"projects/{projectId}/secrets/{secretName}/versions/latest";
-            
-            builder.Logging.AddConsole();
-            var secretLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-            secretLogger.LogInformation($"Intentando obtener secreto: {secretName} desde {secretPath}");
-            
-            // Configurar call settings con timeout y reintentos mejorados para Kubernetes
-            // Aumentar timeout significativamente para manejar problemas de conectividad
-            // gRPC puede necesitar más tiempo para establecer la conexión HTTP/2
-            var callSettings = CallSettings.FromRetry(
-                RetrySettings.FromExponentialBackoff(
-                    maxAttempts: 3, // Reducir reintentos pero aumentar timeout inicial
-                    initialBackoff: TimeSpan.FromSeconds(5), // Esperar más antes del primer reintento
-                    maxBackoff: TimeSpan.FromSeconds(20),
-                    backoffMultiplier: 2.0,
-                    retryFilter: RetrySettings.FilterForStatusCodes(
-                        Grpc.Core.StatusCode.Unavailable, 
-                        Grpc.Core.StatusCode.DeadlineExceeded,
-                        Grpc.Core.StatusCode.Internal,
-                        Grpc.Core.StatusCode.ResourceExhausted
+            // En desarrollo: intentar primero con -dev, luego sin sufijo
+            secretNamesToTry.Add($"{secretName}-dev");
+            secretNamesToTry.Add(secretName);
+            secretLogger.LogInformation($"🔧 DESARROLLO: Intentando secretos: {string.Join(" -> ", secretNamesToTry)}");
+        }
+        else
+        {
+            // En producción: usar directamente el nombre sin sufijo
+            secretNamesToTry.Add(secretName);
+            secretLogger.LogInformation($"🏭 PRODUCCIÓN: Usando secreto: {secretName}");
+        }
+        
+        // Intentar cada nombre de secreto en orden
+        foreach (var secretNameToTry in secretNamesToTry)
+        {
+            try
+            {
+                var secretPath = $"projects/{projectId}/secrets/{secretNameToTry}/versions/latest";
+                secretLogger.LogInformation($"Intentando obtener secreto: {secretNameToTry} desde {secretPath}");
+                
+                // Configurar call settings con timeout y reintentos mejorados
+                var callSettings = CallSettings.FromRetry(
+                    RetrySettings.FromExponentialBackoff(
+                        maxAttempts: 3,
+                        initialBackoff: TimeSpan.FromSeconds(5),
+                        maxBackoff: TimeSpan.FromSeconds(20),
+                        backoffMultiplier: 2.0,
+                        retryFilter: RetrySettings.FilterForStatusCodes(
+                            Grpc.Core.StatusCode.Unavailable, 
+                            Grpc.Core.StatusCode.DeadlineExceeded,
+                            Grpc.Core.StatusCode.Internal,
+                            Grpc.Core.StatusCode.ResourceExhausted
+                        )
                     )
-                )
-            ).WithTimeout(TimeSpan.FromSeconds(60)); // Timeout MUY largo (60s) para Kubernetes - gRPC puede ser lento
-            
-            secretLogger.LogInformation($"Llamando a Secret Manager con timeout de 60 segundos...");
-            var startTime = DateTime.UtcNow;
-            
-            var secretVersion = secretClient.AccessSecretVersion(secretPath, callSettings: callSettings);
-            
-            var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
-            secretLogger.LogInformation($"Secreto {secretName} obtenido exitosamente en {duration}ms");
-            
-            return secretVersion.Payload.Data.ToStringUtf8();
-        }
-        catch (Grpc.Core.RpcException rpcEx)
-        {
-            // Si falla una vez, marcar como no disponible para evitar más intentos
-            if (secretManagerAvailable)
+                ).WithTimeout(TimeSpan.FromSeconds(60));
+                
+                var startTime = DateTime.UtcNow;
+                var secretVersion = secretClient.AccessSecretVersion(secretPath, callSettings: callSettings);
+                var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                
+                secretLogger.LogInformation($"✅ Secreto {secretNameToTry} obtenido exitosamente en {duration}ms");
+                return secretVersion.Payload.Data.ToStringUtf8();
+            }
+            catch (Grpc.Core.RpcException rpcEx)
             {
-                secretManagerAvailable = false;
-                builder.Logging.AddConsole();
-                var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-                tempLogger.LogError($"ERROR gRPC al obtener secreto {secretName}:");
-                tempLogger.LogError($"  Status Code: {rpcEx.StatusCode}");
-                tempLogger.LogError($"  Status Detail: {rpcEx.Status.Detail}");
-                tempLogger.LogError($"  Debug Exception: {rpcEx.Status.DebugException?.Message ?? "N/A"}");
-                if (rpcEx.Status.DebugException is System.Net.Sockets.SocketException socketEx)
+                // Si el secreto no existe (NotFound), intentar el siguiente
+                if (rpcEx.StatusCode == Grpc.Core.StatusCode.NotFound)
                 {
-                    tempLogger.LogError($"  Socket Error Code: {socketEx.SocketErrorCode}");
-                    tempLogger.LogError($"  Native Error Code: {socketEx.NativeErrorCode}");
+                    secretLogger.LogWarning($"⚠️ Secreto {secretNameToTry} no encontrado, intentando siguiente...");
+                    continue; // Intentar siguiente nombre
                 }
-                tempLogger.LogWarning("Secret Manager no está disponible. Usando solo variables de entorno para todos los secretos.");
+                
+                // Para otros errores, marcar como no disponible y retornar
+                if (secretManagerAvailable)
+                {
+                    secretManagerAvailable = false;
+                    secretLogger.LogError($"ERROR gRPC al obtener secreto {secretNameToTry}:");
+                    secretLogger.LogError($"  Status Code: {rpcEx.StatusCode}");
+                    secretLogger.LogError($"  Status Detail: {rpcEx.Status.Detail}");
+                    secretLogger.LogWarning("Secret Manager no está disponible. Usando solo variables de entorno.");
+                }
+                return defaultValue;
             }
-            return defaultValue; // Retornar valor por defecto en caso de error
-        }
-        catch (Exception ex)
-        {
-            // Si falla una vez, marcar como no disponible para evitar más intentos
-            if (secretManagerAvailable)
+            catch (Exception ex)
             {
-                secretManagerAvailable = false;
-                builder.Logging.AddConsole();
-                var tempLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-                tempLogger.LogError($"ERROR inesperado al obtener secreto {secretName}: {ex.GetType().Name} - {ex.Message}");
-                tempLogger.LogError($"Stack trace: {ex.StackTrace}");
-                tempLogger.LogWarning("Secret Manager no está disponible. Usando solo variables de entorno para todos los secretos.");
+                // Para errores inesperados, marcar como no disponible
+                if (secretManagerAvailable)
+                {
+                    secretManagerAvailable = false;
+                    secretLogger.LogError($"ERROR inesperado al obtener secreto {secretNameToTry}: {ex.GetType().Name} - {ex.Message}");
+                    secretLogger.LogWarning("Secret Manager no está disponible. Usando solo variables de entorno.");
+                }
+                return defaultValue;
             }
-            return defaultValue; // Retornar valor por defecto en caso de error
         }
+        
+        // Si llegamos aquí, ningún secreto fue encontrado
+        secretLogger.LogWarning($"⚠️ Ningún secreto encontrado para: {secretName} (intentados: {string.Join(", ", secretNamesToTry)})");
+        return defaultValue;
     }
     
-    // Si Secret Manager no está disponible, usar valor por defecto (que puede ser null)
+    // Si Secret Manager no está disponible, usar valor por defecto
     return defaultValue;
 }
 

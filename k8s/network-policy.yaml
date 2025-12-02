@@ -1,0 +1,64 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: new-api-network-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: new-api
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+  - from:
+    - podSelector:
+        matchLabels:
+          app: react-web
+  - from:
+    - namespaceSelector: {}
+    ports:
+    - port: 7124
+      protocol: TCP
+  egress:
+  # PostgreSQL
+  - ports:
+    - port: 5432
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          app: postgres
+  # RabbitMQ
+  - ports:
+    - port: 5672
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          app: rabbitmq
+  # DNS - Fixed: use correct label for kube-system namespace
+  - ports:
+    - port: 53
+      protocol: UDP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+  # HTTPS to Google APIs (for OAuth token validation)
+  - ports:
+    - port: 443
+      protocol: TCP
+    to: []
+  # HTTP (for any external APIs)
+  - ports:
+    - port: 80
+      protocol: TCP
+    to: []

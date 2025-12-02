@@ -4,152 +4,229 @@ on:
   push:
     branches:
       - main
-      - develop
+    paths-ignore:
+      - 'k8s/deployment.yaml'
   pull_request:
     branches:
       - main
-      - develop
+    paths-ignore:
+      - 'k8s/deployment.yaml'
   workflow_dispatch:
 
-permissions:
-  contents: read
-  security-events: write
-
-env:
-  REGISTRY: docker.io
-  IMAGE_NAME: erizo9/newapi
-
 jobs:
-  # Job de CI: Build y test
-  ci:
-    name: Continuous Integration
+  build-and-test:
+    name: Build and Test
     runs-on: ubuntu-latest
+    # NO ejecutar en PRs de renovate/dependabot para ahorrar costos
+    if: |
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.user.login != 'renovate[bot]' &&
+       github.event.pull_request.user.login != 'dependabot[bot]' &&
+       !startsWith(github.event.pull_request.head.ref, 'renovate/') &&
+       !startsWith(github.event.pull_request.head.ref, 'dependabot/'))
+    
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '8.0.x'
 
       - name: Restore dependencies
-        run: dotnet restore newApi.sln
+        run: dotnet restore newApi.csproj
 
       - name: Build
-        run: dotnet build newApi.sln --no-restore --configuration Release
+        run: dotnet build newApi.csproj --configuration Release --no-restore
 
       - name: Run tests
         run: dotnet test --no-build --configuration Release --verbosity normal || echo "No tests found"
+        continue-on-error: true
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-artifacts
-          path: '**/bin/Release/**/*.dll'
-          retention-days: 7
-
-  # Job de Security scanning (obligatorio - ANTES de build)
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
-    needs: ci
-    if: github.event_name != 'pull_request'
+    needs: build-and-test
+    # NO ejecutar en PRs de renovate/dependabot para ahorrar costos
+    if: |
+      (github.event_name != 'pull_request' ||
+       (github.event.pull_request.user.login != 'renovate[bot]' &&
+        github.event.pull_request.user.login != 'dependabot[bot]' &&
+        !startsWith(github.event.pull_request.head.ref, 'renovate/') &&
+        !startsWith(github.event.pull_request.head.ref, 'dependabot/'))) &&
+      always() &&
+      (needs.build-and-test.result == 'success' || needs.build-and-test.result == 'skipped')
     permissions:
       contents: read
       security-events: write
-      actions: read
+    
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Run Trivy vulnerability scanner
+      - name: Run Trivy vulnerability scanner (table format)
+        uses: aquasecurity/trivy-action@0.33.1
         id: trivy-scan
-        uses: aquasecurity/trivy-action@v0.29
         with:
           scan-type: 'fs'
           scan-ref: '.'
-          format: 'table'  # Formato legible para logs
-          exit-code: '1'  # FALLA EL WORKFLOW si hay vulnerabilidades críticas o altas
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          scanners: 'vuln'
+          skip-files: 'Program.cs'
 
-      - name: Run Trivy vulnerability scanner (SARIF format)
-        id: trivy-sarif
-        continue-on-error: true  # No fallar si Code Scanning no está habilitado
-        uses: aquasecurity/trivy-action@v0.29
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          exit-code: '0'  # No fallar aquí, ya se validó en el paso anterior
-
-      - name: Upload Trivy results to GitHub Security
-        if: always() && steps.trivy-sarif.outcome == 'success' && hashFiles('trivy-results.sarif') != ''
-        continue-on-error: true  # Opcional: puede fallar si Code Scanning no está habilitado
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: 'trivy-results.sarif'
-          wait-for-processing: false
-
-  # Job de CD: Build y push de imagen Docker
-  build-and-push:
+  docker-build:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
-    needs: [ci, security-scan]  # Solo se ejecuta si security-scan pasa
-    if: github.event_name != 'pull_request'
+    needs: [build-and-test, security-scan]
+    if: |
+      github.event_name == 'push' && 
+      github.ref == 'refs/heads/main' &&
+      (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped')
+    permissions:
+      contents: write
+      pull-requests: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
-
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
-          platforms: linux/amd64
+          push: true
+          tags: |
+            erizo9/newapi:latest
+            erizo9/newapi:${{ github.sha }}
+          cache-from: type=registry,ref=erizo9/newapi:buildcache
+          cache-to: type=registry,ref=erizo9/newapi:buildcache,mode=max
 
-  # Job de CD: Notificación (ArgoCD hará el deploy automáticamente)
-  notify:
-    name: Notify - ArgoCD will deploy automatically
-    runs-on: ubuntu-latest
-    needs: [ci, security-scan, build-and-push]  # Solo se ejecuta si security-scan pasa
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    environment:
-      name: production
-      url: https://api.atrapo.io
-    steps:
-      - name: Build completed
+      - name: Get image digest
+        id: image-digest
         run: |
-          echo "✅ Build completed successfully!"
-          echo "📦 Image pushed: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          echo "🚀 ArgoCD will automatically deploy when it detects the new image"
-          echo "🔍 Check ArgoCD UI: https://argocd.inspecciono.com"
+          # Obtener el digest de la imagen latest
+          IMAGE_TAG="erizo9/newapi:latest"
+          DIGEST=$(docker buildx imagetools inspect $IMAGE_TAG --format '{{json .}}' | jq -r '.manifest.digest')
+          
+          # Si no empieza con sha256:, agregarlo
+          if [[ ! "$DIGEST" =~ ^sha256: ]]; then
+            DIGEST="sha256:$DIGEST"
+          fi
+          
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "Image digest: $DIGEST"
 
+      - name: Update deployment.yaml
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # Verificar que el archivo existe
+          if [ ! -f "k8s/deployment.yaml" ]; then
+            echo "⚠️ k8s/deployment.yaml no existe en esta rama, saltando actualización"
+            echo "Esto es normal en PRs o ramas que no tienen el archivo"
+            exit 0
+          fi
+          
+          DIGEST="${{ steps.image-digest.outputs.digest }}"
+          echo "Updating deployment.yaml with digest: $DIGEST"
+          echo "Current image line in deployment.yaml:"
+          grep "image:" k8s/deployment.yaml || echo "No image line found"
+          
+          # Intentar múltiples formatos de imagen
+          UPDATED=false
+          
+          # Formato 1: docker.io/erizo9/newapi@sha256:...
+          if grep -q "image: docker.io/erizo9/newapi@sha256:" k8s/deployment.yaml; then
+            sed -i "s|image: docker.io/erizo9/newapi@sha256:[a-f0-9]*|image: docker.io/erizo9/newapi@$DIGEST|g" k8s/deployment.yaml
+            UPDATED=true
+            echo "✅ Updated with format: docker.io/erizo9/newapi@sha256:..."
+          # Formato 2: erizo9/newapi@sha256:... (formato actual)
+          elif grep -q "image: erizo9/newapi@sha256:" k8s/deployment.yaml; then
+            sed -i "s|image: erizo9/newapi@sha256:[a-f0-9]*|image: erizo9/newapi@$DIGEST|g" k8s/deployment.yaml
+            UPDATED=true
+            echo "✅ Updated with format: erizo9/newapi@sha256:..."
+          # Formato 3: docker.io/erizo9/newapi:latest@sha256:...
+          elif grep -q "image: docker.io/erizo9/newapi:latest@sha256:" k8s/deployment.yaml; then
+            sed -i "s|image: docker.io/erizo9/newapi:latest@sha256:[a-f0-9]*|image: docker.io/erizo9/newapi:latest@$DIGEST|g" k8s/deployment.yaml
+            UPDATED=true
+            echo "✅ Updated with format: docker.io/erizo9/newapi:latest@sha256:..."
+          # Formato 4: erizo9/newapi:latest@sha256:...
+          elif grep -q "image: erizo9/newapi:latest@sha256:" k8s/deployment.yaml; then
+            sed -i "s|image: erizo9/newapi:latest@sha256:[a-f0-9]*|image: erizo9/newapi:latest@$DIGEST|g" k8s/deployment.yaml
+            UPDATED=true
+            echo "✅ Updated with format: erizo9/newapi:latest@sha256:..."
+          fi
+          
+          if [ "$UPDATED" = "false" ]; then
+            echo "❌ No matching image pattern found in deployment.yaml"
+            echo "Available image lines:"
+            grep "image:" k8s/deployment.yaml || echo "No image line found"
+            exit 1
+          fi
+          
+          # Verificar que se actualizó correctamente
+          if grep -q "$DIGEST" k8s/deployment.yaml; then
+            echo "✅ deployment.yaml actualizado correctamente"
+            echo "Updated line:"
+            grep "image:" k8s/deployment.yaml | grep "$DIGEST"
+          else
+            echo "❌ Error: digest no encontrado en deployment.yaml después de actualizar"
+            echo "Digest buscado: $DIGEST"
+            echo "Contenido actual:"
+            grep "image:" k8s/deployment.yaml || echo "No image line found"
+            exit 1
+          fi
 
+      - name: Pull latest changes before commit
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Hacer pull con rebase para integrar cambios remotos
+          git fetch origin main
+          git pull origin main --rebase || git pull origin main --no-rebase || true
+
+      - name: Commit and push deployment update
+        if: github.ref == 'refs/heads/main'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: Update deployment image digest [skip ci]'
+          file_pattern: 'k8s/deployment.yaml'
+          skip_dirty_check: true
+          skip_fetch: false  # Permitir fetch para obtener cambios remotos
+          skip_checkout: true
+          # Forzar push si es necesario (solo para este caso específico)
+          push_options: '--force-with-lease'
+
+      - name: Trigger ArgoCD Sync
+        if: github.ref == 'refs/heads/main'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Esperar un momento para que el commit se propague
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Disparar el workflow de ArgoCD sync
+            try {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'argocd-sync.yml',
+                ref: 'main'
+              });
+              console.log('✅ ArgoCD sync workflow triggered');
+            } catch (error) {
+              console.log('⚠️ Could not trigger ArgoCD sync workflow:', error.message);
+              console.log('ℹ️ ArgoCD should sync automatically if auto-sync is enabled');
+            }

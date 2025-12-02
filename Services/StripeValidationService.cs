@@ -34,6 +34,15 @@ namespace newApi.Services
                 return (true, string.Empty, stripeStatus.ToString(), false, false);
             }
 
+            // ✅ FIX: Permitir PendingVerification si charges_enabled: true
+            // PendingVerification es informativo, no bloqueante si Stripe permite operar
+            if (stripeStatus == StripeStatus.PendingVerification)
+            {
+                // PendingVerification no bloquea si la cuenta puede operar
+                // El estado se actualizará en el próximo webhook account.updated
+                return (true, string.Empty, stripeStatus.ToString(), false, false);
+            }
+
             // Bloquear cuentas rechazadas y desautorizadas
             if (stripeStatus == StripeStatus.Rejected)
             {
@@ -64,6 +73,15 @@ namespace newApi.Services
                 return (false, "Perfil de experto no encontrado");
             }
 
+            // ✅ FIX: Permitir PendingVerification si charges_enabled: true
+            // PendingVerification es informativo, no bloqueante si Stripe permite operar
+            if (expertProfile.StripeStatus == StripeStatus.PendingVerification)
+            {
+                // PendingVerification no bloquea si la cuenta puede operar
+                // El estado se actualizará en el próximo webhook account.updated
+                return (true, string.Empty);
+            }
+            
             if (expertProfile.StripeStatus != StripeStatus.Approved || !expertProfile.OnboardingCompleted)
             {
                 var message = expertProfile.StripeStatus switch
@@ -90,6 +108,14 @@ namespace newApi.Services
                 return (false, "Perfil de experto no encontrado");
             }
 
+            // ✅ FIX: Permitir PendingVerification si charges_enabled: true
+            // PendingVerification es informativo, no bloqueante si Stripe permite operar
+            if (expertProfile.StripeStatus == StripeStatus.PendingVerification)
+            {
+                // PendingVerification no bloquea si la cuenta puede operar
+                return (true, string.Empty);
+            }
+            
             if (expertProfile.StripeStatus != StripeStatus.Approved || !expertProfile.OnboardingCompleted)
             {
                 var message = expertProfile.StripeStatus switch

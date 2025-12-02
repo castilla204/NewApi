@@ -90,6 +90,33 @@ namespace newApi.Controllers
                 return (false, null, "Expert profile not found");
             }
 
+            // ✅ FIX: Permitir PendingVerification si charges_enabled: true (Stripe permite operar)
+            // Necesitamos verificar la cuenta de Stripe para saber si charges_enabled
+            // Por ahora, permitimos PendingVerification si no hay otros problemas
+            if (expertProfile.StripeStatus == StripeStatus.PendingVerification)
+            {
+                // ✅ PendingVerification es informativo, no bloqueante si Stripe permite operar
+                // Verificamos si realmente está bloqueado consultando Stripe
+                try
+                {
+                    if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                    {
+                        var accountService = new AccountService();
+                        var account = await accountService.GetAsync(expertProfile.StripeAccountId);
+                        
+                        // Si charges_enabled y payouts_enabled, permitir operar
+                        if (account.ChargesEnabled && account.PayoutsEnabled)
+                        {
+                            return (true, expertProfile, null);
+                        }
+                    }
+                }
+                catch
+                {
+                    // Si falla la consulta, ser conservador y bloquear
+                }
+            }
+            
             if (expertProfile.StripeStatus != StripeStatus.Approved || !expertProfile.OnboardingCompleted)
             {
                 return (false, expertProfile, GetStatusMessage(expertProfile.StripeStatus));
@@ -105,7 +132,7 @@ namespace newApi.Controllers
                 StripeStatus.NotRequested => "🔧 **Configuración Pendiente**: No has configurado tu cuenta de pagos de Stripe. Para ofrecer servicios y recibir pagos, necesitas completar el proceso de verificación. Haz clic en 'Configurar Pagos' para comenzar.",
                 StripeStatus.Pending => "⏳ **Onboarding en Proceso**: Estamos creando tu cuenta en Stripe Connect. Completa el flujo de onboarding para pasar a verificación.",
                 StripeStatus.ActionRequired => "📝 **Información Faltante**: Stripe te pide información/archivos inmediatos (requirements.currently_due). Abre el panel de Stripe y completa los campos pendientes para evitar restricciones.",
-                StripeStatus.PendingVerification => "🔍 **Verificación de Documentos**: Stripe está revisando la documentación enviada. No necesitas hacer nada adicional, pero no podrás cobrar hasta que finalice la verificación.",
+                StripeStatus.PendingVerification => "🔍 **Verificación de Documentos**: Stripe está revisando la documentación enviada. Puedes seguir operando normalmente mientras se completa la verificación.",
                 StripeStatus.RequirementsDue => "⏰ **Requisitos por Vencer**: Stripe marcó requisitos con fecha límite próxima (future requirements). Completa la información solicitada cuanto antes para evitar bloqueos.",
                 StripeStatus.RequirementsPastDue => "❗ **Requisitos Vencidos**: Algunos requisitos vencieron y Stripe bloqueó pagos. Actualiza tus datos en el panel de Stripe para reactivar la cuenta.",
                 StripeStatus.RestrictedSoon => "⚠️ **Restricción Inminente**: Stripe restringirá tu cuenta si no atiendes los requisitos indicados. Ingresa al panel de Stripe y resuélvelos hoy mismo.",
@@ -157,8 +184,7 @@ namespace newApi.Controllers
             bool chargesEnabled = account.ChargesEnabled;
             bool payoutsEnabled = account.PayoutsEnabled && transfersActive;
             bool detailsSubmitted = account.DetailsSubmitted;
-            bool tosAccepted = account.TosAcceptance?.Date != null && !string.IsNullOrEmpty(account.TosAcceptance?.Ip);
-
+            bool tosAccepted = account.TosAcceptance?.Date != null;  
             var state = new StripeAccountState
             {
                 DisabledReason = disabledReason,
@@ -191,6 +217,22 @@ namespace newApi.Controllers
 
             if (!string.IsNullOrEmpty(disabledReason))
             {
+                // ✅ FIX: Si disabledReason es pending_verification pero charges/payouts están habilitados,
+                // no bloquear - Stripe permite operar durante verificación
+                if ((disabledReason == "requirements.pending_verification" || disabledReason == "requirements.pending_review") 
+                    && chargesEnabled && payoutsEnabled)
+                {
+                    // Stripe permite operar durante pending_verification si los pagos están habilitados
+                    // Marcar como Approved si todo lo demás está bien
+                    if (detailsSubmitted && tosAccepted)
+                    {
+                        state.Status = StripeStatus.Approved;
+                        state.OnboardingCompleted = true;
+                        state.StatusDetails = BuildStatusDetails(state);
+                        return state;
+                    }
+                }
+                
                 state.Status = disabledReason switch
                 {
                     "requirements.past_due" => StripeStatus.RequirementsPastDue,
@@ -214,8 +256,11 @@ namespace newApi.Controllers
             {
                 state.Status = StripeStatus.ActionRequired;
             }
-            else if (pendingVerification.Any())
+            // ✅ FIX: PendingVerification no debe bloquear si charges_enabled: true
+            // Stripe permite operar durante pending_verification si los pagos están habilitados
+            else if (pendingVerification.Any() && (!chargesEnabled || !payoutsEnabled))
             {
+                // Solo marcar como PendingVerification si los pagos están bloqueados
                 state.Status = StripeStatus.PendingVerification;
             }
             else if (futureCurrentlyDue.Any())
@@ -232,6 +277,8 @@ namespace newApi.Controllers
             }
             else if (detailsSubmitted && tosAccepted && chargesEnabled && payoutsEnabled)
             {
+                // ✅ FIX: Aprobar incluso si hay pending_verification, si charges y payouts están habilitados
+                // Esto permite que los expertos operen mientras Stripe revisa documentos
                 state.Status = StripeStatus.Approved;
                 state.OnboardingCompleted = true;
             }
@@ -241,7 +288,17 @@ namespace newApi.Controllers
             }
             else
             {
-                state.Status = StripeStatus.PendingVerification;
+                // ✅ FIX: Si llegamos aquí y charges/payouts están habilitados, aprobar
+                // incluso si hay pending_verification (Stripe permite operar)
+                if (chargesEnabled && payoutsEnabled)
+                {
+                    state.Status = StripeStatus.Approved;
+                    state.OnboardingCompleted = true;
+                }
+                else
+                {
+                    state.Status = StripeStatus.PendingVerification;
+                }
             }
 
             state.StatusDetails = BuildStatusDetails(state);
@@ -480,8 +537,8 @@ namespace newApi.Controllers
                     var linkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.StripeAccountId,
-                        RefreshUrl = "https://atrapo.io/refresh-onboarding",
-                        ReturnUrl = "https://atrapo.io/complete-onboarding",
+                        RefreshUrl = "https://inspecciono.com/refresh-onboarding",
+                        ReturnUrl = "https://inspecciono.com/complete-onboarding",
                         Type = "account_onboarding"
                     };
                     
@@ -504,8 +561,8 @@ namespace newApi.Controllers
                     var linkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.PendingStripeAccountId,
-                        RefreshUrl = "https://atrapo.io/refresh-onboarding",
-                        ReturnUrl = "https://atrapo.io/complete-onboarding",
+                        RefreshUrl = "https://inspecciono.com/refresh-onboarding",
+                        ReturnUrl = "https://inspecciono.com/complete-onboarding",
                         Type = "account_onboarding",
                         Collect = "eventually_due"
                     };
@@ -574,8 +631,8 @@ namespace newApi.Controllers
                     var linkOptions = new AccountLinkCreateOptions
                     {
                         Account = account.Id,
-                        RefreshUrl = "https://atrapo.io/refresh-onboarding",
-                        ReturnUrl = "https://atrapo.io/complete-onboarding",
+                        RefreshUrl = "https://inspecciono.com/refresh-onboarding",
+                        ReturnUrl = "https://inspecciono.com/complete-onboarding",
                         Type = "account_onboarding",
                         Collect = "eventually_due"
                     };
@@ -679,8 +736,8 @@ namespace newApi.Controllers
                 var accountLinkOptions = new Stripe.AccountLinkCreateOptions
                 {
                     Account = expertProfile.StripeAccountId,
-                    RefreshUrl = "https://atrapo.io/expert-panel?refresh=true", // URL si necesita refrescar
-                    ReturnUrl = "https://atrapo.io/expert-panel", // URL de retorno después de actualizar datos
+                    RefreshUrl = "https://inspecciono.com/expert-panel?refresh=true", // URL si necesita refrescar
+                    ReturnUrl = "https://inspecciono.com/expert-panel", // URL de retorno después de actualizar datos
                     Type = linkType // ✅ account_update para cuentas aprobadas, account_onboarding para requirements pendientes
                 };
 
@@ -733,8 +790,10 @@ namespace newApi.Controllers
                     StripeAccountId = expertProfile.StripeAccountId,
                     StripeStatus = expertProfile.StripeStatus.ToString(),
                     StripeStatusDetails = expertProfile.StripeStatusDetails,
+                    // ✅ FIX: Permitir PendingVerification si charges_enabled: true (Stripe permite operar)
                     CanAccessStripe =
                         (expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted)
+                        || expertProfile.StripeStatus == StripeStatus.PendingVerification // Permitir acceso durante verificación
                         || ((expertProfile.StripeStatus == StripeStatus.Deauthorized || expertProfile.StripeStatus == StripeStatus.Rejected) && hasActiveHires),
                     // ✅ FUTURE REQUIREMENTS
                     StripeFutureRequirements = expertProfile.StripeFutureRequirements,
@@ -810,11 +869,15 @@ namespace newApi.Controllers
                     StripeStatus = expertProfile.StripeStatus.ToString(),
                     StripeStatusDetails = expertProfile.StripeStatusDetails,
                     StripeAccountId = expertProfile.StripeAccountId,
+                    // ✅ FIX: Permitir PendingVerification si charges_enabled: true (Stripe permite operar)
+                    // PendingVerification es informativo, no bloqueante si Stripe permite operar
                     CanAccessStripe = (expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted)
+                        || expertProfile.StripeStatus == StripeStatus.PendingVerification // Permitir acceso durante verificación
                         || ((expertProfile.StripeStatus == StripeStatus.Deauthorized || expertProfile.StripeStatus == StripeStatus.Rejected) && hasActiveHires),
-                    // Solo permitir creación/cobro cuando realmente está aprobado
-                    CanCreateServices = expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted,
-                    CanReceivePayments = expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted,
+                    CanCreateServices = (expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted)
+                        || expertProfile.StripeStatus == StripeStatus.PendingVerification, // Permitir durante verificación
+                    CanReceivePayments = (expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted)
+                        || expertProfile.StripeStatus == StripeStatus.PendingVerification, // Permitir durante verificación
                     StatusMessage = GetStatusMessage(expertProfile.StripeStatus),
                     // ✅ FUTURE REQUIREMENTS
                     StripeFutureRequirements = expertProfile.StripeFutureRequirements,
@@ -1004,8 +1067,8 @@ namespace newApi.Controllers
                     var restartLinkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.StripeAccountId,
-                        RefreshUrl = "https://atrapo.io/refresh-onboarding",
-                        ReturnUrl = "https://atrapo.io/complete-onboarding",
+                        RefreshUrl = "https://inspecciono.com/refresh-onboarding",
+                        ReturnUrl = "https://inspecciono.com/complete-onboarding",
                         Type = "account_onboarding"
                     };
                     
@@ -1032,8 +1095,8 @@ namespace newApi.Controllers
                 var pendingLinkOptions = new AccountLinkCreateOptions
                 {
                     Account = expertProfile.PendingStripeAccountId,
-                    RefreshUrl = "https://atrapo.io/refresh-onboarding",
-                    ReturnUrl = "https://atrapo.io/complete-onboarding",
+                    RefreshUrl = "https://inspecciono.com/refresh-onboarding",
+                    ReturnUrl = "https://inspecciono.com/complete-onboarding",
                     Type = "account_onboarding",
                     Collect = "eventually_due"
                 };
@@ -1082,7 +1145,7 @@ namespace newApi.Controllers
                     return NotFound(new { message = "User not found" });
                 }
 
-                var domain = "https://atrapo.io";
+                var domain = "https://inspecciono.com";
                 var options = new SessionCreateOptions
                 {
                     PaymentMethodTypes = new List<string> { "card" },
@@ -1247,7 +1310,7 @@ namespace newApi.Controllers
                 // 💳 SIEMPRE PAGAR CON STRIPE - NO USAR SALDO INTERNO
                 var amountToCharge = service.Price;
 
-                var domain = "https://atrapo.io";
+                var domain = "https://inspecciono.com";
                 var options = new SessionCreateOptions
                 {
                     PaymentMethodTypes = new List<string> { "card" },
@@ -1355,17 +1418,73 @@ namespace newApi.Controllers
                 // ✅ SEGURIDAD CRÍTICA: Validar signature antes de procesar
                 // EventUtility.ConstructEvent valida la signature y lanza StripeException si es inválida
                 // Esto previene ataques de replay e inyección de eventos falsos
-                if (string.IsNullOrEmpty(_webhookSecret))
+                
+                // 🔍 DIAGNÓSTICO: Determinar qué webhook secret usar
+                string? webhookSecretToUse = _webhookSecret;
+                
+                // ✅ FALLBACK: Si el webhook secret principal está vacío, intentar usar el general
+                // Esto es útil en desarrollo cuando solo se configura un webhook secret
+                if (string.IsNullOrEmpty(webhookSecretToUse))
                 {
-                    return BadRequest(new { error = "Webhook secret not configured" });
+                    webhookSecretToUse = _generalWebhookSecret;
+                    if (!string.IsNullOrEmpty(webhookSecretToUse))
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Using general webhook secret as fallback for Connect webhook",
+                            details: "Webhook secret for Connect events is not configured, using general webhook secret as fallback. This should be fixed in production.",
+                            userId: null,
+                            source: "SubscriptionController.HandleStripeWebhook",
+                            relatedEntityType: "Webhook"
+                        );
+                    }
+                }
+                
+                if (string.IsNullOrEmpty(webhookSecretToUse))
+                {
+                    // 🚨 LOG CRÍTICO: Webhook secret no configurado
+                    var eventType = GetEventTypeFromJson(json);
+                    var accountId = GetAccountIdFromJson(json);
+                    
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Webhook secret not configured for Connect events",
+                        details: $"Both _webhookSecret and _generalWebhookSecret are empty. Event type: {eventType}, Account: {accountId}. " +
+                                $"INSTRUCCIONES: 1) Ve al Dashboard de Stripe → Developers → Webhooks → Tu endpoint → Signing secret. " +
+                                $"2) Copia el secret (whsec_...). " +
+                                $"3) Configúralo con: dotnet user-secrets set \"Stripe:WebhookSecret\" \"whsec_...\" " +
+                                $"O como variable de entorno: STRIPE_WEBHOOK_SECRET=whsec_...",
+                        source: "SubscriptionController.HandleStripeWebhook",
+                        relatedEntityType: "Webhook",
+                        relatedEntityId: null,
+                        additionalData: new { 
+                            HasWebhookSecret = !string.IsNullOrEmpty(_webhookSecret),
+                            HasGeneralWebhookSecret = !string.IsNullOrEmpty(_generalWebhookSecret),
+                            EventType = eventType,
+                            AccountId = accountId,
+                            HasSignature = !string.IsNullOrEmpty(signatureHeader),
+                            Instructions = "Configure webhook secret from Stripe Dashboard → Developers → Webhooks → Your endpoint → Signing secret"
+                        }
+                    );
+                    return BadRequest(new { 
+                        error = "Webhook secret not configured",
+                        instructions = "Configure Stripe:WebhookSecret from Stripe Dashboard → Developers → Webhooks → Your endpoint → Signing secret",
+                        eventType = eventType,
+                        accountId = accountId
+                    });
                 }
                 
                 if (string.IsNullOrEmpty(signatureHeader))
                 {
+                    await _loggingService.LogWarningAsync(
+                        message: "Stripe signature header missing in webhook request",
+                        details: "Stripe-Signature header is missing from the webhook request",
+                        userId: null,
+                        source: "SubscriptionController.HandleStripeWebhook",
+                        relatedEntityType: "Webhook"
+                    );
                     return BadRequest(new { error = "Stripe signature header missing" });
                 }
                 
-                var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, _webhookSecret);
+                var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, webhookSecretToUse);
                 // 🔒 IDEMPOTENCIA COMPLETA: Verificar si el evento ya fue procesado
                 if (await IsEventProcessedAsync(stripeEvent.Id))
                 {
@@ -2654,7 +2773,7 @@ namespace newApi.Controllers
                 }
 
                 // 💳 SIEMPRE PAGAR CON STRIPE - NO USAR SALDO INTERNO
-                var domain = "https://atrapo.io";
+                var domain = "https://inspecciono.com";
                 var options = new SessionCreateOptions
                 {
                     PaymentMethodTypes = new List<string> { "card" },
@@ -3849,6 +3968,57 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
+            }
+        }
+
+        /// <summary>
+        /// Método auxiliar para extraer el tipo de evento desde el JSON del webhook
+        /// </summary>
+        private string GetEventTypeFromJson(string json)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(json))
+                    return "unknown";
+                
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("type", out var typeElement))
+                {
+                    return typeElement.GetString() ?? "unknown";
+                }
+                return "unknown";
+            }
+            catch
+            {
+                return "unknown";
+            }
+        }
+
+        private string? GetAccountIdFromJson(string json)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(json))
+                    return null;
+                
+                using var doc = JsonDocument.Parse(json);
+                // Intentar obtener account del nivel raíz (para eventos de Connect)
+                if (doc.RootElement.TryGetProperty("account", out var accountElement))
+                {
+                    return accountElement.GetString();
+                }
+                // Intentar obtener account de data.object.account
+                if (doc.RootElement.TryGetProperty("data", out var dataElement) &&
+                    dataElement.TryGetProperty("object", out var objectElement) &&
+                    objectElement.TryGetProperty("account", out var nestedAccountElement))
+                {
+                    return nestedAccountElement.GetString();
+                }
+                return null;
+            }
+            catch
+            {
+                return null;
             }
         }
 

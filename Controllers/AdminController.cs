@@ -7,8 +7,6 @@ using newApi.Services;
 using Stripe;
 using System.Security.Claims;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Configuration;
-using Grpc.Core;
 
 namespace newApi.Controllers
 {
@@ -20,188 +18,93 @@ namespace newApi.Controllers
     {
         private readonly AppDbContext _context;
         private readonly StripeRefundService _refundService;
-        private readonly IConfiguration _configuration;
+        private readonly IStripeConfigService _stripeConfigService;
         private readonly ILogger<AdminController> _logger;
-        private static string? _currentStripeMode = null; // "production" o "test"
         
-        public AdminController(AppDbContext context, StripeRefundService refundService, IConfiguration configuration, ILogger<AdminController> logger)
+        public AdminController(
+            AppDbContext context, 
+            StripeRefundService refundService,
+            IStripeConfigService stripeConfigService,
+            ILogger<AdminController> logger)
         {
             _context = context;
             _refundService = refundService;
-            _configuration = configuration;
+            _stripeConfigService = stripeConfigService;
             _logger = logger;
         }
 
         /// <summary>
-        /// Obtiene el modo actual de Stripe (production o test)
+        /// Obtener el modo actual de Stripe (development/production)
         /// </summary>
         [HttpGet("stripe/mode")]
-        public IActionResult GetStripeMode()
-        {
-            var currentMode = _currentStripeMode ?? "production";
-            var currentKey = StripeConfiguration.ApiKey;
-            var isTestMode = currentKey?.StartsWith("sk_test_") == true;
-            
-            return Ok(new
-            {
-                mode = isTestMode ? "test" : "production",
-                keyPrefix = currentKey?.Substring(0, Math.Min(10, currentKey?.Length ?? 0)) + "...",
-                keyLength = currentKey?.Length ?? 0
-            });
-        }
-
-        /// <summary>
-        /// Cambia el modo de Stripe entre producción y prueba
-        /// </summary>
-        [HttpPost("stripe/toggle-mode")]
-        public IActionResult ToggleStripeMode([FromBody] ToggleStripeModeRequest? request = null)
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> GetStripeMode()
         {
             try
             {
-                // Determinar el modo objetivo
-                var targetMode = request?.mode?.ToLower() ?? "toggle";
-                var currentKey = StripeConfiguration.ApiKey;
-                var isCurrentlyTest = currentKey?.StartsWith("sk_test_") == true;
-                var currentMode = isCurrentlyTest ? "test" : "production";
-                
-                string? newKey = null;
-                string newMode;
-                
-                if (targetMode == "toggle")
-                {
-                    // Alternar entre test y production
-                    newMode = isCurrentlyTest ? "production" : "test";
-                    newKey = newMode == "test" 
-                        ? GetStripeTestKey()
-                        : GetStripeProductionKey();
-                }
-                else if (targetMode == "test")
-                {
-                    newMode = "test";
-                    newKey = GetStripeTestKey();
-                }
-                else if (targetMode == "production")
-                {
-                    newMode = "production";
-                    newKey = GetStripeProductionKey();
-                }
-                else
-                {
-                    return BadRequest(new { message = "Invalid mode. Use 'test', 'production', or 'toggle'" });
-                }
-                
-                if (string.IsNullOrEmpty(newKey))
-                {
-                    return BadRequest(new { 
-                        message = $"Stripe {newMode} key not found. Configure 'Stripe:SecretKey' for production or 'Stripe:SecretKeyTest' for test mode." 
-                    });
-                }
-                
-                // Actualizar StripeConfiguration
-                StripeConfiguration.ApiKey = newKey;
-                _currentStripeMode = newMode;
-                
-                // Actualizar en SubscriptionController y otros lugares si es necesario
-                // Nota: Esto requiere que esos controladores también usen StripeConfiguration.ApiKey
-                
-                var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                var mode = await _stripeConfigService.GetStripeModeAsync();
+                var setting = await _context.SystemSettings.FirstOrDefaultAsync();
                 
                 return Ok(new
                 {
-                    message = $"Stripe mode changed from {currentMode} to {newMode}",
-                    previousMode = currentMode,
-                    currentMode = newMode,
-                    keyPrefix = newKey.Substring(0, Math.Min(10, newKey.Length)) + "...",
-                    changedBy = userId,
-                    timestamp = DateTime.UtcNow
+                    mode = mode,
+                    changedAt = setting?.StripeModeChangedAt,
+                    changedByUserId = setting?.StripeModeChangedByUserId
                 });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Failed to toggle Stripe mode", error = ex.Message });
+                _logger.LogError(ex, "Error obteniendo modo Stripe");
+                return StatusCode(500, new { message = "Error obteniendo modo Stripe", error = ex.Message });
             }
         }
-        
-        // Helper para obtener clave de producción
-        private string? GetStripeProductionKey()
+
+        /// <summary>
+        /// Cambiar el modo de Stripe entre development y production
+        /// </summary>
+        [HttpPost("stripe/mode")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> SetStripeMode([FromBody] SetStripeModeDto request)
         {
-            _logger.LogInformation("[StripeMode] Buscando clave de PRODUCCIÓN...");
-            
-            // 1. PRIMERO: Intentar desde Secret Manager directamente (stripe-secret-key sin -dev)
-            // Esto asegura que obtenemos la clave de producción incluso si en desarrollo se cargó la de test
-            _logger.LogInformation("[StripeMode] Intentando obtener desde Secret Manager: stripe-secret-key (producción)");
-            var fromSecretManager = GetSecretValueFromSecretManager("stripe-secret-key");
-            if (!string.IsNullOrEmpty(fromSecretManager) && !fromSecretManager.StartsWith("sk_test_"))
+            try
             {
-                _logger.LogInformation("[StripeMode] ✅ Clave de producción encontrada en Secret Manager");
-                return fromSecretManager;
+                if (request == null || string.IsNullOrWhiteSpace(request.Mode))
+                {
+                    return BadRequest(new { message = "El modo es requerido" });
+                }
+
+                if (request.Mode != "development" && request.Mode != "production")
+                {
+                    return BadRequest(new { message = "El modo debe ser 'development' o 'production'" });
+                }
+
+                var userId = int.Parse(User.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")?.Value ?? "0");
+                
+                var success = await _stripeConfigService.SetStripeModeAsync(request.Mode, userId);
+                
+                if (success)
+                {
+                    // Recargar las claves de Stripe con el nuevo modo
+                    // Esto requiere reiniciar la aplicación o recargar la configuración
+                    _logger.LogWarning($"⚠️ Modo Stripe cambiado a {request.Mode}. Se requiere reiniciar la aplicación para aplicar los cambios.");
+                    
+                    return Ok(new
+                    {
+                        message = $"Modo Stripe cambiado a {request.Mode}",
+                        mode = request.Mode,
+                        warning = "Se requiere reiniciar la aplicación para aplicar los cambios completamente"
+                    });
+                }
+
+                return StatusCode(500, new { message = "Error cambiando modo Stripe" });
             }
-            else if (!string.IsNullOrEmpty(fromSecretManager))
+            catch (Exception ex)
             {
-                _logger.LogWarning($"[StripeMode] ⚠️ Secreto stripe-secret-key es de test, no producción: {fromSecretManager.Substring(0, Math.Min(10, fromSecretManager.Length))}...");
+                _logger.LogError(ex, "Error cambiando modo Stripe");
+                return StatusCode(500, new { message = "Error cambiando modo Stripe", error = ex.Message });
             }
-            
-            // 2. Intentar desde configuración (puede tener la clave de test en desarrollo)
-            var fromConfig = _configuration["Stripe:SecretKey"];
-            _logger.LogInformation($"[StripeMode] Config Stripe:SecretKey: {(string.IsNullOrEmpty(fromConfig) ? "vacío" : fromConfig.Substring(0, Math.Min(10, fromConfig.Length)) + "...")}");
-            
-            if (!string.IsNullOrEmpty(fromConfig) && !fromConfig.StartsWith("sk_test_"))
-            {
-                _logger.LogInformation("[StripeMode] ✅ Clave de producción encontrada en configuración");
-                return fromConfig;
-            }
-            else if (!string.IsNullOrEmpty(fromConfig))
-            {
-                _logger.LogWarning("[StripeMode] ⚠️ Config tiene clave de test, no producción");
-            }
-            
-            // 3. Intentar desde variable de entorno
-            _logger.LogInformation("[StripeMode] Intentando obtener desde variable de entorno: STRIPE_SECRET_KEY");
-            var fromEnv = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY");
-            if (!string.IsNullOrEmpty(fromEnv) && !fromEnv.StartsWith("sk_test_"))
-            {
-                _logger.LogInformation("[StripeMode] ✅ Clave de producción encontrada en variable de entorno");
-                return fromEnv;
-            }
-            else if (!string.IsNullOrEmpty(fromEnv))
-            {
-                _logger.LogWarning("[StripeMode] ⚠️ Variable de entorno tiene clave de test, no producción");
-            }
-            
-            _logger.LogWarning("[StripeMode] ❌ No se encontró clave de producción en ningún lugar");
-            return null;
         }
-        
-        // Helper para obtener clave de test
-        private string? GetStripeTestKey()
-        {
-            // 1. Intentar desde configuración
-            var fromConfig = _configuration["Stripe:SecretKeyTest"];
-            if (!string.IsNullOrEmpty(fromConfig) && fromConfig.StartsWith("sk_test_"))
-                return fromConfig;
-            
-            // 2. Intentar desde Secret Manager (stripe-secret-key-dev)
-            var fromSecretManager = GetSecretValueFromSecretManager("stripe-secret-key-dev");
-            if (!string.IsNullOrEmpty(fromSecretManager) && fromSecretManager.StartsWith("sk_test_"))
-                return fromSecretManager;
-            
-            // 3. Intentar desde variable de entorno
-            var fromEnv = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY_TEST");
-            if (!string.IsNullOrEmpty(fromEnv) && fromEnv.StartsWith("sk_test_"))
-                return fromEnv;
-            
-            // 4. Fallback: buscar cualquier clave que empiece con sk_test_ en configuración
-            var allKeys = _configuration.GetSection("Stripe").GetChildren();
-            foreach (var key in allKeys)
-            {
-                var value = key.Value;
-                if (!string.IsNullOrEmpty(value) && value.StartsWith("sk_test_"))
-                    return value;
-            }
-            
-            return null;
-        }
-        
+
         /// <summary>
         /// Obtiene la lista de webhooks configurados en Stripe
         /// </summary>
@@ -393,41 +296,13 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Error eliminando webhook de Stripe", error = ex.Message });
             }
         }
+    }
 
-        // Helper para obtener secretos desde Secret Manager (si está disponible)
-        private string? GetSecretValueFromSecretManager(string secretName)
-        {
-            try
-            {
-                // Crear cliente de Secret Manager (usa Application Default Credentials)
-                var client = Google.Cloud.SecretManager.V1.SecretManagerServiceClient.Create();
-                var projectId = "grup-441318";
-                var secretPath = $"projects/{projectId}/secrets/{secretName}/versions/latest";
-                
-                try
-                {
-                    var secretVersion = client.AccessSecretVersion(secretPath);
-                    return secretVersion.Payload.Data.ToStringUtf8();
-                }
-                catch (Grpc.Core.RpcException)
-                {
-                    // Secreto no encontrado o Secret Manager no disponible
-                    return null;
-                }
-            }
-            catch
-            {
-                // Secret Manager no disponible (sin credenciales o error de conexión)
-                return null;
-            }
-        }
-    }
-    
-    public class ToggleStripeModeRequest
+    public class SetStripeModeDto
     {
-        public string? mode { get; set; } // "test", "production", o "toggle"
+        public string Mode { get; set; } = string.Empty;
     }
-    
+
     public class CreateWebhookRequest
     {
         public string? webhookId { get; set; } // Si se proporciona, actualiza el webhook existente

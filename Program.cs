@@ -522,11 +522,28 @@ if (isDevelopment)
             ?? GetSecretValue("postgres-username", null) 
             ?? "admin";
         // ✅ OBTENER CONTRASEÑA 100% DEL SECRET MANAGER (prioridad sobre variables de entorno)
+        configLogger.LogInformation("🔍 Obteniendo contraseña de PostgreSQL desde Secret Manager...");
         var dbPasswordFromSecret = GetSecretValue("postgres-password", null);
         var dbPasswordFromEnv = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
+        
+        // Logging detallado ANTES de asignar
+        if (!string.IsNullOrEmpty(dbPasswordFromSecret))
+        {
+            configLogger.LogInformation($"✅ Contraseña obtenida del Secret Manager (longitud: {dbPasswordFromSecret.Length}, primeros 3 chars: {dbPasswordFromSecret.Substring(0, Math.Min(3, dbPasswordFromSecret.Length))})");
+        }
+        else
+        {
+            configLogger.LogWarning("⚠️ Secret Manager NO devolvió contraseña (postgres-password)");
+        }
+        
+        if (!string.IsNullOrEmpty(dbPasswordFromEnv))
+        {
+            configLogger.LogInformation($"ℹ️ Variable de entorno POSTGRES_PASSWORD encontrada (longitud: {dbPasswordFromEnv.Length}, primeros 3 chars: {dbPasswordFromEnv.Substring(0, Math.Min(3, dbPasswordFromEnv.Length))})");
+        }
+        
         dbPassword = dbPasswordFromSecret ?? dbPasswordFromEnv ?? "";
         
-        // Logging para debugging: mostrar origen y longitud de la contraseña
+        // Logging final
         if (!string.IsNullOrEmpty(dbPassword))
         {
             var passwordSource = !string.IsNullOrEmpty(dbPasswordFromSecret) 
@@ -534,7 +551,7 @@ if (isDevelopment)
                 : (!string.IsNullOrEmpty(dbPasswordFromEnv) 
                     ? "Environment Variable" 
                     : "Default/Empty");
-            configLogger.LogInformation($"🔐 DB Password obtenida desde: {passwordSource} (longitud: {dbPassword.Length})");
+            configLogger.LogInformation($"🔐 DB Password FINAL obtenida desde: {passwordSource} (longitud: {dbPassword.Length}, primeros 3 chars: {dbPassword.Substring(0, Math.Min(3, dbPassword.Length))})");
         }
         else
         {

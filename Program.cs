@@ -209,8 +209,9 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
     // Intentar usar Secret Manager si está disponible (tanto en desarrollo como producción)
     if (secretClient != null && secretManagerAvailable)
     {
-        var projectId = "grup-441318";
+        var projectId = "61603823707";  // ✅ CORREGIDO: Project ID numérico correcto
         var secretLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+                secretLogger.LogInformation($"📦 Usando Project ID: {projectId}");
         
         // Determinar qué nombres de secretos intentar según el entorno
         var secretNamesToTry = new List<string>();
@@ -257,8 +258,10 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
                 var secretVersion = secretClient.AccessSecretVersion(secretPath, callSettings: callSettings);
                 var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
                 
-                secretLogger.LogInformation($"✅ Secreto {secretNameToTry} obtenido exitosamente en {duration}ms");
-                return secretVersion.Payload.Data.ToStringUtf8();
+                var secretValue = secretVersion.Payload.Data.ToStringUtf8();
+                var maskedValue = string.IsNullOrEmpty(secretValue) ? "(vacío)" : $"{secretValue.Substring(0, Math.Min(3, secretValue.Length))}*** (longitud: {secretValue.Length})";
+                secretLogger.LogInformation($"✅ Secreto {secretNameToTry} obtenido exitosamente en {duration}ms - Valor: {maskedValue}");
+                return secretValue;
             }
             catch (Grpc.Core.RpcException rpcEx)
             {

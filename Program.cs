@@ -343,7 +343,7 @@ if (!string.IsNullOrEmpty(googleClientIdsSecret))
         initLogger2.LogInformation("🔍 Intentando parsear como lista separada por comas...");
         googleClientIds = googleClientIdsSecret
                           .Split(',', StringSplitOptions.RemoveEmptyEntries)
-                          .Select(id => id.Trim().Trim('"').Trim(''')) // Remover comillas si las hay
+                          .Select(id => id.Trim().Trim('"').Trim('\'')) // Remover comillas si las hay
                           .Where(id => !string.IsNullOrWhiteSpace(id))
                           .ToArray();
         
@@ -548,7 +548,8 @@ if (isDevelopment)
         }
         dbName = dbMatch.Success ? dbMatch.Groups[1].Value : "atrapo";
         
-        // Forzar valores en desarrollo: admin y atrapo
+        // Forzar valores en desarrollo: localhost, admin y atrapo
+        dbHost = "localhost";
         dbUsername = "admin";
         dbName = "atrapo";
         
@@ -567,10 +568,9 @@ if (isDevelopment)
     else
     {
         // Construir desde variables de entorno individuales o Google Cloud Secret Manager
-        // Valores por defecto para desarrollo: admin y atrapo
-        dbHost = Environment.GetEnvironmentVariable("POSTGRES_HOST") 
-            ?? GetSecretValue("postgres-host", null) 
-            ?? "localhost";
+        // Valores por defecto para desarrollo: localhost, admin y atrapo
+        // ✅ FORZAR: En desarrollo SIEMPRE usar localhost
+        dbHost = "localhost";
         dbUsername = Environment.GetEnvironmentVariable("POSTGRES_USERNAME") 
             ?? GetSecretValue("postgres-username", null) 
             ?? "admin";

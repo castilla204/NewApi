@@ -137,15 +137,15 @@ namespace newApi.Controllers
                             {
                                 image.SaveAsJpeg(outputStream);
                                 outputStream.Position = 0;
+                                // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
+                                // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
                                 await _storageClient.UploadObjectAsync(
                                     bucket: bucketName,
                                     objectName: objectName,
                                     contentType: "image/jpeg",
-                                    source: outputStream,
-                                    options: new UploadObjectOptions
-                                    {
-                                        PredefinedAcl = PredefinedObjectAcl.Private
-                                    }
+                                    source: outputStream
+                                    // ✅ REMOVIDO: PredefinedAcl no es compatible con uniform bucket-level access
+                                    // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
                                 );
                             }
                         }

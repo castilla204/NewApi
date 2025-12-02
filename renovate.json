@@ -1,70 +1,24 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:base"
+    "config:recommended"
   ],
+  "automerge": true,
+  "automergeType": "pr",
+  "automergeStrategy": "squash",
+  "requiredStatusChecks": [],
+  "prCreation": "not-pending",
+  "stabilityDays": 0,
+  "timezone": "Europe/Madrid",
+  "schedule": ["before 10am on monday"],
   "packageRules": [
     {
-      "description": "Auto-merge patch and minor updates for container images",
-      "matchManagers": [
-        "dockerfile",
-        "docker-compose",
-        "kubernetes"
-      ],
-      "matchUpdateTypes": [
-        "patch",
-        "minor",
-        "digest"
-      ],
+      "matchUpdateTypes": ["minor", "patch"],
       "automerge": true
     },
     {
-      "description": "Auto-merge security patches for dependencies",
-      "matchManagers": [
-        "npm",
-        "pip",
-        "gomod"
-      ],
-      "matchUpdateTypes": [
-        "patch"
-      ],
-      "automerge": true
-    },
-    {
-      "description": "Pin Docker image digests",
-      "matchManagers": [
-        "dockerfile",
-        "docker-compose",
-        "kubernetes"
-      ],
-      "pinDigests": true
-    },
-    {
-      "description": "Require approval for major version updates",
-      "matchUpdateTypes": [
-        "major"
-      ],
+      "matchUpdateTypes": ["major"],
       "automerge": false
     }
-  ],
-  "kubernetes": {
-    "fileMatch": [
-      "**/deployment.yaml",
-      "**/deployment.yml",
-      "**/statefulset.yaml",
-      "**/statefulset.yml",
-      "k8s/**/*.yaml",
-      "k8s/**/*.yml"
-    ]
-  },
-  "schedule": [
-    "before 10am on monday"
-  ],
-  "timezone": "Europe/Madrid",
-  "labels": [
-    "dependencies",
-    "renovate"
-  ],
-  "commitMessagePrefix": "chore(deps): ",
-  "rebaseWhen": "behind-base-branch"
+  ]
 }

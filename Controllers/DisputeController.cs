@@ -1064,11 +1064,10 @@ namespace newApi.Controllers
                                         bucket: bucketName,
                                         objectName: objectName,
                                         contentType: file.ContentType,
-                                        source: inputStream,
-                                        options: new UploadObjectOptions
-                                        {
-                                            PredefinedAcl = PredefinedObjectAcl.Private
-                                        }
+                                        source: inputStream
+                                        // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
+                                        // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
+                                        // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
                                     );
                                 }
 
@@ -1463,11 +1462,11 @@ namespace newApi.Controllers
                                 bucketName,
                                 fileName,
                                 file.ContentType,
-                                memoryStream,
-                                new UploadObjectOptions
-                                {
-                                    PredefinedAcl = PredefinedObjectAcl.Private
-                                });
+                                memoryStream
+                                // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
+                                // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
+                                // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
+                                );
 
                             // Crear URL del archivo
                             var fileUrl = $"https://storage.googleapis.com/{bucketName}/{fileName}";

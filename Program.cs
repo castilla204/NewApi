@@ -469,7 +469,34 @@ builder.Configuration["Stripe:GeneralWebhookSecret"] = GetSecretValue("stripe-ge
 builder.Configuration["Twilio:AccountSid"] = GetSecretValue("twilio-account-sid", null) ?? "";
 builder.Configuration["Twilio:AuthToken"] = GetSecretValue("twilio-auth-token", null) ?? "";
 builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-verification-service-sid", null) ?? "";
+
+// ✅ Cargar clave de cifrado MFA desde Secret Manager (obligatoria para cifrar/descifrar secretos MFA)
+var mfaEncryptionKey = GetSecretValue("mfa-encryption-key", null) 
+    ?? Environment.GetEnvironmentVariable("MFA_ENCRYPTION_KEY");
+
+if (string.IsNullOrEmpty(mfaEncryptionKey))
+{
+    var mfaLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    mfaLogger.LogError("❌ ERROR CRÍTICO: MFA Encryption Key no configurada");
+    mfaLogger.LogError("   La clave debe estar en Secret Manager (mfa-encryption-key) o variable de entorno (MFA_ENCRYPTION_KEY)");
+    mfaLogger.LogError("   Esta clave es OBLIGATORIA para cifrar/descifrar secretos MFA");
+    mfaLogger.LogError("   IMPORTANTE: La misma clave debe usarse en desarrollo y producción para descifrar secretos existentes");
+    throw new InvalidOperationException(
+        "MFA Encryption Key not configured. " +
+        "Add 'mfa-encryption-key' to Google Cloud Secret Manager or set 'MFA_ENCRYPTION_KEY' environment variable. " +
+        "This key is REQUIRED to encrypt/decrypt MFA secrets. " +
+        "IMPORTANT: The same key must be used in development and production to decrypt existing secrets.");
+}
+
+builder.Configuration["Mfa:EncryptionKey"] = mfaEncryptionKey;
+var mfaLogger2 = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+mfaLogger2.LogInformation($"✅ MFA Encryption Key configurada (longitud: {mfaEncryptionKey.Length} caracteres)");
+mfaLogger2.LogInformation($"   Origen: {(GetSecretValue("mfa-encryption-key", null) != null ? "Secret Manager" : "Environment Variable")}");
+
 builder.Configuration["GoogleCloud:BucketName"] = "atrapobucket";
+
+
+
 
 // Configuración de Email (opcional - si no está configurado, no se enviarán emails)
 // Puede usar SMTP de hosting propio, Gmail, SendGrid, etc.

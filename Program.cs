@@ -18,6 +18,7 @@ using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Storage.V1;
 using newApi.DataLayer;
 using newApi.DataLayer.Models;
+using AutoMapper;
 using Hangfire;
 using Hangfire.PostgreSql;
 using Microsoft.Extensions.DependencyInjection;
@@ -121,65 +122,67 @@ else
 if (shouldInitialize)
 {
     try
+    {
+        try
         {
-            try
+            // Leer información básica del archivo de credenciales
+            if (!string.IsNullOrEmpty(credentialsPath))
             {
-                // Leer información básica del archivo de credenciales
                 var credContent = System.IO.File.ReadAllText(credentialsPath);
                 if (credContent.Contains("project_id"))
                 {
                     initLogger.LogInformation("Archivo de credenciales parece válido (contiene project_id)");
                 }
-                
-                // IMPORTANTE: Forzar IPv4 ANTES de crear el cliente
-                // Esto debe hacerse antes de cualquier operación de red
-                try
-                {
-                    // Establecer variable de entorno para forzar IPv4 en .NET
-                    Environment.SetEnvironmentVariable("DOTNET_SYSTEM_NET_DISABLEIPV6", "1");
-                    initLogger.LogInformation("IPv6 deshabilitado para forzar IPv4 (ANTES de crear cliente)");
-                }
-                catch (Exception ipv6Ex)
-                {
-                    initLogger.LogWarning($"No se pudo deshabilitar IPv6: {ipv6Ex.Message}");
-                }
-                
-                // Crear el cliente de Secret Manager con configuración mejorada
-                initLogger.LogInformation("Creando cliente de Secret Manager...");
-                
-                // Configurar el cliente con opciones específicas para Kubernetes/K3s
-                var clientBuilder = new SecretManagerServiceClientBuilder();
-                
-                // Configurar el endpoint explícitamente
-                var endpoint = "secretmanager.googleapis.com:443";
-                clientBuilder.Endpoint = endpoint;
-                initLogger.LogInformation($"Endpoint configurado: {endpoint}");
-                
-                // Configurar opciones de gRPC específicas para Kubernetes/K3s
-                // El problema puede ser que gRPC necesita configuración especial para HTTP/2
-                initLogger.LogInformation("Configurando adaptador gRPC con opciones para Kubernetes...");
-                clientBuilder.GrpcAdapter = GrpcNetClientAdapter.Default.WithAdditionalOptions(options =>
-                {
-                    // Configurar timeouts más largos para la conexión inicial
-                    options.MaxReceiveMessageSize = 4 * 1024 * 1024; // 4MB
-                    options.MaxSendMessageSize = 4 * 1024 * 1024; // 4MB
-                    // No configurar KeepAlive muy agresivo - puede causar problemas en Kubernetes
-                });
-                
-                initLogger.LogInformation("Construyendo cliente de Secret Manager...");
-                secretClient = clientBuilder.Build();
-                
-                initLogger.LogInformation($"Cliente de Secret Manager creado exitosamente (endpoint: {endpoint})");
-                
-                secretManagerAvailable = true; // Asumimos disponible hasta que falle
             }
-            catch (Exception ex)
+            
+            // IMPORTANTE: Forzar IPv4 ANTES de crear el cliente
+            // Esto debe hacerse antes de cualquier operación de red
+            try
             {
-                secretManagerAvailable = false;
-                initLogger.LogError($"ERROR al crear cliente de Secret Manager: {ex.GetType().Name} - {ex.Message}");
-                initLogger.LogError($"Stack trace: {ex.StackTrace}");
-                initLogger.LogWarning("Usando solo variables de entorno como fallback.");
+                // Establecer variable de entorno para forzar IPv4 en .NET
+                Environment.SetEnvironmentVariable("DOTNET_SYSTEM_NET_DISABLEIPV6", "1");
+                initLogger.LogInformation("IPv6 deshabilitado para forzar IPv4 (ANTES de crear cliente)");
             }
+            catch (Exception ipv6Ex)
+            {
+                initLogger.LogWarning($"No se pudo deshabilitar IPv6: {ipv6Ex.Message}");
+            }
+            
+            // Crear el cliente de Secret Manager con configuración mejorada
+            initLogger.LogInformation("Creando cliente de Secret Manager...");
+            
+            // Configurar el cliente con opciones específicas para Kubernetes/K3s
+            var clientBuilder = new SecretManagerServiceClientBuilder();
+            
+            // Configurar el endpoint explícitamente
+            var endpoint = "secretmanager.googleapis.com:443";
+            clientBuilder.Endpoint = endpoint;
+            initLogger.LogInformation($"Endpoint configurado: {endpoint}");
+            
+            // Configurar opciones de gRPC específicas para Kubernetes/K3s
+            // El problema puede ser que gRPC necesita configuración especial para HTTP/2
+            initLogger.LogInformation("Configurando adaptador gRPC con opciones para Kubernetes...");
+            clientBuilder.GrpcAdapter = GrpcNetClientAdapter.Default.WithAdditionalOptions(options =>
+            {
+                // Configurar timeouts más largos para la conexión inicial
+                options.MaxReceiveMessageSize = 4 * 1024 * 1024; // 4MB
+                options.MaxSendMessageSize = 4 * 1024 * 1024; // 4MB
+                // No configurar KeepAlive muy agresivo - puede causar problemas en Kubernetes
+            });
+            
+            initLogger.LogInformation("Construyendo cliente de Secret Manager...");
+            secretClient = clientBuilder.Build();
+            
+            initLogger.LogInformation($"Cliente de Secret Manager creado exitosamente (endpoint: {endpoint})");
+            
+            secretManagerAvailable = true; // Asumimos disponible hasta que falle
+        }
+        catch (Exception ex)
+        {
+            secretManagerAvailable = false;
+            initLogger.LogError($"ERROR al crear cliente de Secret Manager: {ex.GetType().Name} - {ex.Message}");
+            initLogger.LogError($"Stack trace: {ex.StackTrace}");
+            initLogger.LogWarning("Usando solo variables de entorno como fallback.");
         }
     }
     catch (Exception ex)
@@ -324,23 +327,21 @@ if (googleClientIds != null && googleClientIds.Length > 0)
 // Misma lógica para desarrollo y producción
 var configLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
 
-// Leer JWT Key: Prioridad 1) Variables de entorno, 2) Secret Manager (Google Cloud), 3) Configuration
-var jwtKeyFromEnv = Environment.GetEnvironmentVariable("JWT_KEY");
+// Leer JWT desde Secret Manager
 var jwtKeyFromSecret = GetSecretValue("jwt-key", null);
 var jwtKeyFromConfig = builder.Configuration["Jwt:Key"];
 
-builder.Configuration["Jwt:Key"] = jwtKeyFromEnv ?? jwtKeyFromSecret ?? jwtKeyFromConfig ?? "";
+builder.Configuration["Jwt:Key"] = jwtKeyFromSecret ?? jwtKeyFromConfig ?? "";
 
-// Leer Issuer y Audience con la misma prioridad
-builder.Configuration["Jwt:Issuer"] = Environment.GetEnvironmentVariable("JWT_ISSUER") ?? GetSecretValue("jwt-issuer", null) ?? builder.Configuration["Jwt:Issuer"] ?? "newApi";
+// Leer Issuer y Audience desde Secret Manager
+builder.Configuration["Jwt:Issuer"] = GetSecretValue("jwt-issuer", null) ?? builder.Configuration["Jwt:Issuer"] ?? "newApi";
 
-builder.Configuration["Jwt:Audience"] = Environment.GetEnvironmentVariable("JWT_AUDIENCE") ?? GetSecretValue("jwt-audience", null) ?? builder.Configuration["Jwt:Audience"] ?? "newApi";
+builder.Configuration["Jwt:Audience"] = GetSecretValue("jwt-audience", null) ?? builder.Configuration["Jwt:Audience"] ?? "newApi";
 
 // Obtener jwtKey para validación y logging
 var jwtKey = builder.Configuration["Jwt:Key"];
-var jwtKeySource = !string.IsNullOrEmpty(jwtKeyFromEnv) ? "Environment Variable" 
-    : (!string.IsNullOrEmpty(jwtKeyFromSecret) ? "Google Cloud Secret Manager" 
-    : (!string.IsNullOrEmpty(jwtKeyFromConfig) ? "Configuration/User Secrets" : "NOT FOUND"));
+var jwtKeySource = !string.IsNullOrEmpty(jwtKeyFromSecret) ? "Google Cloud Secret Manager" 
+    : (!string.IsNullOrEmpty(jwtKeyFromConfig) ? "Configuration/User Secrets" : "NOT FOUND");
 configLogger.LogInformation($"JWT Key source: {jwtKeySource}");
 
 // ✅ SEGURIDAD 2025: Validar longitud mínima de clave JWT (OWASP Best Practice)
@@ -366,7 +367,7 @@ if (string.IsNullOrEmpty(jwtKey))
     }
     throw new InvalidOperationException(
         "⚠️ CRITICAL SECURITY ERROR: JWT Key is not configured. " +
-        "Please set 'JWT_KEY' environment variable, 'jwt-key' in Google Cloud Secret Manager, or User Secrets. " +
+        "Please set 'jwt-key' in Google Cloud Secret Manager or User Secrets. " +
         $"\nEnvironment: {(isDevelopment ? "Development" : "Production")}" +
         $"\nUser Secrets Path: {userSecretsPath}" +
         $"\nUser Secrets Exists: {System.IO.File.Exists(userSecretsPath)}");
@@ -405,32 +406,13 @@ else
 }
 builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password", null) ?? "";
 builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key", null) ?? "";
-if (isDevelopment)
-{
-    // En desarrollo: usar variables de entorno o User Secrets
-    // NUNCA hardcodear secretos en el código
-    // Configurar con: dotnet user-secrets set "Stripe:SecretKey" "valor"
-    // O usar variables de entorno: STRIPE_SECRET_KEY
-    if (string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]))
-    {
-        builder.Configuration["Stripe:SecretKey"] = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY") ?? "";
-    }
-    if (string.IsNullOrEmpty(builder.Configuration["Stripe:WebhookSecret"]))
-    {
-        builder.Configuration["Stripe:WebhookSecret"] = Environment.GetEnvironmentVariable("STRIPE_WEBHOOK_SECRET") ?? "";
-    }
-    if (string.IsNullOrEmpty(builder.Configuration["Stripe:GeneralWebhookSecret"]))
-    {
-        builder.Configuration["Stripe:GeneralWebhookSecret"] = Environment.GetEnvironmentVariable("STRIPE_GENERAL_WEBHOOK_SECRET") ?? "";
-    }
-}
-else
-{
-    // En producción: valores desde Google Cloud Secret Manager
-    builder.Configuration["Stripe:SecretKey"] = GetSecretValue("stripe-secret-key", null) ?? "";
-    builder.Configuration["Stripe:WebhookSecret"] = GetSecretValue("stripe-webhook-secret", null) ?? "";
-    builder.Configuration["Stripe:GeneralWebhookSecret"] = GetSecretValue("stripe-general-webhook-secret", null) ?? "";
-}
+// Configurar Stripe desde Secret Manager
+// GetSecretValue ya maneja la lógica de desarrollo (-dev) vs producción
+// En desarrollo: intenta stripe-secret-key-dev -> stripe-secret-key
+// En producción: usa stripe-secret-key
+builder.Configuration["Stripe:SecretKey"] = GetSecretValue("stripe-secret-key", null) ?? "";
+builder.Configuration["Stripe:WebhookSecret"] = GetSecretValue("stripe-webhook-secret", null) ?? "";
+builder.Configuration["Stripe:GeneralWebhookSecret"] = GetSecretValue("stripe-general-webhook-secret", null) ?? "";
 
 builder.Configuration["Twilio:AccountSid"] = GetSecretValue("twilio-account-sid", null) ?? "";
 builder.Configuration["Twilio:AuthToken"] = GetSecretValue("twilio-auth-token", null) ?? "";
@@ -571,7 +553,8 @@ if (isDevelopment)
     // Validar que tenemos password
     if (string.IsNullOrEmpty(dbPassword))
     {
-        configLogger.LogWarning("DB_PASSWORD not set in environment variables. Using empty password (may fail).");
+        configLogger.LogWarning("⚠️ postgres-password not found in Secret Manager. Using empty password (may fail).");
+        configLogger.LogWarning("   Ensure postgres-password exists in Google Cloud Secret Manager.");
     }
     
     // Función para probar conexión a un puerto específico
@@ -614,15 +597,22 @@ if (isDevelopment)
     foreach (var port in dbPortsToTry)
     {
         configLogger.LogInformation($"[{Array.IndexOf(dbPortsToTry, port) + 1}/{dbPortsToTry.Length}] Probando puerto {port}...");
-        if (TestConnection(port))
+        try
         {
-            workingPort = port;
-            configLogger.LogInformation($"✅ Puerto {port} disponible y funcionando - USANDO ESTE PUERTO");
-            break;
+            if (TestConnection(port))
+            {
+                workingPort = port;
+                configLogger.LogInformation($"✅ Puerto {port} disponible y funcionando - USANDO ESTE PUERTO");
+                break;
+            }
+            else
+            {
+                configLogger.LogWarning($"❌ Puerto {port} no disponible o no responde - probando siguiente...");
+            }
         }
-        else
+        catch (Exception ex)
         {
-            configLogger.LogWarning($"❌ Puerto {port} no disponible o no responde - probando siguiente...");
+            configLogger.LogWarning($"❌ Error al probar puerto {port}: {ex.Message} - probando siguiente...");
         }
     }
     
@@ -639,7 +629,7 @@ if (isDevelopment)
             $"Verifica que:\n" +
             $"  1. El túnel SSH esté activo (ejecuta ./db-access.sh)\n" +
             $"  2. PostgreSQL esté corriendo en el servidor remoto\n" +
-            $"  3. Las credenciales sean correctas (DB_PASSWORD configurado)\n" +
+            $"  3. Las credenciales sean correctas (postgres-password en Secret Manager)\n" +
             $"  4. El usuario '{dbUsername}' tenga acceso a la base de datos '{dbName}'");
     }
     
@@ -695,38 +685,29 @@ if (isDevelopment)
 }
 else
 {
-    // En producción: Leer de Secret Manager PRIMERO, luego variables de entorno como fallback
-    // Esto permite que la app funcione aunque Secret Manager no esté disponible temporalmente
-    var dbHost = Environment.GetEnvironmentVariable("POSTGRES_HOST") ?? GetSecretValue("postgres-host", null) ?? "postgres-svc";
-    var dbPort = Environment.GetEnvironmentVariable("POSTGRES_PORT") ?? GetSecretValue("postgres-port", null) ?? "5432";
-    var dbUsername = Environment.GetEnvironmentVariable("POSTGRES_USERNAME") ?? GetSecretValue("postgres-username", null);
-    // En producción: Leer de variables de entorno PRIMERO, luego Secret Manager como fallback
-    // Esto permite que la app funcione aunque Secret Manager no esté disponible temporalmente
-    var dbPassword = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD") ?? GetSecretValue("postgres-password", null);
+    // En producción: Leer desde Secret Manager
+    var dbHost = GetSecretValue("postgres-host", null) ?? "postgres-svc";
+    var dbPort = GetSecretValue("postgres-port", null) ?? "5432";
+    var dbUsername = GetSecretValue("postgres-username", null);
+    var dbPassword = GetSecretValue("postgres-password", null);
+    var dbName = GetSecretValue("postgres-database", null) ?? "newapi";
     
     // Logging para debugging: mostrar origen y longitud de la contraseña
     if (!string.IsNullOrEmpty(dbPassword))
     {
-        var passwordSource = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("POSTGRES_PASSWORD")) 
-            ? "Environment Variable" 
-            : (!string.IsNullOrEmpty(GetSecretValue("postgres-password", null)) 
-                ? "Secret Manager" 
-                : "Default/Empty");
-        configLogger.LogInformation($"🔐 DB Password obtenida desde: {passwordSource} - Valor COMPLETO: [{dbPassword}] (longitud: {dbPassword.Length})");
+        configLogger.LogInformation($"🔐 DB Password obtenida desde: Secret Manager - Valor COMPLETO: [{dbPassword}] (longitud: {dbPassword.Length})");
     }
     else
     {
         configLogger.LogWarning("⚠️ DB Password está vacía - la conexión fallará");
     }
-    var dbName = Environment.GetEnvironmentVariable("POSTGRES_DATABASE") ?? GetSecretValue("postgres-database", null) ?? "newapi";
     
     // Si no hay credenciales de DB, lanzar error claro
     if (string.IsNullOrEmpty(dbUsername) || string.IsNullOrEmpty(dbPassword))
     {
         throw new InvalidOperationException(
             "Database credentials are required in production. " +
-            "Configure via environment variables (POSTGRES_USERNAME, POSTGRES_PASSWORD) " +
-            "or Secret Manager (postgres-username, postgres-password). " +
+            "Configure via Secret Manager (postgres-username, postgres-password). " +
             "Secret Manager status: " + (secretManagerAvailable ? "Available but failed to retrieve secrets" : "Not available"));
     }
     
@@ -770,16 +751,9 @@ builder.Services.Configure<FormOptions>(options =>
 });
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(c =>
-{
-    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
-    {
-        Description = "JWT Authorization header (optional for Swagger testing)",
-        Name = "Authorization",
-        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
-        Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey
-    });
-});
+builder.Services.AddSwaggerGen();
+// Note: Swagger security definition removed due to Microsoft.OpenApi.Models namespace issues
+// Swagger will still work for testing endpoints
 
 // ✅ SEGURIDAD 2025: Configurar Rate Limiting nativo de .NET 8
 // Configuración ajustada para aplicación web: límites más permisivos para uso normal, estrictos para endpoints sensibles
@@ -954,10 +928,13 @@ builder.Services.AddRateLimiter(options =>
     };
 });
 
-builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly,
-    typeof(PlatformMappingProfile).Assembly,
-    typeof(CategoryMappingProfile).Assembly,
-    typeof(UserMappingProfile).Assembly);
+builder.Services.AddAutoMapper(cfg =>
+{
+    cfg.AddProfile<AdMappingProfile>();
+    cfg.AddProfile<PlatformMappingProfile>();
+    cfg.AddProfile<CategoryMappingProfile>();
+    cfg.AddProfile<UserMappingProfile>();
+});
 
 // ✅ MEJORAS 2025: Configure SignalR con mejores prácticas
 // - Timeouts optimizados para conexiones estables
@@ -1003,8 +980,7 @@ var signalRBuilder = builder.Services.AddSignalR(options =>
 // Solo en producción (en desarrollo no es necesario)
 if (!isDevelopment)
 {
-    var redisConnectionString = Environment.GetEnvironmentVariable("REDIS_CONNECTION_STRING") 
-        ?? GetSecretValue("redis-connection-string", null);
+    var redisConnectionString = GetSecretValue("redis-connection-string", null);
     
     if (!string.IsNullOrEmpty(redisConnectionString))
     {
@@ -1044,10 +1020,10 @@ builder.Services.AddAuthentication(options =>
         ValidateAudience = true,
         ValidateLifetime = true,
         ValidateIssuerSigningKey = true,
-        ValidIssuer = builder.Configuration["Jwt:Issuer"] ?? Environment.GetEnvironmentVariable("JWT_ISSUER") ?? "",
-        ValidAudience = builder.Configuration["Jwt:Audience"] ?? Environment.GetEnvironmentVariable("JWT_AUDIENCE") ?? "",
+        ValidIssuer = builder.Configuration["Jwt:Issuer"] ?? "",
+        ValidAudience = builder.Configuration["Jwt:Audience"] ?? "",
         IssuerSigningKey = new SymmetricSecurityKey(
-            Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY") ?? throw new InvalidOperationException("JWT Key not found in configuration or environment variables."))),
+            Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? throw new InvalidOperationException("JWT Key not found in Secret Manager or configuration."))),
         ClockSkew = TimeSpan.Zero
     };
     options.Events = new JwtBearerEvents
@@ -1211,9 +1187,6 @@ builder.Services.AddHttpClient();
 
 // Add Health Checks
 builder.Services.AddHealthChecks();
-
-// Register AutoMapper
-builder.Services.AddAutoMapper(typeof(AdMappingProfile).Assembly, typeof(PlatformMappingProfile).Assembly, typeof(CategoryMappingProfile).Assembly);
 
 var app = builder.Build();
 

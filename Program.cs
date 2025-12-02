@@ -209,7 +209,7 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
     // Intentar usar Secret Manager si está disponible (tanto en desarrollo como producción)
     if (secretClient != null && secretManagerAvailable)
     {
-        var projectId = "61603823707";  // ✅ CORREGIDO: Project ID numérico correcto
+        var projectId = "grup-441318";  // ✅ Project ID correcto
         var secretLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
                 secretLogger.LogInformation($"📦 Usando Project ID: {projectId}");
         

@@ -700,29 +700,24 @@ else
     var dbHost = Environment.GetEnvironmentVariable("POSTGRES_HOST") ?? GetSecretValue("postgres-host", null) ?? "postgres-svc";
     var dbPort = Environment.GetEnvironmentVariable("POSTGRES_PORT") ?? GetSecretValue("postgres-port", null) ?? "5432";
     var dbUsername = Environment.GetEnvironmentVariable("POSTGRES_USERNAME") ?? GetSecretValue("postgres-username", null);
-    // ✅ FORZAR: Contraseña SOLO desde Secret Manager - NO usar variables de entorno
-    configLogger.LogInformation("🔍 FORZANDO obtención de contraseña SOLO desde Secret Manager (ignorando variables de entorno)...");
-    var dbPasswordFromSecret = GetSecretValue("postgres-password", null);
+    // En producción: Leer de variables de entorno PRIMERO, luego Secret Manager como fallback
+    // Esto permite que la app funcione aunque Secret Manager no esté disponible temporalmente
+    var dbPassword = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD") ?? GetSecretValue("postgres-password", null);
     
-    // IGNORAR variables de entorno - solo usar Secret Manager
-    var dbPasswordFromEnv = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
-    if (!string.IsNullOrEmpty(dbPasswordFromEnv))
+    // Logging para debugging: mostrar origen y longitud de la contraseña
+    if (!string.IsNullOrEmpty(dbPassword))
     {
-        configLogger.LogWarning($"⚠️ Variable de entorno POSTGRES_PASSWORD encontrada pero IGNORADA (valor: [{dbPasswordFromEnv}], longitud: {dbPasswordFromEnv.Length}) - Solo usando Secret Manager");
+        var passwordSource = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("POSTGRES_PASSWORD")) 
+            ? "Environment Variable" 
+            : (!string.IsNullOrEmpty(GetSecretValue("postgres-password", null)) 
+                ? "Secret Manager" 
+                : "Default/Empty");
+        configLogger.LogInformation($"🔐 DB Password obtenida desde: {passwordSource} - Valor COMPLETO: [{dbPassword}] (longitud: {dbPassword.Length})");
     }
-    
-    // FORZAR uso SOLO del Secret Manager
-    if (string.IsNullOrEmpty(dbPasswordFromSecret))
+    else
     {
-        throw new InvalidOperationException(
-            "ERROR CRÍTICO: No se pudo obtener la contraseña de PostgreSQL desde Secret Manager. " +
-            "El secreto 'postgres-password' debe existir en Google Cloud Secret Manager. " +
-            "NO se usarán variables de entorno como fallback.");
+        configLogger.LogWarning("⚠️ DB Password está vacía - la conexión fallará");
     }
-    
-    var dbPassword = dbPasswordFromSecret;
-    configLogger.LogInformation($"✅ Contraseña OBLIGATORIAMENTE obtenida del Secret Manager: [{dbPassword}] (longitud: {dbPassword.Length})");
-    configLogger.LogInformation($"🔐 DB Password FINAL (SOLO Secret Manager): [{dbPassword}] (longitud: {dbPassword.Length})");
     var dbName = Environment.GetEnvironmentVariable("POSTGRES_DATABASE") ?? GetSecretValue("postgres-database", null) ?? "newapi";
     
     // Si no hay credenciales de DB, lanzar error claro

@@ -60,6 +60,44 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// Alternar el modo de Stripe entre development y production
+        /// </summary>
+        [HttpPost("stripe/toggle-mode")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> ToggleStripeMode()
+        {
+            try
+            {
+                var currentMode = await _stripeConfigService.GetStripeModeAsync();
+                var newMode = currentMode == "development" ? "production" : "development";
+                
+                var userId = int.Parse(User.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")?.Value ?? "0");
+                
+                var success = await _stripeConfigService.SetStripeModeAsync(newMode, userId);
+                
+                if (success)
+                {
+                    _logger.LogWarning($"⚠️ Modo Stripe cambiado de {currentMode} a {newMode}. Se requiere reiniciar la aplicación para aplicar los cambios.");
+                    
+                    return Ok(new
+                    {
+                        message = $"Modo Stripe cambiado de {currentMode} a {newMode}",
+                        previousMode = currentMode,
+                        newMode = newMode,
+                        warning = "Se requiere reiniciar la aplicación para aplicar los cambios completamente"
+                    });
+                }
+
+                return StatusCode(500, new { message = "Error cambiando modo Stripe" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error alternando modo Stripe");
+                return StatusCode(500, new { message = "Error alternando modo Stripe", error = ex.Message });
+            }
+        }
+
+        /// <summary>
         /// Cambiar el modo de Stripe entre development y production
         /// </summary>
         [HttpPost("stripe/mode")]
@@ -102,6 +140,119 @@ namespace newApi.Controllers
             {
                 _logger.LogError(ex, "Error cambiando modo Stripe");
                 return StatusCode(500, new { message = "Error cambiando modo Stripe", error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// ⚠️ TEMPORAL: Aplicar migración de StripeMode a SystemSettings
+        /// Este endpoint es temporal y solo debe usarse para aplicar la migración una vez
+        /// </summary>
+        [HttpPost("stripe/apply-migration")]
+        public async Task<IActionResult> ApplyStripeModeMigration()
+        {
+            try
+            {
+                _logger.LogInformation("🔧 Iniciando aplicación de migración StripeMode");
+
+                // Verificar estado actual antes de aplicar
+                var existingColumns = await _context.Database.SqlQueryRaw<string>(
+                    @"SELECT column_name 
+                      FROM information_schema.columns 
+                      WHERE table_name = 'SystemSettings' 
+                      AND column_name IN ('StripeMode', 'StripeModeChangedAt', 'StripeModeChangedByUserId')
+                      ORDER BY column_name"
+                ).ToListAsync();
+
+                if (existingColumns.Count == 3)
+                {
+                    _logger.LogInformation("✅ Las columnas StripeMode ya existen");
+                    return Ok(new
+                    {
+                        message = "Las columnas ya existen",
+                        existingColumns = existingColumns,
+                        timestamp = DateTime.UtcNow
+                    });
+                }
+
+                _logger.LogInformation($"📊 Columnas existentes antes de migración: {string.Join(", ", existingColumns)}");
+
+                // SQL para agregar las columnas
+                var sql = @"
+DO $$ 
+BEGIN
+    -- Add StripeMode column
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                  WHERE table_schema = 'public' 
+                  AND table_name = 'SystemSettings' 
+                  AND column_name = 'StripeMode') THEN
+        ALTER TABLE ""SystemSettings"" 
+        ADD COLUMN ""StripeMode"" character varying(20) NOT NULL DEFAULT 'production';
+        RAISE NOTICE 'Columna StripeMode agregada';
+    ELSE
+        RAISE NOTICE 'Columna StripeMode ya existe';
+    END IF;
+
+    -- Add StripeModeChangedAt column
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                  WHERE table_schema = 'public' 
+                  AND table_name = 'SystemSettings' 
+                  AND column_name = 'StripeModeChangedAt') THEN
+        ALTER TABLE ""SystemSettings"" 
+        ADD COLUMN ""StripeModeChangedAt"" timestamp with time zone NULL;
+        RAISE NOTICE 'Columna StripeModeChangedAt agregada';
+    ELSE
+        RAISE NOTICE 'Columna StripeModeChangedAt ya existe';
+    END IF;
+
+    -- Add StripeModeChangedByUserId column
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                  WHERE table_schema = 'public' 
+                  AND table_name = 'SystemSettings' 
+                  AND column_name = 'StripeModeChangedByUserId') THEN
+        ALTER TABLE ""SystemSettings"" 
+        ADD COLUMN ""StripeModeChangedByUserId"" integer NULL;
+        RAISE NOTICE 'Columna StripeModeChangedByUserId agregada';
+    ELSE
+        RAISE NOTICE 'Columna StripeModeChangedByUserId ya existe';
+    END IF;
+END $$;
+";
+
+                _logger.LogInformation("🚀 Ejecutando SQL de migración...");
+                var rowsAffected = await _context.Database.ExecuteSqlRawAsync(sql);
+                _logger.LogInformation($"✅ SQL ejecutado. Filas afectadas: {rowsAffected}");
+                
+                // Verificar que las columnas se agregaron
+                var columns = await _context.Database.SqlQueryRaw<string>(
+                    @"SELECT column_name 
+                      FROM information_schema.columns 
+                      WHERE table_schema = 'public' 
+                      AND table_name = 'SystemSettings' 
+                      AND column_name LIKE 'Stripe%'
+                      ORDER BY column_name"
+                ).ToListAsync();
+
+                _logger.LogInformation($"✅ Migración completada. Columnas encontradas: {string.Join(", ", columns)}");
+
+                return Ok(new
+                {
+                    message = "Migración aplicada exitosamente",
+                    columns = columns,
+                    columnsBefore = existingColumns,
+                    rowsAffected = rowsAffected,
+                    timestamp = DateTime.UtcNow
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error aplicando migración de StripeMode");
+                return StatusCode(500, new 
+                { 
+                    message = "Error aplicando migración", 
+                    error = ex.Message,
+                    innerException = ex.InnerException?.Message,
+                    stackTrace = ex.StackTrace
+                });
             }
         }
 

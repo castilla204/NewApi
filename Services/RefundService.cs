@@ -53,6 +53,36 @@ namespace newApi.Services
                     .Include(sh => sh.SearchService)
                         .ThenInclude(ss => ss.ServiceType)
                     .FirstOrDefaultAsync();
+                
+                // ✅ CORRECCIÓN: Verificar transacciones existentes DENTRO del bloque FOR UPDATE para prevenir race conditions
+                FinancialTransaction existingRefund = null;
+                FinancialTransaction existingTransfer = null;
+                if (searchHire != null)
+                {
+                    // Localizar el pago original primero para verificar transacciones existentes
+                    var servicePayment = await _context.FinancialTransactions
+                        .Where(ft => ft.UserId == searchHire.ClientId
+                                  && ft.TransactionType == "ServicePayment"
+                                  && ft.RelatedEntityType == "SearchHire"
+                                  && ft.RelatedEntityId == searchHireId
+                                  && !string.IsNullOrEmpty(ft.StripePaymentIntentId))
+                        .FirstOrDefaultAsync();
+                    
+                    if (servicePayment != null)
+                    {
+                        existingRefund = await _context.FinancialTransactions
+                            .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&
+                                                       ft.RelatedEntityId == searchHireId &&
+                                                       ft.TransactionType == "Refund" &&
+                                                       ft.StripePaymentIntentId == servicePayment.StripePaymentIntentId);
+                        
+                        existingTransfer = await _context.FinancialTransactions
+                            .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&
+                                                       ft.RelatedEntityId == searchHireId &&
+                                                       ft.TransactionType == "Payout" &&
+                                                       !string.IsNullOrEmpty(ft.StripeTransferId));
+                    }
+                }
 
                 if (searchHire == null)
                 {
@@ -234,14 +264,29 @@ namespace newApi.Services
                 }
 
 
-                // Localizar el pago original
-                var servicePayment = await _context.FinancialTransactions
-                    .Where(ft => ft.UserId == searchHire.ClientId
-                              && ft.TransactionType == "ServicePayment"
-                              && ft.RelatedEntityType == "SearchHire"
-                              && ft.RelatedEntityId == searchHireId
-                              && !string.IsNullOrEmpty(ft.StripePaymentIntentId))
-                    .FirstOrDefaultAsync();
+                // Localizar el pago original (si no se encontró antes en la verificación dentro de FOR UPDATE)
+                FinancialTransaction servicePayment = null;
+                if (existingRefund == null && existingTransfer == null)
+                {
+                    servicePayment = await _context.FinancialTransactions
+                        .Where(ft => ft.UserId == searchHire.ClientId
+                                  && ft.TransactionType == "ServicePayment"
+                                  && ft.RelatedEntityType == "SearchHire"
+                                  && ft.RelatedEntityId == searchHireId
+                                  && !string.IsNullOrEmpty(ft.StripePaymentIntentId))
+                        .FirstOrDefaultAsync();
+                }
+                else
+                {
+                    // Si ya encontramos transacciones existentes, buscar el servicePayment para validaciones
+                    servicePayment = await _context.FinancialTransactions
+                        .Where(ft => ft.UserId == searchHire.ClientId
+                                  && ft.TransactionType == "ServicePayment"
+                                  && ft.RelatedEntityType == "SearchHire"
+                                  && ft.RelatedEntityId == searchHireId
+                                  && !string.IsNullOrEmpty(ft.StripePaymentIntentId))
+                        .FirstOrDefaultAsync();
+                }
 
                 if (servicePayment == null)
                 {
@@ -814,22 +859,35 @@ namespace newApi.Services
                     
                     try
                     {
-                        // ✅ CRÍTICO: Verificar si el dinero ya fue procesado (prevenir duplicados)
-                        var existingRefund = await _context.FinancialTransactions
-                            .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&
-                                                       ft.RelatedEntityId == searchHireId &&
-                                                       ft.TransactionType == "Refund" &&
-                                                       ft.StripePaymentIntentId == servicePayment.StripePaymentIntentId);
+                        // ✅ CORRECCIÓN: Usar las transacciones ya verificadas dentro del FOR UPDATE (si están disponibles)
+                        // Si no están disponibles, verificar de nuevo dentro de la transacción
+                        FinancialTransaction existingRefundLocal = null;
+                        FinancialTransaction existingTransferLocal = null;
                         
-                        var existingTransfer = await _context.FinancialTransactions
-                            .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&
-                                                       ft.RelatedEntityId == searchHireId &&
-                                                       ft.TransactionType == "Payout" &&
-                                                       !string.IsNullOrEmpty(ft.StripeTransferId));
+                        if (existingRefund == null && existingTransfer == null)
+                        {
+                            // Verificar de nuevo dentro de la transacción para garantizar atomicidad
+                            existingRefundLocal = await _context.FinancialTransactions
+                                .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&
+                                                           ft.RelatedEntityId == searchHireId &&
+                                                           ft.TransactionType == "Refund" &&
+                                                           ft.StripePaymentIntentId == servicePayment.StripePaymentIntentId);
+                            
+                            existingTransferLocal = await _context.FinancialTransactions
+                                .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&
+                                                           ft.RelatedEntityId == searchHireId &&
+                                                           ft.TransactionType == "Payout" &&
+                                                           !string.IsNullOrEmpty(ft.StripeTransferId));
+                        }
+                        else
+                        {
+                            existingRefundLocal = existingRefund;
+                            existingTransferLocal = existingTransfer;
+                        }
                         
                         // Si ya existe refund o transfer, verificar si es necesario procesar de nuevo
-                        bool refundAlreadyProcessed = existingRefund != null && !string.IsNullOrEmpty(existingRefund.StripeRefundId);
-                        bool transferAlreadyProcessed = existingTransfer != null && !string.IsNullOrEmpty(existingTransfer.StripeTransferId);
+                        bool refundAlreadyProcessed = existingRefundLocal != null && !string.IsNullOrEmpty(existingRefundLocal.StripeRefundId);
+                        bool transferAlreadyProcessed = existingTransferLocal != null && !string.IsNullOrEmpty(existingTransferLocal.StripeTransferId);
                         
                         // Si ambos ya están procesados, retornar true (idempotencia)
                         if (refundAlreadyProcessed && (transferAlreadyProcessed || expertAmount == 0))
@@ -837,8 +895,8 @@ namespace newApi.Services
                             await _loggingService.LogInfoAsync(
                                 message: "Money distribution already processed - idempotent call",
                                 details: $"SearchHire {searchHireId} money distribution was already processed. " +
-                                        $"Refund: {(refundAlreadyProcessed ? $"Already processed ({existingRefund.StripeRefundId})" : "Not needed")}, " +
-                                        $"Transfer: {(transferAlreadyProcessed ? $"Already processed ({existingTransfer.StripeTransferId})" : expertAmount == 0 ? "Not needed" : "Not processed")}. " +
+                                        $"Refund: {(refundAlreadyProcessed ? $"Already processed ({existingRefundLocal.StripeRefundId})" : "Not needed")}, " +
+                                        $"Transfer: {(transferAlreadyProcessed ? $"Already processed ({existingTransferLocal.StripeTransferId})" : expertAmount == 0 ? "Not needed" : "Not processed")}. " +
                                         $"Status: {statusValue}, Reason: {reason}",
                                 userId: initiatedByUserId ?? searchHire.ClientId,
                                 source: "StripeRefundService.ProcessMoneyDistributionAsync",
@@ -848,8 +906,8 @@ namespace newApi.Services
                                     Status = statusValue,
                                     RefundAlreadyProcessed = refundAlreadyProcessed,
                                     TransferAlreadyProcessed = transferAlreadyProcessed,
-                                    ExistingRefundId = existingRefund?.StripeRefundId,
-                                    ExistingTransferId = existingTransfer?.StripeTransferId
+                                    ExistingRefundId = existingRefundLocal?.StripeRefundId,
+                                    ExistingTransferId = existingTransferLocal?.StripeTransferId
                                 }
                             );
                             
@@ -866,8 +924,8 @@ namespace newApi.Services
                             await _loggingService.LogWarningAsync(
                                 message: "Partial money distribution detected - processing missing transactions",
                                 details: $"SearchHire {searchHireId} has partial money distribution. " +
-                                        $"Refund: {(refundAlreadyProcessed ? $"Already processed ({existingRefund.StripeRefundId})" : "Needs processing")}, " +
-                                        $"Transfer: {(transferAlreadyProcessed ? $"Already processed ({existingTransfer.StripeTransferId})" : "Needs processing")}. " +
+                                        $"Refund: {(refundAlreadyProcessed ? $"Already processed ({existingRefundLocal.StripeRefundId})" : "Needs processing")}, " +
+                                        $"Transfer: {(transferAlreadyProcessed ? $"Already processed ({existingTransferLocal.StripeTransferId})" : "Needs processing")}. " +
                                         $"Processing missing transactions only.",
                                 userId: initiatedByUserId ?? searchHire.ClientId,
                                 source: "StripeRefundService.ProcessMoneyDistributionAsync",
@@ -1370,6 +1428,186 @@ namespace newApi.Services
             catch
             {
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// Verifica que un Refund de Stripe esté en estado "succeeded" o "pending"
+        /// </summary>
+        private async Task<bool> VerifyRefundStatusAsync(string refundId, int searchHireId, int? initiatedByUserId)
+        {
+            try
+            {
+                var refundService = new RefundService();
+                var refund = await refundService.GetAsync(refundId);
+                
+                // Refund puede estar en: succeeded, pending, failed, canceled
+                if (refund.Status == "succeeded")
+                {
+                    return true;
+                }
+                else if (refund.Status == "pending")
+                {
+                    // Esperar un poco y verificar de nuevo (máximo 3 intentos)
+                    for (int i = 0; i < 3; i++)
+                    {
+                        await Task.Delay(2000); // Esperar 2 segundos
+                        refund = await refundService.GetAsync(refundId);
+                        if (refund.Status == "succeeded")
+                        {
+                            return true;
+                        }
+                        if (refund.Status == "failed" || refund.Status == "canceled")
+                        {
+                            break;
+                        }
+                    }
+                }
+                
+                // Si llegamos aquí, el refund no está en estado succeeded
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Refund not in succeeded status",
+                    details: $"Refund {refundId} for SearchHire {searchHireId} is in status '{refund.Status}' instead of 'succeeded'.",
+                    userId: initiatedByUserId ?? 0,
+                    source: "StripeRefundService.VerifyRefundStatusAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { RefundId = refundId, Status = refund.Status }
+                );
+                return false;
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error verifying refund status",
+                    details: $"Error verifying refund {refundId} for SearchHire {searchHireId}: {ex.Message}",
+                    userId: initiatedByUserId ?? 0,
+                    source: "StripeRefundService.VerifyRefundStatusAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { RefundId = refundId, Error = ex.Message }
+                );
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Verifica que un Transfer de Stripe esté en estado "paid" o "pending"
+        /// </summary>
+        private async Task<bool> VerifyTransferStatusAsync(string transferId, int searchHireId, int? initiatedByUserId)
+        {
+            try
+            {
+                var transferService = new TransferService();
+                var transfer = await transferService.GetAsync(transferId);
+                
+                // Transfer puede estar en: paid, pending, failed, canceled, paid_out
+                if (transfer.Status == "paid" || transfer.Status == "paid_out")
+                {
+                    return true;
+                }
+                else if (transfer.Status == "pending")
+                {
+                    // Esperar un poco y verificar de nuevo (máximo 3 intentos)
+                    for (int i = 0; i < 3; i++)
+                    {
+                        await Task.Delay(2000); // Esperar 2 segundos
+                        transfer = await transferService.GetAsync(transferId);
+                        if (transfer.Status == "paid" || transfer.Status == "paid_out")
+                        {
+                            return true;
+                        }
+                        if (transfer.Status == "failed" || transfer.Status == "canceled")
+                        {
+                            break;
+                        }
+                    }
+                }
+                
+                // Si llegamos aquí, el transfer no está en estado paid
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Transfer not in paid status",
+                    details: $"Transfer {transferId} for SearchHire {searchHireId} is in status '{transfer.Status}' instead of 'paid' or 'paid_out'.",
+                    userId: initiatedByUserId ?? 0,
+                    source: "StripeRefundService.VerifyTransferStatusAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { TransferId = transferId, Status = transfer.Status }
+                );
+                return false;
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error verifying transfer status",
+                    details: $"Error verifying transfer {transferId} for SearchHire {searchHireId}: {ex.Message}",
+                    userId: initiatedByUserId ?? 0,
+                    source: "StripeRefundService.VerifyTransferStatusAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { TransferId = transferId, Error = ex.Message }
+                );
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Verifica que una TransferReversal de Stripe esté en estado "succeeded"
+        /// </summary>
+        private async Task<bool> VerifyReversalStatusAsync(string transferId, string reversalId, int searchHireId, int? initiatedByUserId)
+        {
+            try
+            {
+                var reversalService = new TransferReversalService();
+                var reversal = await reversalService.GetAsync(transferId, reversalId);
+                
+                // TransferReversal puede estar en: succeeded, pending, failed, canceled
+                if (reversal.Status == "succeeded")
+                {
+                    return true;
+                }
+                else if (reversal.Status == "pending")
+                {
+                    // Esperar un poco y verificar de nuevo (máximo 3 intentos)
+                    for (int i = 0; i < 3; i++)
+                    {
+                        await Task.Delay(2000); // Esperar 2 segundos
+                        reversal = await reversalService.GetAsync(transferId, reversalId);
+                        if (reversal.Status == "succeeded")
+                        {
+                            return true;
+                        }
+                        if (reversal.Status == "failed" || reversal.Status == "canceled")
+                        {
+                            break;
+                        }
+                    }
+                }
+                
+                // Si llegamos aquí, la reversión no está en estado succeeded
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Transfer reversal not in succeeded status",
+                    details: $"Transfer reversal {reversalId} for Transfer {transferId} (SearchHire {searchHireId}) is in status '{reversal.Status}' instead of 'succeeded'.",
+                    userId: initiatedByUserId ?? 0,
+                    source: "StripeRefundService.VerifyReversalStatusAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { TransferId = transferId, ReversalId = reversalId, Status = reversal.Status }
+                );
+                return false;
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error verifying transfer reversal status",
+                    details: $"Error verifying transfer reversal {reversalId} for Transfer {transferId} (SearchHire {searchHireId}): {ex.Message}",
+                    userId: initiatedByUserId ?? 0,
+                    source: "StripeRefundService.VerifyReversalStatusAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { TransferId = transferId, ReversalId = reversalId, Error = ex.Message }
+                );
+                return false;
             }
         }
     }

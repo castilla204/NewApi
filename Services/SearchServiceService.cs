@@ -213,10 +213,14 @@ namespace newApi.Services
             return (decimal)(R * c);
         }
 
-        public async Task<IEnumerable<SearchServiceResponseDto>> GetExpertServices(int expertId, int? serviceTypeId = null)
+        public async Task<(IEnumerable<SearchServiceResponseDto> services, int totalCount)> GetExpertServices(int expertId, int? serviceTypeId = null, int page = 1, int pageSize = 20)
         {
             try
             {
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
                 IQueryable<SearchService> query = _context.SearchServices
                     .AsNoTracking() // ✅ CORRECCIÓN: Forzar consulta desde BD, evitar tracking de EF Core
                     .Where(ss => ss.ExpertProfileId == expertId && ss.IsActive);
@@ -226,6 +230,8 @@ namespace newApi.Services
                     query = query.Where(ss => ss.ServiceTypeId == serviceTypeId.Value);
                 }
 
+                var totalCount = await query.CountAsync();
+
                 query = query
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
@@ -234,13 +240,15 @@ namespace newApi.Services
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                     .Include(ss => ss.SelectedDeliverableTypes)
-                        .ThenInclude(ssdt => ssdt.DeliverableType);
+                        .ThenInclude(ssdt => ssdt.DeliverableType)
+                    .OrderByDescending(ss => ss.CreatedAt)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize);
 
                 var services = await query.ToListAsync();
                 
-                
                 var mappedServices = services.Select(ss => MapToResponseDto(ss)).ToList();
-                return mappedServices;
+                return (mappedServices, totalCount);
             }
             catch (Exception ex)
             {

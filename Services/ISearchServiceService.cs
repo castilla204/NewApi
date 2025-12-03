@@ -21,7 +21,7 @@ namespace newApi.Services
 
         Task<SearchServiceDetailDto> GetServiceByHireId(int id);
 
-        Task<IEnumerable<SearchServiceResponseDto>> GetExpertServices(int expertId, int? serviceTypeId = null);
+        Task<(IEnumerable<SearchServiceResponseDto> services, int totalCount)> GetExpertServices(int expertId, int? serviceTypeId = null, int page = 1, int pageSize = 20);
 
         Task<SearchServiceDetailDto> GetServiceById(int id);
 

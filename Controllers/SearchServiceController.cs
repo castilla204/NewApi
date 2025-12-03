@@ -109,12 +109,29 @@ namespace newApi.Controllers
         }
 
         [HttpGet("expert/{expertId}")]
-        public async Task<IActionResult> GetExpertServices(int expertId, [FromQuery] int? serviceTypeId)
+        public async Task<IActionResult> GetExpertServices(int expertId, [FromQuery] int? serviceTypeId, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
-                var services = await _searchServiceService.GetExpertServices(expertId, serviceTypeId);
-                return Ok(services);
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+                var (services, totalCount) = await _searchServiceService.GetExpertServices(expertId, serviceTypeId, page, pageSize);
+                
+                return Ok(new
+                {
+                    services,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
+                });
             }
             catch (Exception ex)
             {

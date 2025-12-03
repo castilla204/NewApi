@@ -533,8 +533,8 @@ if (isDevelopment)
     // ✅ CORRECCIÓN: Priorizar puertos comunes del túnel SSH
     // Esto acelera la detección cuando se usa el túnel SSH
     var dbPortsToTry = new[] { 
-        5435,  // ✅ PRIORIDAD: Puerto del túnel SSH (db-access.sh)
-        5433,  // Puerto alternativo común del túnel SSH
+        5433,  // ✅ PRIORIDAD: Puerto del túnel SSH (db-access.sh)
+        5435,  // Puerto alternativo común del túnel SSH
         5432,  // Puerto estándar de PostgreSQL
         5434,  // Puerto alternativo común para túneles
         15433, // Puerto alternativo (formato antiguo)

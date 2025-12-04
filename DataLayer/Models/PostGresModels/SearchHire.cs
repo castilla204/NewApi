@@ -32,6 +32,20 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// </summary>
         public int? ExpertAvailabilityId { get; set; }
         public virtual ExpertAvailability? ExpertAvailability { get; set; }
+        
+        /// <summary>
+        /// Zona horaria del experto al momento de crear esta contratación (formato IANA)
+        /// CRÍTICO: Se guarda para que contrataciones activas mantengan el timezone original
+        /// aunque el experto cambie su ubicación/timezone después
+        /// </summary>
+        public string? ExpertTimezone { get; set; }
+        
+        /// <summary>
+        /// Código de país del experto al momento de crear esta contratación (ISO 3166-1 alpha-2)
+        /// CRÍTICO: Se guarda para que contrataciones activas mantengan el país original
+        /// aunque el experto cambie su ubicación después
+        /// </summary>
+        public string? ExpertCountry { get; set; }
     }
 
 }

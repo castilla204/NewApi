@@ -203,7 +203,7 @@ namespace newApi.Controllers
                         Id = s.SearchHire.Id,
                         ExpertId = s.SearchHire.ExpertId ?? 0,
                         Status = s.SearchHire.Status.StatusValue,
-                        StatusTranslated = s.SearchHire.Status.StatusValue.ToSpanishTranslation(),
+                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(s.SearchHire.Status.StatusValue),
                         CreatedAt = s.SearchHire.CreatedAt,
                           Expert = s.SearchHire.Expert != null ? new UserDto
                           {
@@ -625,7 +625,7 @@ namespace newApi.Controllers
                             Id = s.SearchHire.Id,
                             ExpertId = s.SearchHire.ExpertId ?? 0,
                             Status = s.SearchHire.Status.StatusValue,
-                            StatusTranslated = s.SearchHire.Status.StatusValue.ToSpanishTranslation(),
+                            StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(s.SearchHire.Status.StatusValue),
                             CreatedAt = s.SearchHire.CreatedAt,
                               Expert = s.SearchHire.Expert != null ? new UserDto
                               {
@@ -894,7 +894,7 @@ namespace newApi.Controllers
                         Id = search.SearchHire.Id,
                         ExpertId = search.SearchHire.ExpertId ?? 0,
                         Status = search.SearchHire.Status.StatusValue,
-                        StatusTranslated = search.SearchHire.Status.StatusValue.ToSpanishTranslation(),
+                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(search.SearchHire.Status.StatusValue),
                         CreatedAt = search.SearchHire.CreatedAt,
                           Expert = search.SearchHire.Expert != null ? new UserDto
                           {

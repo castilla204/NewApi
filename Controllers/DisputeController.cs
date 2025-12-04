@@ -5,6 +5,7 @@ using System.Security.Claims;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models.enums;
 using newApi.Common;
 using Google.Cloud.Storage.V1;
 using Microsoft.Extensions.Configuration;
@@ -241,7 +242,7 @@ namespace newApi.Controllers
                     ReporterId = d.ReporterId,
                     Reason = d.Reason,
                     Status = d.Status,
-                    StatusTranslated = d.Status.ToSpanishTranslation(),
+                    StatusTranslated = DisputeStatusExtensions.ToSpanishTranslation(d.Status),
                     ResolutionComments = d.ResolutionComments,
                     CreatedAt = d.CreatedAt,
                     
@@ -255,7 +256,7 @@ namespace newApi.Controllers
                     {
                         Id = d.SearchHire.Id,
                         Status = d.SearchHire.Status.StatusValue,
-                        StatusTranslated = d.SearchHire.Status.StatusValue.ToSpanishTranslation(),
+                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(d.SearchHire.Status.StatusValue),
                         Amount = d.SearchHire.Amount,
                         CreatedAt = d.SearchHire.CreatedAt
                     },
@@ -730,14 +731,14 @@ namespace newApi.Controllers
                     ReporterId = dispute.ReporterId,
                     Reason = dispute.Reason,
                     Status = dispute.Status,
-                    StatusTranslated = dispute.Status.ToSpanishTranslation(),
+                    StatusTranslated = DisputeStatusExtensions.ToSpanishTranslation(dispute.Status),
                     ResolutionComments = dispute.ResolutionComments,
                     CreatedAt = dispute.CreatedAt,
                     SearchHire = new SearchHireInfoDto
                     {
                         Id = dispute.SearchHire.Id,
                         Status = dispute.SearchHire.Status.StatusValue,
-                        StatusTranslated = dispute.SearchHire.Status.StatusValue.ToSpanishTranslation(),
+                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(dispute.SearchHire.Status.StatusValue),
                         Amount = dispute.SearchHire.Amount,
                         CreatedAt = dispute.SearchHire.CreatedAt
                     },
@@ -854,7 +855,7 @@ namespace newApi.Controllers
                         Id = dispute.SearchHire.Id,
                         ExpertId = dispute.SearchHire.ExpertId,
                         Status = dispute.SearchHire.Status.StatusValue,
-                        StatusTranslated = dispute.SearchHire.Status.StatusValue.ToSpanishTranslation(),
+                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(dispute.SearchHire.Status.StatusValue),
                         CreatedAt = dispute.SearchHire.CreatedAt,
                         Expert = dispute.SearchHire.Expert != null ? new UserDto
                         {
@@ -1209,7 +1210,7 @@ namespace newApi.Controllers
                     ReporterId = dispute.ReporterId,
                     Reason = dispute.Reason,
                     Status = dispute.Status,
-                    StatusTranslated = dispute.Status.ToSpanishTranslation(),
+                    StatusTranslated = DisputeStatusExtensions.ToSpanishTranslation(dispute.Status),
                     ResolutionComments = dispute.ResolutionComments,
                     CreatedAt = dispute.CreatedAt,
                     ExpertResponse = dispute.ExpertResponse,
@@ -1220,7 +1221,7 @@ namespace newApi.Controllers
                     {
                         Id = dispute.SearchHire.Id,
                         Status = dispute.SearchHire.Status.StatusValue,
-                        StatusTranslated = dispute.SearchHire.Status.StatusValue.ToSpanishTranslation(),
+                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(dispute.SearchHire.Status.StatusValue),
                         Amount = dispute.SearchHire.Amount,
                         CreatedAt = dispute.SearchHire.CreatedAt
                     },

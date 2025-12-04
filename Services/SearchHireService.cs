@@ -186,7 +186,7 @@ namespace newApi.Services
                 SearchServiceId = hire.SearchServiceId,
                 SearchId = hire.SearchId,
                 Status = hire.Status?.StatusValue ?? "unknown",
-                StatusTranslated = hire.Status?.StatusValue?.ToSpanishTranslation() ?? "Desconocido",
+                StatusTranslated = hire.Status?.StatusValue != null ? SearchHireStatusExtensions.ToSpanishTranslation(hire.Status.StatusValue) : "Desconocido",
                 ExpertTransferId = hire.ExpertTransferId,
                 Amount = hire.Amount,
                 CreatedAt = hire.CreatedAt,

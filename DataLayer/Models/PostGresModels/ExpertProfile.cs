@@ -34,6 +34,20 @@ namespace newApi.DataLayer.Models.PostGresModels
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public string Latitude { get; set; }
         public string Longitude { get; set; }
+        
+        /// <summary>
+        /// Zona horaria del experto en formato IANA (ej: "Europe/Madrid", "America/Mexico_City")
+        /// Se usa para determinar el timezone de todos los servicios del experto
+        /// Por defecto: UTC si no se especifica
+        /// </summary>
+        public string Timezone { get; set; } = "UTC";
+        
+        /// <summary>
+        /// Código de país del experto en formato ISO 3166-1 alpha-2 (ej: "ES", "US", "MX")
+        /// Se detecta automáticamente desde las coordenadas al registrarse o actualizar ubicación
+        /// </summary>
+        public string? Country { get; set; }
+        
         public virtual User User { get; set; }
         public virtual ICollection<newApi.DataLayer.Models.PostGresModels.SearchService> SearchServices { get; set; }
     }

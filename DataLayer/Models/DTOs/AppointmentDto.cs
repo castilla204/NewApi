@@ -10,8 +10,29 @@ namespace newApi.DataLayer.Models.DTOs
         public int Id { get; set; }
         public int SearchHireId { get; set; }
         public string Status { get; set; } = string.Empty;
-        public DateTime ProposedDate { get; set; }
-        public TimeSpan ProposedTime { get; set; }
+        public DateTime ProposedDate { get; set; } // Fecha en UTC (guardada en BD)
+        public TimeSpan ProposedTime { get; set; } // Hora en UTC (guardada en BD)
+        
+        // ✅ NUEVOS CAMPOS: Fecha/hora en hora local para el frontend
+        /// <summary>
+        /// Fecha propuesta en hora local del experto (convertida desde UTC)
+        /// </summary>
+        public DateTime? ProposedDateLocal { get; set; }
+        
+        /// <summary>
+        /// Hora propuesta en hora local del experto (convertida desde UTC)
+        /// </summary>
+        public TimeSpan? ProposedTimeLocal { get; set; }
+        
+        /// <summary>
+        /// Timezone IANA usado para la conversión (ej: "Europe/Madrid", "America/Mexico_City")
+        /// </summary>
+        public string? Timezone { get; set; }
+        
+        /// <summary>
+        /// País del experto al momento de la contratación (ISO 3166-1 alpha-2, ej: "ES", "MX")
+        /// </summary>
+        public string? Country { get; set; }
         public string Location { get; set; } = string.Empty;
         public decimal? Latitude { get; set; }
         public decimal? Longitude { get; set; }
@@ -51,8 +72,8 @@ namespace newApi.DataLayer.Models.DTOs
     public class CreateAppointmentDto
     {
         public int SearchHireId { get; set; }
-        public DateTime ProposedDate { get; set; }
-        public TimeSpan ProposedTime { get; set; }
+        public DateTime ProposedDate { get; set; } // Fecha en hora LOCAL del experto
+        public TimeSpan ProposedTime { get; set; } // Hora en hora LOCAL del experto
         public string Location { get; set; } = string.Empty;
         public decimal? Latitude { get; set; }
         public decimal? Longitude { get; set; }
@@ -61,6 +82,12 @@ namespace newApi.DataLayer.Models.DTOs
         public string? DoorNumber { get; set; } // Número de puerta, garaje, etc.
         public string? OwnerPhone { get; set; } // Teléfono del propietario del objeto
         public string? SiteDetails { get; set; } // Detalles específicos del sitio (opcional)
+        
+        /// <summary>
+        /// Timezone IANA opcional (ej: "Europe/Madrid", "America/Mexico_City")
+        /// Si no se proporciona, se usa el timezone del experto desde SearchHire.ExpertTimezone
+        /// </summary>
+        public string? Timezone { get; set; }
     }
 
     /// <summary>
@@ -68,8 +95,8 @@ namespace newApi.DataLayer.Models.DTOs
     /// </summary>
     public class ProposeAppointmentDto
     {
-        public DateTime ProposedDate { get; set; }
-        public TimeSpan ProposedTime { get; set; }
+        public DateTime ProposedDate { get; set; } // Fecha en hora LOCAL del experto
+        public TimeSpan ProposedTime { get; set; } // Hora en hora LOCAL del experto
         public string Location { get; set; } = string.Empty;
         public decimal? Latitude { get; set; }
         public decimal? Longitude { get; set; }
@@ -78,6 +105,12 @@ namespace newApi.DataLayer.Models.DTOs
         public string? DoorNumber { get; set; } // Número de puerta, garaje, etc.
         public string? OwnerPhone { get; set; } // Teléfono del propietario del objeto
         public string? SiteDetails { get; set; } // Detalles específicos del sitio (opcional)
+        
+        /// <summary>
+        /// Timezone IANA opcional (ej: "Europe/Madrid", "America/Mexico_City")
+        /// Si no se proporciona, se usa el timezone del experto desde SearchHire.ExpertTimezone
+        /// </summary>
+        public string? Timezone { get; set; }
     }
 
     /// <summary>

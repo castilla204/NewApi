@@ -33,6 +33,8 @@ namespace newApi.Services
         private readonly ILoggingService _loggingService;
 
         private readonly IStripeValidationService _stripeValidationService;
+        
+        private readonly ITimezoneService _timezoneService;
 
         // ✅ MEJORA: Cache de estados para evitar consultas repetidas a la BD
         // Usa una clave compuesta: "StatusType|StatusValue" -> StatusId
@@ -41,7 +43,7 @@ namespace newApi.Services
         private static DateTime _cacheLastRefresh = DateTime.MinValue;
         private static readonly TimeSpan _cacheExpiration = TimeSpan.FromMinutes(30); // Cache válido por 30 minutos
 
-        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService)
+        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService)
 
         {
 
@@ -54,6 +56,8 @@ namespace newApi.Services
             _loggingService = loggingService;
 
             _stripeValidationService = stripeValidationService;
+            
+            _timezoneService = timezoneService;
 
         }
 
@@ -419,13 +423,27 @@ namespace newApi.Services
                             "AppointmentStatus"
                         );
 
-
+                        // ✅ INTERNACIONALIZACIÓN: Obtener timezone efectivo y convertir fecha/hora local a UTC
+                        // Prioridad: DTO > SearchHire.ExpertTimezone > ExpertProfile.Timezone > UTC
+                        var expertTimezone = !string.IsNullOrWhiteSpace(dto.Timezone) && _timezoneService.IsValidTimezone(dto.Timezone)
+                            ? dto.Timezone
+                            : _timezoneService.GetEffectiveTimezone(
+                                searchHire.ExpertTimezone,
+                                searchHire.SearchService?.ExpertProfile?.Timezone
+                            );
+                        
+                        // Construir DateTime local (asumiendo que viene en hora local del experto)
+                        var proposedDateTimeLocal = dto.ProposedDate.Date + dto.ProposedTime;
+                        
+                        // Convertir de hora local a UTC
+                        var proposedDateTimeUtc = _timezoneService.ConvertToUtc(proposedDateTimeLocal, expertTimezone);
+                        
+                        // Separar fecha y hora en UTC para guardar
+                        var proposedDateUtc = proposedDateTimeUtc.Date;
+                        var proposedTimeUtc = proposedDateTimeUtc.TimeOfDay;
 
                         // ✅ VALIDACIÓN: Verificar que la cita tenga al menos 24 horas de anticipación
-
-                        var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
-
-                        var timeUntilAppointment = proposedDateTime - DateTime.UtcNow;
+                        var timeUntilAppointment = proposedDateTimeUtc - DateTime.UtcNow;
 
                         
 
@@ -439,7 +457,7 @@ namespace newApi.Services
 
                                 $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
 
-                                $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} UTC"
+                                $"Fecha/hora propuesta: {proposedDateTimeUtc:dd/MM/yyyy HH:mm} UTC ({proposedDateTimeLocal:dd/MM/yyyy HH:mm} {expertTimezone})"
 
                             );
 
@@ -454,12 +472,13 @@ namespace newApi.Services
 
 
                         // ✅ VALIDACIÓN: Verificar que la fecha/hora propuesta esté dentro del horario de disponibilidad del experto
-
-                        await ValidateAppointmentAvailabilityAsync(searchHire, proposedDateTime);
+                        // Usar la fecha/hora en UTC para la validación
+                        await ValidateAppointmentAvailabilityAsync(searchHire, proposedDateTimeUtc);
 
 
 
                         // Crear la cita dentro de la transacción
+                        // ✅ INTERNACIONALIZACIÓN: Guardar fecha/hora en UTC (convertida desde hora local)
 
                         var appointment = new Appointment
 
@@ -469,9 +488,9 @@ namespace newApi.Services
 
                             StatusId = awaitingStatusId,
 
-                            ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc),
+                            ProposedDate = DateTime.SpecifyKind(proposedDateUtc, DateTimeKind.Utc),
 
-                            ProposedTime = dto.ProposedTime,
+                            ProposedTime = proposedTimeUtc,
 
                             Location = dto.Location,
 
@@ -810,13 +829,42 @@ namespace newApi.Services
                 if (proposedStatusId == 0)
                     throw new InvalidOperationException("Appointment proposed status not found");
 
-
+                // ✅ INTERNACIONALIZACIÓN: Obtener timezone efectivo y convertir fecha/hora local a UTC
+                // Prioridad: DTO > SearchHire.ExpertTimezone > ExpertProfile.Timezone > UTC
+                // Asegurar que SearchHire tenga las relaciones cargadas
+                if (appointment.SearchHire != null && appointment.SearchHire.SearchService == null)
+                {
+                    await _context.Entry(appointment.SearchHire)
+                        .Reference(sh => sh.SearchService)
+                        .LoadAsync();
+                    
+                    if (appointment.SearchHire.SearchService != null)
+                    {
+                        await _context.Entry(appointment.SearchHire.SearchService)
+                            .Reference(ss => ss.ExpertProfile)
+                            .LoadAsync();
+                    }
+                }
+                
+                var expertTimezone = !string.IsNullOrWhiteSpace(dto.Timezone) && _timezoneService.IsValidTimezone(dto.Timezone)
+                    ? dto.Timezone
+                    : _timezoneService.GetEffectiveTimezone(
+                        appointment.SearchHire?.ExpertTimezone,
+                        appointment.SearchHire?.SearchService?.ExpertProfile?.Timezone
+                    );
+                
+                // Construir DateTime local (asumiendo que viene en hora local del experto)
+                var proposedDateTimeLocal = dto.ProposedDate.Date + dto.ProposedTime;
+                
+                // Convertir de hora local a UTC
+                var proposedDateTimeUtc = _timezoneService.ConvertToUtc(proposedDateTimeLocal, expertTimezone);
+                
+                // Separar fecha y hora en UTC para guardar
+                var proposedDateUtc = proposedDateTimeUtc.Date;
+                var proposedTimeUtc = proposedDateTimeUtc.TimeOfDay;
 
                 // ✅ VALIDACIÓN: Verificar que la cita tenga al menos 24 horas de anticipación
-
-                var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
-
-                var timeUntilAppointment = proposedDateTime - DateTime.UtcNow;
+                var timeUntilAppointment = proposedDateTimeUtc - DateTime.UtcNow;
 
                 
 
@@ -830,7 +878,7 @@ namespace newApi.Services
 
                         $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
 
-                        $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} UTC"
+                        $"Fecha/hora propuesta: {proposedDateTimeUtc:dd/MM/yyyy HH:mm} UTC ({proposedDateTimeLocal:dd/MM/yyyy HH:mm} {expertTimezone})"
 
                     );
 
@@ -845,16 +893,14 @@ namespace newApi.Services
 
 
                         // ✅ VALIDACIÓN: Verificar que la fecha/hora propuesta esté dentro del horario de disponibilidad del experto
+                        // Usar la fecha/hora en UTC para la validación
+                        await ValidateAppointmentAvailabilityAsync(appointment.SearchHire, proposedDateTimeUtc);
 
-                        await ValidateAppointmentAvailabilityAsync(appointment.SearchHire, proposedDateTime);
 
 
-
-                // Actualizar la cita - asegurar que los DateTime tengan Kind=UTC
-
-                appointment.ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc);
-
-                appointment.ProposedTime = dto.ProposedTime;
+                // Actualizar la cita - ✅ INTERNACIONALIZACIÓN: Guardar fecha/hora en UTC (convertida desde hora local)
+                appointment.ProposedDate = DateTime.SpecifyKind(proposedDateUtc, DateTimeKind.Utc);
+                appointment.ProposedTime = proposedTimeUtc;
 
                 appointment.Location = dto.Location;
 
@@ -5207,7 +5253,7 @@ namespace newApi.Services
         /// <summary>
 
         /// Valida que la fecha/hora propuesta para la cita esté dentro del horario de disponibilidad del experto
-
+        /// ✅ INTERNACIONALIZACIÓN: proposedDateTime viene en UTC, se convierte a hora local del experto para validar
         /// </summary>
 
         private async Task ValidateAppointmentAvailabilityAsync(SearchHire searchHire, DateTime proposedDateTime)
@@ -5217,6 +5263,9 @@ namespace newApi.Services
             try
 
             {
+
+                // ✅ INTERNACIONALIZACIÓN: proposedDateTime está en UTC, necesitamos convertir a hora local del experto
+                // para comparar con las horas de disponibilidad que están en hora local
 
                 // Cargar el SearchHire con el ExpertProfile
 
@@ -5254,7 +5303,14 @@ namespace newApi.Services
 
                 var expertProfileId = hire.SearchService.ExpertProfile.Id;
 
+                // ✅ INTERNACIONALIZACIÓN: Obtener timezone del experto (prioridad: SearchHire.ExpertTimezone > ExpertProfile.Timezone)
+                var expertTimezone = _timezoneService.GetEffectiveTimezone(
+                    hire.ExpertTimezone,
+                    hire.SearchService.ExpertProfile.Timezone
+                );
 
+                // ✅ INTERNACIONALIZACIÓN: Convertir fecha/hora UTC a hora local del experto
+                var proposedDateTimeLocal = _timezoneService.ConvertFromUtc(proposedDateTime, expertTimezone);
 
                 // Obtener la disponibilidad activa del experto
 
@@ -5306,9 +5362,8 @@ namespace newApi.Services
 
 
 
-                // Obtener el día de la semana de la fecha propuesta (en inglés)
-
-                var dayOfWeek = proposedDateTime.DayOfWeek.ToString(); // "Monday", "Tuesday", etc.
+                // ✅ INTERNACIONALIZACIÓN: Obtener el día de la semana de la fecha propuesta en hora LOCAL del experto
+                var dayOfWeek = proposedDateTimeLocal.DayOfWeek.ToString(); // "Monday", "Tuesday", etc.
 
 
 
@@ -5378,7 +5433,7 @@ namespace newApi.Services
 
                         $"Días disponibles: {availableDaysSpanish}. " +
 
-                        $"Fecha propuesta: {proposedDateTime:dd/MM/yyyy}"
+                        $"Fecha propuesta: {proposedDateTimeLocal:dd/MM/yyyy} ({expertTimezone})"
 
                     );
 
@@ -5386,16 +5441,14 @@ namespace newApi.Services
 
 
 
-                // Obtener la hora propuesta (solo horas y minutos, sin segundos)
-
-                var proposedTime = proposedDateTime.TimeOfDay;
+                // ✅ INTERNACIONALIZACIÓN: Obtener la hora propuesta en hora LOCAL del experto (solo horas y minutos, sin segundos)
+                var proposedTime = proposedDateTimeLocal.TimeOfDay;
 
                 var proposedTimeOnly = new TimeSpan(proposedTime.Hours, proposedTime.Minutes, 0);
 
 
 
-                // Verificar que la hora esté dentro del rango de disponibilidad
-
+                // ✅ INTERNACIONALIZACIÓN: Verificar que la hora LOCAL esté dentro del rango de disponibilidad LOCAL
                 if (proposedTimeOnly < availability.StartTime || proposedTimeOnly > availability.EndTime)
 
                 {
@@ -5410,11 +5463,11 @@ namespace newApi.Services
 
                     throw new InvalidOperationException(
 
-                        $"La hora propuesta ({proposedTimeFormatted}) está fuera del horario de disponibilidad del experto. " +
+                        $"La hora propuesta ({proposedTimeFormatted} {expertTimezone}) está fuera del horario de disponibilidad del experto. " +
 
-                        $"Horario disponible: {startTimeFormatted} - {endTimeFormatted}. " +
+                        $"Horario disponible: {startTimeFormatted} - {endTimeFormatted} ({expertTimezone}). " +
 
-                        $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm}"
+                        $"Fecha/hora propuesta: {proposedDateTimeLocal:dd/MM/yyyy HH:mm} {expertTimezone} (UTC: {proposedDateTime:dd/MM/yyyy HH:mm})"
 
                     );
 
@@ -5541,6 +5594,51 @@ namespace newApi.Services
         private AppointmentDto MapToDto(Appointment appointment)
 
         {
+            // ✅ INTERNACIONALIZACIÓN: Convertir fecha/hora UTC a hora local del experto
+            // Obtener timezone efectivo (prioridad: SearchHire.ExpertTimezone > ExpertProfile.Timezone > UTC)
+            string? expertTimezone = null;
+            DateTime? proposedDateLocal = null;
+            TimeSpan? proposedTimeLocal = null;
+            
+            // Solo convertir si hay fecha/hora propuesta
+            if (appointment.ProposedDate != default && appointment.ProposedTime != default)
+            {
+                // Asegurar que SearchHire y sus relaciones estén cargadas
+                if (appointment.SearchHire != null)
+                {
+                    if (appointment.SearchHire.SearchService == null)
+                    {
+                        _context.Entry(appointment.SearchHire)
+                            .Reference(sh => sh.SearchService)
+                            .Load();
+                    }
+                    
+                    if (appointment.SearchHire.SearchService?.ExpertProfile == null && 
+                        appointment.SearchHire.SearchService != null)
+                    {
+                        _context.Entry(appointment.SearchHire.SearchService)
+                            .Reference(ss => ss.ExpertProfile)
+                            .Load();
+                    }
+                }
+                
+                // Obtener timezone efectivo
+                expertTimezone = _timezoneService.GetEffectiveTimezone(
+                    appointment.SearchHire?.ExpertTimezone,
+                    appointment.SearchHire?.SearchService?.ExpertProfile?.Timezone
+                );
+                
+                // Construir DateTime UTC desde fecha y hora guardadas
+                var proposedDateTimeUtc = DateTime.SpecifyKind(
+                    appointment.ProposedDate.Date + appointment.ProposedTime,
+                    DateTimeKind.Utc
+                );
+                
+                // Convertir de UTC a hora local
+                var proposedDateTimeLocal = _timezoneService.ConvertFromUtc(proposedDateTimeUtc, expertTimezone);
+                proposedDateLocal = proposedDateTimeLocal.Date;
+                proposedTimeLocal = proposedDateTimeLocal.TimeOfDay;
+            }
 
             return new AppointmentDto
 
@@ -5552,9 +5650,15 @@ namespace newApi.Services
 
                 Status = appointment.Status?.StatusValue ?? string.Empty,
 
-                ProposedDate = appointment.ProposedDate,
+                ProposedDate = appointment.ProposedDate, // UTC (guardada en BD)
 
-                ProposedTime = appointment.ProposedTime,
+                ProposedTime = appointment.ProposedTime, // UTC (guardada en BD)
+                
+                // ✅ INTERNACIONALIZACIÓN: Fecha/hora en hora local para el frontend
+                ProposedDateLocal = proposedDateLocal,
+                ProposedTimeLocal = proposedTimeLocal,
+                Timezone = expertTimezone,
+                Country = appointment.SearchHire?.ExpertCountry, // ✅ INTERNACIONALIZACIÓN: País del experto al momento de la contratación
 
                 Location = appointment.Location,
 

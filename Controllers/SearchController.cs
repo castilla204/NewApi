@@ -205,6 +205,8 @@ namespace newApi.Controllers
                         Status = s.SearchHire.Status.StatusValue,
                         StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(s.SearchHire.Status.StatusValue),
                         CreatedAt = s.SearchHire.CreatedAt,
+                        ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
+                        ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                           Expert = s.SearchHire.Expert != null ? new UserDto
                           {
                               Name = s.SearchHire.Expert.Name,
@@ -627,6 +629,8 @@ namespace newApi.Controllers
                             Status = s.SearchHire.Status.StatusValue,
                             StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(s.SearchHire.Status.StatusValue),
                             CreatedAt = s.SearchHire.CreatedAt,
+                            ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
+                            ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                               Expert = s.SearchHire.Expert != null ? new UserDto
                               {
                                   Name = s.SearchHire.Expert.Name,
@@ -896,6 +900,8 @@ namespace newApi.Controllers
                         Status = search.SearchHire.Status.StatusValue,
                         StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(search.SearchHire.Status.StatusValue),
                         CreatedAt = search.SearchHire.CreatedAt,
+                        ExpertTimezone = search.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
+                        ExpertCountry = search.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                           Expert = search.SearchHire.Expert != null ? new UserDto
                           {
                               Name = search.SearchHire.Expert.Name,
@@ -1059,6 +1065,7 @@ namespace newApi.Controllers
                     var reviewEntity = await _context.Reviews
                         .Include(r => r.Reviewer)
                         .Include(r => r.ImagesCollection)
+                        .Include(r => r.SearchHire) // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
                         .FirstOrDefaultAsync(r => r.SearchHireId == search.SearchHire.Id);
 
                     if (reviewEntity != null)
@@ -1076,7 +1083,9 @@ namespace newApi.Controllers
                                 Email = reviewEntity.Reviewer.Email,
                                 ProfilePictureUrl = null
                             },
-                            ImageUrls = reviewEntity.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>()
+                            ImageUrls = reviewEntity.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>(),
+                            // ✅ INTERNACIONALIZACIÓN: País donde se realizó la contratación
+                            Country = reviewEntity.SearchHire?.ExpertCountry
                         };
                     }
                 }
@@ -1161,6 +1170,8 @@ namespace newApi.Controllers
                             Id = search.SearchHire.Id,
                             Status = search.SearchHire.Status.StatusValue,
                             CreatedAt = search.SearchHire.CreatedAt,
+                            ExpertTimezone = search.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
+                            ExpertCountry = search.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                             Expert = search.SearchHire.Expert != null ? new UserDto
                             {
                                 Id = search.SearchHire.Expert.Id,

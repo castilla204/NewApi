@@ -24,6 +24,7 @@ namespace newApi.Services
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
         private readonly ILoggingService _loggingService;
+        private readonly ITimezoneService _timezoneService;
         private readonly string _twilioVerificationServiceSid;
         private readonly string _twilioauthToken;
 
@@ -32,12 +33,14 @@ namespace newApi.Services
      IConfiguration configuration,
 
      StorageClient storageClient,
-     ILoggingService loggingService)
+     ILoggingService loggingService,
+     ITimezoneService timezoneService)
         {
             _context = context;
             _configuration = configuration;
             _storageClient = storageClient;
             _loggingService = loggingService;
+            _timezoneService = timezoneService;
             _twilioVerificationServiceSid = configuration["Twilio:VerificationServiceSid"];
             _twilioauthToken = configuration["Twilio:AuthToken"];
         }
@@ -585,6 +588,34 @@ namespace newApi.Services
             var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
             user.Role = UserRole.Expert;
 
+            // ✅ DETECTAR TIMEZONE Y COUNTRY automáticamente desde coordenadas
+            string expertTimezone = "UTC";
+            string? expertCountry = null;
+            
+            try
+            {
+                expertTimezone = await _timezoneService.GetTimezoneFromCoordinatesAsync(latitude, longitude);
+                expertCountry = await _timezoneService.GetCountryFromCoordinatesAsync(latitude, longitude);
+            }
+            catch (Exception ex)
+            {
+                // Si falla la detección, usar UTC como fallback y continuar
+                await _loggingService.LogWarningAsync(
+                    message: "Failed to detect timezone/country from coordinates",
+                    details: $"Could not detect timezone/country for coordinates ({latitude}, {longitude}): {ex.Message}. Using UTC as fallback.",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "ExpertProfile",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        Action = "DetectTimezoneCountry",
+                        Latitude = latitude,
+                        Longitude = longitude,
+                        Exception = ex.Message
+                    }
+                );
+            }
+
             var expertProfile = new ExpertProfile
             {
                 UserId = user.Id,
@@ -593,6 +624,8 @@ namespace newApi.Services
                 Description = request.Description,
                 Latitude = request.Latitude,
                 Longitude = request.Longitude,
+                Timezone = expertTimezone,
+                Country = expertCountry,
                 StripeAccountId = null, // No guardar StripeAccountId, se genera en el onboarding
                 CreatedAt = DateTime.UtcNow
             };
@@ -778,8 +811,60 @@ namespace newApi.Services
 
                 // Actualizar los campos básicos
                 expertProfile.Description = request.Description;
+                
+                // ✅ DETECTAR TIMEZONE Y COUNTRY si cambian las coordenadas
+                var coordinatesChanged = expertProfile.Latitude != request.Latitude || 
+                                         expertProfile.Longitude != request.Longitude;
+                
                 expertProfile.Latitude = request.Latitude;
                 expertProfile.Longitude = request.Longitude;
+                
+                // Si cambian las coordenadas, detectar nuevo timezone y country
+                if (coordinatesChanged)
+                {
+                    try
+                    {
+                        var detectedTimezone = await _timezoneService.GetTimezoneFromCoordinatesAsync(latitude, longitude);
+                        var detectedCountry = await _timezoneService.GetCountryFromCoordinatesAsync(latitude, longitude);
+                        
+                        expertProfile.Timezone = detectedTimezone;
+                        expertProfile.Country = detectedCountry;
+                        
+                        await _loggingService.LogInfoAsync(
+                            message: "Timezone and country updated from coordinates",
+                            details: $"Updated timezone to {detectedTimezone} and country to {detectedCountry} for coordinates ({latitude}, {longitude})",
+                            userId: userId,
+                            source: "UserService.UpdateExpertProfile",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: expertProfile.Id,
+                            additionalData: new { 
+                                Action = "UpdateTimezoneCountry",
+                                Latitude = latitude,
+                                Longitude = longitude,
+                                Timezone = detectedTimezone,
+                                Country = detectedCountry
+                            }
+                        );
+                    }
+                    catch (Exception ex)
+                    {
+                        // Si falla la detección, mantener los valores actuales y loguear el error
+                        await _loggingService.LogWarningAsync(
+                            message: "Failed to detect timezone/country from new coordinates",
+                            details: $"Could not detect timezone/country for new coordinates ({latitude}, {longitude}): {ex.Message}. Keeping existing values.",
+                            userId: userId,
+                            source: "UserService.UpdateExpertProfile",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: expertProfile.Id,
+                            additionalData: new { 
+                                Action = "DetectTimezoneCountry",
+                                Latitude = latitude,
+                                Longitude = longitude,
+                                Exception = ex.Message
+                            }
+                        );
+                    }
+                }
 
                 // Procesar nueva imagen de perfil si se proporciona
                 if (request.ProfilePicture != null)

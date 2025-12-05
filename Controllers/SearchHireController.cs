@@ -161,6 +161,11 @@ namespace newApi.Controllers
                     .OrderByDescending(ea => ea.EffectiveFrom)
                     .FirstOrDefaultAsync();
 
+                // ✅ INTERNACIONALIZACIÓN: Obtener timezone y country del experto al momento de crear la contratación
+                // Esto crea un snapshot que protege las contrataciones activas si el experto cambia de ubicación
+                var expertTimezone = expert.ExpertProfile?.Timezone ?? "UTC";
+                var expertCountry = expert.ExpertProfile?.Country;
+
                 var searchHire = new SearchHire
                 {
                     SearchId = dto.SearchId,
@@ -171,6 +176,8 @@ namespace newApi.Controllers
                     Amount = searchService.Price,
                     CreatedAt = DateTime.UtcNow,
                     ExpertAvailabilityId = currentAvailability?.Id, // Guardar la disponibilidad usada
+                    ExpertTimezone = expertTimezone, // ✅ INTERNACIONALIZACIÓN: Snapshot del timezone del lugar de contratación
+                    ExpertCountry = expertCountry, // ✅ INTERNACIONALIZACIÓN: Snapshot del país del lugar de contratación
                     Conversations = new List<Conversation>()
                 };
 
@@ -407,6 +414,7 @@ namespace newApi.Controllers
                 var reviewEntity = await _context.Reviews
                     .Include(r => r.Reviewer)
                     .Include(r => r.ImagesCollection)
+                    .Include(r => r.SearchHire) // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
                     .FirstOrDefaultAsync(r => r.SearchHireId == searchHire.Id);
 
                 if (reviewEntity != null)
@@ -427,7 +435,9 @@ namespace newApi.Controllers
                         ImageUrls = reviewEntity.ImagesCollection?
                             .Select(img => ResolveReviewImageUrl(img))
                             .Where(url => !string.IsNullOrEmpty(url))
-                            .ToList() ?? new List<string>()
+                            .ToList() ?? new List<string>(),
+                        // ✅ INTERNACIONALIZACIÓN: País donde se realizó la contratación
+                        Country = reviewEntity.SearchHire?.ExpertCountry
                     };
                 }
 
@@ -478,7 +488,10 @@ namespace newApi.Controllers
                         IsOnVacation = expertProfile.IsOnVacation,
                         CurrentAvailability = availabilityDto,
                         StripeFutureRequirements = expertProfile.StripeFutureRequirements,
-                        StripeFutureDueAt = expertProfile.StripeFutureDueAt
+                        StripeFutureDueAt = expertProfile.StripeFutureDueAt,
+                        // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto
+                        Timezone = expertProfile.Timezone,
+                        Country = expertProfile.Country
                     };
                 }
 

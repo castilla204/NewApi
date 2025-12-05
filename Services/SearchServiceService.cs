@@ -82,6 +82,10 @@ namespace newApi.Services
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
                             .ThenInclude(r => r.ImagesCollection) // ✅ NUEVO: Incluir imágenes de las reviews
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire) // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                     .Include(ss => ss.SelectedDeliverableTypes)
@@ -183,7 +187,9 @@ namespace newApi.Services
                         CompletedSearches = expert.SearchHiresAsExpert?.Count(sh => sh.Status.StatusValue == "completed") ?? 0,
                         RegisteredSince = firstService.ExpertProfile.CreatedAt,
                         Latitude = firstService.ExpertProfile.Latitude,
-                        Longitude = firstService.ExpertProfile.Longitude
+                        Longitude = firstService.ExpertProfile.Longitude,
+                        // ✅ NUEVO: Precio del servicio
+                        Price = firstService.Price
                     };
                 }).ToList();
 
@@ -237,6 +243,7 @@ namespace newApi.Services
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire) // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                     .Include(ss => ss.SelectedDeliverableTypes)
@@ -272,6 +279,10 @@ namespace newApi.Services
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
                             .ThenInclude(r => r.ImagesCollection) // ✅ NUEVO: Incluir imágenes de las reviews
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire) // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                         .ThenInclude(st => st.ServiceTypeCategory)
@@ -322,6 +333,7 @@ namespace newApi.Services
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire) // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                         .ThenInclude(st => st.ServiceTypeCategory)
@@ -594,7 +606,9 @@ namespace newApi.Services
                     ImageUrls = r.ImagesCollection?
                         .Select(img => ResolveReviewImageUrl(img))
                         .Where(url => !string.IsNullOrEmpty(url))
-                        .ToList() ?? new List<string>()
+                        .ToList() ?? new List<string>(),
+                    // ✅ INTERNACIONALIZACIÓN: País donde se realizó la contratación
+                    Country = r.SearchHire?.ExpertCountry
                 }).ToList() ?? new List<ReviewDto>();
 
                 // ✅ NUEVO: Obtener la disponibilidad actual activa del experto
@@ -630,7 +644,10 @@ namespace newApi.Services
                     CurrentAvailability = availabilityDto, // ✅ NUEVO: Incluir horarios de disponibilidad
                     // ✅ FUTURE REQUIREMENTS
                     StripeFutureRequirements = ss.ExpertProfile.StripeFutureRequirements,
-                    StripeFutureDueAt = ss.ExpertProfile.StripeFutureDueAt
+                    StripeFutureDueAt = ss.ExpertProfile.StripeFutureDueAt,
+                    // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto
+                    Timezone = ss.ExpertProfile.Timezone,
+                    Country = ss.ExpertProfile.Country
                 };
             }
 
@@ -721,7 +738,9 @@ namespace newApi.Services
                     ImageUrls = r.ImagesCollection?
                         .Select(img => ResolveReviewImageUrl(img))
                         .Where(url => !string.IsNullOrEmpty(url))
-                        .ToList() ?? new List<string>()
+                        .ToList() ?? new List<string>(),
+                    // ✅ INTERNACIONALIZACIÓN: País donde se realizó la contratación
+                    Country = r.SearchHire?.ExpertCountry
                 }).ToList() ?? new List<ReviewDto>();
 
                 expertProfileDto = new ExpertProfileDto
@@ -737,7 +756,10 @@ namespace newApi.Services
                     IsOnVacation = ss.ExpertProfile.IsOnVacation,
                     // ✅ FUTURE REQUIREMENTS
                     StripeFutureRequirements = ss.ExpertProfile.StripeFutureRequirements,
-                    StripeFutureDueAt = ss.ExpertProfile.StripeFutureDueAt
+                    StripeFutureDueAt = ss.ExpertProfile.StripeFutureDueAt,
+                    // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto
+                    Timezone = ss.ExpertProfile.Timezone,
+                    Country = ss.ExpertProfile.Country
                 };
             }
 

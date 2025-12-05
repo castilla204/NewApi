@@ -11,6 +11,12 @@ namespace newApi.DataLayer.Models.DTOs
         public DateTime RegisteredSince { get; set; }
         public string Latitude { get; set; }
         public string Longitude { get; set; }
+        
+        // ✅ NUEVO: Precio del servicio (del primer servicio del experto para este tipo de servicio)
+        /// <summary>
+        /// Precio del servicio en euros (del primer servicio del experto para este categoryId y serviceTypeId)
+        /// </summary>
+        public decimal Price { get; set; }
     }
 
     public class ExpertMapResponseDto

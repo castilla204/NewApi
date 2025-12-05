@@ -234,18 +234,34 @@ namespace newApi.Services
                 }
 
 
-                // Localizar el pago original (ya se buscó en la verificación dentro de FOR UPDATE, pero necesitamos la variable)
+                // Localizar el pago original y verificar transacciones existentes
+                FinancialTransaction existingRefund = null;
+                FinancialTransaction existingTransfer = null;
                 FinancialTransaction servicePayment = null;
-                if (existingRefund != null || existingTransfer != null)
-                {
-                    // Si ya encontramos transacciones existentes, buscar el servicePayment para validaciones
-                    servicePayment = await _context.FinancialTransactions
+                
+                // Buscar el servicePayment para validaciones
+                servicePayment = await _context.FinancialTransactions
                     .Where(ft => ft.UserId == searchHire.ClientId
                               && ft.TransactionType == "ServicePayment"
                               && ft.RelatedEntityType == "SearchHire"
                               && ft.RelatedEntityId == searchHireId
                               && !string.IsNullOrEmpty(ft.StripePaymentIntentId))
                     .FirstOrDefaultAsync();
+                
+                // Si hay servicePayment, verificar si ya existen refund o transfer
+                if (servicePayment != null)
+                {
+                    existingRefund = await _context.FinancialTransactions
+                        .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&
+                                                   ft.RelatedEntityId == searchHireId &&
+                                                   ft.TransactionType == "Refund" &&
+                                                   ft.StripePaymentIntentId == servicePayment.StripePaymentIntentId);
+                    
+                    existingTransfer = await _context.FinancialTransactions
+                        .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&
+                                                   ft.RelatedEntityId == searchHireId &&
+                                                   ft.TransactionType == "Payout" &&
+                                                   !string.IsNullOrEmpty(ft.StripeTransferId));
                 }
                 else
                 {
@@ -827,6 +843,8 @@ namespace newApi.Services
                     // MODIFICACIÓN: Declarar variables fuera del try para acceso en catch blocks
                     string createdTransferId = null;
                     string createdRefundId = null;
+                    FinancialTransaction pendingRefundTx = null;
+                    FinancialTransaction pendingTransferTx = null;
                     
                     try
                     {
@@ -921,10 +939,6 @@ namespace newApi.Services
                         // Esto previene pérdida de dinero: si Refund falla, no se hace Transfer
                         var needsRefund = clientRefundAmount > 0 && !refundAlreadyProcessed;
                         var needsTransfer = expertAmount > 0 && searchHire.ExpertId.HasValue && !transferAlreadyProcessed;
-
-                        // Variables para patrón outbox (guardar en BD antes de Stripe)
-                        FinancialTransaction pendingRefundTx = null;
-                        FinancialTransaction pendingTransferTx = null;
 
                         // ✅ PASO 1: Refund PRIMERO (si aplica) - Patrón Outbox
                         if (needsRefund)
@@ -1076,8 +1090,8 @@ namespace newApi.Services
                                     // El dinero ya se movió, NO hacer rollback sin verificar
                                     try
                                     {
-                                        var refundSvc = new RefundService();
-                                        var refundInStripe = await refundSvc.GetAsync(refund.Id);
+                                        var refundSvcVerify = new RefundService();
+                                        var refundInStripe = await refundSvcVerify.GetAsync(refund.Id);
                                         
                                         if (refundInStripe != null && refundInStripe.Status == "succeeded")
                                         {
@@ -1516,8 +1530,8 @@ namespace newApi.Services
                                 // El dinero ya se movió, NO hacer rollback sin verificar
                                 try
                                 {
-                                    var transferSvc = new TransferService();
-                                    var transferInStripe = await transferSvc.GetAsync(transfer.Id);
+                                    var transferSvcVerify = new TransferService();
+                                    var transferInStripe = await transferSvcVerify.GetAsync(transfer.Id);
                                     
                                     // ✅ CORRECCIÓN: En Stripe.NET, Transfer no tiene Status. Se verifica si existe y no está revertido
                                     if (transferInStripe != null && !transferInStripe.Reversed)

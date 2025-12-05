@@ -2322,6 +2322,11 @@ namespace newApi.Controllers
                     currentAvailabilityId = currentAvailability?.Id;
                 }
 
+                // ✅ INTERNACIONALIZACIÓN: Obtener timezone y country del experto al momento de crear la contratación
+                // Esto crea un snapshot que protege las contrataciones activas si el experto cambia de ubicación
+                var expertTimezone = expertProfile?.Timezone ?? "UTC";
+                var expertCountry = expertProfile?.Country;
+
                 // Create search hire
                 searchHire = new SearchHire
                 {
@@ -2333,7 +2338,9 @@ namespace newApi.Controllers
                     Amount = service.Price,
                     CreatedAt = DateTime.UtcNow,
                     CompletionDeadline = DateTime.UtcNow.AddDays(7),
-                    ExpertAvailabilityId = currentAvailabilityId // Guardar la disponibilidad usada
+                    ExpertAvailabilityId = currentAvailabilityId, // Guardar la disponibilidad usada
+                    ExpertTimezone = expertTimezone, // ✅ INTERNACIONALIZACIÓN: Snapshot del timezone del lugar de contratación
+                    ExpertCountry = expertCountry // ✅ INTERNACIONALIZACIÓN: Snapshot del país del lugar de contratación
                 };
                     // ✅ REMOVED: Balance verification eliminated - all payments are direct Stripe
 

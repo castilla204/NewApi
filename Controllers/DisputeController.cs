@@ -857,6 +857,8 @@ namespace newApi.Controllers
                         Status = dispute.SearchHire.Status.StatusValue,
                         StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(dispute.SearchHire.Status.StatusValue),
                         CreatedAt = dispute.SearchHire.CreatedAt,
+                        ExpertTimezone = dispute.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
+                        ExpertCountry = dispute.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                         Expert = dispute.SearchHire.Expert != null ? new UserDto
                         {
                             Id = dispute.SearchHire.Expert.Id,

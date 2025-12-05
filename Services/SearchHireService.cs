@@ -226,7 +226,7 @@ namespace newApi.Services
                         SortOrder = sdt.DeliverableType.SortOrder
                     }).ToList() ?? new List<DeliverableTypeDto>()
                 },
-                ServiceType = hire.SearchService.ServiceType != null ? new ServiceTypeDto
+                ServiceType = hire.SearchService.ServiceType != null ? new DataLayer.Models.DTOs.ServiceTypeDto
                 {
                     Id = hire.SearchService.ServiceType.Id,
                     Name = hire.SearchService.ServiceType.Name,
@@ -256,7 +256,11 @@ namespace newApi.Services
                 // Nuevos campos agregados
                 SearchTitle = hire.Search?.Title,
                 SearchDescription = hire.Search?.Description,
-                UnreadMessagesCount = unreadMessagesCount
+                UnreadMessagesCount = unreadMessagesCount,
+                
+                // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto al momento de la contratación
+                ExpertTimezone = hire.ExpertTimezone,
+                ExpertCountry = hire.ExpertCountry
             };
         }
 

@@ -459,6 +459,18 @@ else
 }
 builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password", null) ?? "";
 builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key", null) ?? "";
+
+// ✅ Cargar Google Maps API Key desde Secret Manager
+var googleMapsApiKey = GetSecretValue("google-maps-api-key", null) 
+    ?? Environment.GetEnvironmentVariable("GOOGLE_API_KEY");
+builder.Configuration["Google:ApiKey"] = googleMapsApiKey ?? "";
+if (!string.IsNullOrEmpty(googleMapsApiKey))
+{
+    var googleMapsLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    googleMapsLogger.LogInformation($"✅ Google Maps API Key configurada (longitud: {googleMapsApiKey.Length} caracteres)");
+    googleMapsLogger.LogInformation($"   Origen: {(GetSecretValue("google-maps-api-key", null) != null ? "Secret Manager" : "Environment Variable")}");
+}
+
 // Configurar Stripe desde Secret Manager
 // Las claves se cargarán dinámicamente según el modo configurado en SystemSetting
 // Por defecto se cargan las de producción, pero se pueden cambiar desde el panel admin
@@ -1256,6 +1268,7 @@ builder.Services.AddScoped<IInvoiceService, newApi.Services.InvoiceService>();
 builder.Services.AddScoped<IStripeValidationService, StripeValidationService>();
 builder.Services.AddScoped<RefreshTokenCleanupService>(); // ✅ SEGURIDAD 2025: Limpieza de refresh tokens
 builder.Services.AddScoped<MfaService>(); // ✅ SEGURIDAD 2025: Autenticación Multifactor (MFA/2FA)
+builder.Services.AddScoped<ITimezoneService, TimezoneService>(); // ✅ Servicio para detección de timezone y country desde coordenadas
 
 // Background services - AppointmentTimerBackgroundService migrated to Hangfire
 

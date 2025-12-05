@@ -14,6 +14,17 @@ namespace newApi.DataLayer.Models.DTOs
         public UserDto? Expert { get; set; }
         public ServiceInfo? Service { get; set; } // ✅ NUEVO: Información del servicio
         public SystemStatusDto? StatusInfo { get; set; } // ✅ NUEVO: Información completa del estado
+        
+        // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto al momento de la contratación
+        /// <summary>
+        /// Timezone IANA del experto al momento de crear la contratación (ej: "Europe/Madrid", "America/Mexico_City")
+        /// </summary>
+        public string? ExpertTimezone { get; set; }
+        
+        /// <summary>
+        /// País del experto al momento de crear la contratación (ISO 3166-1 alpha-2, ej: "ES", "MX")
+        /// </summary>
+        public string? ExpertCountry { get; set; }
     }
 
     public class ServiceInfo
@@ -63,6 +74,17 @@ namespace newApi.DataLayer.Models.DTOs
         public string? SearchTitle { get; set; } // Título de la contratación
         public string? SearchDescription { get; set; } // Descripción de la contratación
         public int UnreadMessagesCount { get; set; } // Número de mensajes pendientes de leer
+        
+        // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto al momento de la contratación
+        /// <summary>
+        /// Timezone IANA del experto al momento de crear la contratación (ej: "Europe/Madrid", "America/Mexico_City")
+        /// </summary>
+        public string? ExpertTimezone { get; set; }
+        
+        /// <summary>
+        /// País del experto al momento de crear la contratación (ISO 3166-1 alpha-2, ej: "ES", "MX")
+        /// </summary>
+        public string? ExpertCountry { get; set; }
     }
 
     public class UpdateSearchHireStatusDto
@@ -114,6 +136,17 @@ namespace newApi.DataLayer.Models.DTOs
         // ✅ FUTURE REQUIREMENTS: Requirements que se deben completar en el futuro según Stripe
         public string? StripeFutureRequirements { get; set; }
         public DateTime? StripeFutureDueAt { get; set; }
+        
+        // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto
+        /// <summary>
+        /// Timezone IANA del experto (ej: "Europe/Madrid", "America/Mexico_City")
+        /// </summary>
+        public string? Timezone { get; set; }
+        
+        /// <summary>
+        /// País del experto (ISO 3166-1 alpha-2, ej: "ES", "MX")
+        /// </summary>
+        public string? Country { get; set; }
     }
 
     public class UserDto
@@ -132,6 +165,13 @@ namespace newApi.DataLayer.Models.DTOs
         public DateTime CreatedAt { get; set; }
         public UserDto Reviewer { get; set; } // ✅ NUEVO: Información del revisor
         public List<string> ImageUrls { get; set; } = new List<string>(); // ✅ NUEVO: URLs de las imágenes
+        
+        // ✅ INTERNACIONALIZACIÓN: País donde se realizó la contratación
+        /// <summary>
+        /// País donde se realizó la contratación (ISO 3166-1 alpha-2, ej: "ES", "MX")
+        /// Obtenido del SearchHire.ExpertCountry al momento de crear la contratación
+        /// </summary>
+        public string? Country { get; set; }
     }
 
     public class CreateSearchServiceRequestDto

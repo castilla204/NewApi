@@ -23,3 +23,5 @@ ORDER BY table_name, column_name;
 -- ✅ Si ves las dos columnas en el resultado, la migración fue exitosa
 
 
+
+

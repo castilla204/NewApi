@@ -222,6 +222,31 @@ namespace newApi.Services
                     return false;
                 }
 
+                // ✅ CORRECCIÓN DE SEGURIDAD: Validar que ningún porcentaje sea negativo
+                // Un porcentaje negativo podría usarse para extraer dinero extra del sistema
+                if (config.ClientPercentage < 0 || config.ExpertPercentage < 0 || config.PlatformPercentage < 0)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Invalid money distribution config - negative percentage detected",
+                        details: $"One or more percentages are negative for status {statusValue}. " +
+                                $"Client: {config.ClientPercentage}%, Expert: {config.ExpertPercentage}%, Platform: {config.PlatformPercentage}%. " +
+                                $"This could indicate a configuration attack or data corruption. " +
+                                $"ACTION REQUIRED: Review StatusConfigurations table for status {statusValue}.",
+                        userId: initiatedByUserId ?? searchHire.ClientId,
+                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { 
+                            Status = statusValue, 
+                            ClientPercentage = config.ClientPercentage,
+                            ExpertPercentage = config.ExpertPercentage,
+                            PlatformPercentage = config.PlatformPercentage,
+                            PossibleAttack = true
+                        }
+                    );
+                    return false;
+                }
+
                 var clientRefundAmount = searchHire.Amount * (config.ClientPercentage / 100);
                 var expertAmount = searchHire.Amount * (config.ExpertPercentage / 100);
                 var platformAmount = searchHire.Amount * (config.PlatformPercentage / 100);
@@ -1043,21 +1068,58 @@ namespace newApi.Services
                                 bool refundVerified = await VerifyRefundStatusAsync(refund.Id, searchHireId, initiatedByUserId);
                                 if (!refundVerified)
                                 {
-                                    // Si la verificación falla, eliminar la transacción pendiente y hacer rollback
-                                    _context.FinancialTransactions.Remove(pendingRefundTx);
+                                    // ✅ CORRECCIÓN CRÍTICA DE SEGURIDAD: El refund ya se creó en Stripe (tenemos refund.Id)
+                                    // El refund puede estar en estado "pending" (en proceso) o "failed"
+                                    // Si está "pending", el dinero YA está en movimiento - NO hacer rollback
+                                    // Debemos PRESERVAR el registro para evitar doble refund
+                                    
+                                    // Actualizar el registro con el ID aunque no esté verificado
+                                    createdRefundId = refund.Id;
+                                    pendingRefundTx.StripeRefundId = refund.Id;
+                                    servicePayment.IsRefunded = true;
+                                    servicePayment.StripeRefundId = refund.Id;
+                                    
+                                    // COMMIT PARCIAL: El refund existe en Stripe, preservar registro
                                     if (transaction != null)
                                     {
-                                        await transaction.RollbackAsync();
+                                        try
+                                        {
+                                            await _context.SaveChangesAsync();
+                                            await transaction.CommitAsync();
+                                            
+                                            await _loggingService.LogWarningAsync(
+                                                message: "Partial commit: Refund created but not verified - record preserved",
+                                                details: $"SearchHire {searchHireId}: Refund {refund.Id} was created in Stripe but verification failed (may be pending). " +
+                                                        $"Record preserved in DB to prevent double refund. Manual verification required.",
+                                                userId: initiatedByUserId ?? searchHire.ClientId,
+                                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                                relatedEntityType: "SearchHire",
+                                                relatedEntityId: searchHireId,
+                                                additionalData: new { RefundId = refund.Id }
+                                            );
+                                        }
+                                        catch (Exception commitEx)
+                                        {
+                                            await _loggingService.LogCriticalAsync(
+                                                message: "CRITICAL: Commit failed for unverified refund - refund exists in Stripe",
+                                                details: $"SearchHire {searchHireId}: Refund {refund.Id} exists in Stripe but DB commit failed. MANUAL SYNC REQUIRED.",
+                                                userId: initiatedByUserId ?? searchHire.ClientId,
+                                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                                relatedEntityType: "SearchHire",
+                                                relatedEntityId: searchHireId,
+                                                additionalData: new { RefundId = refund.Id, Error = commitEx.Message }
+                                            );
+                                        }
                                     }
                                     
                                     await _loggingService.LogCriticalAsync(
-                                        message: "CRITICAL: Refund not verified - money distribution rolled back",
-                                        details: $"SearchHire {searchHireId} finalization failed: refund {refund.Id} was created but not in 'succeeded' status. " +
-                                                $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
-                                                $"1) Verify refund {refund.Id} status in Stripe " +
-                                                $"2) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) " +
-                                                $"3) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) - NOT PROCESSED " +
-                                                $"4) Platform retains {platformAmount:F2}€.",
+                                        message: "CRITICAL: Refund created but not verified - record preserved",
+                                        details: $"SearchHire {searchHireId} finalization: refund {refund.Id} was created but not in 'succeeded' status. " +
+                                                $"REFUND RECORD PRESERVED IN DB (may be pending in Stripe). " +
+                                                $"PENDING ACTIONS: " +
+                                                $"1) Verify refund {refund.Id} status in Stripe (may take time if pending) " +
+                                                $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) - NOT PROCESSED " +
+                                                $"3) Platform retains {platformAmount:F2}€.",
                                         userId: initiatedByUserId ?? searchHire.ClientId,
                                         source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                         relatedEntityType: "SearchHire",
@@ -1317,7 +1379,7 @@ namespace newApi.Services
                                     message: "CRITICAL: Expert Stripe account missing - money distribution failed",
                                     details: $"SearchHire {searchHireId} finalization failed because Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) has no Stripe account configured. " +
                                             $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
-                                            $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) " +
+                                            $"1) {(needsRefund && !string.IsNullOrEmpty(createdRefundId) ? $"Refund {clientRefundAmount:F2}€ to Client - ALREADY PROCESSED ✅" : $"Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId}")} " +
                                             $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) - REQUIRES MANUAL SETUP " +
                                             $"3) Platform retains {platformAmount:F2}€. " +
                                             $"Configuration: Client {config.ClientPercentage}%, Expert {config.ExpertPercentage}%, Platform {config.PlatformPercentage}%",
@@ -1334,13 +1396,41 @@ namespace newApi.Services
                                         ExpertId = searchHire.ExpertId,
                                         ClientName = searchHire.Client?.Name,
                                         ExpertName = searchHire.Expert?.Name,
-                                        ExpertStripeAccountId = expertStripeAccountId
+                                        ExpertStripeAccountId = expertStripeAccountId,
+                                        RefundAlreadyProcessed = !string.IsNullOrEmpty(createdRefundId),
+                                        RefundId = createdRefundId
                                     }
                                 );
-                                // ✅ CORRECCIÓN: Solo hacer rollback si creamos la transacción
+                                // ✅ CORRECCIÓN CRÍTICA DE SEGURIDAD: Si el refund ya se procesó, NO hacer rollback
+                                // Hacer commit parcial para preservar el registro del refund
                                 if (transaction != null)
                                 {
-                                await transaction.RollbackAsync();
+                                    if (!string.IsNullOrEmpty(createdRefundId))
+                                    {
+                                        // Refund ya procesado - commit parcial
+                                        try
+                                        {
+                                            await _context.SaveChangesAsync();
+                                            await transaction.CommitAsync();
+                                        }
+                                        catch (Exception commitEx)
+                                        {
+                                            await _loggingService.LogCriticalAsync(
+                                                message: "CRITICAL: Partial commit failed - refund already in Stripe",
+                                                details: $"SearchHire {searchHireId}: Refund {createdRefundId} exists in Stripe but commit failed. MANUAL SYNC REQUIRED.",
+                                                userId: initiatedByUserId ?? searchHire.ClientId,
+                                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                                relatedEntityType: "SearchHire",
+                                                relatedEntityId: searchHireId,
+                                                additionalData: new { RefundId = createdRefundId, Error = commitEx.Message }
+                                            );
+                                        }
+                                    }
+                                    else
+                                    {
+                                        // No hay refund procesado - rollback seguro
+                                        await transaction.RollbackAsync();
+                                    }
                                 }
                                 return false;
                                 }
@@ -1350,20 +1440,53 @@ namespace newApi.Services
                                 var expertAccount = await accountService.GetAsync(expertStripeAccountId);
                                 if (expertAccount.ChargesEnabled == false || expertAccount.PayoutsEnabled == false)
                                 {
-                                await _loggingService.LogCriticalAsync(
-                                    message: "CRITICAL: Expert account not enabled for transfers",
-                                    details: $"Expert {searchHire.ExpertId} account {expertStripeAccountId} is not fully verified.",
-                                    userId: searchHire.ExpertId,
-                                    source: "StripeRefundService.ProcessMoneyDistributionAsync",
-                                    relatedEntityType: "Account",
-                                    relatedEntityId: (int)searchHire.ExpertId,
-                                    additionalData: new { AccountId = expertStripeAccountId, ChargesEnabled = expertAccount.ChargesEnabled, PayoutsEnabled = expertAccount.PayoutsEnabled }
-                                );
-                                if (transaction != null)
-                                {
-                                await transaction.RollbackAsync();
-                                }
-                                return false;
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL: Expert account not enabled for transfers",
+                                        details: $"Expert {searchHire.ExpertId} account {expertStripeAccountId} is not fully verified. " +
+                                                $"{(needsRefund && !string.IsNullOrEmpty(createdRefundId) ? $"Refund {createdRefundId} was already processed - PRESERVED." : "No refund processed.")}",
+                                        userId: searchHire.ExpertId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                        relatedEntityType: "Account",
+                                        relatedEntityId: (int)searchHire.ExpertId,
+                                        additionalData: new { 
+                                            AccountId = expertStripeAccountId, 
+                                            ChargesEnabled = expertAccount.ChargesEnabled, 
+                                            PayoutsEnabled = expertAccount.PayoutsEnabled,
+                                            RefundAlreadyProcessed = !string.IsNullOrEmpty(createdRefundId),
+                                            RefundId = createdRefundId
+                                        }
+                                    );
+                                    // ✅ CORRECCIÓN CRÍTICA DE SEGURIDAD: Si el refund ya se procesó, NO hacer rollback
+                                    if (transaction != null)
+                                    {
+                                        if (!string.IsNullOrEmpty(createdRefundId))
+                                        {
+                                            // Refund ya procesado - commit parcial
+                                            try
+                                            {
+                                                await _context.SaveChangesAsync();
+                                                await transaction.CommitAsync();
+                                            }
+                                            catch (Exception commitEx)
+                                            {
+                                                await _loggingService.LogCriticalAsync(
+                                                    message: "CRITICAL: Partial commit failed - refund already in Stripe",
+                                                    details: $"SearchHire {searchHireId}: Refund {createdRefundId} exists in Stripe but commit failed. MANUAL SYNC REQUIRED.",
+                                                    userId: initiatedByUserId ?? searchHire.ClientId,
+                                                    source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                                    relatedEntityType: "SearchHire",
+                                                    relatedEntityId: searchHireId,
+                                                    additionalData: new { RefundId = createdRefundId, Error = commitEx.Message }
+                                                );
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // No hay refund procesado - rollback seguro
+                                            await transaction.RollbackAsync();
+                                        }
+                                    }
+                                    return false;
                                 }
 
                                 // ✅ PATRÓN OUTBOX: Guardar en BD ANTES de llamar a Stripe (con estado "pending")
@@ -1386,46 +1509,79 @@ namespace newApi.Services
                                 }
                                 catch (Exception saveEx)
                                 {
-                                // Si falla al guardar inicial, NO llamar a Stripe
-                                _context.FinancialTransactions.Remove(pendingTransferTx);
-                                
-                                // Si ya se procesó el refund, NO hacer rollback completo (solo eliminar transfer pendiente)
-                                // El refund ya está procesado, solo falló el guardado inicial del transfer
-                                if (transaction != null && !needsRefund)
-                                {
-                                    await transaction.RollbackAsync();
-                                }
-                                else if (transaction != null && pendingRefundTx != null)
-                                {
-                                    // Si también hay refund pendiente, hacer rollback completo
-                                    _context.FinancialTransactions.Remove(pendingRefundTx);
-                                    await transaction.RollbackAsync();
-                                }
-                                
-                                await _loggingService.LogCriticalAsync(
-                                    message: "CRITICAL: Failed to save pending transfer transaction before Stripe",
-                                    details: $"SearchHire {searchHireId} finalization failed: Cannot proceed with Stripe transfer because SaveChangesAsync failed when saving pending transaction. " +
-                                            $"No money was moved for transfer. Error: {saveEx.Message}. " +
-                                            $"{(needsRefund && !string.IsNullOrEmpty(createdRefundId) ? $"Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) - ALREADY PROCESSED ✅" : "No refund needed")}. " +
-                                            $"Stack Trace: {saveEx.StackTrace}. " +
-                                            $"ACTION REQUIRED: Check database connectivity and retry.",
-                                    userId: initiatedByUserId ?? searchHire.ClientId,
-                                    source: "StripeRefundService.ProcessMoneyDistributionAsync",
-                                    relatedEntityType: "SearchHire",
-                                    relatedEntityId: searchHireId,
-                                    additionalData: new { 
-                                        Status = statusValue,
-                                        ExpertTransferAmount = expertAmount,
-                                        RefundAlreadyProcessed = needsRefund && !string.IsNullOrEmpty(createdRefundId),
-                                        RefundId = createdRefundId,
-                                        ErrorType = saveEx.GetType().Name,
-                                        ErrorMessage = saveEx.Message,
-                                        StackTrace = saveEx.StackTrace,
-                                        InnerException = saveEx.InnerException?.Message
+                                    // Si falla al guardar inicial, NO llamar a Stripe
+                                    _context.FinancialTransactions.Remove(pendingTransferTx);
+                                    
+                                    // ✅ CORRECCIÓN CRÍTICA DE SEGURIDAD: Verificar si refund ya se procesó
+                                    bool refundAlreadyInStripe = !string.IsNullOrEmpty(createdRefundId);
+                                    
+                                    if (transaction != null)
+                                    {
+                                        if (refundAlreadyInStripe)
+                                        {
+                                            // Refund ya procesado en Stripe - commit parcial para preservar registro
+                                            try
+                                            {
+                                                await _context.SaveChangesAsync();
+                                                await transaction.CommitAsync();
+                                                
+                                                await _loggingService.LogWarningAsync(
+                                                    message: "Partial commit: Refund preserved after transfer save failure",
+                                                    details: $"SearchHire {searchHireId}: Transfer save failed but refund {createdRefundId} preserved in DB.",
+                                                    userId: initiatedByUserId ?? searchHire.ClientId,
+                                                    source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                                    relatedEntityType: "SearchHire",
+                                                    relatedEntityId: searchHireId,
+                                                    additionalData: new { RefundId = createdRefundId }
+                                                );
+                                            }
+                                            catch (Exception commitEx)
+                                            {
+                                                await _loggingService.LogCriticalAsync(
+                                                    message: "CRITICAL: Partial commit failed - refund already in Stripe",
+                                                    details: $"SearchHire {searchHireId}: Refund {createdRefundId} exists in Stripe but commit failed. MANUAL SYNC REQUIRED.",
+                                                    userId: initiatedByUserId ?? searchHire.ClientId,
+                                                    source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                                    relatedEntityType: "SearchHire",
+                                                    relatedEntityId: searchHireId,
+                                                    additionalData: new { RefundId = createdRefundId, Error = commitEx.Message }
+                                                );
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // No hay refund procesado - rollback seguro
+                                            if (pendingRefundTx != null)
+                                            {
+                                                _context.FinancialTransactions.Remove(pendingRefundTx);
+                                            }
+                                            await transaction.RollbackAsync();
+                                        }
                                     }
-                                );
-                                return false;
-                            }
+                                    
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL: Failed to save pending transfer transaction before Stripe",
+                                        details: $"SearchHire {searchHireId} finalization failed: Cannot proceed with Stripe transfer because SaveChangesAsync failed when saving pending transaction. " +
+                                                $"No money was moved for transfer. Error: {saveEx.Message}. " +
+                                                $"{(refundAlreadyInStripe ? $"Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) - ALREADY PROCESSED AND PRESERVED ✅" : "No refund processed")}. " +
+                                                $"ACTION REQUIRED: Check database connectivity and retry transfer manually.",
+                                        userId: initiatedByUserId ?? searchHire.ClientId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId,
+                                        additionalData: new { 
+                                            Status = statusValue,
+                                            ExpertTransferAmount = expertAmount,
+                                            RefundAlreadyProcessed = refundAlreadyInStripe,
+                                            RefundId = createdRefundId,
+                                            ErrorType = saveEx.GetType().Name,
+                                            ErrorMessage = saveEx.Message,
+                                            StackTrace = saveEx.StackTrace,
+                                            InnerException = saveEx.InnerException?.Message
+                                        }
+                                    );
+                                    return false;
+                                }
 
                             var transferOptions = new TransferCreateOptions
                             {
@@ -1471,34 +1627,68 @@ namespace newApi.Services
                                 }
                             }
                             
-                            // ✅ CRÍTICO: Verificar que el transfer esté en estado "paid" o "paid_out"
+                            // ✅ CRÍTICO: Verificar que el transfer esté en estado válido
                             bool transferVerified = await VerifyTransferStatusAsync(transfer.Id, searchHireId, initiatedByUserId);
                             if (!transferVerified)
                             {
-                                // Si la verificación falla, eliminar la transacción pendiente
+                                // Si la verificación falla, eliminar la transacción pendiente del transfer
                                 _context.FinancialTransactions.Remove(pendingTransferTx);
                                 
-                                // Si ya se procesó el refund, NO hacer rollback completo (solo eliminar transfer pendiente)
-                                // El refund ya está procesado, solo falló el transfer
-                                if (transaction != null && !needsRefund)
+                                // ✅ CORRECCIÓN CRÍTICA DE SEGURIDAD: Verificar si refund ya se procesó
+                                bool refundAlreadyInStripeForVerify = !string.IsNullOrEmpty(createdRefundId);
+                                
+                                if (transaction != null)
                                 {
-                                    await transaction.RollbackAsync();
-                                }
-                                else if (transaction != null && pendingRefundTx != null)
-                                {
-                                    // Si también hay refund pendiente, hacer rollback completo
-                                    _context.FinancialTransactions.Remove(pendingRefundTx);
-                                    await transaction.RollbackAsync();
+                                    if (refundAlreadyInStripeForVerify)
+                                    {
+                                        // Refund ya procesado en Stripe - commit parcial para preservar registro
+                                        try
+                                        {
+                                            await _context.SaveChangesAsync();
+                                            await transaction.CommitAsync();
+                                            
+                                            await _loggingService.LogWarningAsync(
+                                                message: "Partial commit: Refund preserved after transfer verification failure",
+                                                details: $"SearchHire {searchHireId}: Transfer {transfer.Id} verification failed but refund {createdRefundId} preserved in DB.",
+                                                userId: initiatedByUserId ?? searchHire.ClientId,
+                                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                                relatedEntityType: "SearchHire",
+                                                relatedEntityId: searchHireId,
+                                                additionalData: new { RefundId = createdRefundId, TransferId = transfer.Id }
+                                            );
+                                        }
+                                        catch (Exception commitEx)
+                                        {
+                                            await _loggingService.LogCriticalAsync(
+                                                message: "CRITICAL: Partial commit failed - refund already in Stripe",
+                                                details: $"SearchHire {searchHireId}: Refund {createdRefundId} exists in Stripe but commit failed. MANUAL SYNC REQUIRED.",
+                                                userId: initiatedByUserId ?? searchHire.ClientId,
+                                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                                relatedEntityType: "SearchHire",
+                                                relatedEntityId: searchHireId,
+                                                additionalData: new { RefundId = createdRefundId, Error = commitEx.Message }
+                                            );
+                                        }
+                                    }
+                                    else
+                                    {
+                                        // No hay refund procesado - rollback seguro
+                                        if (pendingRefundTx != null)
+                                        {
+                                            _context.FinancialTransactions.Remove(pendingRefundTx);
+                                        }
+                                        await transaction.RollbackAsync();
+                                    }
                                 }
                                 
                                 await _loggingService.LogCriticalAsync(
-                                    message: "CRITICAL: Transfer not verified - money distribution rolled back",
-                                    details: $"SearchHire {searchHireId} finalization failed: transfer {transfer.Id} was created but not in 'paid' or 'paid_out' status. " +
+                                    message: "CRITICAL: Transfer not verified - partial money distribution",
+                                    details: $"SearchHire {searchHireId} finalization: transfer {transfer.Id} was created but verification failed. " +
                                             $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
                                             $"1) Verify transfer {transfer.Id} status in Stripe " +
                                             $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) " +
                                             $"3) Platform retains {platformAmount:F2}€. " +
-                                            $"{(needsRefund && !string.IsNullOrEmpty(createdRefundId) ? $"Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) - ALREADY PROCESSED" : "")}",
+                                            $"{(refundAlreadyInStripeForVerify ? $"Refund {clientRefundAmount:F2}€ to Client - PRESERVED IN DB ✅" : "No refund processed")}",
                                     userId: initiatedByUserId ?? searchHire.ClientId,
                                     source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                     relatedEntityType: "SearchHire",
@@ -1509,7 +1699,8 @@ namespace newApi.Services
                                         ClientRefundAmount = clientRefundAmount,
                                         ExpertTransferAmount = expertAmount,
                                         PlatformAmount = platformAmount,
-                                        RefundAlreadyProcessed = needsRefund && !string.IsNullOrEmpty(createdRefundId)
+                                        RefundAlreadyProcessed = refundAlreadyInStripeForVerify,
+                                        RefundId = createdRefundId
                                     }
                                 );
                                 return false;
@@ -1698,23 +1889,63 @@ namespace newApi.Services
                             }
                             catch (StripeException transferEx)
                             {
-                                // Si el transfer falla, eliminar la transacción pendiente
+                                // Si el transfer falla, eliminar la transacción pendiente del transfer
                                 if (pendingTransferTx != null)
                                 {
                                     _context.FinancialTransactions.Remove(pendingTransferTx);
                                 }
                                 
-                                // ✅ CRÍTICO: Si ya se procesó el refund, NO hacer rollback completo
-                                // El refund ya está procesado en Stripe, solo falló el transfer
-                                // Hacer rollback solo de la transacción de BD para el transfer pendiente
+                                // ✅ CORRECCIÓN CRÍTICA DE SEGURIDAD: Si el refund YA se procesó en Stripe,
+                                // NO hacer rollback - hacer COMMIT parcial para mantener registro del refund
+                                // Esto previene doble refund y pérdida de trazabilidad
+                                bool refundWasProcessed = !string.IsNullOrEmpty(createdRefundId);
+                                
                                 if (transaction != null)
                                 {
-                                    // Si hay refund pendiente también (no debería pasar porque Refund se ejecuta primero), hacer rollback completo
-                                    if (pendingRefundTx != null)
+                                    if (refundWasProcessed)
                                     {
-                                        _context.FinancialTransactions.Remove(pendingRefundTx);
+                                        // ✅ COMMIT PARCIAL: Refund ya procesado en Stripe, guardar su registro
+                                        // Solo el transfer pendiente fue eliminado del contexto
+                                        try
+                                        {
+                                            await _context.SaveChangesAsync(); // Guardar estado actual (sin transfer pendiente)
+                                            await transaction.CommitAsync();
+                                            
+                                            await _loggingService.LogWarningAsync(
+                                                message: "Partial commit: Refund saved, transfer failed",
+                                                details: $"SearchHire {searchHireId}: Refund {createdRefundId} was committed to DB because it was already processed in Stripe. " +
+                                                        $"Transfer failed and was NOT saved. Manual intervention needed for transfer.",
+                                                userId: initiatedByUserId ?? searchHire.ClientId,
+                                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                                relatedEntityType: "SearchHire",
+                                                relatedEntityId: searchHireId,
+                                                additionalData: new { RefundId = createdRefundId, TransferError = transferEx.Message }
+                                            );
+                                        }
+                                        catch (Exception commitEx)
+                                        {
+                                            // Si el commit falla, log crítico pero NO hacer rollback (dinero ya se movió)
+                                            await _loggingService.LogCriticalAsync(
+                                                message: "CRITICAL: Failed to commit partial transaction after refund",
+                                                details: $"SearchHire {searchHireId}: Refund {createdRefundId} exists in Stripe but commit failed. " +
+                                                        $"MONEY ALREADY MOVED. Manual sync required. CommitError: {commitEx.Message}",
+                                                userId: initiatedByUserId ?? searchHire.ClientId,
+                                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                                relatedEntityType: "SearchHire",
+                                                relatedEntityId: searchHireId,
+                                                additionalData: new { RefundId = createdRefundId, CommitError = commitEx.Message }
+                                            );
+                                        }
                                     }
-                                    await transaction.RollbackAsync();
+                                    else
+                                    {
+                                        // No hay refund procesado, hacer rollback completo seguro
+                                        if (pendingRefundTx != null)
+                                        {
+                                            _context.FinancialTransactions.Remove(pendingRefundTx);
+                                        }
+                                        await transaction.RollbackAsync();
+                                    }
                                 }
                                 
                                 // 🚨 LOG CRÍTICO: Transfer falló
@@ -1753,21 +1984,74 @@ namespace newApi.Services
                         
                         // Verificar que todas las operaciones necesarias fueron exitosas
                         bool allOperationsSucceeded = true;
-                        if (needsRefund && string.IsNullOrEmpty(createdRefundId))
+                        bool finalRefundCompleted = !string.IsNullOrEmpty(createdRefundId);
+                        bool finalTransferCompleted = !string.IsNullOrEmpty(createdTransferId);
+                        
+                        if (needsRefund && !finalRefundCompleted)
                         {
                             allOperationsSucceeded = false;
                         }
-                        if (needsTransfer && string.IsNullOrEmpty(createdTransferId))
+                        if (needsTransfer && !finalTransferCompleted)
                         {
                             allOperationsSucceeded = false;
                         }
                         
                         if (!allOperationsSucceeded)
                         {
-                            // Si alguna operación falló, hacer rollback
+                            // ✅ CORRECCIÓN DE SEGURIDAD: Si alguna operación YA se procesó en Stripe,
+                            // NO hacer rollback completo - hacer commit parcial para preservar registros
                             if (transaction != null)
                             {
-                                await transaction.RollbackAsync();
+                                if (finalRefundCompleted || finalTransferCompleted)
+                                {
+                                    // Commit parcial: guardar lo que sí se procesó
+                                    try
+                                    {
+                                        // Eliminar transacciones pendientes que no se completaron
+                                        if (pendingRefundTx != null && !finalRefundCompleted)
+                                        {
+                                            _context.FinancialTransactions.Remove(pendingRefundTx);
+                                        }
+                                        if (pendingTransferTx != null && !finalTransferCompleted)
+                                        {
+                                            _context.FinancialTransactions.Remove(pendingTransferTx);
+                                        }
+                                        
+                                        await _context.SaveChangesAsync();
+                                        await transaction.CommitAsync();
+                                        
+                                        await _loggingService.LogWarningAsync(
+                                            message: "Partial commit: Some operations succeeded",
+                                            details: $"SearchHire {searchHireId}: Committed partial results after validation. " +
+                                                    $"Refund: {(finalRefundCompleted ? $"SAVED ({createdRefundId})" : "not processed")}, " +
+                                                    $"Transfer: {(finalTransferCompleted ? $"SAVED ({createdTransferId})" : "not processed")}.",
+                                            userId: initiatedByUserId ?? searchHire.ClientId,
+                                            source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                            relatedEntityType: "SearchHire",
+                                            relatedEntityId: searchHireId,
+                                            additionalData: new { RefundId = createdRefundId, TransferId = createdTransferId }
+                                        );
+                                    }
+                                    catch (Exception commitEx)
+                                    {
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL: Partial commit failed - money already moved",
+                                            details: $"SearchHire {searchHireId}: Commit failed but money already moved. " +
+                                                    $"RefundInStripe: {createdRefundId ?? "none"}, TransferInStripe: {createdTransferId ?? "none"}. " +
+                                                    $"MANUAL SYNC REQUIRED. Error: {commitEx.Message}",
+                                            userId: initiatedByUserId ?? searchHire.ClientId,
+                                            source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                            relatedEntityType: "SearchHire",
+                                            relatedEntityId: searchHireId,
+                                            additionalData: new { RefundId = createdRefundId, TransferId = createdTransferId, Error = commitEx.Message }
+                                        );
+                                    }
+                                }
+                                else
+                                {
+                                    // Ninguna operación se completó - rollback seguro
+                                    await transaction.RollbackAsync();
+                                }
                             }
                             return false;
                         }
@@ -1811,12 +2095,12 @@ namespace newApi.Services
                     }
                     catch (StripeException ex)
                     {
-                        // ✅ CORRECCIÓN CRÍTICA: Manejar rollback según qué operaciones ya se procesaron
-                        // Si el Refund ya se procesó en Stripe, NO hacer rollback completo (solo eliminar transacciones pendientes)
+                        // ✅ CORRECCIÓN CRÍTICA DE SEGURIDAD: Manejar rollback según qué operaciones ya se procesaron
+                        // Si el Refund ya se procesó en Stripe, NO hacer rollback - hacer COMMIT parcial
                         bool refundProcessedInStripe = !string.IsNullOrEmpty(createdRefundId);
                         bool transferProcessedInStripe = !string.IsNullOrEmpty(createdTransferId);
                         
-                        // Eliminar transacciones pendientes que no se completaron
+                        // Eliminar transacciones pendientes que NO se completaron en Stripe
                         if (pendingRefundTx != null && !refundProcessedInStripe)
                         {
                             _context.FinancialTransactions.Remove(pendingRefundTx);
@@ -1826,15 +2110,59 @@ namespace newApi.Services
                             _context.FinancialTransactions.Remove(pendingTransferTx);
                         }
                         
-                        // Solo hacer rollback si creamos la transacción y ninguna operación se completó en Stripe
-                        if (transaction != null && !refundProcessedInStripe && !transferProcessedInStripe)
-                    {
-                        await transaction.RollbackAsync();
-                        }
-                        else if (transaction != null)
+                        if (transaction != null)
                         {
-                            // Si alguna operación se completó, hacer rollback pero mantener registro de lo que se procesó
-                            await transaction.RollbackAsync();
+                            if (refundProcessedInStripe || transferProcessedInStripe)
+                            {
+                                // ✅ COMMIT PARCIAL: Al menos una operación ya se procesó en Stripe
+                                // Guardar registros de las operaciones completadas para evitar duplicados
+                                try
+                                {
+                                    await _context.SaveChangesAsync();
+                                    await transaction.CommitAsync();
+                                    
+                                    await _loggingService.LogWarningAsync(
+                                        message: "Partial commit after StripeException: processed operations saved",
+                                        details: $"SearchHire {searchHireId}: Committed partial results. " +
+                                                $"Refund: {(refundProcessedInStripe ? $"SAVED ({createdRefundId})" : "not processed")}, " +
+                                                $"Transfer: {(transferProcessedInStripe ? $"SAVED ({createdTransferId})" : "not processed")}. " +
+                                                $"StripeError: {ex.Message}",
+                                        userId: initiatedByUserId ?? searchHire.ClientId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId,
+                                        additionalData: new { 
+                                            RefundId = createdRefundId, 
+                                            TransferId = createdTransferId,
+                                            StripeError = ex.Message 
+                                        }
+                                    );
+                                }
+                                catch (Exception commitEx)
+                                {
+                                    // Si commit falla, el dinero ya se movió en Stripe - log crítico pero NO rollback
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL: Partial commit failed - money already moved in Stripe",
+                                        details: $"SearchHire {searchHireId}: Commit failed but money already moved. " +
+                                                $"RefundInStripe: {createdRefundId ?? "none"}, TransferInStripe: {createdTransferId ?? "none"}. " +
+                                                $"MANUAL SYNC REQUIRED. CommitError: {commitEx.Message}",
+                                        userId: initiatedByUserId ?? searchHire.ClientId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId,
+                                        additionalData: new { 
+                                            RefundId = createdRefundId, 
+                                            TransferId = createdTransferId,
+                                            CommitError = commitEx.Message 
+                                        }
+                                    );
+                                }
+                            }
+                            else
+                            {
+                                // Ninguna operación se completó en Stripe - rollback seguro
+                                await transaction.RollbackAsync();
+                            }
                         }
                         
                         // ✅ MEJORA GROK: Notificar al experto si hay error de Stripe (estado ya está cambiado)
@@ -1910,11 +2238,12 @@ namespace newApi.Services
                     }
                     catch (Exception ex)
                     {
-                        // ✅ CORRECCIÓN CRÍTICA: Manejar rollback según qué operaciones ya se procesaron
+                        // ✅ CORRECCIÓN CRÍTICA DE SEGURIDAD: Manejar rollback según qué operaciones ya se procesaron
+                        // Si alguna operación ya se procesó en Stripe, NO hacer rollback - hacer COMMIT parcial
                         bool refundProcessedInStripe = !string.IsNullOrEmpty(createdRefundId);
                         bool transferProcessedInStripe = !string.IsNullOrEmpty(createdTransferId);
                         
-                        // Eliminar transacciones pendientes que no se completaron
+                        // Eliminar transacciones pendientes que NO se completaron en Stripe
                         if (pendingRefundTx != null && !refundProcessedInStripe)
                         {
                             _context.FinancialTransactions.Remove(pendingRefundTx);
@@ -1924,15 +2253,59 @@ namespace newApi.Services
                             _context.FinancialTransactions.Remove(pendingTransferTx);
                         }
                         
-                        // Solo hacer rollback si creamos la transacción y ninguna operación se completó en Stripe
-                        if (transaction != null && !refundProcessedInStripe && !transferProcessedInStripe)
-                    {
-                        await transaction.RollbackAsync();
-                        }
-                        else if (transaction != null)
+                        if (transaction != null)
                         {
-                            // Si alguna operación se completó, hacer rollback pero mantener registro de lo que se procesó
-                            await transaction.RollbackAsync();
+                            if (refundProcessedInStripe || transferProcessedInStripe)
+                            {
+                                // ✅ COMMIT PARCIAL: Al menos una operación ya se procesó en Stripe
+                                // Guardar registros de las operaciones completadas para evitar duplicados
+                                try
+                                {
+                                    await _context.SaveChangesAsync();
+                                    await transaction.CommitAsync();
+                                    
+                                    await _loggingService.LogWarningAsync(
+                                        message: "Partial commit after Exception: processed operations saved",
+                                        details: $"SearchHire {searchHireId}: Committed partial results. " +
+                                                $"Refund: {(refundProcessedInStripe ? $"SAVED ({createdRefundId})" : "not processed")}, " +
+                                                $"Transfer: {(transferProcessedInStripe ? $"SAVED ({createdTransferId})" : "not processed")}. " +
+                                                $"Error: {ex.Message}",
+                                        userId: initiatedByUserId ?? searchHire.ClientId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId,
+                                        additionalData: new { 
+                                            RefundId = createdRefundId, 
+                                            TransferId = createdTransferId,
+                                            Error = ex.Message 
+                                        }
+                                    );
+                                }
+                                catch (Exception commitEx)
+                                {
+                                    // Si commit falla, el dinero ya se movió en Stripe - log crítico pero NO rollback
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL: Partial commit failed - money already moved in Stripe",
+                                        details: $"SearchHire {searchHireId}: Commit failed but money already moved. " +
+                                                $"RefundInStripe: {createdRefundId ?? "none"}, TransferInStripe: {createdTransferId ?? "none"}. " +
+                                                $"MANUAL SYNC REQUIRED. CommitError: {commitEx.Message}",
+                                        userId: initiatedByUserId ?? searchHire.ClientId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId,
+                                        additionalData: new { 
+                                            RefundId = createdRefundId, 
+                                            TransferId = createdTransferId,
+                                            CommitError = commitEx.Message 
+                                        }
+                                    );
+                                }
+                            }
+                            else
+                            {
+                                // Ninguna operación se completó en Stripe - rollback seguro
+                                await transaction.RollbackAsync();
+                            }
                         }
                         
                         // 🚨 LOG CRÍTICO: Error general durante distribución (una sola vez, con información completa)

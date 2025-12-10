@@ -97,3 +97,5 @@ Una vez aplicada la migración:
 **¡Listo!** Todos los errores están corregidos y la migración está lista para aplicar. 🚀
 
 
+
+

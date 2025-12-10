@@ -90,3 +90,5 @@ Una vez aplicada la migración, el endpoint `/api/Admin/stripe/mode` debería fu
 
 **Nota:** El archivo `add-stripe-mode-columns.sql` contiene el SQL listo para ejecutar.
 
+
+

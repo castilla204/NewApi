@@ -105,3 +105,5 @@ Authorization: Bearer {token}
 3. **Guardar** la información del usuario al hacer login y reutilizarla
 4. **Manejar** el caso cuando el usuario no es experto (404 en expert-profile)
 
+
+

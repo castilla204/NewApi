@@ -375,3 +375,5 @@ interface SetStripeModeRequest {
 
 **Recomendación:** Usa `toggle-mode` para la mayoría de casos, ya que es más simple y no requiere saber el modo actual.
 
+
+

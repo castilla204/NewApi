@@ -140,3 +140,5 @@ Verifica que los nombres de las tablas sean correctos (con mayúsculas/minúscul
 **¡Listo!** Una vez aplicada la migración manualmente, el sistema funcionará correctamente. 🚀
 
 
+
+

@@ -1099,7 +1099,7 @@ namespace newApi.Services
                 issuer: _configuration["Jwt:Issuer"],
                 audience: _configuration["Jwt:Audience"],
                 claims: claims,
-                expires: DateTime.UtcNow.AddMinutes(30), // ✅ SEGURIDAD 2025: 30 minutos (antes: 24h)
+                expires: DateTime.UtcNow.AddHours(1), // ✅ BEST PRACTICE 2024: 1 hora (estándar Microsoft/Google/Auth0)
                 notBefore: DateTime.UtcNow, // ✅ SEGURIDAD: Token válido desde ahora
                 signingCredentials: creds
             );
@@ -1128,7 +1128,7 @@ namespace newApi.Services
             {
                 Token = token,
                 UserId = userId,
-                ExpiresAt = DateTime.UtcNow.AddDays(7), // ✅ Best Practice: 7 días
+                ExpiresAt = DateTime.UtcNow.AddDays(30), // ✅ BEST PRACTICE 2024: 30 días (estándar industria - balance seguridad/UX)
                 CreatedByIp = ipAddress,
                 DeviceInfo = GetDeviceInfo()
             };

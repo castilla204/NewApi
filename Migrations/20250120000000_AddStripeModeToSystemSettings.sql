@@ -13,3 +13,5 @@ ADD COLUMN "StripeModeChangedAt" timestamp with time zone NULL;
 ALTER TABLE "SystemSettings" 
 ADD COLUMN "StripeModeChangedByUserId" integer NULL;
 
+
+

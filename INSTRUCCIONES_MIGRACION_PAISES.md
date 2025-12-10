@@ -145,3 +145,5 @@ ALTER TABLE "ExpertProfiles" DROP COLUMN "Country";
 **¡Listo!** Una vez aplicada la migración, el sistema comenzará a detectar y guardar los países automáticamente. 🚀
 
 
+
+

@@ -86,3 +86,5 @@ SearchHires     | ExpertCountry  | text      | YES
 **¡Ejecuta el SQL y la migración estará aplicada!** 🎉
 
 
+
+

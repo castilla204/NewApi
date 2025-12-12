@@ -247,9 +247,43 @@ namespace newApi.Services
                     return false;
                 }
 
-                var clientRefundAmount = searchHire.Amount * (config.ClientPercentage / 100);
-                var expertAmount = searchHire.Amount * (config.ExpertPercentage / 100);
-                var platformAmount = searchHire.Amount * (config.PlatformPercentage / 100);
+                // ✅ STRIPE TAX: Calcular sobre BASE PRE-TAX (sin IVA), no sobre total con IVA
+                // Si BaseAmount es null (datos antiguos), usar Amount como fallback para compatibilidad
+                var baseAmount = searchHire.BaseAmount ?? searchHire.Amount;
+                
+                if (searchHire.BaseAmount == null)
+                {
+                    // ⚠️ WARNING: No hay BaseAmount, usando Amount como fallback
+                    // Esto puede causar que se calcule comisión sobre IVA en datos antiguos
+                    await _loggingService.LogWarningAsync(
+                        message: "Calculating percentages on total amount (tax may be included)",
+                        details: $"SearchHire {searchHireId} does not have BaseAmount. Using Amount {searchHire.Amount}€ as fallback. " +
+                                $"This may cause commission to be calculated on tax amount. " +
+                                $"TaxAmount: {searchHire.TaxAmount ?? 0}€",
+                        userId: initiatedByUserId ?? searchHire.ClientId,
+                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId
+                    );
+                }
+
+                var clientRefundAmount = baseAmount * (config.ClientPercentage / 100);
+                var expertAmount = baseAmount * (config.ExpertPercentage / 100);
+                var platformAmount = baseAmount * (config.PlatformPercentage / 100);
+                
+                // ✅ Logging mejorado con información de tax
+                await _loggingService.LogInfoAsync(
+                    message: "Money distribution calculated on base amount (pre-tax)",
+                    details: $"BaseAmount: {baseAmount}€, TaxAmount: {searchHire.TaxAmount ?? 0}€, " +
+                            $"TotalAmount: {searchHire.Amount}€. " +
+                            $"Distribution: Client {clientRefundAmount}€ ({config.ClientPercentage}%), " +
+                            $"Expert {expertAmount}€ ({config.ExpertPercentage}%), " +
+                            $"Platform {platformAmount}€ ({config.PlatformPercentage}%)",
+                    userId: initiatedByUserId ?? searchHire.ClientId,
+                    source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId
+                );
 
                 // MODIFICACIÓN: Estimar fees de Stripe y warning si platformAmount no cubre (para evitar pérdidas, según guías 2025)
                 var stripeFeeEstimate = searchHire.Amount * 0.029m + 0.30m; // 2.9% + 0.30€ estándar para EUR

@@ -189,6 +189,8 @@ namespace newApi.Services
                 StatusTranslated = hire.Status?.StatusValue != null ? SearchHireStatusExtensions.ToSpanishTranslation(hire.Status.StatusValue) : "Desconocido",
                 ExpertTransferId = hire.ExpertTransferId,
                 Amount = hire.Amount,
+                BaseAmount = hire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
+                TaxAmount = hire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
                 CreatedAt = hire.CreatedAt,
                 UpdatedAt = hire.UpdatedAt,
                 Client = hire.ClientId.HasValue && hire.Client != null ? new UserDto

@@ -1325,10 +1325,17 @@ namespace newApi.Controllers
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {
                                     Name = $"Payment for Service {service.Id}"
-                                }
+                                },
+                                // ✅ STRIPE TAX: Configurar tax como inclusivo (el precio ya incluye IVA)
+                                TaxBehavior = "inclusive" // Stripe hace reverse calc automático
                             },
                             Quantity = 1
                         }
+                    },
+                    // ✅ STRIPE TAX: Habilitar cálculo automático de tax basado en ubicación del comprador
+                    AutomaticTax = new SessionAutomaticTaxOptions
+                    {
+                        Enabled = true // Habilita cálculo auto basado en IP, billing/shipping address
                     },
                     Mode = "payment",
                     SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}",
@@ -2327,6 +2334,73 @@ namespace newApi.Controllers
                 var expertTimezone = expertProfile?.Timezone ?? "UTC";
                 var expertCountry = expertProfile?.Country;
 
+                // ✅ STRIPE TAX: Obtener tax breakdown de la Checkout Session (NO PaymentIntent)
+                // El tax breakdown está en la Session, no en el PaymentIntent
+                decimal totalAmount = service.Price;
+                decimal? taxAmount = null;
+                decimal? baseAmount = null;
+                
+                try
+                {
+                    var sessionService = new SessionService();
+                    var sessionGetOptions = new SessionGetOptions
+                    {
+                        Expand = new List<string> { "total_details.breakdown" } // Opcional pero recomendado para breakdown detallado
+                    };
+                    var sessionWithTax = await sessionService.GetAsync(session.Id, sessionGetOptions);
+                    
+                    if (sessionWithTax.AmountTotal.HasValue)
+                    {
+                        totalAmount = sessionWithTax.AmountTotal.Value / 100m; // Total pagado (en centavos, dividir por 100)
+                        taxAmount = (sessionWithTax.TotalDetails?.AmountTax ?? 0) / 100m; // IVA (en centavos, dividir por 100)
+                        baseAmount = totalAmount - taxAmount; // Base pre-tax
+                        
+                        // ✅ VALIDACIÓN: Si AutomaticTax no aplicó (ej. exención B2B), AmountTax será 0
+                        if (sessionWithTax.AutomaticTax?.Status == "requires_location_inputs")
+                        {
+                            // Stripe necesita más información de ubicación - usar precio completo como fallback
+                            await _loggingService.LogWarningAsync(
+                                message: "Stripe Tax requires location inputs - using full amount as base",
+                                details: $"Session {session.Id} requires location inputs for tax calculation. Using full amount {totalAmount}€ as base amount.",
+                                userId: userId,
+                                source: "SubscriptionController.HandlePendingHireCompleted",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: null
+                            );
+                            baseAmount = totalAmount;
+                            taxAmount = 0;
+                        }
+                    }
+                    else
+                    {
+                        // ✅ FALLBACK: Si AmountTotal no tiene valor, usar service.Price como base
+                        await _loggingService.LogWarningAsync(
+                            message: "Stripe Session AmountTotal is null - using service price as base",
+                            details: $"Session {session.Id} does not have AmountTotal. Using service price {totalAmount}€ as base amount.",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: null
+                        );
+                        baseAmount = totalAmount; // totalAmount ya es service.Price
+                        taxAmount = 0;
+                    }
+                }
+                catch (Exception taxEx)
+                {
+                    // Si falla obtener tax breakdown, usar precio completo como fallback
+                    await _loggingService.LogWarningAsync(
+                        message: "Failed to get tax breakdown from Stripe Session - using full amount as base",
+                        details: $"Error getting tax breakdown from Session {session.Id}: {taxEx.Message}. Using full amount {totalAmount}€ as base amount.",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: null
+                    );
+                    baseAmount = totalAmount;
+                    taxAmount = 0;
+                }
+
                 // Create search hire
                 searchHire = new SearchHire
                 {
@@ -2335,7 +2409,9 @@ namespace newApi.Controllers
                     SearchServiceId = service.Id,
                     SearchId = search.Id,
                         StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Pending.ToStringValue()),
-                    Amount = service.Price,
+                    Amount = totalAmount, // Total con IVA (€110)
+                    BaseAmount = baseAmount, // Base sin IVA (€90.91) ✅ STRIPE TAX
+                    TaxAmount = taxAmount, // IVA (€19.09) ✅ STRIPE TAX
                     CreatedAt = DateTime.UtcNow,
                     CompletionDeadline = DateTime.UtcNow.AddDays(7),
                     ExpertAvailabilityId = currentAvailabilityId, // Guardar la disponibilidad usada
@@ -2960,10 +3036,17 @@ namespace newApi.Controllers
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {
                                     Name = $"Payment for Service {service.Id}"
-                                }
+                                },
+                                // ✅ STRIPE TAX: Configurar tax como inclusivo (el precio ya incluye IVA)
+                                TaxBehavior = "inclusive" // Stripe hace reverse calc automático
                             },
                             Quantity = 1
                         }
+                    },
+                    // ✅ STRIPE TAX: Habilitar cálculo automático de tax basado en ubicación del comprador
+                    AutomaticTax = new SessionAutomaticTaxOptions
+                    {
+                        Enabled = true // Habilita cálculo auto basado en IP, billing/shipping address
                     },
                     Mode = "payment",
                     SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}",

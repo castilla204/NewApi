@@ -174,6 +174,9 @@ namespace newApi.Controllers
                     SearchServiceId = searchService.Id,
                     StatusId = await GetStatusIdByValueAsync("pending"),
                     Amount = searchService.Price,
+                    // ✅ STRIPE TAX: Si no hay pago de Stripe (creación directa), usar Amount como BaseAmount y TaxAmount = 0
+                    BaseAmount = searchService.Price, // Sin pago Stripe, el precio completo es la base
+                    TaxAmount = 0, // Sin pago Stripe, no hay tax calculado
                     CreatedAt = DateTime.UtcNow,
                     ExpertAvailabilityId = currentAvailability?.Id, // Guardar la disponibilidad usada
                     ExpertTimezone = expertTimezone, // ✅ INTERNACIONALIZACIÓN: Snapshot del timezone del lugar de contratación

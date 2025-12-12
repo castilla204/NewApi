@@ -205,6 +205,9 @@ namespace newApi.Controllers
                         Status = s.SearchHire.Status.StatusValue,
                         StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(s.SearchHire.Status.StatusValue),
                         CreatedAt = s.SearchHire.CreatedAt,
+                        Amount = s.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
+                        BaseAmount = s.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
+                        TaxAmount = s.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
                         ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
                         ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                           Expert = s.SearchHire.Expert != null ? new UserDto
@@ -629,6 +632,9 @@ namespace newApi.Controllers
                             Status = s.SearchHire.Status.StatusValue,
                             StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(s.SearchHire.Status.StatusValue),
                             CreatedAt = s.SearchHire.CreatedAt,
+                            Amount = s.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
+                            BaseAmount = s.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
+                            TaxAmount = s.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
                             ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
                             ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                               Expert = s.SearchHire.Expert != null ? new UserDto
@@ -900,6 +906,9 @@ namespace newApi.Controllers
                         Status = search.SearchHire.Status.StatusValue,
                         StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(search.SearchHire.Status.StatusValue),
                         CreatedAt = search.SearchHire.CreatedAt,
+                        Amount = search.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
+                        BaseAmount = search.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
+                        TaxAmount = search.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
                         ExpertTimezone = search.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
                         ExpertCountry = search.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                           Expert = search.SearchHire.Expert != null ? new UserDto
@@ -1170,6 +1179,9 @@ namespace newApi.Controllers
                             Id = search.SearchHire.Id,
                             Status = search.SearchHire.Status.StatusValue,
                             CreatedAt = search.SearchHire.CreatedAt,
+                            Amount = search.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
+                            BaseAmount = search.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
+                            TaxAmount = search.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
                             ExpertTimezone = search.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
                             ExpertCountry = search.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                             Expert = search.SearchHire.Expert != null ? new UserDto

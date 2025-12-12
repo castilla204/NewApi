@@ -13,6 +13,18 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual SystemStatus Status { get; set; }
         public string? ExpertTransferId { get; set; }
         public decimal Amount { get; set; }
+        
+        /// <summary>
+        /// Base amount sin IVA/tax (pre-tax). Se calcula desde Stripe Tax breakdown.
+        /// Si es null, se usa Amount como fallback para compatibilidad con datos existentes.
+        /// </summary>
+        public decimal? BaseAmount { get; set; }
+        
+        /// <summary>
+        /// Monto de IVA/tax calculado por Stripe Tax. Si es null o 0, no hay tax aplicado.
+        /// </summary>
+        public decimal? TaxAmount { get; set; }
+        
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime? UpdatedAt { get; set; }
         public DateTime? CompletionDeadline { get; set; }

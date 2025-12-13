@@ -145,6 +145,78 @@ namespace newApi.Controllers
             }
         }
 
+        /// <summary>
+        /// Marca TODAS las notificaciones del usuario como leídas.
+        /// Llamar cuando el usuario ABRE el panel de notificaciones para quitar el badge/alerta.
+        /// </summary>
+        [HttpPut("read-all")]
+        public async Task<IActionResult> MarkAllAsRead()
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var now = DateTime.UtcNow;
+                
+                // Marcar todas las notificaciones NO leídas del usuario como leídas
+                var unreadNotifications = await _context.Notifications
+                    .Where(n => n.UserId == userId && !n.Read)
+                    .ToListAsync();
+
+                if (unreadNotifications.Count == 0)
+                {
+                    return Ok(new { message = "No unread notifications", markedCount = 0 });
+                }
+
+                foreach (var notification in unreadNotifications)
+                {
+                    notification.Read = true;
+                    notification.ReadAt = now;
+                }
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new { 
+                    message = "All notifications marked as read", 
+                    markedCount = unreadNotifications.Count 
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Obtiene el conteo de notificaciones NO leídas (para mostrar el badge/número en el icono).
+        /// Llamar periódicamente o al cargar la app para actualizar el badge.
+        /// </summary>
+        [HttpGet("unread-count")]
+        public async Task<IActionResult> GetUnreadCount()
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var unreadCount = await _context.Notifications
+                    .CountAsync(n => n.UserId == userId && !n.Read);
+
+                return Ok(new { unreadCount });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
         [HttpDelete("{id}")]
         [Authorize]
         public async Task<IActionResult> DeleteNotification(Guid id)

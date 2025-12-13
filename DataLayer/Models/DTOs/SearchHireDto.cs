@@ -128,6 +128,7 @@ namespace newApi.DataLayer.Models.DTOs
         public int CategoryId { get; set; }
         public int ServiceTypeId { get; set; }
         public string ServiceTypeName { get; set; }
+        public string ServiceTypeDescription { get; set; } // ✅ NUEVO
         public int? ServiceTypeCategoryId { get; set; }
         public bool RequiresAppointment { get; set; }
         public decimal Price { get; set; }

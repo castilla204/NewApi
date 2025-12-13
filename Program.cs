@@ -1261,6 +1261,7 @@ builder.Services.AddScoped<IAccountDeletionService, AccountDeletionService>();
 builder.Services.AddScoped<IAccountDeletionNotificationService, AccountDeletionNotificationService>();
 builder.Services.AddScoped<StripeRefundService>();
 builder.Services.AddScoped<IEmailService, EmailService>();
+builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<ILoggingService, LoggingService>();
 builder.Services.AddScoped<IInvoiceService, newApi.Services.InvoiceService>();
 builder.Services.AddScoped<IStripeValidationService, StripeValidationService>();

@@ -35,6 +35,7 @@ namespace newApi.Services
         private readonly IStripeValidationService _stripeValidationService;
         
         private readonly ITimezoneService _timezoneService;
+        private readonly INotificationService _notificationService;
 
         // ✅ MEJORA: Cache de estados para evitar consultas repetidas a la BD
         // Usa una clave compuesta: "StatusType|StatusValue" -> StatusId
@@ -43,8 +44,10 @@ namespace newApi.Services
         private static DateTime _cacheLastRefresh = DateTime.MinValue;
         private static readonly TimeSpan _cacheExpiration = TimeSpan.FromMinutes(30); // Cache válido por 30 minutos
 
-        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService)
-
+        /// <summary>
+        /// Constructor
+        /// </summary>
+        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService, INotificationService notificationService)
         {
 
             _context = context;
@@ -58,6 +61,8 @@ namespace newApi.Services
             _stripeValidationService = stripeValidationService;
             
             _timezoneService = timezoneService;
+            
+            _notificationService = notificationService;
 
         }
 
@@ -1035,8 +1040,21 @@ namespace newApi.Services
                         source: "AppointmentService.ProposeAppointmentAsync",
                         relatedEntityType: "Appointment",
                         relatedEntityId: updatedAppointment.Id,
-                        notifyUser: true
+                        notifyUser: false // Desactivar notificación genérica
                     );
+
+                    // ✅ EMAIL: Notificar al experto de la nueva propuesta
+                    if (updatedAppointment.SearchHire.Expert != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Expert.Email))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            updatedAppointment.SearchHire.Expert.Email,
+                            updatedAppointment.SearchHire.Expert.Name,
+                            "📅 Nueva Propuesta de Cita",
+                            $"El cliente ha propuesto una cita para el <strong>{formattedDate}</strong> en <strong>{updatedAppointment.Location}</strong>.<br><br>Tienes 24 horas para aceptar o rechazar esta propuesta.",
+                            "Ver Propuesta",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
                 }
 
                 // ✅ Notificar al cliente confirmando el envío de la propuesta (Confirmación para el remitente)
@@ -1047,8 +1065,21 @@ namespace newApi.Services
                     source: "AppointmentService.ProposeAppointmentAsync",
                     relatedEntityType: "Appointment",
                     relatedEntityId: updatedAppointment.Id,
-                    notifyUser: true
+                    notifyUser: false // Desactivar notificación genérica
                 );
+
+                // ✅ EMAIL: Confirmar al cliente que su propuesta fue enviada
+                if (updatedAppointment.SearchHire.Client != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Client.Email))
+                {
+                    await _notificationService.SendGeneralNotificationEmailAsync(
+                        updatedAppointment.SearchHire.Client.Email,
+                        updatedAppointment.SearchHire.Client.Name,
+                        "Propuesta Enviada",
+                        $"Has propuesto una cita para el <strong>{updatedAppointment.ProposedDate:dd/MM/yyyy}</strong> a las <strong>{updatedAppointment.ProposedTime:hh\\:mm}</strong>.<br><br>El experto tiene 24 horas para responder.",
+                        "Ver Estado",
+                        "https://www.inspecciono.com/appointments"
+                    );
+                }
 
                 return MapToDto(updatedAppointment);
 
@@ -1415,8 +1446,20 @@ namespace newApi.Services
                             source: "AppointmentService.ConfirmAppointmentAsync",
                             relatedEntityType: "Appointment",
                             relatedEntityId: updatedAppointment.Id,
-                            notifyUser: true
+                            notifyUser: false
                         );
+
+                        // ✅ EMAIL: Enviar email personalizado de confirmación
+                        if (updatedAppointment.SearchHire.Client != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Client.Email))
+                        {
+                            await _notificationService.SendAppointmentConfirmationEmailAsync(
+                                updatedAppointment.SearchHire.Client.Email, 
+                                updatedAppointment.SearchHire.Client.Name, 
+                                formattedDateTime, 
+                                updatedAppointment.Location, 
+                                isExpert: false
+                            );
+                        }
 
                         // ✅ LOG: Notificación al cliente enviada
                         await _loggingService.LogInfoAsync(
@@ -1443,8 +1486,20 @@ namespace newApi.Services
                             source: "AppointmentService.ConfirmAppointmentAsync",
                             relatedEntityType: "Appointment",
                             relatedEntityId: updatedAppointment.Id,
-                            notifyUser: true
+                            notifyUser: false
                         );
+
+                        // ✅ EMAIL: Enviar email personalizado de confirmación al experto
+                        if (updatedAppointment.SearchHire.Expert != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Expert.Email))
+                        {
+                            await _notificationService.SendAppointmentConfirmationEmailAsync(
+                                updatedAppointment.SearchHire.Expert.Email, 
+                                updatedAppointment.SearchHire.Expert.Name, 
+                                formattedDate, 
+                                updatedAppointment.Location, 
+                                isExpert: true
+                            );
+                        }
                     }
 
                     // ✅ LOG: Mapeando a DTO
@@ -2196,8 +2251,22 @@ namespace newApi.Services
                         source: "AppointmentService.RejectAppointmentAsync",
                         relatedEntityType: "Appointment",
                         relatedEntityId: appointment.Id,
-                        notifyUser: true
+                        notifyUser: false
                     );
+
+                    // ✅ EMAIL: Notificar cancelación por rechazos múltiples
+                    if (updatedAppointment.SearchHire.Client != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Client.Email))
+                    {
+                        var expertName = updatedAppointment.SearchHire.Expert?.Name ?? "El experto";
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            updatedAppointment.SearchHire.Client.Email,
+                            updatedAppointment.SearchHire.Client.Name,
+                            "❌ Cita Cancelada",
+                            $"{expertName} ha rechazado la propuesta de cita por segunda vez. Lamentamos los inconvenientes. Hemos procesado el reembolso completo a tu favor.",
+                            "Ver Reembolso",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
 
                     // ✅ Notificar al experto (Confirmación de rechazo final)
                     await _loggingService.LogWarningAsync(
@@ -2207,8 +2276,19 @@ namespace newApi.Services
                         source: "AppointmentService.RejectAppointmentAsync",
                         relatedEntityType: "Appointment",
                         relatedEntityId: appointment.Id,
-                        notifyUser: true
+                        notifyUser: false
                     );
+
+                    // ✅ EMAIL: Confirmar al experto que se canceló por segundo rechazo
+                    if (updatedAppointment.SearchHire.Expert != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Expert.Email))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            updatedAppointment.SearchHire.Expert.Email,
+                            updatedAppointment.SearchHire.Expert.Name,
+                            "Cita Cancelada (2do rechazo)",
+                            "Has rechazado la cita por segunda vez. La contratación ha sido cancelada y el cliente reembolsado."
+                        );
+                    }
                 }
                 else
                 {
@@ -2220,8 +2300,22 @@ namespace newApi.Services
                         source: "AppointmentService.RejectAppointmentAsync",
                         relatedEntityType: "Appointment",
                         relatedEntityId: appointment.Id,
-                        notifyUser: true
+                        notifyUser: false
                     );
+
+                    // ✅ EMAIL: Notificar rechazo y pedir nueva propuesta
+                    if (updatedAppointment.SearchHire.Client != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Client.Email))
+                    {
+                        var expertName = updatedAppointment.SearchHire.Expert?.Name ?? "El experto";
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            updatedAppointment.SearchHire.Client.Email,
+                            updatedAppointment.SearchHire.Client.Name,
+                            "📅 Cita Rechazada",
+                            $"{expertName} no puede asistir en la fecha propuesta. Por favor, propón una nueva fecha y hora para la cita.<br><br>Tienes 24 horas para enviar una nueva propuesta.",
+                            "Proponer Nueva Fecha",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
 
                     // ✅ Notificar al experto (Confirmación de rechazo)
                     await _loggingService.LogInfoAsync(
@@ -2231,8 +2325,19 @@ namespace newApi.Services
                         source: "AppointmentService.RejectAppointmentAsync",
                         relatedEntityType: "Appointment",
                         relatedEntityId: appointment.Id,
-                        notifyUser: true
+                        notifyUser: false
                     );
+
+                    // ✅ EMAIL: Confirmar al experto que rechazó la cita
+                    if (updatedAppointment.SearchHire.Expert != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Expert.Email))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            updatedAppointment.SearchHire.Expert.Email,
+                            updatedAppointment.SearchHire.Expert.Name,
+                            "Cita Rechazada",
+                            "Has rechazado la propuesta de cita. Hemos notificado al cliente para que proponga una nueva fecha."
+                        );
+                    }
                 }
 
 
@@ -2924,8 +3029,43 @@ namespace newApi.Services
                         source: "AppointmentService.CancelAppointmentAsync",
                         relatedEntityType: "Appointment",
                         relatedEntityId: appointment.Id,
-                        notifyUser: true
+                        notifyUser: false // Desactivar notificación genérica
                     );
+
+                    // ✅ EMAIL: Notificar cancelación a ambas partes
+                    // 1. Al que canceló
+                    var actorEmail = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Client?.Email : appointment.SearchHire.Expert?.Email;
+                    var actorName = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Client?.Name : appointment.SearchHire.Expert?.Name;
+                    
+                    if (!string.IsNullOrEmpty(actorEmail))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            actorEmail,
+                            actorName ?? "Usuario",
+                            "Cita Cancelada",
+                            $"Has cancelado la cita del {appointment.ProposedDate:dd/MM/yyyy}. {refundInfo}",
+                            "Ver Estado",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
+
+                    // 2. A la contraparte
+                    var otherPartyId = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.ExpertId : appointment.SearchHire.ClientId;
+                    var otherPartyEmail = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Expert?.Email : appointment.SearchHire.Client?.Email;
+                    var otherPartyName = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Expert?.Name : appointment.SearchHire.Client?.Name;
+
+                    if (otherPartyId.HasValue && !string.IsNullOrEmpty(otherPartyEmail))
+                    {
+                        var cancelledBy = userId == appointment.SearchHire.ClientId ? "el cliente" : "el experto";
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            otherPartyEmail,
+                            otherPartyName ?? "Usuario",
+                            "⚠️ Cita Cancelada",
+                            $"La cita programada para el {appointment.ProposedDate:dd/MM/yyyy} ha sido cancelada por {cancelledBy}.",
+                            "Ver Detalles",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
                 }
                 else
                 {
@@ -2955,8 +3095,43 @@ namespace newApi.Services
                         source: "AppointmentService.CancelAppointmentAsync",
                         relatedEntityType: "Appointment",
                         relatedEntityId: appointment.Id,
-                        notifyUser: true
+                        notifyUser: false // Desactivar notificación genérica
                     );
+
+                    // ✅ EMAIL: Notificar cancelación a ambas partes
+                    // 1. Al que canceló
+                    var actorEmail = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Client?.Email : appointment.SearchHire.Expert?.Email;
+                    var actorName = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Client?.Name : appointment.SearchHire.Expert?.Name;
+                    
+                    if (!string.IsNullOrEmpty(actorEmail))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            actorEmail,
+                            actorName ?? "Usuario",
+                            "Cita Cancelada",
+                            $"Has cancelado la cita del {appointment.ProposedDate:dd/MM/yyyy}. {refundInfo}",
+                            "Ver Estado",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
+
+                    // 2. A la contraparte
+                    var otherPartyId = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.ExpertId : appointment.SearchHire.ClientId;
+                    var otherPartyEmail = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Expert?.Email : appointment.SearchHire.Client?.Email;
+                    var otherPartyName = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Expert?.Name : appointment.SearchHire.Client?.Name;
+
+                    if (otherPartyId.HasValue && !string.IsNullOrEmpty(otherPartyEmail))
+                    {
+                        var cancelledBy = userId == appointment.SearchHire.ClientId ? "el cliente" : "el experto";
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            otherPartyEmail,
+                            otherPartyName ?? "Usuario",
+                            "⚠️ Cita Cancelada",
+                            $"La cita programada para el {appointment.ProposedDate:dd/MM/yyyy} ha sido cancelada por {cancelledBy}.",
+                            "Ver Detalles",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
                 }
 
 
@@ -4503,6 +4678,29 @@ namespace newApi.Services
                                     "Client did not propose within 24h - automatic cancellation",
                                     null,
                                     updateState: true); // ✅ updateState: true para que haga el mapeo automático
+
+                                // ✅ EMAIL: Notificar cancelación automática por falta de propuesta
+                                if (timer.Appointment.SearchHire.Client != null && !string.IsNullOrEmpty(timer.Appointment.SearchHire.Client.Email))
+                                {
+                                    await _notificationService.SendGeneralNotificationEmailAsync(
+                                        timer.Appointment.SearchHire.Client.Email,
+                                        timer.Appointment.SearchHire.Client.Name,
+                                        "❌ Contratación Cancelada",
+                                        "La contratación ha sido cancelada porque no se recibió una propuesta de cita en el plazo de 24 horas.",
+                                        "Ver Detalles",
+                                        "https://www.inspecciono.com/appointments"
+                                    );
+                                }
+
+                                if (timer.Appointment.SearchHire.Expert != null && !string.IsNullOrEmpty(timer.Appointment.SearchHire.Expert.Email))
+                                {
+                                    await _notificationService.SendGeneralNotificationEmailAsync(
+                                        timer.Appointment.SearchHire.Expert.Email,
+                                        timer.Appointment.SearchHire.Expert.Name,
+                                        "Contratación Cancelada",
+                                        "La contratación ha sido cancelada porque el cliente no propuso una fecha en el plazo establecido."
+                                    );
+                                }
                             }
                             catch (Exception moneyEx)
                             {
@@ -4681,6 +4879,30 @@ namespace newApi.Services
                                     "Expert did not respond within 24h - automatic cancellation",
                                     null,
                                     updateState: true); // ✅ updateState: true para que haga el mapeo automático
+
+                                // ✅ EMAIL: Notificar cancelación automática por falta de respuesta del experto
+                                if (timer.Appointment.SearchHire.Client != null && !string.IsNullOrEmpty(timer.Appointment.SearchHire.Client.Email))
+                                {
+                                    var expertName = timer.Appointment.SearchHire.Expert?.Name ?? "El experto";
+                                    await _notificationService.SendGeneralNotificationEmailAsync(
+                                        timer.Appointment.SearchHire.Client.Email,
+                                        timer.Appointment.SearchHire.Client.Name,
+                                        "❌ Cita Cancelada",
+                                        $"{expertName} no respondió a tu propuesta en el plazo de 24 horas. Hemos cancelado la cita y procesado tu reembolso completo.",
+                                        "Ver Reembolso",
+                                        "https://www.inspecciono.com/appointments"
+                                    );
+                                }
+
+                                if (timer.Appointment.SearchHire.Expert != null && !string.IsNullOrEmpty(timer.Appointment.SearchHire.Expert.Email))
+                                {
+                                    await _notificationService.SendGeneralNotificationEmailAsync(
+                                        timer.Appointment.SearchHire.Expert.Email,
+                                        timer.Appointment.SearchHire.Expert.Name,
+                                        "Cita Cancelada (Sin respuesta)",
+                                        "La cita ha sido cancelada porque no respondiste a la propuesta del cliente en el plazo de 24 horas."
+                                    );
+                                }
                                 
                                 // ✅ LOG: Procesamiento de dinero completado
                                 await _loggingService.LogInfoAsync(
@@ -5121,8 +5343,35 @@ namespace newApi.Services
                                         ExpertId = timer.Appointment.SearchHire?.ExpertId,
                                         Status = AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue(),
                                         MoneyDistributionSuccess = true
-                                    }
+                                    },
+                                    notifyUser: false // Usar emails específicos
                                 );
+                                
+                                // ✅ EMAIL: Notificar al cliente que el servicio se completó (y pedir reseña)
+                                if (timer.Appointment.SearchHire?.Client != null && !string.IsNullOrEmpty(timer.Appointment.SearchHire.Client.Email))
+                                {
+                                    var serviceName = timer.Appointment.SearchHire.SearchService?.ServiceType?.Name ?? "Servicio de Inspección";
+                                    var expertName = timer.Appointment.SearchHire.Expert?.Name ?? "El experto";
+                                    
+                                    // Usar el template de finalización que invita a reseñar
+                                    await _notificationService.SendServiceCompletionEmailAsync(
+                                        timer.Appointment.SearchHire.Client.Email,
+                                        timer.Appointment.SearchHire.Client.Name,
+                                        serviceName,
+                                        expertName
+                                    );
+                                    
+                                    // Log adicional para el cliente explicando por qué se completó
+                                    await _loggingService.LogInfoAsync(
+                                        message: "Servicio finalizado automáticamente",
+                                        details: "El plazo de 24 horas para revisar el reporte ha finalizado sin acciones. El servicio se ha marcado como completado automáticamente.",
+                                        userId: timer.Appointment.SearchHire.ClientId,
+                                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                        relatedEntityType: "Appointment",
+                                        relatedEntityId: timer.Appointment.Id,
+                                        notifyUser: true
+                                    );
+                                }
                                 
                                 // ✅ Notificar al experto que el servicio se completó automáticamente a su favor
                                 if (timer.Appointment.SearchHire?.ExpertId.HasValue == true)
@@ -5134,8 +5383,18 @@ namespace newApi.Services
                                         source: "AppointmentService.ProcessAppointmentTimerAsync",
                                         relatedEntityType: "Appointment",
                                         relatedEntityId: timer.Appointment.Id,
-                                        notifyUser: true
+                                        notifyUser: false // Usar email específico
                                     );
+
+                                    if (timer.Appointment.SearchHire.Expert != null && !string.IsNullOrEmpty(timer.Appointment.SearchHire.Expert.Email))
+                                    {
+                                        await _notificationService.SendGeneralNotificationEmailAsync(
+                                            timer.Appointment.SearchHire.Expert.Email,
+                                            timer.Appointment.SearchHire.Expert.Name,
+                                            "🎉 Servicio Completado",
+                                            $"¡Enhorabuena! El servicio #{timer.Appointment.SearchHireId} se ha completado automáticamente porque el cliente no presentó objeciones en 24 horas. El pago ha sido liberado a tu cuenta."
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -5434,8 +5693,20 @@ namespace newApi.Services
                             source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
                             relatedEntityType: "Appointment",
                             relatedEntityId: appointment.Id,
-                            notifyUser: true
+                            notifyUser: false // Usar email específico
                         );
+
+                        if (searchHire.Expert != null && !string.IsNullOrEmpty(searchHire.Expert.Email))
+                        {
+                            await _notificationService.SendGeneralNotificationEmailAsync(
+                                searchHire.Expert.Email,
+                                searchHire.Expert.Name,
+                                "📝 Hora de Enviar el Reporte",
+                                $"Han pasado 3 horas desde la cita #{appointment.Id}. Tienes 24 horas para enviar el reporte del servicio. Si no lo envías a tiempo, la cita será cancelada automáticamente.",
+                                "Enviar Reporte",
+                                "https://www.inspecciono.com/appointments"
+                            );
+                        }
                     }
                     
                     // ✅ Notificar al cliente que se está esperando el reporte
@@ -5448,8 +5719,18 @@ namespace newApi.Services
                             source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
                             relatedEntityType: "Appointment",
                             relatedEntityId: appointment.Id,
-                            notifyUser: true
+                            notifyUser: false // Usar email específico
                         );
+
+                        if (searchHire.Client != null && !string.IsNullOrEmpty(searchHire.Client.Email))
+                        {
+                            await _notificationService.SendGeneralNotificationEmailAsync(
+                                searchHire.Client.Email,
+                                searchHire.Client.Name,
+                                "⏳ Esperando Reporte",
+                                $"Han pasado 3 horas desde la cita #{appointment.Id}. El experto tiene 24 horas para enviar el reporte. Te notificaremos en cuanto esté disponible."
+                            );
+                        }
                     }
                     
                     // ✅ Marcar el timer de transición como expirado ya que el job se ejecutó exitosamente
@@ -5773,8 +6054,20 @@ namespace newApi.Services
                         source: "AppointmentService.SubmitExpertReportAsync",
                         relatedEntityType: "Appointment",
                         relatedEntityId: appointment.Id,
-                        notifyUser: true
+                        notifyUser: false // Usar email específico
                     );
+
+                    if (appointment.SearchHire.Client != null && !string.IsNullOrEmpty(appointment.SearchHire.Client.Email))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            appointment.SearchHire.Client.Email,
+                            appointment.SearchHire.Client.Name,
+                            "📄 Reporte Recibido",
+                            $"El experto ha enviado el reporte del servicio #{appointment.SearchHireId}.<br><br>Tienes 24 horas para revisar el reporte y aprobarlo o abrir una disputa. Si no realizas ninguna acción, el servicio se aprobará automáticamente.",
+                            "Revisar Reporte",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
                 }
 
                 // ✅ Notificar al experto que el reporte se envió correctamente
@@ -5787,8 +6080,18 @@ namespace newApi.Services
                         source: "AppointmentService.SubmitExpertReportAsync",
                         relatedEntityType: "Appointment",
                         relatedEntityId: appointment.Id,
-                        notifyUser: true
+                        notifyUser: false // Usar email específico
                     );
+
+                    if (appointment.SearchHire.Expert != null && !string.IsNullOrEmpty(appointment.SearchHire.Expert.Email))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            appointment.SearchHire.Expert.Email,
+                            appointment.SearchHire.Expert.Name,
+                            "✅ Reporte Enviado",
+                            $"Has enviado correctamente el reporte del servicio #{appointment.SearchHireId}. El cliente ha sido notificado y tiene 24 horas para revisar tu trabajo."
+                        );
+                    }
                 }
 
                 // Cargar la cita actualizada con todas las relaciones

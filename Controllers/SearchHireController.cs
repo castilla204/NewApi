@@ -29,6 +29,7 @@ namespace newApi.Controllers
         private readonly IInvoiceService _invoiceService;
         private readonly IAppointmentService _appointmentService;
         private readonly ISignedUrlService _signedUrlService;
+        private readonly INotificationService _notificationService;
 
         public SearchHireController(
             SearchHireService searchHireService,
@@ -39,7 +40,8 @@ namespace newApi.Controllers
             ILoggingService loggingService,
             IInvoiceService invoiceService,
             IAppointmentService appointmentService,
-            ISignedUrlService signedUrlService)
+            ISignedUrlService signedUrlService,
+            INotificationService notificationService)
         {
             _searchHireService = searchHireService;
             _context = context;
@@ -50,6 +52,7 @@ namespace newApi.Controllers
             _invoiceService = invoiceService;
             _appointmentService = appointmentService;
             _signedUrlService = signedUrlService;
+            _notificationService = notificationService;
             StripeConfiguration.ApiKey = configuration["Stripe:SecretKey"];
         }
 
@@ -907,6 +910,20 @@ namespace newApi.Controllers
                                     relatedEntityType: "SearchHire",
                                     relatedEntityId: searchHire.Id,
                                     notifyUser: true
+                                );
+                            }
+
+                            // ✅ EMAIL: Enviar correo de finalización y solicitud de reseña al cliente
+                            if (searchHire.Client != null && !string.IsNullOrEmpty(searchHire.Client.Email))
+                            {
+                                var expertName = searchHire.Expert?.Name ?? "El experto";
+                                var serviceName = searchHire.SearchService?.ServiceType?.Name ?? "Servicio de inspección";
+                                
+                                await _notificationService.SendServiceCompletionEmailAsync(
+                                    searchHire.Client.Email,
+                                    searchHire.Client.Name,
+                                    serviceName,
+                                    expertName
                                 );
                             }
                         }

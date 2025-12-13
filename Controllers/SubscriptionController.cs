@@ -1145,6 +1145,20 @@ namespace newApi.Controllers
                     return NotFound(new { message = "User not found" });
                 }
 
+                // ✅ VALIDACIÓN: Usuario bloqueado no puede realizar pagos
+                if (user.IsBlocked)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Blocked user attempted to load money",
+                        details: $"Blocked user {user.Id} ({user.Email}) attempted to load money",
+                        userId: user.Id,
+                        source: "SubscriptionController.LoadMoney",
+                        relatedEntityType: "User",
+                        relatedEntityId: user.Id
+                    );
+                    return Unauthorized(new { message = "User account is blocked" });
+                }
+
                 var domain = "https://inspecciono.com";
                 var options = new SessionCreateOptions
                 {
@@ -1282,6 +1296,20 @@ namespace newApi.Controllers
                 if (user == null)
                 {
                     return NotFound(new { message = "User not found" });
+                }
+
+                // ✅ VALIDACIÓN: Usuario bloqueado no puede contratar servicios
+                if (user.IsBlocked)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Blocked user attempted to pay for service",
+                        details: $"Blocked user {user.Id} ({user.Email}) attempted to pay for service {request.ServiceId}",
+                        userId: user.Id,
+                        source: "SubscriptionController.LoadMoneyService",
+                        relatedEntityType: "User",
+                        relatedEntityId: user.Id
+                    );
+                    return Unauthorized(new { message = "User account is blocked" });
                 }
 
                 // 🚨 VALIDACIÓN CRÍTICA: Verificar teléfono antes del pago
@@ -1495,7 +1523,34 @@ namespace newApi.Controllers
                     return BadRequest(new { error = "Stripe signature header missing" });
                 }
                 
-                var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, webhookSecretToUse);
+                // ✅ STRIPE API VERSION: Permitir diferentes versiones de API con advertencia
+                // El webhook endpoint en Stripe Dashboard puede estar configurado con una versión diferente
+                // a la que espera el SDK. Esto es seguro siempre que validemos la signature correctamente.
+                var stripeEvent = EventUtility.ConstructEvent(
+                    json, 
+                    signatureHeader, 
+                    webhookSecretToUse,
+                    throwOnApiVersionMismatch: false // ⚠️ Permite procesar eventos de diferentes versiones de API
+                );
+                
+                // ⚠️ ADVERTENCIA: Si hay mismatch de versión, loguear para actualizar el webhook endpoint
+                if (stripeEvent.ApiVersion != null)
+                {
+                    var expectedVersion = "2025-11-17.clover"; // Versión esperada por Stripe.NET 50.0.0
+                    if (stripeEvent.ApiVersion != expectedVersion)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Stripe webhook API version mismatch",
+                            details: $"Webhook event received with API version '{stripeEvent.ApiVersion}', but SDK expects '{expectedVersion}'. " +
+                                    $"Consider updating the webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}' for better compatibility.",
+                            userId: null,
+                            source: "SubscriptionController.HandleStripeWebhook",
+                            relatedEntityType: "Webhook",
+                            relatedEntityId: null
+                        );
+                    }
+                }
+                
                 currentEventId = stripeEvent.Id;
                 currentEventType = stripeEvent.Type;
                 currentAccountId = stripeEvent.Account;
@@ -1915,7 +1970,34 @@ namespace newApi.Controllers
                     return BadRequest(new { error = "Stripe signature header missing" });
                 }
                 
-                var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, _generalWebhookSecret);
+                // ✅ STRIPE API VERSION: Permitir diferentes versiones de API con advertencia
+                // El webhook endpoint en Stripe Dashboard puede estar configurado con una versión diferente
+                // a la que espera el SDK. Esto es seguro siempre que validemos la signature correctamente.
+                var stripeEvent = EventUtility.ConstructEvent(
+                    json, 
+                    signatureHeader, 
+                    _generalWebhookSecret,
+                    throwOnApiVersionMismatch: false // ⚠️ Permite procesar eventos de diferentes versiones de API
+                );
+                
+                // ⚠️ ADVERTENCIA: Si hay mismatch de versión, loguear para actualizar el webhook endpoint
+                if (stripeEvent.ApiVersion != null)
+                {
+                    var expectedVersion = "2025-11-17.clover"; // Versión esperada por Stripe.NET 50.0.0
+                    if (stripeEvent.ApiVersion != expectedVersion)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Stripe webhook API version mismatch",
+                            details: $"Webhook event received with API version '{stripeEvent.ApiVersion}', but SDK expects '{expectedVersion}'. " +
+                                    $"Consider updating the webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}' for better compatibility.",
+                            userId: null,
+                            source: "SubscriptionController.HandleGeneralStripeWebhook",
+                            relatedEntityType: "Webhook",
+                            relatedEntityId: null
+                        );
+                    }
+                }
+                
                 currentEventId = stripeEvent.Id;
                 currentEventType = stripeEvent.Type;
                 currentAccountId = stripeEvent.Account;
@@ -2512,15 +2594,24 @@ namespace newApi.Controllers
                 }
                 catch (Exception ex)
                 {
-                    // Log error pero no fallar la creación de la contratación
-                    await _loggingService.LogWarningAsync(
-                        message: "Failed to create automatic appointment",
-                        details: $"Error creating automatic appointment for SearchHire {searchHire.Id}: {ex.Message}",
+                    // 🚨 LOG CRÍTICO: Error al crear cita automática y timer inicial
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Failed to create automatic appointment and initial timer",
+                        details: $"Error creating automatic appointment for SearchHire {searchHire.Id} in HandlePendingHireCompleted. " +
+                                $"The SearchHire was confirmed but the Appointment/Timer flow failed. " +
+                                $"Error: {ex.Message}. StackTrace: {ex.StackTrace}",
                         userId: userId,
                         source: "SubscriptionController.HandlePendingHireCompleted",
                         relatedEntityType: "SearchHire",
                         relatedEntityId: searchHire.Id,
-                        notifyUser: false
+                        additionalData: new { 
+                            Action = "CreateAutomaticAppointment",
+                            SearchHireId = searchHire.Id,
+                            ClientId = userId,
+                            ExpertId = expertuserid,
+                            Exception = ex.Message
+                        },
+                        notifyUser: false // No asustar al usuario, pero alertar a admins
                     );
                 }
 

@@ -301,6 +301,20 @@ namespace newApi.Controllers
                     return NotFound(new { message = "User not found" });
                 }
 
+                // ✅ VALIDACIÓN: Usuario bloqueado no puede crear búsquedas ni contratar
+                if (user.IsBlocked)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Blocked user attempted to create search with hire",
+                        details: $"Blocked user {user.Id} ({user.Email}) attempted to create search with hire",
+                        userId: user.Id,
+                        source: "SearchController.CreateSearchWithHire",
+                        relatedEntityType: "User",
+                        relatedEntityId: user.Id
+                    );
+                    return Unauthorized(new { message = "User account is blocked" });
+                }
+
                 // 🚨 VALIDACIÓN CRÍTICA: Los expertos no pueden crear contrataciones como clientes
                 // ✅ IMPORTANTE: Deben usar una cuenta distinta (no registrada como experto) para contratar
                 // ✅ Esta validación DEBE hacerse ANTES de crear el checkout session
@@ -499,6 +513,20 @@ namespace newApi.Controllers
                 if (user == null)
                 {
                     return NotFound(new { message = "User not found" });
+                }
+
+                // ✅ VALIDACIÓN: Usuario bloqueado no puede crear búsquedas
+                if (user.IsBlocked)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Blocked user attempted to create search",
+                        details: $"Blocked user {user.Id} ({user.Email}) attempted to create a search",
+                        userId: user.Id,
+                        source: "SearchController.CreateSearch",
+                        relatedEntityType: "User",
+                        relatedEntityId: user.Id
+                    );
+                    return Unauthorized(new { message = "User account is blocked" });
                 }
 
                 // ✅ COMENTADO: Verificación de teléfono ya no es necesaria

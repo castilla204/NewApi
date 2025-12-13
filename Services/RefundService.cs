@@ -267,18 +267,48 @@ namespace newApi.Services
                     );
                 }
 
-                var clientRefundAmount = baseAmount * (config.ClientPercentage / 100);
+                // ✅ CORRECCIÓN CRÍTICA: Calcular refunds sobre BASE (para distribución interna)
+                // pero convertir a BRUTO (con IVA) cuando se envía a Stripe para que calcule el IVA proporcional
+                var clientRefundAmountBase = baseAmount * (config.ClientPercentage / 100);
                 var expertAmount = baseAmount * (config.ExpertPercentage / 100);
                 var platformAmount = baseAmount * (config.PlatformPercentage / 100);
+                
+                // ✅ STRIPE TAX: Convertir refund base a BRUTO (con IVA proporcional) para Stripe
+                // Si hay TaxAmount, calcular el porcentaje de IVA y añadirlo al refund
+                decimal clientRefundAmountForStripe;
+                
+                // ✅ OPTIMIZACIÓN: Para reembolso 100%, usar Amount original directamente para evitar errores de redondeo
+                if (config.ClientPercentage == 100)
+                {
+                    // Reembolso total: devolver el monto exacto que pagó el cliente
+                    clientRefundAmountForStripe = searchHire.Amount;
+                }
+                else if (searchHire.TaxAmount.HasValue && searchHire.TaxAmount.Value > 0 && baseAmount > 0)
+                {
+                    // Reembolso parcial con tax: calcular proporcionalmente
+                    // Método más preciso: usar proporción del total en lugar de recalcular con taxRate
+                    // grossRefund = totalAmount * (clientPercentage / 100)
+                    clientRefundAmountForStripe = searchHire.Amount * (config.ClientPercentage / 100);
+                }
+                else
+                {
+                    // Si no hay tax o es dato antiguo, usar el monto calculado directamente
+                    // (Stripe manejará el tax automáticamente si está configurado)
+                    clientRefundAmountForStripe = clientRefundAmountBase;
+                }
+                
+                // ✅ Usar clientRefundAmountBase para cálculos internos, clientRefundAmountForStripe para Stripe
+                var clientRefundAmount = clientRefundAmountBase; // Para logs y cálculos internos
                 
                 // ✅ Logging mejorado con información de tax
                 await _loggingService.LogInfoAsync(
                     message: "Money distribution calculated on base amount (pre-tax)",
                     details: $"BaseAmount: {baseAmount}€, TaxAmount: {searchHire.TaxAmount ?? 0}€, " +
                             $"TotalAmount: {searchHire.Amount}€. " +
-                            $"Distribution: Client {clientRefundAmount}€ ({config.ClientPercentage}%), " +
+                            $"Distribution (base): Client {clientRefundAmount}€ ({config.ClientPercentage}%), " +
                             $"Expert {expertAmount}€ ({config.ExpertPercentage}%), " +
-                            $"Platform {platformAmount}€ ({config.PlatformPercentage}%)",
+                            $"Platform {platformAmount}€ ({config.PlatformPercentage}%). " +
+                            $"Refund to Stripe (gross with tax): {clientRefundAmountForStripe}€",
                     userId: initiatedByUserId ?? searchHire.ClientId,
                     source: "StripeRefundService.ProcessMoneyDistributionAsync",
                     relatedEntityType: "SearchHire",
@@ -367,7 +397,10 @@ namespace newApi.Services
                     var balanceService = new BalanceService();
                     var balance = await balanceService.GetAsync();
                     var availableEur = balance.Available?.FirstOrDefault(b => b.Currency == "eur")?.Amount / 100.0m ?? 0;
-                    var totalOutflow = clientRefundAmount + expertAmount;
+                    // ✅ STRIPE TAX FIX: Usar monto BRUTO (con IVA) para verificación de balance
+                    // El refund a Stripe será clientRefundAmountForStripe (incluye IVA proporcional)
+                    // El transfer al experto es expertAmount (sin IVA, es pago de servicios no sujeto)
+                    var totalOutflow = clientRefundAmountForStripe + expertAmount;
                     if (availableEur < totalOutflow)
                     {
                         // 🚨 LOG CRÍTICO: Balance insuficiente (una sola vez, con información completa)
@@ -375,7 +408,7 @@ namespace newApi.Services
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Insufficient Stripe platform balance for money distribution",
                             details: $"SearchHire {searchHireId} finalization failed due to insufficient Stripe platform balance. " +
-                                    $"Available Balance: {availableEur}€, Required Outflow: {totalOutflow}€ (Client Refund: {clientRefundAmount}€, Expert Transfer: {expertAmount}€). " +
+                                    $"Available Balance: {availableEur}€, Required Outflow: {totalOutflow}€ (Client Refund Gross: {clientRefundAmountForStripe}€, Expert Transfer: {expertAmount}€). " +
                                     $"Distribution Plan: Client={config.ClientPercentage}%, Expert={config.ExpertPercentage}%, Platform={config.PlatformPercentage}%. " +
                                     $"Status: {statusValue}, Reason: {reason}, PaymentIntentId: {servicePayment.StripePaymentIntentId}. " +
                                     $"ACTION REQUIRED: Wait for balance to be available (from PaymentIntent capture) or manually verify Stripe balance and retry distribution.",
@@ -388,7 +421,8 @@ namespace newApi.Services
                                 Reason = reason,
                                 AvailableBalance = availableEur,
                                 TotalOutflow = totalOutflow,
-                                ClientRefundAmount = clientRefundAmount,
+                                ClientRefundAmountGross = clientRefundAmountForStripe,
+                                ClientRefundAmountBase = clientRefundAmount,
                                 ExpertTransferAmount = expertAmount,
                                 PlatformAmount = platformAmount,
                                 PaymentIntentId = servicePayment.StripePaymentIntentId
@@ -408,7 +442,7 @@ namespace newApi.Services
                         message: "CRITICAL: Error checking Stripe balance - money distribution failed",
                         details: $"SearchHire {searchHireId} finalization failed due to error checking Stripe platform balance. " +
                                 $"Stripe Error: {balanceEx.Message}, Type: {balanceEx.StripeError?.Type}, Code: {balanceEx.StripeError?.Code}. " +
-                                $"Required outflow: {clientRefundAmount + expertAmount}€ (Client: {clientRefundAmount}€, Expert: {expertAmount}€). " +
+                                $"Required outflow: {clientRefundAmountForStripe + expertAmount}€ (Client Gross: {clientRefundAmountForStripe}€, Expert: {expertAmount}€). " +
                                 $"ACTION REQUIRED: Verify Stripe balance manually and retry distribution if balance is sufficient.",
                         userId: initiatedByUserId ?? searchHire.ClientId,
                         source: "StripeRefundService.ProcessMoneyDistributionAsync",
@@ -419,8 +453,9 @@ namespace newApi.Services
                             StripeError = balanceEx.Message,
                             StripeErrorType = balanceEx.StripeError?.Type,
                             StripeErrorCode = balanceEx.StripeError?.Code,
-                            RequiredOutflow = clientRefundAmount + expertAmount,
-                            ClientRefundAmount = clientRefundAmount,
+                            RequiredOutflow = clientRefundAmountForStripe + expertAmount,
+                            ClientRefundAmountGross = clientRefundAmountForStripe,
+                            ClientRefundAmountBase = clientRefundAmount,
                             ExpertTransferAmount = expertAmount
                         }
                     );
@@ -1003,10 +1038,11 @@ namespace newApi.Services
                         if (needsRefund)
                         {
                             // ✅ PATRÓN OUTBOX: Guardar en BD ANTES de llamar a Stripe (con estado "pending")
+                            // ✅ CORRECCIÓN: Guardar el monto BRUTO (con IVA) que el cliente realmente recibe
                             pendingRefundTx = new FinancialTransaction
                             {
                                 UserId = searchHire.ClientId,
-                                Amount = clientRefundAmount,
+                                Amount = clientRefundAmountForStripe, // ✅ BRUTO con IVA (lo que el cliente recibe)
                                 TransactionType = "Refund",
                                 RelatedEntityType = "SearchHire",
                                 RelatedEntityId = searchHireId,
@@ -1055,7 +1091,9 @@ namespace newApi.Services
                             var refundOptions = new RefundCreateOptions
                             {
                                 PaymentIntent = servicePayment.StripePaymentIntentId,
-                                Amount = (long)(clientRefundAmount * 100),
+                                // ✅ STRIPE TAX: Enviar monto BRUTO (con IVA proporcional) para que Stripe calcule correctamente
+                                // ✅ CRÍTICO: Usar Math.Round para evitar pérdida de centavos por truncamiento
+                                Amount = (long)Math.Round(clientRefundAmountForStripe * 100, MidpointRounding.AwayFromZero),
                                 Reason = RefundReasons.RequestedByCustomer,
                                 Metadata = new Dictionary<string, string>
                                 {
@@ -2100,9 +2138,10 @@ namespace newApi.Services
                         if (needsRefund && !string.IsNullOrEmpty(createdRefundId))
                         {
                             // Refund exitoso - notificar al cliente
+                            // ✅ CORRECCIÓN: Mostrar monto BRUTO (lo que el cliente realmente recibe)
                             await _loggingService.LogInfoAsync(
                                 message: "Reembolso procesado",
-                                details: $"Se procesó tu reembolso de {clientRefundAmount:F2}€ por el servicio #{searchHireId}. El dinero llegará a tu cuenta en 5-10 días hábiles.",
+                                details: $"Se procesó tu reembolso de {clientRefundAmountForStripe:F2}€ por el servicio #{searchHireId}. El dinero llegará a tu cuenta en 5-10 días hábiles.",
                                 userId: searchHire.ClientId,
                                 source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                 relatedEntityType: "SearchHire",

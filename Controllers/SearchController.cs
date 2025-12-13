@@ -419,10 +419,17 @@ namespace newApi.Controllers
                                         ProductData = new SessionLineItemPriceDataProductDataOptions
                                         {
                                             Name = $"Payment for Service {service.Id}"
-                                        }
+                                        },
+                                        // ✅ STRIPE TAX: Configurar tax como inclusivo
+                                        TaxBehavior = "inclusive"
                                     },
                                     Quantity = 1
                                 }
+                            },
+                            // ✅ STRIPE TAX: Habilitar cálculo automático de tax
+                            AutomaticTax = new SessionAutomaticTaxOptions
+                            {
+                                Enabled = true
                             },
                             Mode = "payment",
                             SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}&serviceId={service.Id}",

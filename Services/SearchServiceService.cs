@@ -167,6 +167,19 @@ namespace newApi.Services
                 services = services
                     .Where(ss => ss.IsActive && !string.IsNullOrEmpty(ss.ExpertProfile?.Latitude) && !string.IsNullOrEmpty(ss.ExpertProfile?.Longitude)) // ✅ CORRECCIÓN: Filtrar explícitamente por IsActive después de cargar
                     .ToList();
+
+                // ✅ NUEVO: Cargar todas las disponibilidades activas de los expertos en una sola consulta
+                var expertProfileIds = services.Select(ss => ss.ExpertProfileId).Distinct().ToList();
+                var availabilities = await _context.ExpertAvailabilities
+                    .Where(ea => expertProfileIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                    .OrderByDescending(ea => ea.EffectiveFrom)
+                    .ToListAsync();
+
+                // Agrupar por ExpertId y tomar la más reciente (si hay duplicados)
+                var availabilityByExpert = availabilities
+                    .GroupBy(ea => ea.ExpertId)
+                    .ToDictionary(g => g.Key, g => g.First());
+
                 // Agrupar servicios por experto para evitar duplicados
                 var expertGroups = services.GroupBy(ss => ss.ExpertProfile.User.Id);
 
@@ -175,6 +188,21 @@ namespace newApi.Services
                     var firstService = expertGroup.First();
                     var expert = firstService.ExpertProfile.User;
                     
+                    // Obtener disponibilidad
+                    CurrentExpertAvailabilityDto? availabilityDto = null;
+                    if (availabilityByExpert.TryGetValue(firstService.ExpertProfile.Id, out var currentAvailability))
+                    {
+                        var daysOfWeek = System.Text.Json.JsonSerializer.Deserialize<List<string>>(currentAvailability.DaysOfWeek) ?? new List<string>();
+                        availabilityDto = new CurrentExpertAvailabilityDto
+                        {
+                            Id = currentAvailability.Id,
+                            DaysOfWeek = daysOfWeek,
+                            StartTime = currentAvailability.StartTime,
+                            EndTime = currentAvailability.EndTime,
+                            EffectiveFrom = currentAvailability.EffectiveFrom
+                        };
+                    }
+
                     return new ExpertMapDto
                     {
                         Id = expert.Id,
@@ -189,7 +217,12 @@ namespace newApi.Services
                         Latitude = firstService.ExpertProfile.Latitude,
                         Longitude = firstService.ExpertProfile.Longitude,
                         // ✅ NUEVO: Precio del servicio
-                        Price = firstService.Price
+                        Price = firstService.Price,
+                        // ✅ NUEVO: Datos adicionales solicitados (descripciones, tipos y horarios)
+                        ServiceDescription = firstService.Conditions,
+                        ServiceTypeName = firstService.ServiceType?.Name ?? "Unknown",
+                        ServiceTypeDescription = firstService.ServiceType?.Description ?? string.Empty,
+                        CurrentAvailability = availabilityDto
                     };
                 }).ToList();
 
@@ -556,6 +589,7 @@ namespace newApi.Services
                 CategoryId = ss.CategoryId,
                 ServiceTypeId = ss.ServiceTypeId,
                 ServiceTypeName = ss.ServiceType?.Name ?? "Unknown Service Type",
+                ServiceTypeDescription = ss.ServiceType?.Description ?? string.Empty, // ✅ NUEVO
                 ServiceTypeCategoryId = ss.ServiceType?.ServiceTypeCategoryId,
                 RequiresAppointment = ss.ServiceType?.RequiresAppointment ?? false,
                 Price = ss.Price,
@@ -659,6 +693,7 @@ namespace newApi.Services
                 CategoryId = baseDto.CategoryId,
                 ServiceTypeId = baseDto.ServiceTypeId,
                 ServiceTypeName = baseDto.ServiceTypeName,
+                ServiceTypeDescription = baseDto.ServiceTypeDescription, // ✅ FIXED: Copiar descripción
                 ServiceTypeCategoryId = baseDto.ServiceTypeCategoryId, // ✅ CORRECCIÓN: Incluir ServiceTypeCategoryId
                 RequiresAppointment = baseDto.RequiresAppointment, // ✅ CORRECCIÓN: Incluir RequiresAppointment
                 Price = baseDto.Price,
@@ -688,6 +723,7 @@ namespace newApi.Services
                 CategoryId = ss.CategoryId,
                 ServiceTypeId = ss.ServiceTypeId,
                 ServiceTypeName = ss.ServiceType?.Name ?? "Unknown Service Type",
+                ServiceTypeDescription = ss.ServiceType?.Description ?? string.Empty, // ✅ NUEVO
                 ServiceTypeCategoryId = ss.ServiceType?.ServiceTypeCategoryId,
                 RequiresAppointment = ss.ServiceType?.RequiresAppointment ?? false,
                 Price = ss.Price,

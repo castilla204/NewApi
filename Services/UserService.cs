@@ -25,6 +25,7 @@ namespace newApi.Services
         private readonly StorageClient _storageClient;
         private readonly ILoggingService _loggingService;
         private readonly ITimezoneService _timezoneService;
+        private readonly INotificationService _notificationService;
         private readonly string _twilioVerificationServiceSid;
         private readonly string _twilioauthToken;
 
@@ -34,13 +35,15 @@ namespace newApi.Services
 
      StorageClient storageClient,
      ILoggingService loggingService,
-     ITimezoneService timezoneService)
+     ITimezoneService timezoneService,
+     INotificationService notificationService)
         {
             _context = context;
             _configuration = configuration;
             _storageClient = storageClient;
             _loggingService = loggingService;
             _timezoneService = timezoneService;
+            _notificationService = notificationService;
             _twilioVerificationServiceSid = configuration["Twilio:VerificationServiceSid"];
             _twilioauthToken = configuration["Twilio:AuthToken"];
         }
@@ -437,6 +440,12 @@ namespace newApi.Services
                         IsAdminEmail = isAdminEmail
                     }
                 );
+
+                // ✅ EMAIL: Enviar correo de bienvenida al nuevo usuario
+                if (!string.IsNullOrEmpty(user.Email))
+                {
+                    await _notificationService.SendWelcomeEmailAsync(user.Email, user.Name);
+                }
             }
             else if (!user.IsDeleted)
             {

@@ -300,6 +300,27 @@ namespace newApi.Services
             // ✅ MEJORA: Buscar primero usuarios activos (sin IgnoreQueryFilters)
             var user = await _context.Users.FirstOrDefaultAsync(u => u.GoogleId == payload.Subject);
 
+            // ✅ VALIDACIÓN CRÍTICA: Verificar si el usuario está bloqueado antes de procesar cualquier otra cosa
+            if (user != null && user.IsBlocked)
+            {
+                // ✅ LOG: Intento de inicio de sesión de usuario bloqueado
+                await _loggingService.LogWarningAsync(
+                    message: "Blocked user attempted login",
+                    details: $"Blocked user {user.Id} ({user.Email}) attempted to login via Google Auth",
+                    userId: user.Id,
+                    source: "UserService.GoogleAuth",
+                    relatedEntityType: "User",
+                    relatedEntityId: user.Id,
+                    additionalData: new
+                    {
+                        Action = "BlockedUserLoginAttempt",
+                        Email = user.Email,
+                        GoogleId = user.GoogleId
+                    }
+                );
+                return (false, null, null);
+            }
+
             // ✅ MEJORA: Si no se encuentra usuario activo, buscar usuarios eliminados (soft deleted)
             // Esto permite restaurar cuentas eliminadas cuando el usuario se vuelve a registrar
             if (user == null)
@@ -310,6 +331,26 @@ namespace newApi.Services
                 
                 if (deletedUser != null)
                 {
+                    // ✅ VALIDACIÓN: Si el usuario eliminado estaba bloqueado, no permitir login ni restauración
+                    if (deletedUser.IsBlocked)
+                    {
+                        await _loggingService.LogWarningAsync(
+                           message: "Blocked (deleted) user attempted login",
+                           details: $"Blocked and deleted user {deletedUser.Id} ({deletedUser.Email}) attempted to login via Google Auth",
+                           userId: deletedUser.Id,
+                           source: "UserService.GoogleAuth",
+                           relatedEntityType: "User",
+                           relatedEntityId: deletedUser.Id,
+                            additionalData: new
+                           {
+                               Action = "BlockedDeletedUserLoginAttempt",
+                               Email = deletedUser.Email,
+                               GoogleId = deletedUser.GoogleId
+                           }
+                       );
+                        return (false, null, null);
+                    }
+
                     // ✅ RESTAURAR usuario eliminado en lugar de crear uno nuevo
                     var previouslyDeletedAt = deletedUser.DeletedAt; // Guardar antes de limpiar
                     deletedUser.IsDeleted = false;
@@ -436,6 +477,20 @@ namespace newApi.Services
 
             if (user == null)
             {
+                return (false, null, null, null);
+            }
+
+            // ✅ VALIDACIÓN: Usuario bloqueado no puede convertirse en experto
+            if (user.IsBlocked)
+            {
+                 await _loggingService.LogWarningAsync(
+                    message: "Blocked user attempted to become expert",
+                    details: $"Blocked user {user.Id} ({user.Email}) attempted to become expert",
+                    userId: user.Id,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: user.Id
+                );
                 return (false, null, null, null);
             }
 

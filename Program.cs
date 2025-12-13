@@ -1230,18 +1230,16 @@ builder.Services.AddHangfire(config => config
     .UseDefaultTypeResolver()
     .UseDefaultTypeSerializer());
 
-// ⚠️ Servidor de Hangfire deshabilitado para evitar problemas de recursos
-// Descomentar solo si se necesita procesar jobs en background
-/*
+// ✅ HABILITADO: Servidor de Hangfire para procesar jobs automáticamente
+// Los jobs de timers de appointments requieren que el servidor esté activo
 builder.Services.AddHangfireServer(options =>
 {
-    options.WorkerCount = 2;
+    options.WorkerCount = 2; // Número de workers que procesan jobs simultáneamente
     options.ServerTimeout = TimeSpan.FromMinutes(5);
     options.HeartbeatInterval = TimeSpan.FromSeconds(30);
     options.ServerCheckInterval = TimeSpan.FromMinutes(1);
-    options.SchedulePollingInterval = TimeSpan.FromSeconds(30);
+    options.SchedulePollingInterval = TimeSpan.FromSeconds(30); // Verifica jobs programados cada 30 segundos
 });
-*/
 
 // Register Services
 builder.Services.AddScoped<IRabbitMQService, RabbitMQService>();

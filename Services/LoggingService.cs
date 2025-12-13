@@ -515,119 +515,68 @@ namespace newApi.Services
                     // Capturar variables para el closure
                     var userEmail = user.Email;
                     var emailSubject = title;
-                    var emailBody = $@"
-<!DOCTYPE html>
-<html lang='es'>
-<head>
-    <meta charset='utf-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; 
-            line-height: 1.6; 
-            color: #333333; 
-            background-color: #f4f4f4;
-            padding: 20px;
-        }}
-        .email-container {{ 
-            max-width: 600px; 
-            margin: 0 auto; 
-            background-color: #ffffff;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }}
-        .header {{ 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white; 
-            padding: 40px 30px; 
-            text-align: center;
-        }}
-        .header h1 {{
-            font-size: 28px;
-            font-weight: 600;
-            margin: 0;
-            letter-spacing: -0.5px;
-        }}
-        .content {{ 
-            padding: 40px 30px;
-            background-color: #ffffff;
-        }}
-        .message-box {{ 
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-            padding: 25px;
-            margin: 25px 0;
-            border-radius: 8px;
-            border-left: 5px solid #667eea;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-        }}
-        .message-box p {{
-            font-size: 16px;
-            line-height: 1.8;
-            color: #2d3748;
-            margin: 0;
-        }}
-        .info-text {{
-            color: #718096;
-            font-size: 14px;
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #edf2f7;
-            border-radius: 6px;
-        }}
-        .footer {{ 
-            text-align: center; 
-            padding: 30px;
-            background-color: #f7fafc;
-            color: #718096;
-            font-size: 12px;
-            border-top: 1px solid #e2e8f0;
-        }}
-        .footer p {{
-            margin: 5px 0;
-        }}
-        .logo {{
-            font-size: 24px;
-            font-weight: bold;
-            margin-bottom: 10px;
-        }}
-        @media only screen and (max-width: 600px) {{
-            .email-container {{
-                width: 100% !important;
-                border-radius: 0;
-            }}
-            .header, .content {{
-                padding: 25px 20px !important;
-            }}
-            .header h1 {{
-                font-size: 24px !important;
-            }}
-        }}
-    </style>
-</head>
-<body>
-    <div class='email-container'>
-        <div class='header'>
-            <div class='logo'>📧 Inspecciono</div>
-            <h1>{title}</h1>
-        </div>
-        <div class='content'>
-            <div class='message-box'>
-                <p>{fullMessage}</p>
-            </div>
-            <div class='info-text'>
-                💡 Puedes ver más detalles en tu panel de notificaciones.
-            </div>
-        </div>
-        <div class='footer'>
-            <p><strong>Inspecciono</strong></p>
-            <p>Este es un email automático. Por favor, no respondas a este mensaje.</p>
-            <p style='margin-top: 15px; font-size: 11px; color: #a0aec0;'>© {DateTime.UtcNow.Year} Inspecciono. Todos los derechos reservados.</p>
-        </div>
-    </div>
-</body>
-</html>";
+                    
+                    // ---------------------------------------------------------
+                    // 🎨 NUEVO DISEÑO "HERO/DUOLINGO" (Lectura de plantilla)
+                    // ---------------------------------------------------------
+                    string templateHtml;
+                    try 
+                    {
+                        var path = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "Resources", "EmailTemplate.html");
+                        if (System.IO.File.Exists(path))
+                        {
+                            templateHtml = System.IO.File.ReadAllText(path);
+                        }
+                        else
+                        {
+                            // Fallback básico si no encuentra el archivo
+                            templateHtml = "<html><body style='font-family:sans-serif;'><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
+                        }
+                    }
+                    catch
+                    {
+                        templateHtml = "<html><body style='font-family:sans-serif;'><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
+                    }
+
+                    // Preparar contenido (convertir saltos de línea a <br>)
+                    var formattedMessage = fullMessage?.Replace("\n", "<br>") ?? "";
+                    
+                    var contentHtml = $@"
+                        <p style='font-size: 16px; line-height: 1.6; color: #333; margin-bottom: 20px;'>
+                            {formattedMessage}
+                        </p>
+                        <div style='background-color: #f0fdf4; border-left: 4px solid #22c55e; padding: 15px; margin-bottom: 20px; border-radius: 4px;'>
+                            <p style='margin: 0; color: #166534; font-size: 14px;'>
+                                💡 Puedes ver más detalles en tu panel de notificaciones.
+                            </p>
+                        </div>";
+
+                    // Botón de acción (Ver Notificaciones)
+                    // Usamos el estilo del template (Duolingo button)
+                    var actionButtonHtml = @"
+                        <table align='center' border='0' cellpadding='0' cellspacing='0' class='button-wrapper' style='border-collapse:collapse;border-spacing:0;padding-bottom:0;padding-left:0;padding-right:0;padding-top:20px;text-align:left;vertical-align:top;width:100%'>
+                            <tbody>
+                                <tr>
+                                    <td align='center'>
+                                        <div class='center' style='text-align:center'>
+                                            <!--[if mso]>
+                                            <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='https://inspecciono.com/notifications' style='height:48px;v-text-anchor:middle;width:260px;' arcsize='10%' strokecolor='#1CB0F6' fillcolor='#1CB0F6'>
+                                            <w:anchorlock/>
+                                            <center style='color:#ffffff;font-family:sans-serif;font-size:16px;font-weight:bold;'>VER NOTIFICACIONES</center>
+                                            </v:roundrect>
+                                            <![endif]-->
+                                            <a href='https://inspecciono.com/notifications' style='-webkit-text-size-adjust:none;background-color:#1CB0F6;border:1px solid #1CB0F6;border-radius:12px;box-shadow:0 4px 0 0 #1899D6;color:#fff;display:inline-block;font-family:Helvetica,Arial,sans-serif;font-size:16px;font-weight:700;letter-spacing:.5px;line-height:48px;mso-hide:all;padding:0;text-align:center;text-decoration:none;width:260px;min-width:200px;'>VER NOTIFICACIONES</a>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>";
+
+                    var emailBody = templateHtml
+                        .Replace("{{TITLE}}", title)
+                        .Replace("{{CONTENT}}", contentHtml)
+                        .Replace("{{ACTION_BUTTON}}", actionButtonHtml)
+                        .Replace("{{YEAR}}", DateTime.UtcNow.Year.ToString());
 
                     // ✅ HANGFIRE: Enviar email en segundo plano usando Hangfire (mejor práctica)
                     // Hangfire proporciona: persistencia, reintentos automáticos, monitoreo, y no bloquea la API

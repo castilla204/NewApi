@@ -37,7 +37,7 @@ spec:
       - name: regcred
       containers:
       - name: new-api
-        image: erizo9/newapi@sha256:d88819ba68a0b8be42a1417f035c591459214b70523136a153d197a58a81c314
+        image: erizo9/newapi@sha256:d52cc76b8a85d3a532de9c1aa5a4730e7daba45ce8b8f247f632a674fe9c1f54
         imagePullPolicy: Always
         ports:
         - name: http

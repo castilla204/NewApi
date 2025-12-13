@@ -48,116 +48,64 @@ namespace newApi.Services
         #region Helper: Base Template Generator
         
         /// <summary>
-        /// Generates the common HTML structure for all emails
+        /// Generates the common HTML structure for all emails using the sophisticated template
         /// </summary>
         private string GenerateEmailTemplate(string title, string content, string? actionText = null, string? actionUrl = null, string headerIcon = "📢")
         {
-            var year = DateTime.UtcNow.Year;
-            var actionButtonHtml = !string.IsNullOrEmpty(actionText) && !string.IsNullOrEmpty(actionUrl)
-                ? $"<a href='{actionUrl}' class='cta-button'>{actionText}</a>"
-                : "";
+            var year = DateTime.UtcNow.Year.ToString();
+            
+            // Try to read the template file
+            string templateHtml;
+            try 
+            {
+                var path = Path.Combine(Directory.GetCurrentDirectory(), "Resources", "EmailTemplate.html");
+                if (File.Exists(path))
+                {
+                    templateHtml = File.ReadAllText(path);
+                }
+                else
+                {
+                    // Fallback to a basic template if file is missing
+                    templateHtml = "<html><body><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
+                }
+            }
+            catch
+            {
+                templateHtml = "<html><body><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
+            }
 
-            return $@"
-<!DOCTYPE html>
-<html lang='es'>
-<head>
-    <meta charset='utf-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <title>{title}</title>
-    <style>
-        body {{
-            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            background-color: #f4f7f6;
-            margin: 0;
-            padding: 0;
-            color: #333;
-            line-height: 1.6;
-        }}
-        .container {{
-            max-width: 600px;
-            margin: 0 auto;
-            background-color: #ffffff;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
-            margin-top: 20px;
-            margin-bottom: 20px;
-        }}
-        .header {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 30px;
-            text-align: center;
-            color: white;
-        }}
-        .header h1 {{
-            margin: 0;
-            font-size: 24px;
-            font-weight: 600;
-        }}
-        .logo {{
-            font-size: 32px;
-            margin-bottom: 10px;
-            display: block;
-        }}
-        .content {{
-            padding: 40px 30px;
-        }}
-        .cta-button {{
-            display: block;
-            width: 100%;
-            text-align: center;
-            background-color: #667eea;
-            color: white;
-            text-decoration: none;
-            padding: 15px 0;
-            border-radius: 6px;
-            font-weight: 600;
-            font-size: 16px;
-            margin-top: 30px;
-            transition: background-color 0.3s;
-        }}
-        .cta-button:hover {{
-            background-color: #5a67d8;
-        }}
-        .footer {{
-            background-color: #edf2f7;
-            padding: 20px;
-            text-align: center;
-            font-size: 12px;
-            color: #718096;
-        }}
-        .highlight-box {{
-            background-color: #f8fafc;
-            border-left: 4px solid #667eea;
-            padding: 20px;
-            margin: 20px 0;
-            border-radius: 4px;
-        }}
-        /* Estilos específicos para contenido dinámico */
-        .detail-item {{ margin-bottom: 10px; font-size: 15px; }}
-        .detail-label {{ font-weight: 600; color: #4a5568; display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }}
-        .detail-value {{ color: #2d3748; font-size: 16px; }}
-        .greeting {{ font-size: 18px; margin-bottom: 20px; color: #2d3748; font-weight: 500; }}
-    </style>
-</head>
-<body>
-    <div class='container'>
-        <div class='header'>
-            <span class='logo'>{headerIcon}</span>
-            <h1>{title}</h1>
-        </div>
-        <div class='content'>
-            {content}
-            {actionButtonHtml}
-        </div>
-        <div class='footer'>
-            <p>© {year} Inspecciono. Todos los derechos reservados.</p>
-            <p>Has recibido este correo porque tienes una cuenta activa en Inspecciono.</p>
-            <p style='margin-top: 10px;'><a href='#' style='color: #718096; text-decoration: underline;'>Preferencias de notificación</a></p>
-        </div>
-    </div>
-</body>
-</html>";
+            // Create Action Button HTML if needed
+            var actionButtonHtml = "";
+            if (!string.IsNullOrEmpty(actionText) && !string.IsNullOrEmpty(actionUrl))
+            {
+                actionButtonHtml = $@"
+                    <table align='center' border='0' cellpadding='0' cellspacing='0' class='button-wrapper' style='border-collapse:collapse;border-spacing:0;padding-bottom:0;padding-left:0;padding-right:0;padding-top:20px;text-align:left;vertical-align:top;width:100%'>
+                        <tbody>
+                            <tr>
+                                <td align='center'>
+                                    <div class='center' style='text-align:center'>
+                                        <!--[if mso]>
+                                        <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:48px;v-text-anchor:middle;width:260px;' arcsize='10%' strokecolor='#1CB0F6' fillcolor='#1CB0F6'>
+                                        <w:anchorlock/>
+                                        <center style='color:#ffffff;font-family:sans-serif;font-size:16px;font-weight:bold;'>{actionText}</center>
+                                        </v:roundrect>
+                                        <![endif]-->
+                                        <a href='{actionUrl}' style='-webkit-text-size-adjust:none;background-color:#1CB0F6;border:1px solid #1CB0F6;border-radius:12px;box-shadow:0 4px 0 0 #1899D6;color:#fff;display:inline-block;font-family:Helvetica,Arial,sans-serif;font-size:16px;font-weight:700;letter-spacing:.5px;line-height:48px;mso-hide:all;padding:0;text-align:center;text-decoration:none;width:260px;min-width:200px;'>{actionText}</a>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>";
+            }
+
+            // Replace Placeholders
+            var finalHtml = templateHtml
+                .Replace("{{TITLE}}", title)
+                .Replace("{{CONTENT}}", content)
+                .Replace("{{ACTION_BUTTON}}", actionButtonHtml)
+                .Replace("{{YEAR}}", year);
+
+            return finalHtml;
         }
 
         #endregion

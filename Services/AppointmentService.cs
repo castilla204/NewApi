@@ -1457,7 +1457,8 @@ namespace newApi.Services
                                 updatedAppointment.SearchHire.Client.Name, 
                                 formattedDateTime, 
                                 updatedAppointment.Location, 
-                                isExpert: false
+                                isExpert: false,
+                                searchHireId: updatedAppointment.SearchHireId
                             );
                         }
 
@@ -1497,7 +1498,8 @@ namespace newApi.Services
                                 updatedAppointment.SearchHire.Expert.Name, 
                                 formattedDate, 
                                 updatedAppointment.Location, 
-                                isExpert: true
+                                isExpert: true,
+                                searchHireId: updatedAppointment.SearchHireId
                             );
                         }
                     }
@@ -5358,7 +5360,8 @@ namespace newApi.Services
                                         timer.Appointment.SearchHire.Client.Email,
                                         timer.Appointment.SearchHire.Client.Name,
                                         serviceName,
-                                        expertName
+                                        expertName,
+                                        timer.Appointment.SearchHireId
                                     );
                                     
                                     // Log adicional para el cliente explicando por qué se completó

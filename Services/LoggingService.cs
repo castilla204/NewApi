@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
 using System.Text.Json;
+using System.Linq;
 
 namespace newApi.Services
 {
@@ -83,7 +84,7 @@ namespace newApi.Services
             // Si se solicita notificar al usuario, crear notificación (aunque sea debug)
             if (notifyUser && userId.HasValue)
             {
-                await ProcessUserNotificationAsync(userId.Value, message, details, "Debug");
+                await ProcessUserNotificationAsync(userId.Value, message, details, "Debug", relatedEntityType, relatedEntityId);
             }
             
             await Task.CompletedTask; // Método async pero no hace operaciones de BD
@@ -222,7 +223,7 @@ namespace newApi.Services
                 // Si se solicita notificar al usuario y hay userId, crear notificación
                 if (notifyUser && userId.HasValue)
                 {
-                    await ProcessUserNotificationAsync(userId.Value, message, details, logLevel);
+                    await ProcessUserNotificationAsync(userId.Value, message, details, logLevel, relatedEntityType, relatedEntityId);
                 }
             }
             catch (Exception ex)
@@ -473,7 +474,7 @@ namespace newApi.Services
         /// <summary>
         /// Crea una notificación para el usuario cuando se solicita explícitamente
         /// </summary>
-        private async Task ProcessUserNotificationAsync(int userId, string message, string? details, string logLevel)
+        private async Task ProcessUserNotificationAsync(int userId, string message, string? details, string logLevel, string? relatedEntityType = null, int? relatedEntityId = null)
         {
             try
             {
@@ -549,20 +550,49 @@ namespace newApi.Services
                             Accede a tu panel para más detalles.
                         </p>";
 
+                    // Determinar URL y Texto del botón
+                    string actionUrl = "https://inspecciono.com/notifications";
+                    string actionText = "Ver notificaciones";
+
+                    if (relatedEntityType == "SearchHire" && relatedEntityId.HasValue)
+                    {
+                        actionUrl = $"https://inspecciono.com/detalles/{relatedEntityId}";
+                        actionText = "Ver detalles";
+                    }
+                    else if (relatedEntityType == "Appointment" && relatedEntityId.HasValue)
+                    {
+                        // Obtener el SearchHireId de la cita para redirigir correctamente
+                        var appointment = await _context.Appointments
+                            .AsNoTracking()
+                            .Select(a => new { a.Id, a.SearchHireId })
+                            .FirstOrDefaultAsync(a => a.Id == relatedEntityId.Value);
+
+                        if (appointment != null)
+                        {
+                             actionUrl = $"https://inspecciono.com/detalles/{appointment.SearchHireId}";
+                             actionText = "Ver detalles";
+                        }
+                        else
+                        {
+                             actionUrl = "https://inspecciono.com/appointments";
+                             actionText = "Ver cita";
+                        }
+                    }
+
                     // Botón de acción - Estilo profesional y discreto
-                    var actionButtonHtml = @"
+                    var actionButtonHtml = $@"
                         <table align='center' border='0' cellpadding='0' cellspacing='0' style='border-collapse:collapse;border-spacing:0;padding:16px 0 0 0;text-align:center;vertical-align:top;width:100%'>
                             <tbody>
                                 <tr>
                                     <td align='center' style='padding:0'>
                                         <!--[if mso]>
-                                        <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='https://inspecciono.com/notifications' style='height:36px;v-text-anchor:middle;width:180px;' arcsize='15%' strokecolor='#2563EB' fillcolor='#2563EB'>
+                                        <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:36px;v-text-anchor:middle;width:180px;' arcsize='15%' strokecolor='#2563EB' fillcolor='#2563EB'>
                                         <w:anchorlock/>
-                                        <center style='color:#ffffff;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;'>Ver notificaciones</center>
+                                        <center style='color:#ffffff;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;'>{actionText}</center>
                                         </v:roundrect>
                                         <![endif]-->
                                         <!--[if !mso]><!-->
-                                        <a href='https://inspecciono.com/notifications' style='background-color:#2563EB;border-radius:6px;color:#ffffff;display:inline-block;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;line-height:36px;mso-hide:all;padding:0 24px;text-align:center;text-decoration:none;'>Ver notificaciones</a>
+                                        <a href='{actionUrl}' style='background-color:#2563EB;border-radius:6px;color:#ffffff;display:inline-block;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;line-height:36px;mso-hide:all;padding:0 24px;text-align:center;text-decoration:none;'>{actionText}</a>
                                         <!--<![endif]-->
                                     </td>
                                 </tr>

@@ -1,6 +1,7 @@
 using Hangfire;
 using newApi.DataLayer.Models.DTOs;
 using System.Globalization;
+using System.IO;
 
 namespace newApi.Services
 {
@@ -12,7 +13,7 @@ namespace newApi.Services
         /// <summary>
         /// Sends an appointment confirmation email with a nice HTML template
         /// </summary>
-        Task SendAppointmentConfirmationEmailAsync(string toEmail, string userName, string date, string location, bool isExpert);
+        Task SendAppointmentConfirmationEmailAsync(string toEmail, string userName, string date, string location, bool isExpert, int searchHireId);
 
         /// <summary>
         /// Sends a welcome email to new users
@@ -27,7 +28,7 @@ namespace newApi.Services
         /// <summary>
         /// Sends a service completion email requesting a review
         /// </summary>
-        Task SendServiceCompletionEmailAsync(string toEmail, string userName, string serviceName, string expertName);
+        Task SendServiceCompletionEmailAsync(string toEmail, string userName, string serviceName, string expertName, int searchHireId);
     }
 
     /// <summary>
@@ -111,9 +112,9 @@ namespace newApi.Services
         #endregion
 
         /// <inheritdoc />
-        public async Task SendAppointmentConfirmationEmailAsync(string toEmail, string userName, string date, string location, bool isExpert)
+        public async Task SendAppointmentConfirmationEmailAsync(string toEmail, string userName, string date, string location, bool isExpert, int searchHireId)
         {
-            BackgroundJob.Enqueue(() => SendAppointmentConfirmationEmailJob(toEmail, userName, date, location, isExpert));
+            BackgroundJob.Enqueue(() => SendAppointmentConfirmationEmailJob(toEmail, userName, date, location, isExpert, searchHireId));
             await Task.CompletedTask;
         }
 
@@ -132,9 +133,9 @@ namespace newApi.Services
         }
 
         /// <inheritdoc />
-        public async Task SendServiceCompletionEmailAsync(string toEmail, string userName, string serviceName, string expertName)
+        public async Task SendServiceCompletionEmailAsync(string toEmail, string userName, string serviceName, string expertName, int searchHireId)
         {
-            BackgroundJob.Enqueue(() => SendServiceCompletionEmailJob(toEmail, userName, serviceName, expertName));
+            BackgroundJob.Enqueue(() => SendServiceCompletionEmailJob(toEmail, userName, serviceName, expertName, searchHireId));
             await Task.CompletedTask;
         }
 
@@ -144,7 +145,7 @@ namespace newApi.Services
         /// Job to send the appointment confirmation email in background
         /// </summary>
         [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
-        public async Task SendAppointmentConfirmationEmailJob(string toEmail, string userName, string date, string location, bool isExpert)
+        public async Task SendAppointmentConfirmationEmailJob(string toEmail, string userName, string date, string location, bool isExpert, int searchHireId)
         {
             var subject = isExpert ? "Cita confirmada" : "Tu cita ha sido confirmada";
             var title = isExpert ? "Cita confirmada" : "Tu cita está confirmada";
@@ -160,7 +161,8 @@ namespace newApi.Services
                 <p style='margin:0 0 16px 0;color:#374151;'><strong>Ubicación:</strong> {location}</p>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas hacer cambios, accede a tu panel de citas.</p>";
 
-            var htmlBody = GenerateEmailTemplate(title, content, "Ver cita", "https://inspecciono.com/appointments", "📅");
+            var actionUrl = $"https://inspecciono.com/detalles/{searchHireId}";
+            var htmlBody = GenerateEmailTemplate(title, content, "Ver detalles", actionUrl, "📅");
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true);
         }
 
@@ -207,7 +209,7 @@ namespace newApi.Services
         /// Job to send the service completion email in background
         /// </summary>
         [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
-        public async Task SendServiceCompletionEmailJob(string toEmail, string userName, string serviceName, string expertName)
+        public async Task SendServiceCompletionEmailJob(string toEmail, string userName, string serviceName, string expertName, int searchHireId)
         {
             var subject = "Servicio completado";
             var title = "Tu servicio ha finalizado";
@@ -218,7 +220,8 @@ namespace newApi.Services
                 <p style='margin:0 0 16px 0;'>Tu valoración ayuda a otros usuarios y mejora la comunidad.</p>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Solo te llevará un momento.</p>";
 
-            var htmlBody = GenerateEmailTemplate(title, content, "Dejar valoración", "https://inspecciono.com/reviews/pending", "⭐");
+            var actionUrl = $"https://inspecciono.com/detalles/{searchHireId}";
+            var htmlBody = GenerateEmailTemplate(title, content, "Dejar valoración", actionUrl, "⭐");
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true);
         }
 

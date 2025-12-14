@@ -40,7 +40,7 @@ namespace newApi.Controllers
                                     ?? await GetConfigForStatus("appointment_completed_without_client_approval");
                 decimal platformFee = successConfig?.PlatformPercentage ?? 5;
 
-                // 2. Cancelación por Cliente (Estándar/Tardía)
+                // 2. Cancelación por Cliente (Estándar/Tardía - Segunda Instancia)
                 var cancelClientSecond = await GetConfigForStatus("appointment_cancelled_by_client_second");
                 decimal refundClientSecond = cancelClientSecond?.ClientPercentage ?? 80;
 
@@ -48,9 +48,13 @@ namespace newApi.Controllers
                 var cancelClientNoProp = await GetConfigForStatus("appointment_cancelled_by_client_no_proposal");
                 decimal refundClientNoProp = cancelClientNoProp?.ClientPercentage ?? 90;
 
-                // 4. Cancelación por Experto
+                // 4. Cancelación por Experto (General)
                 var cancelExpertConfig = await GetConfigForStatus("appointment_cancelled_by_expert");
                 decimal refundExpertCancel = cancelExpertConfig?.ClientPercentage ?? 100;
+
+                // 5. Cancelación por Experto (No Respuesta)
+                var cancelExpertNoResp = await GetConfigForStatus("appointment_cancelled_by_expert_no_response");
+                decimal refundExpertNoResp = cancelExpertNoResp?.ClientPercentage ?? 100;
 
                 var year = DateTime.UtcNow.Year;
 
@@ -61,171 +65,90 @@ namespace newApi.Controllers
     <meta charset='UTF-8'>
     <title>Términos y Condiciones - {COMPANY_NAME}</title>
     <style>
-        body {{ font-family: 'Segoe UI', -apple-system, sans-serif; line-height: 1.7; color: #1a202c; max-width: 900px; margin: 0 auto; padding: 40px 20px; background: #f7fafc; }}
-        .container {{ background: white; padding: 50px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }}
-        h1 {{ color: #1a202c; border-bottom: 3px solid #4F46E5; padding-bottom: 15px; font-size: 2em; }}
-        h2 {{ color: #2d3748; margin-top: 40px; padding-bottom: 10px; border-bottom: 1px solid #e2e8f0; }}
-        h3 {{ color: #4a5568; margin-top: 25px; }}
-        .highlight {{ color: #4F46E5; font-weight: 700; background: linear-gradient(120deg, #EEF2FF 0%, #E0E7FF 100%); padding: 3px 8px; border-radius: 4px; }}
-        .company-info {{ background: #f0fdf4; border: 1px solid #86efac; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-        .warning-box {{ background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px 20px; margin: 20px 0; border-radius: 0 8px 8px 0; }}
-        table {{ width: 100%; border-collapse: collapse; margin: 25px 0; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-        th {{ background: #4F46E5; color: white; text-align: left; padding: 15px; font-weight: 600; }}
-        td {{ padding: 15px; border-bottom: 1px solid #e2e8f0; }}
-        tr:nth-child(even) {{ background: #f8fafc; }}
-        tr:last-child td {{ border-bottom: none; }}
-        .text-green {{ color: #059669; font-weight: 700; }}
-        .text-red {{ color: #dc2626; font-weight: 700; }}
-        .text-muted {{ color: #64748b; font-size: 0.9em; }}
-        ul {{ padding-left: 25px; }}
-        li {{ margin-bottom: 12px; }}
-        .update-date {{ color: #64748b; font-size: 0.95em; margin-bottom: 30px; }}
-        a {{ color: #4F46E5; text-decoration: none; }}
-        a:hover {{ text-decoration: underline; }}
+        body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; line-height: 1.5; color: #333; max-width: 800px; margin: 0 auto; padding: 40px; background-color: #fff; font-size: 13px; }}
+        h1 {{ font-size: 20px; font-weight: 700; margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px; color: #000; }}
+        h2 {{ font-size: 15px; font-weight: 700; margin-top: 30px; margin-bottom: 10px; color: #000; text-transform: uppercase; letter-spacing: 0.5px; }}
+        h3 {{ font-size: 13px; font-weight: 700; margin-top: 20px; margin-bottom: 8px; }}
+        p {{ margin-bottom: 12px; text-align: justify; }}
+        ul {{ padding-left: 20px; margin-bottom: 12px; }}
+        li {{ margin-bottom: 6px; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 12px; }}
+        th {{ border-bottom: 2px solid #333; text-align: left; padding: 8px; font-weight: 700; }}
+        td {{ border-bottom: 1px solid #eee; padding: 8px; vertical-align: top; }}
+        .header-info {{ font-size: 11px; color: #666; margin-bottom: 30px; border: 1px solid #eee; padding: 15px; background: #fcfcfc; }}
+        .strong {{ font-weight: 600; }}
+        a {{ color: #000; text-decoration: underline; }}
     </style>
 </head>
 <body>
-    <div class='container'>
-        <h1>📜 Términos y Condiciones de Uso</h1>
-        <p class='update-date'>Última actualización: {DateTime.Now:dd} de {DateTime.Now:MMMM} de {year}</p>
-
-        <div class='company-info'>
-            <strong>🏢 Información del Titular:</strong><br>
-            Sitio web: <a href='https://{COMPANY_WEBSITE}'>{COMPANY_WEBSITE}</a><br>
-            Contacto: <a href='mailto:{COMPANY_EMAIL}'>{COMPANY_EMAIL}</a>
-        </div>
-
-        <h2>1. Objeto y Ámbito de Aplicación</h2>
-        <p>Los presentes Términos y Condiciones regulan el acceso y uso del sitio web <strong><a href='https://{COMPANY_WEBSITE}'>{COMPANY_WEBSITE}</a></strong> (en adelante, ""la Plataforma""), propiedad de <strong>{COMPANY_NAME}</strong>.</p>
-        <p>{COMPANY_NAME} es una plataforma de intermediación que conecta a <strong>Clientes</strong> con <strong>Expertos verificados</strong> para la prestación de servicios de inspección técnica. Al acceder o utilizar la Plataforma, usted acepta quedar vinculado por estos términos.</p>
-
-        <h2>2. Descripción del Servicio</h2>
-        <p>{COMPANY_NAME} actúa exclusivamente como <strong>intermediario</strong> entre Clientes y Expertos. Nuestros servicios incluyen:</p>
-        <ul>
-            <li>Verificación de identidad y credenciales de los Expertos.</li>
-            <li>Gestión de reservas y citas entre las partes.</li>
-            <li>Procesamiento seguro de pagos a través de pasarelas certificadas (Stripe).</li>
-            <li>Sistema de valoraciones y reseñas.</li>
-            <li>Soporte al cliente.</li>
-        </ul>
-
-        <h2>3. Tarifas y Comisiones</h2>
-        <p>Por la prestación de nuestros servicios de intermediación, {COMPANY_NAME} aplica las siguientes tarifas:</p>
-        
-        <table>
-            <thead>
-                <tr>
-                    <th>Concepto</th>
-                    <th>Porcentaje</th>
-                    <th>Descripción</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td><strong>Comisión de Plataforma</strong></td>
-                    <td><span class='highlight'>{platformFee}%</span></td>
-                    <td>Se deduce del pago total al completarse el servicio.</td>
-                </tr>
-                <tr>
-                    <td><strong>Pago al Experto</strong></td>
-                    <td><span class='highlight'>{100 - platformFee}%</span></td>
-                    <td>El experto recibe esta parte tras completar el servicio.</td>
-                </tr>
-            </tbody>
-        </table>
-        <p class='text-muted'>Los precios mostrados en la plataforma incluyen el IVA aplicable (21% en España).</p>
-
-        <h2>4. Política de Cancelaciones y Reembolsos</h2>
-        <p>Entendemos que los planes pueden cambiar. A continuación se detallan las condiciones de reembolso según el escenario:</p>
-        
-        <table>
-            <thead>
-                <tr>
-                    <th>Escenario</th>
-                    <th>Reembolso</th>
-                    <th>Penalización</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td>
-                        <strong>Cancelación por el Experto</strong><br>
-                        <span class='text-muted'>El experto no puede asistir, rechaza o no responde.</span>
-                    </td>
-                    <td class='text-green'>{refundExpertCancel}% (Total)</td>
-                    <td>Sin coste para el cliente</td>
-                </tr>
-                <tr>
-                    <td>
-                        <strong>Cliente no propone cita a tiempo</strong><br>
-                        <span class='text-muted'>El cliente no responde en el plazo establecido (24-48h).</span>
-                    </td>
-                    <td><span class='highlight'>{refundClientNoProp}%</span></td>
-                    <td class='text-red'>{100 - refundClientNoProp}%</td>
-                </tr>
-                <tr>
-                    <td>
-                        <strong>Cancelación tardía por Cliente</strong><br>
-                        <span class='text-muted'>Cancelación una vez confirmada la cita.</span>
-                    </td>
-                    <td><span class='highlight'>{refundClientSecond}%</span></td>
-                    <td class='text-red'>{100 - refundClientSecond}%</td>
-                </tr>
-            </tbody>
-        </table>
-
-        <div class='warning-box'>
-            <strong>⚠️ Importante:</strong> Las penalizaciones se aplican para compensar al Experto por el tiempo reservado en su agenda y cubrir los gastos de gestión de la plataforma. Los reembolsos se procesan en un plazo de 5-10 días hábiles.
-        </div>
-
-        <h2>5. Procesamiento de Pagos</h2>
-        <p>Todos los pagos se procesan de forma segura a través de <strong>Stripe</strong>, una pasarela de pago certificada PCI-DSS Nivel 1.</p>
-        <ul>
-            <li>{COMPANY_NAME} no almacena datos de tarjetas de crédito/débito.</li>
-            <li>Los fondos se retienen hasta la finalización satisfactoria del servicio.</li>
-            <li>Se aceptan las principales tarjetas de crédito y débito (Visa, Mastercard, etc.).</li>
-        </ul>
-
-        <h2>6. Obligaciones del Usuario</h2>
-        <p>Al utilizar la Plataforma, usted se compromete a:</p>
-        <ul>
-            <li>Proporcionar información veraz y actualizada.</li>
-            <li>No utilizar la Plataforma para fines ilícitos o fraudulentos.</li>
-            <li>Respetar los derechos de los demás usuarios y Expertos.</li>
-            <li>No eludir el sistema de pagos de la Plataforma.</li>
-            <li>Comunicarse de forma respetuosa a través de los canales proporcionados.</li>
-        </ul>
-
-        <h2>7. Propiedad Intelectual</h2>
-        <p>Todo el contenido de <strong>{COMPANY_WEBSITE}</strong>, incluyendo pero no limitado a textos, gráficos, logotipos, iconos, imágenes, software y diseño, es propiedad de {COMPANY_NAME} o de sus licenciantes y está protegido por las leyes de propiedad intelectual e industrial.</p>
-        <p>Queda prohibida la reproducción, distribución, comunicación pública o transformación de dicho contenido sin autorización expresa por escrito.</p>
-
-        <h2>8. Limitación de Responsabilidad</h2>
-        <p>{COMPANY_NAME} actúa como intermediario y:</p>
-        <ul>
-            <li><strong>No garantiza</strong> el resultado final de las inspecciones técnicas realizadas por los Expertos.</li>
-            <li><strong>No se hace responsable</strong> de daños derivados de la actuación de los Expertos.</li>
-            <li><strong>No asume responsabilidad</strong> por interrupciones del servicio por causas ajenas a su control.</li>
-        </ul>
-        <p>La responsabilidad máxima de {COMPANY_NAME} se limitará, en todo caso, al importe pagado por el servicio contratado.</p>
-
-        <h2>9. Modificaciones</h2>
-        <p>{COMPANY_NAME} se reserva el derecho de modificar estos Términos y Condiciones en cualquier momento. Las modificaciones entrarán en vigor desde su publicación en la Plataforma. Se notificará a los usuarios registrados de cambios sustanciales por correo electrónico.</p>
-
-        <h2>10. Legislación Aplicable y Jurisdicción</h2>
-        <p>Estos Términos se rigen por la legislación española. Para la resolución de cualquier controversia, las partes se someten a los Juzgados y Tribunales de la ciudad de domicilio del usuario, salvo que la ley establezca otro fuero.</p>
-
-        <h2>11. Contacto</h2>
-        <p>Para cualquier consulta sobre estos términos:</p>
-        <ul>
-            <li>📧 Email: <a href='mailto:{COMPANY_SUPPORT_EMAIL}'>{COMPANY_SUPPORT_EMAIL}</a></li>
-            <li>🌐 Web: <a href='https://{COMPANY_WEBSITE}'>{COMPANY_WEBSITE}</a></li>
-        </ul>
-
-        <p style='margin-top: 40px; padding-top: 20px; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 0.9em;'>
-            © {year} {COMPANY_NAME}. Todos los derechos reservados.
-        </p>
+    <h1>Términos y Condiciones de Uso</h1>
+    
+    <div class='header-info'>
+        <p style='margin:0;'><strong>Titular:</strong> {COMPANY_NAME}</p>
+        <p style='margin:0;'><strong>Sitio Web:</strong> {COMPANY_WEBSITE}</p>
+        <p style='margin:0;'><strong>Contacto:</strong> {COMPANY_EMAIL}</p>
+        <p style='margin:0;'><strong>Última actualización:</strong> {DateTime.Now:dd/MM/yyyy}</p>
     </div>
+
+    <h2>1. Objeto y Aceptación</h2>
+    <p>Los presentes Términos y Condiciones regulan el uso de la plataforma de intermediación {COMPANY_NAME} (en adelante, ""la Plataforma""). El acceso y uso de la Plataforma implica la aceptación plena y sin reservas de todas y cada una de las condiciones incluidas en este documento.</p>
+
+    <h2>2. Descripción del Servicio</h2>
+    <p>{COMPANY_NAME} pone a disposición de los usuarios una herramienta tecnológica para conectar a clientes demandantes de servicios de inspección técnica con profesionales independientes (""Expertos""). {COMPANY_NAME} actúa únicamente como intermediario, no prestando directamente los servicios de inspección.</p>
+
+    <h2>3. Política Económica y Tarifas</h2>
+    <p>El uso de la Plataforma conlleva la aplicación de tarifas de gestión y comisiones sobre los servicios contratados.</p>
+
+    <h3>3.1. Comisión de Servicio</h3>
+    <p>Por la intermediación y gestión de pagos, se aplica la siguiente estructura de comisiones sobre el precio total del servicio (IVA incluido):</p>
+    <ul>
+        <li><strong>Comisión de Plataforma:</strong> {platformFee}%</li>
+        <li><strong>Honorarios del Experto:</strong> {100 - platformFee}%</li>
+    </ul>
+
+    <h3>3.2. Política de Cancelación y Reembolsos</h3>
+    <p>La política de cancelación está diseñada para equilibrar los derechos del Cliente y del Experto. Los porcentajes de reembolso se calculan sobre el importe total pagado.</p>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Escenario de Cancelación</th>
+                <th>Reembolso al Cliente</th>
+                <th>Cargo por Gestión/Penalización</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Cancelación por el Experto (Cualquier motivo)</td>
+                <td>{refundExpertCancel}%</td>
+                <td>0%</td>
+            </tr>
+            <tr>
+                <td>Cancelación por Cliente (Falta de respuesta/propuesta)</td>
+                <td>{refundClientNoProp}%</td>
+                <td>{100 - refundClientNoProp}%</td>
+            </tr>
+            <tr>
+                <td>Cancelación por Cliente (Una vez confirmada/Tardía)</td>
+                <td>{refundClientSecond}%</td>
+                <td>{100 - refundClientSecond}%</td>
+            </tr>
+        </tbody>
+    </table>
+    <p><em>Nota: Los cargos por gestión cubren los costes operativos, comisiones bancarias y, en su caso, la compensación al Experto por el bloqueo de agenda.</em></p>
+
+    <h2>4. Pagos y Facturación</h2>
+    <p>Los pagos se procesan a través de la pasarela segura Stripe. El Cliente autoriza el cargo en su tarjeta en el momento de la solicitud. Los fondos permanecen retenidos hasta la finalización del servicio o la aplicación de una política de cancelación.</p>
+    <p>La factura correspondiente al servicio será emitida y enviada automáticamente al correo electrónico del Cliente una vez completado el servicio.</p>
+
+    <h2>5. Responsabilidad</h2>
+    <p>{COMPANY_NAME} verifica la identidad de los Expertos pero no garantiza la exactitud, veracidad o exhaustividad de los informes técnicos emitidos, siendo estos responsabilidad exclusiva del Experto. {COMPANY_NAME} no será responsable de daños indirectos, lucro cesante o pérdidas de oportunidades de negocio.</p>
+
+    <h2>6. Protección de Datos</h2>
+    <p>El tratamiento de datos personales se rige por lo dispuesto en nuestra Política de Privacidad, cumpliendo con el Reglamento (UE) 2016/679 (RGPD) y la Ley Orgánica 3/2018 (LOPD-GDD).</p>
+
+    <h2>7. Legislación y Fuero</h2>
+    <p>Para la resolución de controversias, las partes se someten a los juzgados y tribunales del domicilio del Titular de la Plataforma, salvo que la ley imponga otro fuero.</p>
 </body>
 </html>";
 
@@ -239,8 +162,7 @@ namespace newApi.Controllers
                         refundClientSecond,
                         refundClientNoProp,
                         refundExpertCancel,
-                        companyName = COMPANY_NAME,
-                        website = COMPANY_WEBSITE
+                        refundExpertNoResp
                     }
                 });
             }

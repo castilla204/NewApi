@@ -74,24 +74,24 @@ namespace newApi.Services
                 templateHtml = "<html><body><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
             }
 
-            // Create Action Button HTML if needed
+            // Create Action Button HTML if needed - Professional discrete style
             var actionButtonHtml = "";
             if (!string.IsNullOrEmpty(actionText) && !string.IsNullOrEmpty(actionUrl))
             {
                 actionButtonHtml = $@"
-                    <table align='center' border='0' cellpadding='0' cellspacing='0' class='button-wrapper' style='border-collapse:collapse;border-spacing:0;padding-bottom:0;padding-left:0;padding-right:0;padding-top:20px;text-align:left;vertical-align:top;width:100%'>
+                    <table align='center' border='0' cellpadding='0' cellspacing='0' style='border-collapse:collapse;border-spacing:0;padding:16px 0 0 0;text-align:center;vertical-align:top;width:100%'>
                         <tbody>
                             <tr>
-                                <td align='center'>
-                                    <div class='center' style='text-align:center'>
-                                        <!--[if mso]>
-                                        <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:48px;v-text-anchor:middle;width:260px;' arcsize='10%' strokecolor='#1CB0F6' fillcolor='#1CB0F6'>
-                                        <w:anchorlock/>
-                                        <center style='color:#ffffff;font-family:sans-serif;font-size:16px;font-weight:bold;'>{actionText}</center>
-                                        </v:roundrect>
-                                        <![endif]-->
-                                        <a href='{actionUrl}' style='-webkit-text-size-adjust:none;background-color:#1CB0F6;border:1px solid #1CB0F6;border-radius:12px;box-shadow:0 4px 0 0 #1899D6;color:#fff;display:inline-block;font-family:Helvetica,Arial,sans-serif;font-size:16px;font-weight:700;letter-spacing:.5px;line-height:48px;mso-hide:all;padding:0;text-align:center;text-decoration:none;width:260px;min-width:200px;'>{actionText}</a>
-                                    </div>
+                                <td align='center' style='padding:0'>
+                                    <!--[if mso]>
+                                    <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:36px;v-text-anchor:middle;width:180px;' arcsize='15%' strokecolor='#2563EB' fillcolor='#2563EB'>
+                                    <w:anchorlock/>
+                                    <center style='color:#ffffff;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;'>{actionText}</center>
+                                    </v:roundrect>
+                                    <![endif]-->
+                                    <!--[if !mso]><!-->
+                                    <a href='{actionUrl}' style='background-color:#2563EB;border-radius:6px;color:#ffffff;display:inline-block;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;line-height:36px;mso-hide:all;padding:0 24px;text-align:center;text-decoration:none;'>{actionText}</a>
+                                    <!--<![endif]-->
                                 </td>
                             </tr>
                         </tbody>
@@ -146,33 +146,21 @@ namespace newApi.Services
         [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
         public async Task SendAppointmentConfirmationEmailJob(string toEmail, string userName, string date, string location, bool isExpert)
         {
-            var subject = isExpert ? "✅ Has confirmado tu cita - Inspecciono" : "✅ ¡Tu cita ha sido confirmada! - Inspecciono";
-            var title = isExpert ? "Cita Confirmada Exitosamente" : "¡Cita Confirmada!";
+            var subject = isExpert ? "Cita confirmada" : "Tu cita ha sido confirmada";
+            var title = isExpert ? "Cita confirmada" : "Tu cita está confirmada";
             
             var messageStart = isExpert 
-                ? $"Has confirmado la cita para el <strong>{date}</strong>. Recuerda que solo puedes cancelar hasta 12 horas antes sin penalización."
-                : $"El experto ha confirmado tu cita para el <strong>{date}</strong>. ¡Todo está listo!";
+                ? $"Has confirmado la cita para el {date}."
+                : $"El experto ha confirmado tu cita para el {date}.";
 
             var content = $@"
-                <p class='greeting'>Hola {userName},</p>
-                <p>{messageStart}</p>
-                
-                <div class='highlight-box'>
-                    <div class='detail-item'>
-                        <span class='detail-label'>Fecha y Hora</span>
-                        <span class='detail-value'>🗓️ {date}</span>
-                    </div>
-                    <div class='detail-item'>
-                        <span class='detail-label'>Ubicación</span>
-                        <span class='detail-value'>📍 {location}</span>
-                    </div>
-                </div>
+                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 16px 0;'>{messageStart}</p>
+                <p style='margin:0 0 6px 0;color:#374151;'><strong>Fecha:</strong> {date}</p>
+                <p style='margin:0 0 16px 0;color:#374151;'><strong>Ubicación:</strong> {location}</p>
+                <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas hacer cambios, accede a tu panel de citas.</p>";
 
-                <p style='font-size: 14px; color: #718096; margin-top: 20px;'>
-                    Si tienes alguna pregunta o necesitas reagendar, por favor contáctanos lo antes posible o gestiona tu cita desde la plataforma.
-                </p>";
-
-            var htmlBody = GenerateEmailTemplate(title, content, "Ver Detalles de la Cita", "https://www.inspecciono.com/appointments", "📅");
+            var htmlBody = GenerateEmailTemplate(title, content, "Ver cita", "https://inspecciono.com/appointments", "📅");
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true);
         }
 
@@ -182,25 +170,19 @@ namespace newApi.Services
         [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
         public async Task SendWelcomeEmailJob(string toEmail, string userName)
         {
-            var subject = "👋 ¡Bienvenido a Inspecciono!";
-            var title = "¡Bienvenido a la comunidad!";
+            var subject = "Bienvenido a Inspecciono";
+            var title = "Bienvenido a Inspecciono";
 
             var content = $@"
-                <p class='greeting'>¡Hola {userName}!</p>
-                <p>Estamos muy emocionados de tenerte con nosotros. En <strong>Inspecciono</strong>, nuestra misión es conectarte con los mejores expertos para tus necesidades de inspección y validación.</p>
-                
-                <p>Aquí tienes algunos pasos para empezar:</p>
-                <ul style='padding-left: 20px; color: #4a5568;'>
-                    <li style='margin-bottom: 10px;'>Completa tu perfil para que los demás usuarios te conozcan mejor.</li>
-                    <li style='margin-bottom: 10px;'>Explora los servicios disponibles o publica el tuyo.</li>
-                    <li style='margin-bottom: 10px;'>Si tienes dudas, nuestro centro de ayuda está siempre disponible.</li>
-                </ul>
+                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 12px 0;'>Gracias por registrarte en Inspecciono. Estamos aquí para ayudarte a encontrar expertos verificados para tus inspecciones.</p>
+                <p style='margin:0 0 12px 0;'>Para empezar:</p>
+                <p style='margin:0 0 6px 0;padding-left:12px;'>• Completa tu perfil</p>
+                <p style='margin:0 0 6px 0;padding-left:12px;'>• Explora los servicios disponibles</p>
+                <p style='margin:0 0 16px 0;padding-left:12px;'>• Contacta con nuestro soporte si tienes dudas</p>
+                <p style='margin:0;font-size:13px;color:#6B7280;'>Los perfiles completos obtienen mejores resultados.</p>";
 
-                <div class='highlight-box'>
-                    <p style='margin: 0;'>🚀 <strong>Tip Pro:</strong> Los usuarios con perfiles completos tienen un 80% más de éxito en sus gestiones.</p>
-                </div>";
-
-            var htmlBody = GenerateEmailTemplate(title, content, "Completar mi Perfil", "https://www.inspecciono.com/profile", "👋");
+            var htmlBody = GenerateEmailTemplate(title, content, "Completar perfil", "https://inspecciono.com/profile", "👋");
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true);
         }
 
@@ -210,12 +192,12 @@ namespace newApi.Services
         [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
         public async Task SendGeneralNotificationEmailJob(string toEmail, string userName, string title, string message, string? actionText, string? actionUrl)
         {
-            var subject = $"📢 {title} - Inspecciono";
+            var subject = title;
             
             var content = $@"
-                <p class='greeting'>Hola {userName},</p>
-                <p>{message}</p>
-                <p>Si esta notificación requiere tu atención, por favor accede a la plataforma lo antes posible.</p>";
+                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 12px 0;'>{message}</p>
+                <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas más información, accede a tu cuenta.</p>";
 
             var htmlBody = GenerateEmailTemplate(title, content, actionText, actionUrl, "📢");
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true);
@@ -227,23 +209,16 @@ namespace newApi.Services
         [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
         public async Task SendServiceCompletionEmailJob(string toEmail, string userName, string serviceName, string expertName)
         {
-            var subject = "⭐ Tu servicio ha finalizado - ¿Cómo fue tu experiencia?";
-            var title = "¡Servicio Completado!";
+            var subject = "Servicio completado";
+            var title = "Tu servicio ha finalizado";
 
             var content = $@"
-                <p class='greeting'>Hola {userName},</p>
-                <p>El servicio <strong>{serviceName}</strong> realizado por <strong>{expertName}</strong> ha sido marcado como completado.</p>
-                
-                <p>Esperamos que hayas tenido una excelente experiencia. Tu opinión es fundamental para nosotros y ayuda a otros usuarios a tomar mejores decisiones.</p>
+                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 12px 0;'>El servicio <strong>{serviceName}</strong> realizado por <strong>{expertName}</strong> ha sido completado.</p>
+                <p style='margin:0 0 16px 0;'>Tu valoración ayuda a otros usuarios y mejora la comunidad.</p>
+                <p style='margin:0;font-size:13px;color:#6B7280;'>Solo te llevará un momento.</p>";
 
-                <div style='text-align: center; margin: 30px 0;'>
-                    <p style='font-size: 18px; font-weight: 600; color: #2d3748;'>¿Qué tal estuvo el servicio?</p>
-                    <p style='font-size: 32px; letter-spacing: 10px;'>⭐⭐⭐⭐⭐</p>
-                </div>
-
-                <p>Tomará menos de un minuto dejar tu reseña.</p>";
-
-            var htmlBody = GenerateEmailTemplate(title, content, "Dejar una Reseña", "https://www.inspecciono.com/reviews/pending", "⭐");
+            var htmlBody = GenerateEmailTemplate(title, content, "Dejar valoración", "https://inspecciono.com/reviews/pending", "⭐");
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true);
         }
 

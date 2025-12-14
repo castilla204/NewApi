@@ -542,31 +542,28 @@ namespace newApi.Services
                     var formattedMessage = fullMessage?.Replace("\n", "<br>") ?? "";
                     
                     var contentHtml = $@"
-                        <p style='font-size: 16px; line-height: 1.6; color: #333; margin-bottom: 20px;'>
+                        <p style='margin:0 0 12px 0;font-size:14px;line-height:22px;color:#374151;'>
                             {formattedMessage}
                         </p>
-                        <div style='background-color: #f0fdf4; border-left: 4px solid #22c55e; padding: 15px; margin-bottom: 20px; border-radius: 4px;'>
-                            <p style='margin: 0; color: #166534; font-size: 14px;'>
-                                💡 Puedes ver más detalles en tu panel de notificaciones.
-                            </p>
-                        </div>";
+                        <p style='margin:0;font-size:13px;color:#6B7280;'>
+                            Accede a tu panel para más detalles.
+                        </p>";
 
-                    // Botón de acción (Ver Notificaciones)
-                    // Usamos el estilo del template (Duolingo button)
+                    // Botón de acción - Estilo profesional y discreto
                     var actionButtonHtml = @"
-                        <table align='center' border='0' cellpadding='0' cellspacing='0' class='button-wrapper' style='border-collapse:collapse;border-spacing:0;padding-bottom:0;padding-left:0;padding-right:0;padding-top:20px;text-align:left;vertical-align:top;width:100%'>
+                        <table align='center' border='0' cellpadding='0' cellspacing='0' style='border-collapse:collapse;border-spacing:0;padding:16px 0 0 0;text-align:center;vertical-align:top;width:100%'>
                             <tbody>
                                 <tr>
-                                    <td align='center'>
-                                        <div class='center' style='text-align:center'>
-                                            <!--[if mso]>
-                                            <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='https://inspecciono.com/notifications' style='height:48px;v-text-anchor:middle;width:260px;' arcsize='10%' strokecolor='#1CB0F6' fillcolor='#1CB0F6'>
-                                            <w:anchorlock/>
-                                            <center style='color:#ffffff;font-family:sans-serif;font-size:16px;font-weight:bold;'>VER NOTIFICACIONES</center>
-                                            </v:roundrect>
-                                            <![endif]-->
-                                            <a href='https://inspecciono.com/notifications' style='-webkit-text-size-adjust:none;background-color:#1CB0F6;border:1px solid #1CB0F6;border-radius:12px;box-shadow:0 4px 0 0 #1899D6;color:#fff;display:inline-block;font-family:Helvetica,Arial,sans-serif;font-size:16px;font-weight:700;letter-spacing:.5px;line-height:48px;mso-hide:all;padding:0;text-align:center;text-decoration:none;width:260px;min-width:200px;'>VER NOTIFICACIONES</a>
-                                        </div>
+                                    <td align='center' style='padding:0'>
+                                        <!--[if mso]>
+                                        <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='https://inspecciono.com/notifications' style='height:36px;v-text-anchor:middle;width:180px;' arcsize='15%' strokecolor='#2563EB' fillcolor='#2563EB'>
+                                        <w:anchorlock/>
+                                        <center style='color:#ffffff;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;'>Ver notificaciones</center>
+                                        </v:roundrect>
+                                        <![endif]-->
+                                        <!--[if !mso]><!-->
+                                        <a href='https://inspecciono.com/notifications' style='background-color:#2563EB;border-radius:6px;color:#ffffff;display:inline-block;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;line-height:36px;mso-hide:all;padding:0 24px;text-align:center;text-decoration:none;'>Ver notificaciones</a>
+                                        <!--<![endif]-->
                                     </td>
                                 </tr>
                             </tbody>

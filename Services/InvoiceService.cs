@@ -48,7 +48,7 @@ namespace newApi.Services
             var serviceName = searchHire.SearchService.ServiceType.Name;
             var serviceCategory = searchHire.SearchService.Category.Name;
             var amount = searchHire.Amount;
-            var iva = amount * 0.21m; // IVA 21%
+            var iva = searchHire.TaxAmount ?? (amount * 0.21m); // Usar tax real o fallback 21%
             var total = amount + iva;
 
             // Generar PDF con QuestPDF
@@ -191,16 +191,12 @@ namespace newApi.Services
                 // Generar PDF
                 var pdfBytes = await GenerateInvoicePdfAsync(searchHireId);
 
-                // Convertir a base64 para adjuntar en email
-                var pdfBase64 = Convert.ToBase64String(pdfBytes);
-
                 // Obtener datos para el email
                 var searchHire = await _context.SearchHires
                     .Include(sh => sh.Client)
+                    .Include(sh => sh.Expert)
                     .Include(sh => sh.SearchService)
                         .ThenInclude(ss => ss.ServiceType)
-                    .Include(sh => sh.SearchService)
-                        .ThenInclude(ss => ss.Category)
                     .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
 
                 if (searchHire == null)
@@ -209,178 +205,19 @@ namespace newApi.Services
                 }
 
                 var invoiceNumber = $"FAC-{searchHire.Id:D6}";
-                var subject = $"Factura {invoiceNumber} - Inspecciono";
-                
-                var iva = searchHire.Amount * 0.21m;
-                var total = searchHire.Amount + iva;
-                
-                var emailBody = $@"
-<!DOCTYPE html>
-<html lang='es'>
-<head>
-    <meta charset='utf-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <meta http-equiv='X-UA-Compatible' content='IE=edge'>
-    <!--[if mso]>
-    <style type='text/css'>
-        body, table, td {{font-family: Arial, Helvetica, sans-serif !important;}}
-    </style>
-    <![endif]-->
-</head>
-<body style='margin: 0; padding: 0; background-color: #f5f7fa; font-family: -apple-system, BlinkMacSystemFont, ''Segoe UI'', Roboto, ''Helvetica Neue'', Arial, sans-serif;'>
-    <table role='presentation' cellspacing='0' cellpadding='0' border='0' width='100%' style='background-color: #f5f7fa;'>
-        <tr>
-            <td align='center' style='padding: 40px 20px;'>
-                <table role='presentation' cellspacing='0' cellpadding='0' border='0' width='100%' style='max-width: 600px; background-color: #ffffff; border: 1px solid #e1e8ed;'>
-                    
-                    <!-- Company Header -->
-                    <tr>
-                        <td style='background-color: #1e3a5f; padding: 30px 40px;'>
-                            <table role='presentation' cellspacing='0' cellpadding='0' border='0' width='100%'>
-                                <tr>
-                                    <td>
-                                        <h1 style='margin: 0; font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: 0.5px;'>INSPECCIONO</h1>
-                                        <p style='margin: 8px 0 0 0; font-size: 13px; color: #a0b8c8; font-weight: 400; text-transform: uppercase; letter-spacing: 1px;'>FACTURA</p>
-                                    </td>
-                                    <td align='right' style='vertical-align: top;'>
-                                        <p style='margin: 0; font-size: 24px; font-weight: 700; color: #ffffff;'>{invoiceNumber}</p>
-                                    </td>
-                                </tr>
-                            </table>
-                        </td>
-                    </tr>
-                    
-                    <!-- Invoice Info Section -->
-                    <tr>
-                        <td style='padding: 35px 40px; background-color: #ffffff;'>
-                            <table role='presentation' cellspacing='0' cellpadding='0' border='0' width='100%'>
-                                <tr>
-                                    <td width='50%' style='vertical-align: top; padding-right: 20px;'>
-                                        <p style='margin: 0 0 8px 0; font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;'>Facturado a</p>
-                                        <p style='margin: 0 0 20px 0; font-size: 15px; color: #111827; font-weight: 600; line-height: 1.5;'>{searchHire.Client.Name}</p>
-                                        <p style='margin: 0; font-size: 13px; color: #6b7280; line-height: 1.6;'>{searchHire.Client.Email}</p>
-                                    </td>
-                                    <td width='50%' style='vertical-align: top; padding-left: 20px; text-align: right;'>
-                                        <p style='margin: 0 0 8px 0; font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;'>Fecha de emisión</p>
-                                        <p style='margin: 0 0 20px 0; font-size: 15px; color: #111827; font-weight: 600;'>{searchHire.CreatedAt:dd/MM/yyyy}</p>
-                                        <p style='margin: 0; font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;'>Número de factura</p>
-                                        <p style='margin: 4px 0 0 0; font-size: 15px; color: #111827; font-weight: 600;'>{invoiceNumber}</p>
-                                    </td>
-                                </tr>
-                            </table>
-                        </td>
-                    </tr>
-                    
-                    <!-- Service Details -->
-                    <tr>
-                        <td style='padding: 0 40px 30px 40px; background-color: #ffffff;'>
-                            <table role='presentation' cellspacing='0' cellpadding='0' border='0' width='100%' style='border: 1px solid #e5e7eb;'>
-                                <tr>
-                                    <td style='background-color: #f9fafb; padding: 12px 20px; border-bottom: 1px solid #e5e7eb;'>
-                                        <p style='margin: 0; font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;'>Descripción del servicio</p>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <td style='padding: 20px;'>
-                                        <table role='presentation' cellspacing='0' cellpadding='0' border='0' width='100%'>
-                                            <tr>
-                                                <td style='padding-bottom: 12px; border-bottom: 1px solid #f3f4f6;'>
-                                                    <p style='margin: 0 0 6px 0; font-size: 15px; color: #111827; font-weight: 600;'>{searchHire.SearchService.ServiceType.Name}</p>
-                                                    <p style='margin: 0; font-size: 13px; color: #6b7280;'>Categoría: {searchHire.SearchService.Category?.Name ?? "N/A"}</p>
-                                                </td>
-                                            </tr>
-                                        </table>
-                                    </td>
-                                </tr>
-                            </table>
-                        </td>
-                    </tr>
-                    
-                    <!-- Amount Summary -->
-                    <tr>
-                        <td style='padding: 0 40px 35px 40px; background-color: #ffffff;'>
-                            <table role='presentation' cellspacing='0' cellpadding='0' border='0' width='100%'>
-                                <tr>
-                                    <td align='right' style='padding-bottom: 15px;'>
-                                        <table role='presentation' cellspacing='0' cellpadding='0' border='0' style='width: 250px;'>
-                                            <tr>
-                                                <td style='padding: 8px 0;'>
-                                                    <p style='margin: 0; font-size: 14px; color: #6b7280; text-align: right;'>Subtotal</p>
-                                                </td>
-                                                <td style='padding: 8px 0; width: 100px; text-align: right;'>
-                                                    <p style='margin: 0; font-size: 14px; color: #111827; font-weight: 500;'>{searchHire.Amount:N2} €</p>
-                                                </td>
-                                            </tr>
-                                            <tr>
-                                                <td style='padding: 8px 0;'>
-                                                    <p style='margin: 0; font-size: 14px; color: #6b7280; text-align: right;'>IVA (21%)</p>
-                                                </td>
-                                                <td style='padding: 8px 0; text-align: right;'>
-                                                    <p style='margin: 0; font-size: 14px; color: #111827; font-weight: 500;'>{iva:N2} €</p>
-                                                </td>
-                                            </tr>
-                                            <tr>
-                                                <td style='padding: 20px 0 8px 0; border-top: 2px solid #1e3a5f;'>
-                                                    <p style='margin: 0; font-size: 16px; color: #111827; font-weight: 700; text-align: right;'>TOTAL</p>
-                                                </td>
-                                                <td style='padding: 20px 0 8px 0; border-top: 2px solid #1e3a5f; text-align: right;'>
-                                                    <p style='margin: 0; font-size: 20px; color: #1e3a5f; font-weight: 700;'>{total:N2} €</p>
-                                                </td>
-                                            </tr>
-                                        </table>
-                                    </td>
-                                </tr>
-                            </table>
-                        </td>
-                    </tr>
-                    
-                    <!-- Attachment Notice -->
-                    <tr>
-                        <td style='padding: 0 40px 35px 40px; background-color: #ffffff;'>
-                            <table role='presentation' cellspacing='0' cellpadding='0' border='0' width='100%' style='background-color: #f0f9ff; border-left: 4px solid #1e3a5f;'>
-                                <tr>
-                                    <td style='padding: 18px 20px;'>
-                                        <p style='margin: 0; font-size: 13px; color: #1e3a5f; line-height: 1.6;'>
-                                            <strong>Archivo adjunto:</strong> La factura en formato PDF está adjunta a este correo electrónico. Puede descargarla y guardarla para sus registros contables.
-                                        </p>
-                                    </td>
-                                </tr>
-                            </table>
-                        </td>
-                    </tr>
-                    
-                    <!-- Footer -->
-                    <tr>
-                        <td style='background-color: #f9fafb; padding: 30px 40px; border-top: 1px solid #e5e7eb;'>
-                            <table role='presentation' cellspacing='0' cellpadding='0' border='0' width='100%'>
-                                <tr>
-                                    <td style='padding-bottom: 15px;'>
-                                        <p style='margin: 0; font-size: 16px; font-weight: 700; color: #111827;'>Inspecciono</p>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <td style='padding-bottom: 8px;'>
-                                        <p style='margin: 0; font-size: 13px; color: #6b7280;'>info@inspecciono.com</p>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <td>
-                                        <p style='margin: 15px 0 0 0; font-size: 11px; color: #9ca3af; line-height: 1.6;'>
-                                            Este es un correo electrónico automático generado por nuestro sistema. Por favor, no responda a este mensaje.<br>
-                                            Factura generada el {DateTime.UtcNow:dd/MM/yyyy HH:mm} UTC
-                                        </p>
-                                    </td>
-                                </tr>
-                            </table>
-                        </td>
-                    </tr>
-                    
-                </table>
-            </td>
-        </tr>
-    </table>
-</body>
-</html>";
+                var subject = "Factura y confirmación de contratación";
+                var title = "¡Contratación completada!";
+                var serviceName = searchHire.SearchService.ServiceType.Name;
+                var expertName = searchHire.Expert.Name;
+
+                var content = $@"
+                    <p style='margin:0 0 12px 0;'>Hola {searchHire.Client.Name},</p>
+                    <p style='margin:0 0 12px 0;'>¡Gracias por confiar en Inspecciono! La contratación del servicio <strong>{serviceName}</strong> con el experto <strong>{expertName}</strong> se ha procesado correctamente.</p>
+                    <p style='margin:0 0 12px 0;'>Adjunto a este correo encontrarás la factura en formato PDF con el desglose de impuestos correspondiente.</p>
+                    <p style='margin:0 0 16px 0;'>El experto se pondrá en contacto contigo pronto para coordinar los detalles.</p>
+                    <p style='margin:0;font-size:13px;color:#6B7280;'>Si tienes alguna pregunta, no dudes en contactarnos.</p>";
+
+                var emailBody = GenerateEmailTemplate(title, content, "Ver detalles", $"https://inspecciono.com/hires/{searchHireId}", "📄");
 
                 // Enviar email con PDF adjunto
                 var fileName = $"Factura_{invoiceNumber}.pdf";
@@ -399,6 +236,53 @@ namespace newApi.Services
                 Console.WriteLine($"[INVOICE SERVICE] ERROR al enviar factura: {ex.Message}");
                 throw;
             }
+        }
+
+        private string GenerateEmailTemplate(string title, string content, string? actionText = null, string? actionUrl = null, string headerIcon = "📢")
+        {
+            var year = DateTime.UtcNow.Year.ToString();
+            string templateHtml;
+            try 
+            {
+                var path = Path.Combine(Directory.GetCurrentDirectory(), "Resources", "EmailTemplate.html");
+                if (File.Exists(path))
+                    templateHtml = File.ReadAllText(path);
+                else
+                    templateHtml = "<html><body><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
+            }
+            catch
+            {
+                templateHtml = "<html><body><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
+            }
+
+            var actionButtonHtml = "";
+            if (!string.IsNullOrEmpty(actionText) && !string.IsNullOrEmpty(actionUrl))
+            {
+                actionButtonHtml = $@"
+                    <table align='center' border='0' cellpadding='0' cellspacing='0' style='border-collapse:collapse;border-spacing:0;padding:16px 0 0 0;text-align:center;vertical-align:top;width:100%'>
+                        <tbody>
+                            <tr>
+                                <td align='center' style='padding:0'>
+                                    <!--[if mso]>
+                                    <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:36px;v-text-anchor:middle;width:180px;' arcsize='15%' strokecolor='#2563EB' fillcolor='#2563EB'>
+                                    <w:anchorlock/>
+                                    <center style='color:#ffffff;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;'>{actionText}</center>
+                                    </v:roundrect>
+                                    <![endif]-->
+                                    <!--[if !mso]><!-->
+                                    <a href='{actionUrl}' style='background-color:#2563EB;border-radius:6px;color:#ffffff;display:inline-block;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;line-height:36px;mso-hide:all;padding:0 24px;text-align:center;text-decoration:none;'>{actionText}</a>
+                                    <!--<![endif]-->
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>";
+            }
+
+            return templateHtml
+                .Replace("{{TITLE}}", title)
+                .Replace("{{CONTENT}}", content)
+                .Replace("{{ACTION_BUTTON}}", actionButtonHtml)
+                .Replace("{{YEAR}}", year);
         }
 
         /// <summary>

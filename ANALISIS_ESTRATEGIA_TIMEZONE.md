@@ -421,3 +421,4 @@ Las mejoras opcionales (validación de cambios grandes, cache, logging mejorado)
 
 
 
+

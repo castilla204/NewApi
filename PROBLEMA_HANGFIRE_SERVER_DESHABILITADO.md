@@ -118,3 +118,4 @@ Total jobs de ProcessAppointmentTimerAsync: 9
 5. Verificar en `/hangfire` que el servidor está activo
 6. Los jobs en cola deberían ejecutarse automáticamente
 
+

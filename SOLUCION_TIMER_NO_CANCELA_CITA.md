@@ -144,3 +144,4 @@ LIMIT 10;
 2. "Cancelando cita por falta de respuesta del experto"
 3. "Cita cancelada y dinero procesado correctamente" (o error si falla)
 
+

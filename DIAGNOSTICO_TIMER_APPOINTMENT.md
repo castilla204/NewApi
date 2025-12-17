@@ -308,3 +308,4 @@ AND "StatusValue" = 'appointment_cancelled_by_expert_no_response';
 - `Services/AppointmentService.cs` línea 3949: Validación de estado para timer "response"
 - `Services/AppointmentService.cs` línea 4023-4052: Lógica de cancelación por falta de respuesta
 
+

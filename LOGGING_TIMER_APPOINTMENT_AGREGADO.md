@@ -221,3 +221,4 @@ Cuando ejecutes el job manualmente, verás una secuencia de logs como:
 
 **NO se cambió la lógica del código** - solo se agregó logging detallado para diagnosticar el problema. El código funciona exactamente igual que antes, pero ahora podrás ver exactamente qué está pasando en cada paso.
 
+

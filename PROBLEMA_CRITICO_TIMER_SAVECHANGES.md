@@ -201,3 +201,4 @@ ORDER BY "CreatedAt" DESC;
 2. Procesar el dinero después
 3. Si el dinero falla, el estado ya está guardado
 
+

@@ -296,3 +296,4 @@ catch (Exception ex)
 
 **El sistema ahora es más robusto y fácil de diagnosticar.**
 
+

@@ -80,12 +80,28 @@ namespace newApi.Controllers
         }
 
         /// <summary>
-        /// Obtiene expertos para mostrar en el mapa con información básica (sin filtros de ubicación)
+        /// Obtiene expertos para mostrar en el mapa con información básica.
+        /// Soporta búsqueda por bounds del mapa (como Airbnb) para cargar servicios dinámicamente al mover el mapa.
         /// </summary>
+        /// <param name="categoryId">ID de la categoría</param>
+        /// <param name="serviceTypeId">ID del tipo de servicio</param>
+        /// <param name="northeastLat">Latitud del punto noreste del mapa visible (opcional)</param>
+        /// <param name="northeastLng">Longitud del punto noreste del mapa visible (opcional)</param>
+        /// <param name="southwestLat">Latitud del punto suroeste del mapa visible (opcional)</param>
+        /// <param name="southwestLng">Longitud del punto suroeste del mapa visible (opcional)</param>
+        /// <param name="zoom">Nivel de zoom del mapa (opcional, afecta el límite de resultados)</param>
+        /// <param name="limit">Límite máximo de resultados (default: 100)</param>
+        /// <returns>Lista de expertos con precios para mostrar en el mapa</returns>
         [HttpGet("map-experts")]
         public async Task<IActionResult> GetMapExperts(
             [FromQuery] int categoryId,
-            [FromQuery] int serviceTypeId)
+            [FromQuery] int serviceTypeId,
+            [FromQuery] decimal? northeastLat = null,
+            [FromQuery] decimal? northeastLng = null,
+            [FromQuery] decimal? southwestLat = null,
+            [FromQuery] decimal? southwestLng = null,
+            [FromQuery] int? zoom = null,
+            [FromQuery] int limit = 100)
         {
             try
             {
@@ -99,8 +115,36 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "El tipo de servicio es requerido y debe ser mayor que 0" });
                 }
 
-                var experts = await _searchServiceService.GetMapExperts(categoryId, serviceTypeId);
+                // Validar que si se proporciona un bound, se proporcionen todos
+                bool hasPartialBounds = (northeastLat.HasValue || northeastLng.HasValue || 
+                                        southwestLat.HasValue || southwestLng.HasValue) &&
+                                       !(northeastLat.HasValue && northeastLng.HasValue && 
+                                         southwestLat.HasValue && southwestLng.HasValue);
+                
+                if (hasPartialBounds)
+                {
+                    return BadRequest(new { message = "Si se proporcionan bounds, deben proporcionarse todos los parámetros: northeastLat, northeastLng, southwestLat, southwestLng" });
+                }
+
+                if (limit <= 0 || limit > 500)
+                {
+                    return BadRequest(new { message = "El límite debe estar entre 1 y 500" });
+                }
+
+                var experts = await _searchServiceService.GetMapExperts(
+                    categoryId, 
+                    serviceTypeId,
+                    northeastLat,
+                    northeastLng,
+                    southwestLat,
+                    southwestLng,
+                    zoom,
+                    limit);
                 return Ok(experts);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
             }
             catch (Exception ex)
             {

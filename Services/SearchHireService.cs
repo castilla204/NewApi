@@ -11,16 +11,16 @@ namespace newApi.Services
     public class SearchHireService : ISearchHireService
     {
         private readonly AppDbContext _context;
-        private readonly string _domain = "https://atrapo.io";
+        private readonly string _domain = "https://inspecciono.com";
 
         public SearchHireService(AppDbContext context)
         {
             _context = context;
         }
 
-        public async Task<IEnumerable<SearchHireResponseDto>> GetClientHires(int userId)
+        public async Task<(IEnumerable<SearchHireResponseDto> hires, int totalCount)> GetClientHires(int userId, int page, int pageSize)
         {
-            var hires = await _context.SearchHires
+            var query = _context.SearchHires
                 .Include(h => h.Client)
                 .Include(h => h.Expert)
                 .Include(h => h.Status)
@@ -31,16 +31,22 @@ namespace newApi.Services
                 .Include(h => h.SearchService)
                     .ThenInclude(s => s.SelectedDeliverableTypes)
                         .ThenInclude(sdt => sdt.DeliverableType)
-                .Where(h => h.ClientId.HasValue && h.ClientId.Value == userId)
+                .Where(h => h.ClientId.HasValue && h.ClientId.Value == userId);
+
+            var totalCount = await query.CountAsync();
+
+            var hires = await query
                 .OrderByDescending(h => h.CreatedAt)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
                 .ToListAsync();
 
-            return hires.Select(MapToResponseDto).ToList();
+            return (hires.Select(MapToResponseDto).ToList(), totalCount);
         }
 
-        public async Task<IEnumerable<SearchHireResponseDto>> GetExpertHires(int userId)
+        public async Task<(IEnumerable<SearchHireResponseDto> hires, int totalCount)> GetExpertHires(int userId, int page, int pageSize)
         {
-            var hires = await _context.SearchHires
+            var query = _context.SearchHires
                 .Include(h => h.Client)
                 .Include(h => h.Expert)
                 .Include(h => h.Status)
@@ -54,11 +60,17 @@ namespace newApi.Services
                 .Include(h => h.Search) // Incluir datos de Search para título y descripción
                 .Include(h => h.Conversations)
                     .ThenInclude(c => c.Messages) // Incluir mensajes para contar pendientes
-                .Where(h => h.ExpertId == userId)
+                .Where(h => h.ExpertId == userId);
+
+            var totalCount = await query.CountAsync();
+
+            var hires = await query
                 .OrderByDescending(h => h.CreatedAt)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
                 .ToListAsync();
 
-            return hires.Select(MapToResponseDto).ToList();
+            return (hires.Select(MapToResponseDto).ToList(), totalCount);
         }
 
         public async Task<(bool Success, string ErrorMessage)> UpdateHireStatus(int userId, int hireId, string status)
@@ -174,9 +186,11 @@ namespace newApi.Services
                 SearchServiceId = hire.SearchServiceId,
                 SearchId = hire.SearchId,
                 Status = hire.Status?.StatusValue ?? "unknown",
-                StatusTranslated = hire.Status?.StatusValue?.ToSpanishTranslation() ?? "Desconocido",
+                StatusTranslated = hire.Status?.StatusValue != null ? SearchHireStatusExtensions.ToSpanishTranslation(hire.Status.StatusValue) : "Desconocido",
                 ExpertTransferId = hire.ExpertTransferId,
                 Amount = hire.Amount,
+                BaseAmount = hire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
+                TaxAmount = hire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
                 CreatedAt = hire.CreatedAt,
                 UpdatedAt = hire.UpdatedAt,
                 Client = hire.ClientId.HasValue && hire.Client != null ? new UserDto
@@ -214,7 +228,7 @@ namespace newApi.Services
                         SortOrder = sdt.DeliverableType.SortOrder
                     }).ToList() ?? new List<DeliverableTypeDto>()
                 },
-                ServiceType = hire.SearchService.ServiceType != null ? new ServiceTypeDto
+                ServiceType = hire.SearchService.ServiceType != null ? new DataLayer.Models.DTOs.ServiceTypeDto
                 {
                     Id = hire.SearchService.ServiceType.Id,
                     Name = hire.SearchService.ServiceType.Name,
@@ -244,7 +258,11 @@ namespace newApi.Services
                 // Nuevos campos agregados
                 SearchTitle = hire.Search?.Title,
                 SearchDescription = hire.Search?.Description,
-                UnreadMessagesCount = unreadMessagesCount
+                UnreadMessagesCount = unreadMessagesCount,
+                
+                // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto al momento de la contratación
+                ExpertTimezone = hire.ExpertTimezone,
+                ExpertCountry = hire.ExpertCountry
             };
         }
 

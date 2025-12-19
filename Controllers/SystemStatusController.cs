@@ -73,36 +73,58 @@ namespace newApi.Controllers
         /// Obtiene todos los mapeos de estados
         /// </summary>
         [HttpGet("mappings")]
-        public async Task<IActionResult> GetStatusMappings()
+        public async Task<IActionResult> GetStatusMappings([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
-                var mappings = await _systemStatusService.GetStatusMappingsAsync();
-                
-                var result = mappings.Select(m => new
-                {
-                    m.Id,
-                    SourceStatus = new
-                    {
-                        m.SourceStatus.Id,
-                        m.SourceStatus.StatusType,
-                        m.SourceStatus.StatusName,
-                        m.SourceStatus.StatusValue,
-                        m.SourceStatus.DisplayName
-                    },
-                    TargetStatus = new
-                    {
-                        m.TargetStatus.Id,
-                        m.TargetStatus.StatusType,
-                        m.TargetStatus.StatusName,
-                        m.TargetStatus.StatusValue,
-                        m.TargetStatus.DisplayName
-                    },
-                    m.IsActive,
-                    m.CreatedAt
-                }).ToList();
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
 
-                return Ok(result);
+                var allMappings = await _systemStatusService.GetStatusMappingsAsync();
+                
+                var totalCount = allMappings.Count();
+                
+                var result = allMappings
+                    .Select(m => new
+                    {
+                        m.Id,
+                        SourceStatus = new
+                        {
+                            m.SourceStatus.Id,
+                            m.SourceStatus.StatusType,
+                            m.SourceStatus.StatusName,
+                            m.SourceStatus.StatusValue,
+                            m.SourceStatus.DisplayName
+                        },
+                        TargetStatus = new
+                        {
+                            m.TargetStatus.Id,
+                            m.TargetStatus.StatusType,
+                            m.TargetStatus.StatusName,
+                            m.TargetStatus.StatusValue,
+                            m.TargetStatus.DisplayName
+                        },
+                        m.IsActive,
+                        m.CreatedAt
+                    })
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .ToList();
+
+                return Ok(new
+                {
+                    mappings = result,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
+                });
             }
             catch (Exception ex)
             {
@@ -114,10 +136,14 @@ namespace newApi.Controllers
         /// Obtiene todas las configuraciones de distribución de dinero
         /// </summary>
         [HttpGet("configurations")]
-        public async Task<IActionResult> GetStatusConfigurations([FromQuery] string? statusValue = null)
+        public async Task<IActionResult> GetStatusConfigurations([FromQuery] string? statusValue = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
                 var query = _context.StatusConfigurations
                     .Include(sc => sc.Status)
                     .Include(sc => sc.Category)
@@ -129,12 +155,18 @@ namespace newApi.Controllers
                     query = query.Where(sc => sc.Status.StatusValue == statusValue);
                 }
 
-                var configurations = await query
-                    .Where(sc => sc.IsActive)
+                var baseQuery = query
+                    .Where(sc => sc.IsActive);
+
+                var totalCount = await baseQuery.CountAsync();
+
+                var configurations = await baseQuery
                     .OrderBy(sc => sc.Status.StatusType)
                     .ThenBy(sc => sc.Status.SortOrder)
                     .ThenBy(sc => sc.CategoryId)
                     .ThenBy(sc => sc.ServiceTypeCategoryId)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
                     .Select(sc => new
                     {
                         sc.Id,
@@ -165,7 +197,19 @@ namespace newApi.Controllers
                     })
                     .ToListAsync();
 
-                return Ok(configurations);
+                return Ok(new
+                {
+                    configurations,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
+                });
             }
             catch (Exception ex)
             {

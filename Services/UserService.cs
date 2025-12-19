@@ -24,6 +24,8 @@ namespace newApi.Services
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
         private readonly ILoggingService _loggingService;
+        private readonly ITimezoneService _timezoneService;
+        private readonly INotificationService _notificationService;
         private readonly string _twilioVerificationServiceSid;
         private readonly string _twilioauthToken;
 
@@ -32,12 +34,16 @@ namespace newApi.Services
      IConfiguration configuration,
 
      StorageClient storageClient,
-     ILoggingService loggingService)
+     ILoggingService loggingService,
+     ITimezoneService timezoneService,
+     INotificationService notificationService)
         {
             _context = context;
             _configuration = configuration;
             _storageClient = storageClient;
             _loggingService = loggingService;
+            _timezoneService = timezoneService;
+            _notificationService = notificationService;
             _twilioVerificationServiceSid = configuration["Twilio:VerificationServiceSid"];
             _twilioauthToken = configuration["Twilio:AuthToken"];
         }
@@ -47,9 +53,9 @@ namespace newApi.Services
             return await _context.Users.FindAsync(userId);
         }
 
-        public async Task<IEnumerable<object>> GetAllUsers()
+        public async Task<(IEnumerable<object> users, int totalCount)> GetAllUsers(int page, int pageSize)
         {
-            return await _context.Users
+            var query = _context.Users
                 .Select(u => new
                 {
                     u.Id,
@@ -62,8 +68,17 @@ namespace newApi.Services
                     SearchCount = u.Searches.Count(s => s.IsActive),
                     SubscriptionPlan = u.SubscriptionPlan.Name,
                     Role = u.Role.ToString()
-                })
+                });
+
+            var totalCount = await query.CountAsync();
+            
+            var users = await query
+                .OrderByDescending(u => u.CreatedAt)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
                 .ToListAsync();
+
+            return (users, totalCount);
         }
 
         public async Task<bool> BlockUser(int userId)
@@ -288,6 +303,27 @@ namespace newApi.Services
             // ✅ MEJORA: Buscar primero usuarios activos (sin IgnoreQueryFilters)
             var user = await _context.Users.FirstOrDefaultAsync(u => u.GoogleId == payload.Subject);
 
+            // ✅ VALIDACIÓN CRÍTICA: Verificar si el usuario está bloqueado antes de procesar cualquier otra cosa
+            if (user != null && user.IsBlocked)
+            {
+                // ✅ LOG: Intento de inicio de sesión de usuario bloqueado
+                await _loggingService.LogWarningAsync(
+                    message: "Blocked user attempted login",
+                    details: $"Blocked user {user.Id} ({user.Email}) attempted to login via Google Auth",
+                    userId: user.Id,
+                    source: "UserService.GoogleAuth",
+                    relatedEntityType: "User",
+                    relatedEntityId: user.Id,
+                    additionalData: new
+                    {
+                        Action = "BlockedUserLoginAttempt",
+                        Email = user.Email,
+                        GoogleId = user.GoogleId
+                    }
+                );
+                return (false, null, null);
+            }
+
             // ✅ MEJORA: Si no se encuentra usuario activo, buscar usuarios eliminados (soft deleted)
             // Esto permite restaurar cuentas eliminadas cuando el usuario se vuelve a registrar
             if (user == null)
@@ -298,6 +334,26 @@ namespace newApi.Services
                 
                 if (deletedUser != null)
                 {
+                    // ✅ VALIDACIÓN: Si el usuario eliminado estaba bloqueado, no permitir login ni restauración
+                    if (deletedUser.IsBlocked)
+                    {
+                        await _loggingService.LogWarningAsync(
+                           message: "Blocked (deleted) user attempted login",
+                           details: $"Blocked and deleted user {deletedUser.Id} ({deletedUser.Email}) attempted to login via Google Auth",
+                           userId: deletedUser.Id,
+                           source: "UserService.GoogleAuth",
+                           relatedEntityType: "User",
+                           relatedEntityId: deletedUser.Id,
+                            additionalData: new
+                           {
+                               Action = "BlockedDeletedUserLoginAttempt",
+                               Email = deletedUser.Email,
+                               GoogleId = deletedUser.GoogleId
+                           }
+                       );
+                        return (false, null, null);
+                    }
+
                     // ✅ RESTAURAR usuario eliminado en lugar de crear uno nuevo
                     var previouslyDeletedAt = deletedUser.DeletedAt; // Guardar antes de limpiar
                     deletedUser.IsDeleted = false;
@@ -384,6 +440,12 @@ namespace newApi.Services
                         IsAdminEmail = isAdminEmail
                     }
                 );
+
+                // ✅ EMAIL: Enviar correo de bienvenida al nuevo usuario
+                if (!string.IsNullOrEmpty(user.Email))
+                {
+                    await _notificationService.SendWelcomeEmailAsync(user.Email, user.Name);
+                }
             }
             else if (!user.IsDeleted)
             {
@@ -424,6 +486,20 @@ namespace newApi.Services
 
             if (user == null)
             {
+                return (false, null, null, null);
+            }
+
+            // ✅ VALIDACIÓN: Usuario bloqueado no puede convertirse en experto
+            if (user.IsBlocked)
+            {
+                 await _loggingService.LogWarningAsync(
+                    message: "Blocked user attempted to become expert",
+                    details: $"Blocked user {user.Id} ({user.Email}) attempted to become expert",
+                    userId: user.Id,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: user.Id
+                );
                 return (false, null, null, null);
             }
 
@@ -576,6 +652,34 @@ namespace newApi.Services
             var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
             user.Role = UserRole.Expert;
 
+            // ✅ DETECTAR TIMEZONE Y COUNTRY automáticamente desde coordenadas
+            string expertTimezone = "UTC";
+            string? expertCountry = null;
+            
+            try
+            {
+                expertTimezone = await _timezoneService.GetTimezoneFromCoordinatesAsync(latitude, longitude);
+                expertCountry = await _timezoneService.GetCountryFromCoordinatesAsync(latitude, longitude);
+            }
+            catch (Exception ex)
+            {
+                // Si falla la detección, usar UTC como fallback y continuar
+                await _loggingService.LogWarningAsync(
+                    message: "Failed to detect timezone/country from coordinates",
+                    details: $"Could not detect timezone/country for coordinates ({latitude}, {longitude}): {ex.Message}. Using UTC as fallback.",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "ExpertProfile",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        Action = "DetectTimezoneCountry",
+                        Latitude = latitude,
+                        Longitude = longitude,
+                        Exception = ex.Message
+                    }
+                );
+            }
+
             var expertProfile = new ExpertProfile
             {
                 UserId = user.Id,
@@ -584,6 +688,8 @@ namespace newApi.Services
                 Description = request.Description,
                 Latitude = request.Latitude,
                 Longitude = request.Longitude,
+                Timezone = expertTimezone,
+                Country = expertCountry,
                 StripeAccountId = null, // No guardar StripeAccountId, se genera en el onboarding
                 CreatedAt = DateTime.UtcNow
             };
@@ -769,8 +875,60 @@ namespace newApi.Services
 
                 // Actualizar los campos básicos
                 expertProfile.Description = request.Description;
+                
+                // ✅ DETECTAR TIMEZONE Y COUNTRY si cambian las coordenadas
+                var coordinatesChanged = expertProfile.Latitude != request.Latitude || 
+                                         expertProfile.Longitude != request.Longitude;
+                
                 expertProfile.Latitude = request.Latitude;
                 expertProfile.Longitude = request.Longitude;
+                
+                // Si cambian las coordenadas, detectar nuevo timezone y country
+                if (coordinatesChanged)
+                {
+                    try
+                    {
+                        var detectedTimezone = await _timezoneService.GetTimezoneFromCoordinatesAsync(latitude, longitude);
+                        var detectedCountry = await _timezoneService.GetCountryFromCoordinatesAsync(latitude, longitude);
+                        
+                        expertProfile.Timezone = detectedTimezone;
+                        expertProfile.Country = detectedCountry;
+                        
+                        await _loggingService.LogInfoAsync(
+                            message: "Timezone and country updated from coordinates",
+                            details: $"Updated timezone to {detectedTimezone} and country to {detectedCountry} for coordinates ({latitude}, {longitude})",
+                            userId: userId,
+                            source: "UserService.UpdateExpertProfile",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: expertProfile.Id,
+                            additionalData: new { 
+                                Action = "UpdateTimezoneCountry",
+                                Latitude = latitude,
+                                Longitude = longitude,
+                                Timezone = detectedTimezone,
+                                Country = detectedCountry
+                            }
+                        );
+                    }
+                    catch (Exception ex)
+                    {
+                        // Si falla la detección, mantener los valores actuales y loguear el error
+                        await _loggingService.LogWarningAsync(
+                            message: "Failed to detect timezone/country from new coordinates",
+                            details: $"Could not detect timezone/country for new coordinates ({latitude}, {longitude}): {ex.Message}. Keeping existing values.",
+                            userId: userId,
+                            source: "UserService.UpdateExpertProfile",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: expertProfile.Id,
+                            additionalData: new { 
+                                Action = "DetectTimezoneCountry",
+                                Latitude = latitude,
+                                Longitude = longitude,
+                                Exception = ex.Message
+                            }
+                        );
+                    }
+                }
 
                 // Procesar nueva imagen de perfil si se proporciona
                 if (request.ProfilePicture != null)
@@ -1005,7 +1163,7 @@ namespace newApi.Services
                 issuer: _configuration["Jwt:Issuer"],
                 audience: _configuration["Jwt:Audience"],
                 claims: claims,
-                expires: DateTime.UtcNow.AddMinutes(30), // ✅ SEGURIDAD 2025: 30 minutos (antes: 24h)
+                expires: DateTime.UtcNow.AddHours(1), // ✅ BEST PRACTICE 2024: 1 hora (estándar Microsoft/Google/Auth0)
                 notBefore: DateTime.UtcNow, // ✅ SEGURIDAD: Token válido desde ahora
                 signingCredentials: creds
             );
@@ -1034,7 +1192,7 @@ namespace newApi.Services
             {
                 Token = token,
                 UserId = userId,
-                ExpiresAt = DateTime.UtcNow.AddDays(7), // ✅ Best Practice: 7 días
+                ExpiresAt = DateTime.UtcNow.AddDays(30), // ✅ BEST PRACTICE 2024: 30 días (estándar industria - balance seguridad/UX)
                 CreatedByIp = ipAddress,
                 DeviceInfo = GetDeviceInfo()
             };

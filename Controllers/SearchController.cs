@@ -203,8 +203,13 @@ namespace newApi.Controllers
                         Id = s.SearchHire.Id,
                         ExpertId = s.SearchHire.ExpertId ?? 0,
                         Status = s.SearchHire.Status.StatusValue,
-                        StatusTranslated = s.SearchHire.Status.StatusValue.ToSpanishTranslation(),
+                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(s.SearchHire.Status.StatusValue),
                         CreatedAt = s.SearchHire.CreatedAt,
+                        Amount = s.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
+                        BaseAmount = s.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
+                        TaxAmount = s.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
+                        ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
+                        ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                           Expert = s.SearchHire.Expert != null ? new UserDto
                           {
                               Name = s.SearchHire.Expert.Name,
@@ -296,6 +301,20 @@ namespace newApi.Controllers
                     return NotFound(new { message = "User not found" });
                 }
 
+                // ✅ VALIDACIÓN: Usuario bloqueado no puede crear búsquedas ni contratar
+                if (user.IsBlocked)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Blocked user attempted to create search with hire",
+                        details: $"Blocked user {user.Id} ({user.Email}) attempted to create search with hire",
+                        userId: user.Id,
+                        source: "SearchController.CreateSearchWithHire",
+                        relatedEntityType: "User",
+                        relatedEntityId: user.Id
+                    );
+                    return Unauthorized(new { message = "User account is blocked" });
+                }
+
                 // 🚨 VALIDACIÓN CRÍTICA: Los expertos no pueden crear contrataciones como clientes
                 // ✅ IMPORTANTE: Deben usar una cuenta distinta (no registrada como experto) para contratar
                 // ✅ Esta validación DEBE hacerse ANTES de crear el checkout session
@@ -385,7 +404,7 @@ namespace newApi.Controllers
                         // ✅ All payments are now processed through Stripe - no internal balance system
                         var amountToCharge = service.Price;
 
-                        var domain = "https://atrapo.io";
+                        var domain = "https://inspecciono.com";
                         var options = new SessionCreateOptions
                         {
                             PaymentMethodTypes = new List<string> { "card" },
@@ -400,10 +419,17 @@ namespace newApi.Controllers
                                         ProductData = new SessionLineItemPriceDataProductDataOptions
                                         {
                                             Name = $"Payment for Service {service.Id}"
-                                        }
+                                        },
+                                        // ✅ STRIPE TAX: Configurar tax como inclusivo
+                                        TaxBehavior = "inclusive"
                                     },
                                     Quantity = 1
                                 }
+                            },
+                            // ✅ STRIPE TAX: Habilitar cálculo automático de tax
+                            AutomaticTax = new SessionAutomaticTaxOptions
+                            {
+                                Enabled = true
                             },
                             Mode = "payment",
                             SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}&serviceId={service.Id}",
@@ -494,6 +520,20 @@ namespace newApi.Controllers
                 if (user == null)
                 {
                     return NotFound(new { message = "User not found" });
+                }
+
+                // ✅ VALIDACIÓN: Usuario bloqueado no puede crear búsquedas
+                if (user.IsBlocked)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Blocked user attempted to create search",
+                        details: $"Blocked user {user.Id} ({user.Email}) attempted to create a search",
+                        userId: user.Id,
+                        source: "SearchController.CreateSearch",
+                        relatedEntityType: "User",
+                        relatedEntityId: user.Id
+                    );
+                    return Unauthorized(new { message = "User account is blocked" });
                 }
 
                 // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
@@ -625,8 +665,13 @@ namespace newApi.Controllers
                             Id = s.SearchHire.Id,
                             ExpertId = s.SearchHire.ExpertId ?? 0,
                             Status = s.SearchHire.Status.StatusValue,
-                            StatusTranslated = s.SearchHire.Status.StatusValue.ToSpanishTranslation(),
+                            StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(s.SearchHire.Status.StatusValue),
                             CreatedAt = s.SearchHire.CreatedAt,
+                            Amount = s.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
+                            BaseAmount = s.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
+                            TaxAmount = s.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
+                            ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
+                            ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                               Expert = s.SearchHire.Expert != null ? new UserDto
                               {
                                   Name = s.SearchHire.Expert.Name,
@@ -894,8 +939,13 @@ namespace newApi.Controllers
                         Id = search.SearchHire.Id,
                         ExpertId = search.SearchHire.ExpertId ?? 0,
                         Status = search.SearchHire.Status.StatusValue,
-                        StatusTranslated = search.SearchHire.Status.StatusValue.ToSpanishTranslation(),
+                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(search.SearchHire.Status.StatusValue),
                         CreatedAt = search.SearchHire.CreatedAt,
+                        Amount = search.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
+                        BaseAmount = search.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
+                        TaxAmount = search.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
+                        ExpertTimezone = search.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
+                        ExpertCountry = search.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                           Expert = search.SearchHire.Expert != null ? new UserDto
                           {
                               Name = search.SearchHire.Expert.Name,
@@ -1059,6 +1109,7 @@ namespace newApi.Controllers
                     var reviewEntity = await _context.Reviews
                         .Include(r => r.Reviewer)
                         .Include(r => r.ImagesCollection)
+                        .Include(r => r.SearchHire) // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
                         .FirstOrDefaultAsync(r => r.SearchHireId == search.SearchHire.Id);
 
                     if (reviewEntity != null)
@@ -1076,7 +1127,9 @@ namespace newApi.Controllers
                                 Email = reviewEntity.Reviewer.Email,
                                 ProfilePictureUrl = null
                             },
-                            ImageUrls = reviewEntity.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>()
+                            ImageUrls = reviewEntity.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>(),
+                            // ✅ INTERNACIONALIZACIÓN: País donde se realizó la contratación
+                            Country = reviewEntity.SearchHire?.ExpertCountry
                         };
                     }
                 }
@@ -1161,6 +1214,11 @@ namespace newApi.Controllers
                             Id = search.SearchHire.Id,
                             Status = search.SearchHire.Status.StatusValue,
                             CreatedAt = search.SearchHire.CreatedAt,
+                            Amount = search.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
+                            BaseAmount = search.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
+                            TaxAmount = search.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
+                            ExpertTimezone = search.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
+                            ExpertCountry = search.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                             Expert = search.SearchHire.Expert != null ? new UserDto
                             {
                                 Id = search.SearchHire.Expert.Id,

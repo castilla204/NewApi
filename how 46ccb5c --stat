@@ -1,0 +1,56 @@
+[33mcommit 9820f55df38959c210e95d79d535caad070006fb[m
+Author: castilla204 <castilla204@users.noreply.github.com>
+Date:   Thu Dec 4 15:45:40 2025 +0100
+
+    feat: Add country and timezone fields for multi-country support
+    
+    - Introduced new columns `Country` in `ExpertProfiles` and `ExpertCountry` in `SearchHires` to store country information.
+    - Implemented migration scripts to add these fields to the database.
+    - Updated relevant services and DTOs to handle country and timezone data for experts during hiring processes.
+    - Enhanced error handling and logging for timezone detection from coordinates.
+    - Created comprehensive documentation for migration and implementation steps.
+
+ .cursor/mcp.json                                   |   2 [32m+[m[31m-[m
+ ANALISIS_ESTRATEGIA_TIMEZONE.md                    | 417 [32m+++++++++++++++++++++[m
+ APLICAR_MIGRACION_PAISES_SQL.sql                   |  24 [32m++[m
+ COMO_FUNCIONA_TIMEZONE_COMPLETO.md                 | 226 [32m+++++++++++[m
+ Controllers/DisputeController.cs                   |   8 [32m+[m[31m-[m
+ Controllers/SearchController.cs                    |  23 [32m+[m[31m-[m
+ Controllers/SearchHireController.cs                |  11 [32m+[m[31m-[m
+ Controllers/ServiceTypeController.cs               |  15 [32m+[m[31m-[m
+ Controllers/SubscriptionController.cs              |   4 [32m+[m[31m-[m
+ DataLayer/DataLayer.csproj                         |   1 [32m+[m
+ DataLayer/Models/AppDbContext.cs                   |   2 [32m+[m[31m-[m
+ DataLayer/Models/DTOs/CreateReviewDto.cs           |   4 [32m+[m[31m-[m
+ DataLayer/Models/DTOs/SearchHireDto.cs             |  49 [32m++[m[31m-[m
+ DataLayer/Models/DTOs/ServiceTypeDto.cs            |  17 [32m+[m
+ DataLayer/Models/PostGresModels/Conversation.cs    |   3 [32m+[m[31m-[m
+ DataLayer/Models/PostGresModels/ExpertProfile.cs   |   6 [32m+[m
+ DataLayer/Models/PostGresModels/SearchHire.cs      |   7 [32m+[m
+ .../.NETCoreApp,Version=v8.0.AssemblyAttributes.cs |   4 [31m-[m
+ .../obj/Debug/net8.0/DataLayer.AssemblyInfo.cs     |  23 [31m--[m
+ ...Layer.GeneratedMSBuildEditorConfig.editorconfig |  13 [31m-[m
+ .../obj/Debug/net8.0/DataLayer.GlobalUsings.g.cs   |   8 [31m-[m
+ .../.NETCoreApp,Version=v8.0.AssemblyAttributes.cs |   1 [31m-[m
+ .../obj/Release/net8.0/DataLayer.AssemblyInfo.cs   |  12 [31m-[m
+ ...Layer.GeneratedMSBuildEditorConfig.editorconfig |  13 [31m-[m
+ .../obj/Release/net8.0/DataLayer.GlobalUsings.g.cs |   8 [31m-[m
+ EJECUTAR_MIGRACION_AHORA.md                        |  87 [32m+++++[m
+ EJECUTAR_MIGRACION_AHORA_INSTRUCCIONES.md          |  71 [32m++++[m
+ ESTADO_FINAL_ARREGLOS.md                           |  63 [32m++++[m
+ FUNCIONA_EN_CUALQUIER_LUGAR.md                     | 159 [32m++++++++[m
+ GUIA_FRONTEND_PAISES_BANDERAS.md                   |   0
+ INSTRUCCIONES_MIGRACION_PAISES.md                  | 146 [32m++++++++[m
+ ...20000_AddCountryToExpertProfileAndSearchHire.cs |  43 [32m+++[m
+ Program.cs                                         |  11 [32m+[m
+ RESUMEN_ARREGLOS_MIGRACION.md                      |  98 [32m+++++[m
+ SOLUCION_ERRORES_MIGRACION.md                      | 141 [32m+++++++[m
+ Services/SearchHireService.cs                      |   5 [32m+[m[31m-[m
+ Services/SearchServiceService.cs                   |  10 [32m+[m[31m-[m
+ Services/TimezoneService.cs                        | 332 [32m++++++++++++++[m[31m--[m
+ Services/UserService.cs                            | 162 [32m+++++++[m[31m-[m
+ aplicar-migracion-paises.ps1                       | 140 [32m+++++++[m
+ ejecutar-migracion-simple.ps1                      | 100 [32m+++++[m
+ newApi.csproj                                      |   4 [32m+[m
+ newApi.sln                                         |  26 [32m++[m
+ 43 files changed, 2338 insertions(+), 161 deletions(-)

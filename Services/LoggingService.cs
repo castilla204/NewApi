@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
 using System.Text.Json;
+using System.Linq;
 
 namespace newApi.Services
 {
@@ -83,7 +84,7 @@ namespace newApi.Services
             // Si se solicita notificar al usuario, crear notificación (aunque sea debug)
             if (notifyUser && userId.HasValue)
             {
-                await ProcessUserNotificationAsync(userId.Value, message, details, "Debug");
+                await ProcessUserNotificationAsync(userId.Value, message, details, "Debug", relatedEntityType, relatedEntityId);
             }
             
             await Task.CompletedTask; // Método async pero no hace operaciones de BD
@@ -222,7 +223,7 @@ namespace newApi.Services
                 // Si se solicita notificar al usuario y hay userId, crear notificación
                 if (notifyUser && userId.HasValue)
                 {
-                    await ProcessUserNotificationAsync(userId.Value, message, details, logLevel);
+                    await ProcessUserNotificationAsync(userId.Value, message, details, logLevel, relatedEntityType, relatedEntityId);
                 }
             }
             catch (Exception ex)
@@ -473,7 +474,7 @@ namespace newApi.Services
         /// <summary>
         /// Crea una notificación para el usuario cuando se solicita explícitamente
         /// </summary>
-        private async Task ProcessUserNotificationAsync(int userId, string message, string? details, string logLevel)
+        private async Task ProcessUserNotificationAsync(int userId, string message, string? details, string logLevel, string? relatedEntityType = null, int? relatedEntityId = null)
         {
             try
             {
@@ -515,119 +516,94 @@ namespace newApi.Services
                     // Capturar variables para el closure
                     var userEmail = user.Email;
                     var emailSubject = title;
-                    var emailBody = $@"
-<!DOCTYPE html>
-<html lang='es'>
-<head>
-    <meta charset='utf-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; 
-            line-height: 1.6; 
-            color: #333333; 
-            background-color: #f4f4f4;
-            padding: 20px;
-        }}
-        .email-container {{ 
-            max-width: 600px; 
-            margin: 0 auto; 
-            background-color: #ffffff;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }}
-        .header {{ 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white; 
-            padding: 40px 30px; 
-            text-align: center;
-        }}
-        .header h1 {{
-            font-size: 28px;
-            font-weight: 600;
-            margin: 0;
-            letter-spacing: -0.5px;
-        }}
-        .content {{ 
-            padding: 40px 30px;
-            background-color: #ffffff;
-        }}
-        .message-box {{ 
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-            padding: 25px;
-            margin: 25px 0;
-            border-radius: 8px;
-            border-left: 5px solid #667eea;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-        }}
-        .message-box p {{
-            font-size: 16px;
-            line-height: 1.8;
-            color: #2d3748;
-            margin: 0;
-        }}
-        .info-text {{
-            color: #718096;
-            font-size: 14px;
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #edf2f7;
-            border-radius: 6px;
-        }}
-        .footer {{ 
-            text-align: center; 
-            padding: 30px;
-            background-color: #f7fafc;
-            color: #718096;
-            font-size: 12px;
-            border-top: 1px solid #e2e8f0;
-        }}
-        .footer p {{
-            margin: 5px 0;
-        }}
-        .logo {{
-            font-size: 24px;
-            font-weight: bold;
-            margin-bottom: 10px;
-        }}
-        @media only screen and (max-width: 600px) {{
-            .email-container {{
-                width: 100% !important;
-                border-radius: 0;
-            }}
-            .header, .content {{
-                padding: 25px 20px !important;
-            }}
-            .header h1 {{
-                font-size: 24px !important;
-            }}
-        }}
-    </style>
-</head>
-<body>
-    <div class='email-container'>
-        <div class='header'>
-            <div class='logo'>📧 Inspecciono</div>
-            <h1>{title}</h1>
-        </div>
-        <div class='content'>
-            <div class='message-box'>
-                <p>{fullMessage}</p>
-            </div>
-            <div class='info-text'>
-                💡 Puedes ver más detalles en tu panel de notificaciones.
-            </div>
-        </div>
-        <div class='footer'>
-            <p><strong>Inspecciono</strong></p>
-            <p>Este es un email automático. Por favor, no respondas a este mensaje.</p>
-            <p style='margin-top: 15px; font-size: 11px; color: #a0aec0;'>© {DateTime.UtcNow.Year} Inspecciono. Todos los derechos reservados.</p>
-        </div>
-    </div>
-</body>
-</html>";
+                    
+                    // ---------------------------------------------------------
+                    // 🎨 NUEVO DISEÑO "HERO/DUOLINGO" (Lectura de plantilla)
+                    // ---------------------------------------------------------
+                    string templateHtml;
+                    try 
+                    {
+                        var path = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "Resources", "EmailTemplate.html");
+                        if (System.IO.File.Exists(path))
+                        {
+                            templateHtml = System.IO.File.ReadAllText(path);
+                        }
+                        else
+                        {
+                            // Fallback básico si no encuentra el archivo
+                            templateHtml = "<html><body style='font-family:sans-serif;'><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
+                        }
+                    }
+                    catch
+                    {
+                        templateHtml = "<html><body style='font-family:sans-serif;'><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
+                    }
+
+                    // Preparar contenido (convertir saltos de línea a <br>)
+                    var formattedMessage = fullMessage?.Replace("\n", "<br>") ?? "";
+                    
+                    var contentHtml = $@"
+                        <p style='margin:0 0 12px 0;font-size:14px;line-height:22px;color:#374151;'>
+                            {formattedMessage}
+                        </p>
+                        <p style='margin:0;font-size:13px;color:#6B7280;'>
+                            Accede a tu panel para más detalles.
+                        </p>";
+
+                    // Determinar URL y Texto del botón
+                    string actionUrl = "https://inspecciono.com/notifications";
+                    string actionText = "Ver notificaciones";
+
+                    if (relatedEntityType == "SearchHire" && relatedEntityId.HasValue)
+                    {
+                        actionUrl = $"https://inspecciono.com/detalles/{relatedEntityId}";
+                        actionText = "Ver detalles";
+                    }
+                    else if (relatedEntityType == "Appointment" && relatedEntityId.HasValue)
+                    {
+                        // Obtener el SearchHireId de la cita para redirigir correctamente
+                        var appointment = await _context.Appointments
+                            .AsNoTracking()
+                            .Select(a => new { a.Id, a.SearchHireId })
+                            .FirstOrDefaultAsync(a => a.Id == relatedEntityId.Value);
+
+                        if (appointment != null)
+                        {
+                             actionUrl = $"https://inspecciono.com/detalles/{appointment.SearchHireId}";
+                             actionText = "Ver detalles";
+                        }
+                        else
+                        {
+                             actionUrl = "https://inspecciono.com/appointments";
+                             actionText = "Ver cita";
+                        }
+                    }
+
+                    // Botón de acción - Estilo profesional y discreto
+                    var actionButtonHtml = $@"
+                        <table align='center' border='0' cellpadding='0' cellspacing='0' style='border-collapse:collapse;border-spacing:0;padding:16px 0 0 0;text-align:center;vertical-align:top;width:100%'>
+                            <tbody>
+                                <tr>
+                                    <td align='center' style='padding:0'>
+                                        <!--[if mso]>
+                                        <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:36px;v-text-anchor:middle;width:180px;' arcsize='15%' strokecolor='#2563EB' fillcolor='#2563EB'>
+                                        <w:anchorlock/>
+                                        <center style='color:#ffffff;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;'>{actionText}</center>
+                                        </v:roundrect>
+                                        <![endif]-->
+                                        <!--[if !mso]><!-->
+                                        <a href='{actionUrl}' style='background-color:#2563EB;border-radius:6px;color:#ffffff;display:inline-block;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;line-height:36px;mso-hide:all;padding:0 24px;text-align:center;text-decoration:none;'>{actionText}</a>
+                                        <!--<![endif]-->
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>";
+
+                    var emailBody = templateHtml
+                        .Replace("{{TITLE}}", title)
+                        .Replace("{{CONTENT}}", contentHtml)
+                        .Replace("{{ACTION_BUTTON}}", actionButtonHtml)
+                        .Replace("{{YEAR}}", DateTime.UtcNow.Year.ToString());
 
                     // ✅ HANGFIRE: Enviar email en segundo plano usando Hangfire (mejor práctica)
                     // Hangfire proporciona: persistencia, reintentos automáticos, monitoreo, y no bloquea la API

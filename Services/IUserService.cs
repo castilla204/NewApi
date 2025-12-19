@@ -8,7 +8,7 @@ namespace newApi.Services
 {
     public interface IUserService
     {
-        Task<IEnumerable<object>> GetAllUsers();
+        Task<(IEnumerable<object> users, int totalCount)> GetAllUsers(int page, int pageSize);
         Task<bool> BlockUser(int userId);
         Task<bool> DeleteUser(int userId);
         // ✅ COMENTADO: Verificación de teléfono ya no es necesaria - métodos stub devuelven false/null

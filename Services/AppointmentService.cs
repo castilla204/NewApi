@@ -13,7 +13,7 @@ using newApi.Common;
 using System.Globalization;
 
 using Hangfire;
-
+using System.Text.Json;
 
 
 namespace newApi.Services
@@ -33,6 +33,9 @@ namespace newApi.Services
         private readonly ILoggingService _loggingService;
 
         private readonly IStripeValidationService _stripeValidationService;
+        
+        private readonly ITimezoneService _timezoneService;
+        private readonly INotificationService _notificationService;
 
         // ✅ MEJORA: Cache de estados para evitar consultas repetidas a la BD
         // Usa una clave compuesta: "StatusType|StatusValue" -> StatusId
@@ -41,8 +44,10 @@ namespace newApi.Services
         private static DateTime _cacheLastRefresh = DateTime.MinValue;
         private static readonly TimeSpan _cacheExpiration = TimeSpan.FromMinutes(30); // Cache válido por 30 minutos
 
-        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService)
-
+        /// <summary>
+        /// Constructor
+        /// </summary>
+        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService, INotificationService notificationService)
         {
 
             _context = context;
@@ -54,6 +59,10 @@ namespace newApi.Services
             _loggingService = loggingService;
 
             _stripeValidationService = stripeValidationService;
+            
+            _timezoneService = timezoneService;
+            
+            _notificationService = notificationService;
 
         }
 
@@ -419,13 +428,27 @@ namespace newApi.Services
                             "AppointmentStatus"
                         );
 
-
+                        // ✅ INTERNACIONALIZACIÓN: Obtener timezone efectivo y convertir fecha/hora local a UTC
+                        // Prioridad: DTO > SearchHire.ExpertTimezone > ExpertProfile.Timezone > UTC
+                        var expertTimezone = !string.IsNullOrWhiteSpace(dto.Timezone) && _timezoneService.IsValidTimezone(dto.Timezone)
+                            ? dto.Timezone
+                            : _timezoneService.GetEffectiveTimezone(
+                                searchHire.ExpertTimezone,
+                                searchHire.SearchService?.ExpertProfile?.Timezone
+                            );
+                        
+                        // Construir DateTime local (asumiendo que viene en hora local del experto)
+                        var proposedDateTimeLocal = dto.ProposedDate.Date + dto.ProposedTime;
+                        
+                        // Convertir de hora local a UTC
+                        var proposedDateTimeUtc = _timezoneService.ConvertToUtc(proposedDateTimeLocal, expertTimezone);
+                        
+                        // Separar fecha y hora en UTC para guardar
+                        var proposedDateUtc = proposedDateTimeUtc.Date;
+                        var proposedTimeUtc = proposedDateTimeUtc.TimeOfDay;
 
                         // ✅ VALIDACIÓN: Verificar que la cita tenga al menos 24 horas de anticipación
-
-                        var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
-
-                        var timeUntilAppointment = proposedDateTime - DateTime.UtcNow;
+                        var timeUntilAppointment = proposedDateTimeUtc - DateTime.UtcNow;
 
                         
 
@@ -439,7 +462,7 @@ namespace newApi.Services
 
                                 $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
 
-                                $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} UTC"
+                                $"Fecha/hora propuesta: {proposedDateTimeUtc:dd/MM/yyyy HH:mm} UTC ({proposedDateTimeLocal:dd/MM/yyyy HH:mm} {expertTimezone})"
 
                             );
 
@@ -454,12 +477,13 @@ namespace newApi.Services
 
 
                         // ✅ VALIDACIÓN: Verificar que la fecha/hora propuesta esté dentro del horario de disponibilidad del experto
-
-                        await ValidateAppointmentAvailabilityAsync(searchHire, proposedDateTime);
+                        // Usar la fecha/hora en UTC para la validación
+                        await ValidateAppointmentAvailabilityAsync(searchHire, proposedDateTimeUtc);
 
 
 
                         // Crear la cita dentro de la transacción
+                        // ✅ INTERNACIONALIZACIÓN: Guardar fecha/hora en UTC (convertida desde hora local)
 
                         var appointment = new Appointment
 
@@ -469,9 +493,9 @@ namespace newApi.Services
 
                             StatusId = awaitingStatusId,
 
-                            ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc),
+                            ProposedDate = DateTime.SpecifyKind(proposedDateUtc, DateTimeKind.Utc),
 
-                            ProposedTime = dto.ProposedTime,
+                            ProposedTime = proposedTimeUtc,
 
                             Location = dto.Location,
 
@@ -810,13 +834,42 @@ namespace newApi.Services
                 if (proposedStatusId == 0)
                     throw new InvalidOperationException("Appointment proposed status not found");
 
-
+                // ✅ INTERNACIONALIZACIÓN: Obtener timezone efectivo y convertir fecha/hora local a UTC
+                // Prioridad: DTO > SearchHire.ExpertTimezone > ExpertProfile.Timezone > UTC
+                // Asegurar que SearchHire tenga las relaciones cargadas
+                if (appointment.SearchHire != null && appointment.SearchHire.SearchService == null)
+                {
+                    await _context.Entry(appointment.SearchHire)
+                        .Reference(sh => sh.SearchService)
+                        .LoadAsync();
+                    
+                    if (appointment.SearchHire.SearchService != null)
+                    {
+                        await _context.Entry(appointment.SearchHire.SearchService)
+                            .Reference(ss => ss.ExpertProfile)
+                            .LoadAsync();
+                    }
+                }
+                
+                var expertTimezone = !string.IsNullOrWhiteSpace(dto.Timezone) && _timezoneService.IsValidTimezone(dto.Timezone)
+                    ? dto.Timezone
+                    : _timezoneService.GetEffectiveTimezone(
+                        appointment.SearchHire?.ExpertTimezone,
+                        appointment.SearchHire?.SearchService?.ExpertProfile?.Timezone
+                    );
+                
+                // Construir DateTime local (asumiendo que viene en hora local del experto)
+                var proposedDateTimeLocal = dto.ProposedDate.Date + dto.ProposedTime;
+                
+                // Convertir de hora local a UTC
+                var proposedDateTimeUtc = _timezoneService.ConvertToUtc(proposedDateTimeLocal, expertTimezone);
+                
+                // Separar fecha y hora en UTC para guardar
+                var proposedDateUtc = proposedDateTimeUtc.Date;
+                var proposedTimeUtc = proposedDateTimeUtc.TimeOfDay;
 
                 // ✅ VALIDACIÓN: Verificar que la cita tenga al menos 24 horas de anticipación
-
-                var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
-
-                var timeUntilAppointment = proposedDateTime - DateTime.UtcNow;
+                var timeUntilAppointment = proposedDateTimeUtc - DateTime.UtcNow;
 
                 
 
@@ -830,7 +883,7 @@ namespace newApi.Services
 
                         $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
 
-                        $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} UTC"
+                        $"Fecha/hora propuesta: {proposedDateTimeUtc:dd/MM/yyyy HH:mm} UTC ({proposedDateTimeLocal:dd/MM/yyyy HH:mm} {expertTimezone})"
 
                     );
 
@@ -845,16 +898,14 @@ namespace newApi.Services
 
 
                         // ✅ VALIDACIÓN: Verificar que la fecha/hora propuesta esté dentro del horario de disponibilidad del experto
+                        // Usar la fecha/hora en UTC para la validación
+                        await ValidateAppointmentAvailabilityAsync(appointment.SearchHire, proposedDateTimeUtc);
 
-                        await ValidateAppointmentAvailabilityAsync(appointment.SearchHire, proposedDateTime);
 
 
-
-                // Actualizar la cita - asegurar que los DateTime tengan Kind=UTC
-
-                appointment.ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc);
-
-                appointment.ProposedTime = dto.ProposedTime;
+                // Actualizar la cita - ✅ INTERNACIONALIZACIÓN: Guardar fecha/hora en UTC (convertida desde hora local)
+                appointment.ProposedDate = DateTime.SpecifyKind(proposedDateUtc, DateTimeKind.Utc);
+                appointment.ProposedTime = proposedTimeUtc;
 
                 appointment.Location = dto.Location;
 
@@ -989,7 +1040,44 @@ namespace newApi.Services
                         source: "AppointmentService.ProposeAppointmentAsync",
                         relatedEntityType: "Appointment",
                         relatedEntityId: updatedAppointment.Id,
-                        notifyUser: true
+                        notifyUser: false // Desactivar notificación genérica
+                    );
+
+                    // ✅ EMAIL: Notificar al experto de la nueva propuesta
+                    if (updatedAppointment.SearchHire.Expert != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Expert.Email))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            updatedAppointment.SearchHire.Expert.Email,
+                            updatedAppointment.SearchHire.Expert.Name,
+                            "📅 Nueva Propuesta de Cita",
+                            $"El cliente ha propuesto una cita para el <strong>{formattedDate}</strong> en <strong>{updatedAppointment.Location}</strong>.<br><br>Tienes 24 horas para aceptar o rechazar esta propuesta.",
+                            "Ver Propuesta",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
+                }
+
+                // ✅ Notificar al cliente confirmando el envío de la propuesta (Confirmación para el remitente)
+                await _loggingService.LogInfoAsync(
+                    message: "Propuesta de cita enviada correctamente",
+                    details: $"Has propuesto una cita para el {updatedAppointment.ProposedDate:dd/MM/yyyy} a las {updatedAppointment.ProposedTime:hh\\:mm}. El experto tiene 24 horas para responder. Si no responde, la cita se cancelará y recibirás un reembolso completo.",
+                    userId: userId,
+                    source: "AppointmentService.ProposeAppointmentAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: updatedAppointment.Id,
+                    notifyUser: false // Desactivar notificación genérica
+                );
+
+                // ✅ EMAIL: Confirmar al cliente que su propuesta fue enviada
+                if (updatedAppointment.SearchHire.Client != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Client.Email))
+                {
+                    await _notificationService.SendGeneralNotificationEmailAsync(
+                        updatedAppointment.SearchHire.Client.Email,
+                        updatedAppointment.SearchHire.Client.Name,
+                        "Propuesta Enviada",
+                        $"Has propuesto una cita para el <strong>{updatedAppointment.ProposedDate:dd/MM/yyyy}</strong> a las <strong>{updatedAppointment.ProposedTime:hh\\:mm}</strong>.<br><br>El experto tiene 24 horas para responder.",
+                        "Ver Estado",
+                        "https://www.inspecciono.com/appointments"
                     );
                 }
 
@@ -1358,8 +1446,21 @@ namespace newApi.Services
                             source: "AppointmentService.ConfirmAppointmentAsync",
                             relatedEntityType: "Appointment",
                             relatedEntityId: updatedAppointment.Id,
-                            notifyUser: true
+                            notifyUser: false
                         );
+
+                        // ✅ EMAIL: Enviar email personalizado de confirmación
+                        if (updatedAppointment.SearchHire.Client != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Client.Email))
+                        {
+                            await _notificationService.SendAppointmentConfirmationEmailAsync(
+                                updatedAppointment.SearchHire.Client.Email, 
+                                updatedAppointment.SearchHire.Client.Name, 
+                                formattedDateTime, 
+                                updatedAppointment.Location, 
+                                isExpert: false,
+                                searchHireId: updatedAppointment.SearchHireId
+                            );
+                        }
 
                         // ✅ LOG: Notificación al cliente enviada
                         await _loggingService.LogInfoAsync(
@@ -1371,6 +1472,36 @@ namespace newApi.Services
                             relatedEntityId: dto.AppointmentId,
                             notifyUser: false
                         );
+                    }
+
+                    // ✅ Notificar al experto confirmando la cita (Confirmación para el remitente)
+                    if (updatedAppointment.SearchHire?.ExpertId.HasValue == true && updatedAppointment.SearchHire.ExpertId.Value > 0)
+                    {
+                        var appointmentDateTime = updatedAppointment.ProposedDate.Date + updatedAppointment.ProposedTime;
+                        var formattedDate = appointmentDateTime.ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture);
+                        
+                        await _loggingService.LogInfoAsync(
+                            message: "Cita confirmada correctamente",
+                            details: $"Has confirmado la cita para el {formattedDate}. Recuerda que solo puedes cancelar hasta 12 horas antes de la cita.",
+                            userId: updatedAppointment.SearchHire.ExpertId.Value,
+                            source: "AppointmentService.ConfirmAppointmentAsync",
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: updatedAppointment.Id,
+                            notifyUser: false
+                        );
+
+                        // ✅ EMAIL: Enviar email personalizado de confirmación al experto
+                        if (updatedAppointment.SearchHire.Expert != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Expert.Email))
+                        {
+                            await _notificationService.SendAppointmentConfirmationEmailAsync(
+                                updatedAppointment.SearchHire.Expert.Email, 
+                                updatedAppointment.SearchHire.Expert.Name, 
+                                formattedDate, 
+                                updatedAppointment.Location, 
+                                isExpert: true,
+                                searchHireId: updatedAppointment.SearchHireId
+                            );
+                        }
                     }
 
                     // ✅ LOG: Mapeando a DTO
@@ -2112,57 +2243,103 @@ namespace newApi.Services
 
 
                 // ✅ Notificar al cliente sobre el rechazo
-
                 if (isSecondRejection)
-
                 {
-
                     // Segunda cancelación - notificar sobre refund automático
-
                     await _loggingService.LogWarningAsync(
-
                         message: "Cita rechazada por segunda vez",
-
                         details: $"El experto rechazó la propuesta de cita por segunda vez. Se procesará tu reembolso automáticamente.",
-
                         userId: appointment.SearchHire.ClientId,
-
                         source: "AppointmentService.RejectAppointmentAsync",
-
                         relatedEntityType: "Appointment",
-
                         relatedEntityId: appointment.Id,
-
-                        notifyUser: true
-
+                        notifyUser: false
                     );
 
+                    // ✅ EMAIL: Notificar cancelación por rechazos múltiples
+                    if (updatedAppointment.SearchHire.Client != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Client.Email))
+                    {
+                        var expertName = updatedAppointment.SearchHire.Expert?.Name ?? "El experto";
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            updatedAppointment.SearchHire.Client.Email,
+                            updatedAppointment.SearchHire.Client.Name,
+                            "❌ Cita Cancelada",
+                            $"{expertName} ha rechazado la propuesta de cita por segunda vez. Lamentamos los inconvenientes. Hemos procesado el reembolso completo a tu favor.",
+                            "Ver Reembolso",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
+
+                    // ✅ Notificar al experto (Confirmación de rechazo final)
+                    await _loggingService.LogWarningAsync(
+                        message: "Has rechazado la cita por segunda vez",
+                        details: $"Has rechazado la propuesta por segunda vez. El servicio ha sido cancelado y se ha procesado el reembolso al cliente.",
+                        userId: userId,
+                        source: "AppointmentService.RejectAppointmentAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointment.Id,
+                        notifyUser: false
+                    );
+
+                    // ✅ EMAIL: Confirmar al experto que se canceló por segundo rechazo
+                    if (updatedAppointment.SearchHire.Expert != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Expert.Email))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            updatedAppointment.SearchHire.Expert.Email,
+                            updatedAppointment.SearchHire.Expert.Name,
+                            "Cita Cancelada (2do rechazo)",
+                            "Has rechazado la cita por segunda vez. La contratación ha sido cancelada y el cliente reembolsado."
+                        );
+                    }
                 }
-
                 else
-
                 {
-
                     // Primera cancelación - notificar que puede proponer otra
-
                     await _loggingService.LogInfoAsync(
-
                         message: "Cita rechazada",
-
-                        details: $"El experto rechazó la propuesta de cita. Puedes proponer otra fecha y hora.",
-
+                        details: $"El experto rechazó la propuesta de cita. Puedes proponer otra fecha y hora. Tienes 24 horas para hacerlo.",
                         userId: appointment.SearchHire.ClientId,
-
                         source: "AppointmentService.RejectAppointmentAsync",
-
                         relatedEntityType: "Appointment",
-
                         relatedEntityId: appointment.Id,
-
-                        notifyUser: true
-
+                        notifyUser: false
                     );
 
+                    // ✅ EMAIL: Notificar rechazo y pedir nueva propuesta
+                    if (updatedAppointment.SearchHire.Client != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Client.Email))
+                    {
+                        var expertName = updatedAppointment.SearchHire.Expert?.Name ?? "El experto";
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            updatedAppointment.SearchHire.Client.Email,
+                            updatedAppointment.SearchHire.Client.Name,
+                            "📅 Cita Rechazada",
+                            $"{expertName} no puede asistir en la fecha propuesta. Por favor, propón una nueva fecha y hora para la cita.<br><br>Tienes 24 horas para enviar una nueva propuesta.",
+                            "Proponer Nueva Fecha",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
+
+                    // ✅ Notificar al experto (Confirmación de rechazo)
+                    await _loggingService.LogInfoAsync(
+                        message: "Has rechazado la cita",
+                        details: $"Has rechazado la propuesta de cita. El cliente tiene 24 horas para proponer una nueva fecha.",
+                        userId: userId,
+                        source: "AppointmentService.RejectAppointmentAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointment.Id,
+                        notifyUser: false
+                    );
+
+                    // ✅ EMAIL: Confirmar al experto que rechazó la cita
+                    if (updatedAppointment.SearchHire.Expert != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Expert.Email))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            updatedAppointment.SearchHire.Expert.Email,
+                            updatedAppointment.SearchHire.Expert.Name,
+                            "Cita Rechazada",
+                            "Has rechazado la propuesta de cita. Hemos notificado al cliente para que proponga una nueva fecha."
+                        );
+                    }
                 }
 
 
@@ -2594,6 +2771,49 @@ namespace newApi.Services
                     );
                 }
 
+                // ✅ CRÍTICO: Si la cancelación NO es final (primera cancelación), crear un timer de propuesta
+                // Esto evita que la app quede bloqueada si nadie toma acción
+                if (!cancelledStatus.IsFinalizationStatus)
+                {
+                    // Cancelar timers existentes (ej: response timer si existía)
+                    var activeTimersForCancel = await _context.AppointmentTimers
+                        .Where(t => t.AppointmentId == appointment.Id && !t.IsExpired)
+                        .ToListAsync();
+                    
+                    foreach (var timer in activeTimersForCancel)
+                    {
+                        timer.IsExpired = true;
+                        timer.ExpiredAt = DateTime.UtcNow;
+                        if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                        {
+                            try { BackgroundJob.Delete(timer.HangfireJobId); } catch { }
+                            timer.HangfireJobId = null;
+                        }
+                    }
+
+                    // Crear nuevo timer de "proposal" (24h)
+                    // Si expira sin acción, se cancelará definitivamente
+                    var proposalTimer = new AppointmentTimer
+                    {
+                        AppointmentId = appointment.Id,
+                        TimerType = "proposal",
+                        StartTime = DateTime.UtcNow,
+                        EndTime = DateTime.UtcNow.AddHours(24),
+                        IsExpired = false,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    
+                    _context.AppointmentTimers.Add(proposalTimer);
+                    await _context.SaveChangesAsync();
+                    
+                    var jobId = BackgroundJob.Schedule<IAppointmentService>(
+                        service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
+                        proposalTimer.EndTime - DateTime.UtcNow
+                    );
+                    
+                    proposalTimer.HangfireJobId = jobId;
+                }
+
                 // ✅ CRÍTICO: Guardar estados ANTES de procesar dinero
                 // El estado debe cambiar SIEMPRE, incluso si falla el procesamiento de dinero
                 await _context.SaveChangesAsync();
@@ -2780,75 +3000,140 @@ namespace newApi.Services
 
 
                 // ✅ Notificar a la otra parte sobre la cancelación
-
                 if (appointment.SearchHire.ClientId == userId)
-
                 {
-
                     // Cliente canceló - notificar al experto
-
                     if (appointment.SearchHire.ExpertId.HasValue)
-
                     {
-
                         var refundMessage = cancelledStatus.IsFinalizationStatus 
-
                             ? " Se procesará el reembolso al cliente." 
-
                             : "";
-
                         await _loggingService.LogWarningAsync(
-
                             message: "Cita cancelada por el cliente",
-
                             details: $"El cliente canceló la cita #{appointment.Id}.{refundMessage}",
-
                             userId: appointment.SearchHire.ExpertId.Value,
-
                             source: "AppointmentService.CancelAppointmentAsync",
-
                             relatedEntityType: "Appointment",
-
                             relatedEntityId: appointment.Id,
-
                             notifyUser: true
-
                         );
-
                     }
 
-                }
-
-                else
-
-                {
-
-                    // Experto canceló - notificar al cliente
-
-                    var refundMessage = cancelledStatus.IsFinalizationStatus 
-
-                        ? " Se procesará tu reembolso." 
-
-                        : "";
-
-                    await _loggingService.LogWarningAsync(
-
-                        message: "Cita cancelada por el experto",
-
-                        details: $"El experto canceló la cita #{appointment.Id}.{refundMessage}",
-
-                        userId: appointment.SearchHire.ClientId,
-
+                    // ✅ Notificar al cliente (Confirmación de cancelación)
+                    var refundInfo = cancelledStatus.IsFinalizationStatus 
+                        ? "Se procesará el reembolso a tu favor (menos penalización si aplica)." 
+                        : "Se ha creado un nuevo timer de propuesta. Tienes 24 horas para proponer una nueva cita.";
+                        
+                    await _loggingService.LogInfoAsync(
+                        message: "Has cancelado la cita",
+                        details: $"Has cancelado la cita #{appointment.Id} correctamente. {refundInfo}",
+                        userId: userId,
                         source: "AppointmentService.CancelAppointmentAsync",
-
                         relatedEntityType: "Appointment",
-
                         relatedEntityId: appointment.Id,
-
-                        notifyUser: true
-
+                        notifyUser: false // Desactivar notificación genérica
                     );
 
+                    // ✅ EMAIL: Notificar cancelación a ambas partes
+                    // 1. Al que canceló
+                    var actorEmail = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Client?.Email : appointment.SearchHire.Expert?.Email;
+                    var actorName = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Client?.Name : appointment.SearchHire.Expert?.Name;
+                    
+                    if (!string.IsNullOrEmpty(actorEmail))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            actorEmail,
+                            actorName ?? "Usuario",
+                            "Cita Cancelada",
+                            $"Has cancelado la cita del {appointment.ProposedDate:dd/MM/yyyy}. {refundInfo}",
+                            "Ver Estado",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
+
+                    // 2. A la contraparte
+                    var otherPartyId = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.ExpertId : appointment.SearchHire.ClientId;
+                    var otherPartyEmail = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Expert?.Email : appointment.SearchHire.Client?.Email;
+                    var otherPartyName = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Expert?.Name : appointment.SearchHire.Client?.Name;
+
+                    if (otherPartyId.HasValue && !string.IsNullOrEmpty(otherPartyEmail))
+                    {
+                        var cancelledBy = userId == appointment.SearchHire.ClientId ? "el cliente" : "el experto";
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            otherPartyEmail,
+                            otherPartyName ?? "Usuario",
+                            "⚠️ Cita Cancelada",
+                            $"La cita programada para el {appointment.ProposedDate:dd/MM/yyyy} ha sido cancelada por {cancelledBy}.",
+                            "Ver Detalles",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
+                }
+                else
+                {
+                    // Experto canceló - notificar al cliente
+                    var refundMessage = cancelledStatus.IsFinalizationStatus 
+                        ? " Se procesará tu reembolso." 
+                        : "";
+                    await _loggingService.LogWarningAsync(
+                        message: "Cita cancelada por el experto",
+                        details: $"El experto canceló la cita #{appointment.Id}.{refundMessage}",
+                        userId: appointment.SearchHire.ClientId,
+                        source: "AppointmentService.CancelAppointmentAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointment.Id,
+                        notifyUser: true
+                    );
+
+                    // ✅ Notificar al experto (Confirmación de cancelación)
+                    var refundInfo = cancelledStatus.IsFinalizationStatus 
+                        ? "Se procesará el reembolso completo al cliente." 
+                        : "El cliente ha sido notificado y podrá proponer una nueva cita.";
+
+                    await _loggingService.LogInfoAsync(
+                        message: "Has cancelado la cita",
+                        details: $"Has cancelado la cita #{appointment.Id} correctamente. {refundInfo}",
+                        userId: userId,
+                        source: "AppointmentService.CancelAppointmentAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointment.Id,
+                        notifyUser: false // Desactivar notificación genérica
+                    );
+
+                    // ✅ EMAIL: Notificar cancelación a ambas partes
+                    // 1. Al que canceló
+                    var actorEmail = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Client?.Email : appointment.SearchHire.Expert?.Email;
+                    var actorName = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Client?.Name : appointment.SearchHire.Expert?.Name;
+                    
+                    if (!string.IsNullOrEmpty(actorEmail))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            actorEmail,
+                            actorName ?? "Usuario",
+                            "Cita Cancelada",
+                            $"Has cancelado la cita del {appointment.ProposedDate:dd/MM/yyyy}. {refundInfo}",
+                            "Ver Estado",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
+
+                    // 2. A la contraparte
+                    var otherPartyId = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.ExpertId : appointment.SearchHire.ClientId;
+                    var otherPartyEmail = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Expert?.Email : appointment.SearchHire.Client?.Email;
+                    var otherPartyName = userId == appointment.SearchHire.ClientId ? appointment.SearchHire.Expert?.Name : appointment.SearchHire.Client?.Name;
+
+                    if (otherPartyId.HasValue && !string.IsNullOrEmpty(otherPartyEmail))
+                    {
+                        var cancelledBy = userId == appointment.SearchHire.ClientId ? "el cliente" : "el experto";
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            otherPartyEmail,
+                            otherPartyName ?? "Usuario",
+                            "⚠️ Cita Cancelada",
+                            $"La cita programada para el {appointment.ProposedDate:dd/MM/yyyy} ha sido cancelada por {cancelledBy}.",
+                            "Ver Detalles",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
                 }
 
 
@@ -3812,20 +4097,145 @@ namespace newApi.Services
                             .ThenInclude(sh => sh.Expert)
                     .FirstOrDefaultAsync(t => t.Id == timerId);
 
+                // #region agent log
+                File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                    JsonSerializer.Serialize(new
+                    {
+                        sessionId = "debug-session",
+                        runId = "run1",
+                        hypothesisId = "H1",
+                        location = "AppointmentService.ProcessAppointmentTimerAsync:entry",
+                        message = "Timer loaded",
+                        data = new
+                        {
+                            timerId,
+                            timerType = timer?.TimerType,
+                            isExpired = timer?.IsExpired,
+                            appointmentId = timer?.AppointmentId
+                        },
+                        timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    }) + Environment.NewLine);
+                // #endregion
+
                 if (timer == null)
                 {
+                    // ✅ LOG: Timer no encontrado
+                    await _loggingService.LogWarningAsync(
+                        message: "Timer no encontrado",
+                        details: $"Timer con Id {timerId} no existe en la base de datos.",
+                        userId: null,
+                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                        relatedEntityType: "AppointmentTimer",
+                        relatedEntityId: timerId
+                    );
                     return; // Timer no encontrado
                 }
 
                 // Verificar si el timer ya está expirado (puede haber sido cancelado)
                 if (timer.IsExpired)
                 {
-                    return; // Timer ya procesado o cancelado
+                    // ✅ MEJORA: Verificar si la cita fue procesada correctamente
+                    // Si el timer está expirado pero la cita no fue procesada, reprocesar
+                    var currentAppointmentStatus = timer.Appointment?.Status?.StatusValue ?? string.Empty;
+                    var currentSearchHireStatus = timer.Appointment?.SearchHire?.Status?.StatusValue ?? string.Empty;
+                    
+                    // Para timer "response", si la cita sigue en "appointment_proposed", significa que NO se procesó
+                    bool shouldReprocess = false;
+                    if (timer.TimerType == "response" && currentAppointmentStatus == "appointment_proposed" && currentSearchHireStatus == "pending")
+                    {
+                        shouldReprocess = true;
+                    }
+                    else if (timer.TimerType == "proposal" && currentAppointmentStatus == AppointmentStatus.AwaitingAppointment.ToStringValue() && currentSearchHireStatus == "pending")
+                    {
+                        shouldReprocess = true;
+                    }
+                    else if (timer.TimerType == "expert_report" && currentAppointmentStatus == "appointment_awaiting_report" && currentSearchHireStatus == "pending")
+                    {
+                        shouldReprocess = true;
+                    }
+                    else if (timer.TimerType == "client_decision" && currentAppointmentStatus == "appointment_report_sent" && currentSearchHireStatus == "awaiting_client_decision")
+                    {
+                        shouldReprocess = true;
+                    }
+                    
+                    if (shouldReprocess)
+                    {
+                        // #region agent log
+                        File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                            JsonSerializer.Serialize(new
+                            {
+                                sessionId = "debug-session",
+                                runId = "run1",
+                                hypothesisId = "H2",
+                                location = "AppointmentService.ProcessAppointmentTimerAsync:isExpired-reprocess",
+                                message = "Reprocessing expired timer",
+                                data = new
+                                {
+                                    timerId,
+                                    timerType = timer.TimerType,
+                                    appointmentStatus = currentAppointmentStatus,
+                                    searchHireStatus = currentSearchHireStatus
+                                },
+                                timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                            }) + Environment.NewLine);
+                        // #endregion
+                        // ⚠️ Timer expirado pero cita no procesada - reprocesar
+                        await _loggingService.LogWarningAsync(
+                            message: "Timer expirado pero cita no procesada - reprocesando",
+                            details: $"Timer {timerId} está marcado como expirado (IsExpired=true), pero la cita no fue procesada. " +
+                                    $"TimerType: {timer.TimerType}, AppointmentId: {timer.AppointmentId}, " +
+                                    $"AppointmentStatus: {currentAppointmentStatus}, SearchHireStatus: {currentSearchHireStatus}. " +
+                                    $"Reprocesando para asegurar que la cita se actualice correctamente.",
+                            userId: timer.Appointment?.SearchHire?.ClientId,
+                            source: "AppointmentService.ProcessAppointmentTimerAsync",
+                            relatedEntityType: "AppointmentTimer",
+                            relatedEntityId: timerId
+                        );
+                        // Continuar con el procesamiento (no retornar)
+                    }
+                    else
+                    {
+                        // ✅ LOG: Timer ya procesado correctamente
+                        await _loggingService.LogInfoAsync(
+                            message: "Timer ya expirado - retornando sin procesar",
+                            details: $"Timer {timerId} ya está marcado como expirado (IsExpired=true) y la cita fue procesada correctamente. " +
+                                    $"AppointmentId: {timer.AppointmentId}, TimerType: {timer.TimerType}, " +
+                                    $"AppointmentStatus: {currentAppointmentStatus}, SearchHireStatus: {currentSearchHireStatus}",
+                            userId: timer.Appointment?.SearchHire?.ClientId,
+                            source: "AppointmentService.ProcessAppointmentTimerAsync",
+                            relatedEntityType: "AppointmentTimer",
+                            relatedEntityId: timerId
+                        );
+                        return; // Timer ya procesado correctamente
+                    }
                 }
 
                 // ✅ VALIDACIÓN CRÍTICA: Verificar que el SearchHire y Appointment existan
                 if (timer.Appointment == null || timer.Appointment.SearchHire == null)
                 {
+                    // #region agent log
+                    File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                        JsonSerializer.Serialize(new
+                        {
+                            sessionId = "debug-session",
+                            runId = "run1",
+                            hypothesisId = "H4",
+                            location = "AppointmentService.ProcessAppointmentTimerAsync:null-check",
+                            message = "Appointment or SearchHire null",
+                            data = new { timerId, appointmentNull = timer.Appointment == null, searchHireNull = timer.Appointment?.SearchHire == null },
+                            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                        }) + Environment.NewLine);
+                    // #endregion
+                    // ✅ LOG: Appointment o SearchHire eliminados
+                    await _loggingService.LogWarningAsync(
+                        message: "Appointment o SearchHire eliminados",
+                        details: $"Timer {timerId}. Appointment es null: {timer.Appointment == null}, " +
+                                $"SearchHire es null: {timer.Appointment?.SearchHire == null}",
+                        userId: null,
+                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                        relatedEntityType: "AppointmentTimer",
+                        relatedEntityId: timerId
+                    );
                     timer.IsExpired = true;
                     timer.ExpiredAt = DateTime.UtcNow;
                     await _context.SaveChangesAsync();
@@ -3838,6 +4248,29 @@ namespace newApi.Services
                 // ✅ VALIDACIÓN CRÍTICA: Verificar que el SearchHire NO esté finalizado
                 if (searchHire.Status?.IsFinalizationStatus == true)
                 {
+                    // #region agent log
+                    File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                        JsonSerializer.Serialize(new
+                        {
+                            sessionId = "debug-session",
+                            runId = "run1",
+                            hypothesisId = "H4",
+                            location = "AppointmentService.ProcessAppointmentTimerAsync:finalized-searchhire",
+                            message = "SearchHire already finalized",
+                            data = new { timerId, searchHireId = searchHire.Id, status = searchHire.Status?.StatusValue },
+                            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                        }) + Environment.NewLine);
+                    // #endregion
+                    // ✅ LOG: SearchHire ya finalizado
+                    await _loggingService.LogInfoAsync(
+                        message: "SearchHire ya finalizado - retornando sin procesar",
+                        details: $"Timer {timerId}. SearchHireId: {searchHire.Id}, Status: {searchHire.Status?.StatusValue}, " +
+                                $"IsFinalizationStatus: {searchHire.Status?.IsFinalizationStatus}",
+                        userId: null,
+                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                        relatedEntityType: "AppointmentTimer",
+                        relatedEntityId: timerId
+                    );
                     timer.IsExpired = true;
                     timer.ExpiredAt = DateTime.UtcNow;
                     await _context.SaveChangesAsync();
@@ -3847,6 +4280,29 @@ namespace newApi.Services
                 // ✅ VALIDACIÓN CRÍTICA: Verificar que los usuarios existan y no estén bloqueados
                 if (searchHire.Client == null || searchHire.Client.IsBlocked)
                 {
+                    // ✅ LOG: Cliente eliminado o bloqueado
+                    await _loggingService.LogWarningAsync(
+                        message: "Timer cancelado - Cliente bloqueado o eliminado",
+                        details: $"Timer {timerId} cancelado porque el cliente {searchHire.ClientId} está {(searchHire.Client == null ? "eliminado" : "bloqueado")}. Timer expirado sin procesar.",
+                        userId: searchHire.ClientId,
+                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                        relatedEntityType: "AppointmentTimer",
+                        relatedEntityId: timerId
+                    );
+
+                    // #region agent log
+                    File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                        JsonSerializer.Serialize(new
+                        {
+                            sessionId = "debug-session",
+                            runId = "run1",
+                            hypothesisId = "H4",
+                            location = "AppointmentService.ProcessAppointmentTimerAsync:client-blocked-null",
+                            message = "Client null or blocked",
+                            data = new { timerId, clientNull = searchHire.Client == null, clientBlocked = searchHire.Client?.IsBlocked },
+                            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                        }) + Environment.NewLine);
+                    // #endregion
                     timer.IsExpired = true;
                     timer.ExpiredAt = DateTime.UtcNow;
                     await _context.SaveChangesAsync();
@@ -3855,6 +4311,29 @@ namespace newApi.Services
 
                 if (searchHire.ExpertId.HasValue && (searchHire.Expert == null || searchHire.Expert.IsBlocked))
                 {
+                    // ✅ LOG: Experto eliminado o bloqueado
+                    await _loggingService.LogWarningAsync(
+                        message: "Timer cancelado - Experto bloqueado o eliminado",
+                        details: $"Timer {timerId} cancelado porque el experto {searchHire.ExpertId} está {(searchHire.Expert == null ? "eliminado" : "bloqueado")}. Timer expirado sin procesar.",
+                        userId: searchHire.ClientId,
+                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                        relatedEntityType: "AppointmentTimer",
+                        relatedEntityId: timerId
+                    );
+
+                    // #region agent log
+                    File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                        JsonSerializer.Serialize(new
+                        {
+                            sessionId = "debug-session",
+                            runId = "run1",
+                            hypothesisId = "H4",
+                            location = "AppointmentService.ProcessAppointmentTimerAsync:expert-blocked-null",
+                            message = "Expert null or blocked",
+                            data = new { timerId, expertNull = searchHire.Expert == null, expertBlocked = searchHire.Expert?.IsBlocked },
+                            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                        }) + Environment.NewLine);
+                    // #endregion
                     timer.IsExpired = true;
                     timer.ExpiredAt = DateTime.UtcNow;
                     await _context.SaveChangesAsync();
@@ -3869,6 +4348,29 @@ namespace newApi.Services
                 {
                     if (searchHireStatus != "pending")
                     {
+                        // #region agent log
+                        File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                            JsonSerializer.Serialize(new
+                            {
+                                sessionId = "debug-session",
+                                runId = "run1",
+                                hypothesisId = "H4",
+                                location = "AppointmentService.ProcessAppointmentTimerAsync:pending-check",
+                                message = "SearchHire not pending",
+                                data = new { timerId, timerType = timer.TimerType, searchHireId = searchHire.Id, searchHireStatus },
+                                timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                            }) + Environment.NewLine);
+                        // #endregion
+                        // ✅ LOG: SearchHire no está en pending
+                        await _loggingService.LogInfoAsync(
+                            message: "SearchHire no está en pending - retornando sin procesar",
+                            details: $"Timer {timerId}, TimerType: {timer.TimerType}. SearchHireId: {searchHire.Id}, " +
+                                    $"SearchHireStatus actual: '{searchHireStatus}', esperado: 'pending'",
+                            userId: null,
+                            source: "AppointmentService.ProcessAppointmentTimerAsync",
+                            relatedEntityType: "AppointmentTimer",
+                            relatedEntityId: timerId
+                        );
                         timer.IsExpired = true;
                         timer.ExpiredAt = DateTime.UtcNow;
                         await _context.SaveChangesAsync();
@@ -3894,6 +4396,29 @@ namespace newApi.Services
                 if (timer.TimerType == "proposal" && appointmentStatus != AppointmentStatus.AwaitingAppointment.ToStringValue() && appointmentStatus != AppointmentStatus.AppointmentRejected.ToStringValue() && 
                     appointmentStatus != AppointmentStatus.AppointmentCancelledByClient.ToStringValue() && appointmentStatus != AppointmentStatus.AppointmentCancelledByExpert.ToStringValue())
                 {
+                    // ✅ LOG: Estado de cita no válido para proposal
+                    await _loggingService.LogWarningAsync(
+                        message: "Timer proposal cancelado - Estado de cita inválido",
+                        details: $"Timer {timerId} cancelado. Estado actual: '{appointmentStatus}'. Estados esperados: awaiting_appointment, rejected, cancelled_by_client/expert.",
+                        userId: searchHire.ClientId,
+                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                        relatedEntityType: "AppointmentTimer",
+                        relatedEntityId: timerId
+                    );
+
+                    // #region agent log
+                    File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                        JsonSerializer.Serialize(new
+                        {
+                            sessionId = "debug-session",
+                            runId = "run1",
+                            hypothesisId = "H4",
+                            location = "AppointmentService.ProcessAppointmentTimerAsync:proposal-invalid-appointment-status",
+                            message = "Invalid appointment status for proposal",
+                            data = new { timerId, appointmentStatus },
+                            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                        }) + Environment.NewLine);
+                    // #endregion
                     timer.IsExpired = true;
                     timer.ExpiredAt = DateTime.UtcNow;
                     await _context.SaveChangesAsync();
@@ -3902,6 +4427,29 @@ namespace newApi.Services
 
                 if (timer.TimerType == "response" && appointmentStatus != "appointment_proposed")
                 {
+                    // #region agent log
+                    File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                        JsonSerializer.Serialize(new
+                        {
+                            sessionId = "debug-session",
+                            runId = "run1",
+                            hypothesisId = "H4",
+                            location = "AppointmentService.ProcessAppointmentTimerAsync:response-invalid-appointment-status",
+                            message = "Invalid appointment status for response",
+                            data = new { timerId, appointmentStatus },
+                            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                        }) + Environment.NewLine);
+                    // #endregion
+                    // ✅ LOG: Estado de cita no válido
+                    await _loggingService.LogInfoAsync(
+                        message: "Estado de cita no válido para timer de response - retornando sin procesar",
+                        details: $"Timer {timerId}, TimerType: response. AppointmentId: {timer.AppointmentId}, " +
+                                $"AppointmentStatus actual: '{appointmentStatus}', esperado: 'appointment_proposed'",
+                        userId: timer.Appointment?.SearchHire?.ClientId,
+                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                        relatedEntityType: "AppointmentTimer",
+                        relatedEntityId: timerId
+                    );
                     timer.IsExpired = true;
                     timer.ExpiredAt = DateTime.UtcNow;
                     await _context.SaveChangesAsync();
@@ -3910,6 +4458,29 @@ namespace newApi.Services
 
                 if (timer.TimerType == "expert_report" && appointmentStatus != "appointment_awaiting_report")
                 {
+                    // ✅ LOG: Estado de cita no válido para expert_report
+                    await _loggingService.LogWarningAsync(
+                        message: "Timer expert_report cancelado - Estado de cita inválido",
+                        details: $"Timer {timerId} cancelado. Estado actual: '{appointmentStatus}'. Estado esperado: appointment_awaiting_report.",
+                        userId: searchHire.ClientId,
+                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                        relatedEntityType: "AppointmentTimer",
+                        relatedEntityId: timerId
+                    );
+
+                    // #region agent log
+                    File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                        JsonSerializer.Serialize(new
+                        {
+                            sessionId = "debug-session",
+                            runId = "run1",
+                            hypothesisId = "H4",
+                            location = "AppointmentService.ProcessAppointmentTimerAsync:expert-report-invalid-appointment-status",
+                            message = "Invalid appointment status for expert_report",
+                            data = new { timerId, appointmentStatus },
+                            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                        }) + Environment.NewLine);
+                    // #endregion
                     timer.IsExpired = true;
                     timer.ExpiredAt = DateTime.UtcNow;
                     await _context.SaveChangesAsync();
@@ -3921,6 +4492,29 @@ namespace newApi.Services
                 {
                     if (searchHireStatus != "awaiting_client_decision")
                     {
+                        // ✅ LOG: Estado SearchHire no válido para client_decision
+                        await _loggingService.LogWarningAsync(
+                            message: "Timer client_decision cancelado - Estado SearchHire inválido",
+                            details: $"Timer {timerId} cancelado. Estado SearchHire actual: '{searchHireStatus}'. Estado esperado: awaiting_client_decision.",
+                            userId: searchHire.ClientId,
+                            source: "AppointmentService.ProcessAppointmentTimerAsync",
+                            relatedEntityType: "AppointmentTimer",
+                            relatedEntityId: timerId
+                        );
+
+                        // #region agent log
+                        File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                            JsonSerializer.Serialize(new
+                            {
+                                sessionId = "debug-session",
+                                runId = "run1",
+                                hypothesisId = "H4",
+                                location = "AppointmentService.ProcessAppointmentTimerAsync:client-decision-searchhire-invalid",
+                                message = "SearchHire not awaiting_client_decision",
+                                data = new { timerId, searchHireStatus },
+                                timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                            }) + Environment.NewLine);
+                        // #endregion
                         timer.IsExpired = true;
                         timer.ExpiredAt = DateTime.UtcNow;
                         await _context.SaveChangesAsync();
@@ -3930,11 +4524,67 @@ namespace newApi.Services
                 
                 if (timer.TimerType == "client_decision" && appointmentStatus != "appointment_report_sent")
                 {
+                    // ✅ LOG: Estado de cita no válido para client_decision
+                    await _loggingService.LogWarningAsync(
+                        message: "Timer client_decision cancelado - Estado de cita inválido",
+                        details: $"Timer {timerId} cancelado. Estado Appointment actual: '{appointmentStatus}'. Estado esperado: appointment_report_sent.",
+                        userId: searchHire.ClientId,
+                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                        relatedEntityType: "AppointmentTimer",
+                        relatedEntityId: timerId
+                    );
+
+                    // #region agent log
+                    File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                        JsonSerializer.Serialize(new
+                        {
+                            sessionId = "debug-session",
+                            runId = "run1",
+                            hypothesisId = "H4",
+                            location = "AppointmentService.ProcessAppointmentTimerAsync:client-decision-appointment-invalid",
+                            message = "Appointment status invalid for client_decision",
+                            data = new { timerId, appointmentStatus },
+                            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                        }) + Environment.NewLine);
+                    // #endregion
                     timer.IsExpired = true;
                     timer.ExpiredAt = DateTime.UtcNow;
                     await _context.SaveChangesAsync();
                     return; // Estado de cita no válido para timer de client_decision
                 }
+
+                // #region agent log
+                File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                    JsonSerializer.Serialize(new
+                    {
+                        sessionId = "debug-session",
+                        runId = "run2",
+                        hypothesisId = "H5",
+                        location = "AppointmentService.ProcessAppointmentTimerAsync:after-validations",
+                        message = "Passed validations, proceeding to process timer",
+                        data = new
+                        {
+                            timerId,
+                            timerType = timer.TimerType,
+                            appointmentStatus,
+                            searchHireStatus,
+                            isExpired = timer.IsExpired
+                        },
+                        timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    }) + Environment.NewLine);
+                // #endregion
+
+                // ✅ LOG: Inicio de procesamiento del timer
+                await _loggingService.LogInfoAsync(
+                    message: "Iniciando procesamiento de timer",
+                    details: $"Timer {timerId}, TimerType: {timer.TimerType}, AppointmentId: {timer.AppointmentId}, " +
+                            $"AppointmentStatus: {appointmentStatus}, SearchHireId: {searchHire.Id}, " +
+                            $"SearchHireStatus: {searchHireStatus}, EndTime: {timer.EndTime}, Now: {DateTime.UtcNow}",
+                    userId: searchHire.ClientId,
+                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                    relatedEntityType: "AppointmentTimer",
+                    relatedEntityId: timerId
+                );
 
                 // Marcar timer como expirado
                 timer.IsExpired = true;
@@ -3951,8 +4601,52 @@ namespace newApi.Services
 
                         if (noProposalStatus != null && timer.Appointment != null)
                         {
+                            // #region agent log
+                            File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                                JsonSerializer.Serialize(new
+                                {
+                                    sessionId = "debug-session",
+                                    runId = "run2",
+                                    hypothesisId = "H6",
+                                    location = "AppointmentService.ProcessAppointmentTimerAsync:proposal-branch",
+                                    message = "Entering proposal branch",
+                                    data = new
+                                    {
+                                        timerId,
+                                        appointmentId = timer.AppointmentId,
+                                        searchHireId = timer.Appointment.SearchHireId,
+                                        appointmentStatus,
+                                        searchHireStatus
+                                    },
+                                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                                }) + Environment.NewLine);
+                            // #endregion
+
                             timer.Appointment.StatusId = noProposalStatus.Id;
                             timer.Appointment.UpdatedAt = DateTime.UtcNow;
+
+                            // ✅ CRÍTICO: Guardar estado INMEDIATAMENTE antes de procesar dinero
+                            await _context.SaveChangesAsync();
+
+                            // #region agent log
+                            File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                                JsonSerializer.Serialize(new
+                                {
+                                    sessionId = "debug-session",
+                                    runId = "run3",
+                                    hypothesisId = "H9",
+                                    location = "AppointmentService.ProcessAppointmentTimerAsync:proposal-after-save",
+                                    message = "Proposal branch saved state before money",
+                                    data = new
+                                    {
+                                        timerId,
+                                        appointmentId = timer.AppointmentId,
+                                        searchHireId = timer.Appointment.SearchHireId,
+                                        statusId = timer.Appointment.StatusId
+                                    },
+                                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                                }) + Environment.NewLine);
+                            // #endregion
 
                             // Procesar dinero automáticamente
                             // ✅ MEJORA: Usar lógica automática de mapeo - ProcessMoneyDistributionAsync mapea automáticamente
@@ -3960,17 +4654,99 @@ namespace newApi.Services
                             // Usa los % del AppointmentStatus (0/100/0) porque tiene configuración
                             try
                             {
+                                // #region agent log
+                                File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                                    JsonSerializer.Serialize(new
+                                    {
+                                        sessionId = "debug-session",
+                                        runId = "run1",
+                                        hypothesisId = "H3",
+                                        location = "AppointmentService.ProcessAppointmentTimerAsync:proposal-money",
+                                        message = "Calling money distribution",
+                                        data = new
+                                        {
+                                            timerId,
+                                            appointmentId = timer.AppointmentId,
+                                            searchHireId = timer.Appointment.SearchHireId,
+                                            status = AppointmentStatus.AppointmentCancelledByClientNoProposal.ToStringValue()
+                                        },
+                                        timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                                    }) + Environment.NewLine);
+                                // #endregion
+
                                 await _refundService.ProcessMoneyDistributionAsync(
                                     timer.Appointment.SearchHireId,
                                     AppointmentStatus.AppointmentCancelledByClientNoProposal.ToStringValue(),
                                     "Client did not propose within 24h - automatic cancellation",
                                     null,
                                     updateState: true); // ✅ updateState: true para que haga el mapeo automático
+
+                                // ✅ EMAIL: Notificar cancelación automática por falta de propuesta
+                                if (timer.Appointment.SearchHire.Client != null && !string.IsNullOrEmpty(timer.Appointment.SearchHire.Client.Email))
+                                {
+                                    await _notificationService.SendGeneralNotificationEmailAsync(
+                                        timer.Appointment.SearchHire.Client.Email,
+                                        timer.Appointment.SearchHire.Client.Name,
+                                        "❌ Contratación Cancelada",
+                                        "La contratación ha sido cancelada porque no se recibió una propuesta de cita en el plazo de 24 horas.",
+                                        "Ver Detalles",
+                                        "https://www.inspecciono.com/appointments"
+                                    );
+                                }
+
+                                if (timer.Appointment.SearchHire.Expert != null && !string.IsNullOrEmpty(timer.Appointment.SearchHire.Expert.Email))
+                                {
+                                    await _notificationService.SendGeneralNotificationEmailAsync(
+                                        timer.Appointment.SearchHire.Expert.Email,
+                                        timer.Appointment.SearchHire.Expert.Name,
+                                        "Contratación Cancelada",
+                                        "La contratación ha sido cancelada porque el cliente no propuso una fecha en el plazo establecido."
+                                    );
+                                }
                             }
-                            catch
+                            catch (Exception moneyEx)
                             {
-                                // Log error pero continuar
+                                // ✅ NOTIFICAR ADMIN: El dinero falló pero el estado ya está guardado
+                                await _loggingService.LogCriticalAsync(
+                                    message: "Money distribution failed after auto-cancel (proposal timer)",
+                                    details: $"Timer {timerId}, AppointmentId {timer.AppointmentId}, SearchHireId {timer.Appointment.SearchHireId}. " +
+                                             $"State is already updated to appointment_cancelled_by_client_no_proposal. Error: {moneyEx.Message}",
+                                    userId: timer.Appointment.SearchHire?.ClientId,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "Appointment",
+                                    relatedEntityId: timer.Appointment.Id,
+                                    additionalData: new
+                                    {
+                                        TimerType = "proposal",
+                                        TimerId = timer.Id,
+                                        AppointmentStatus = AppointmentStatus.AppointmentCancelledByClientNoProposal.ToStringValue(),
+                                        Exception = moneyEx.Message,
+                                        StackTrace = moneyEx.StackTrace
+                                    },
+                                    notifyUser: true
+                                );
                             }
+
+                            // #region agent log
+                            File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                                JsonSerializer.Serialize(new
+                                {
+                                    sessionId = "debug-session",
+                                    runId = "run2",
+                                    hypothesisId = "H7",
+                                    location = "AppointmentService.ProcessAppointmentTimerAsync:proposal-complete",
+                                    message = "Proposal timer processed (after money try/catch)",
+                                    data = new
+                                    {
+                                        timerId,
+                                        appointmentId = timer.AppointmentId,
+                                        searchHireId = timer.Appointment.SearchHireId,
+                                        appointmentStatus = timer.Appointment.StatusId,
+                                        searchHireStatus = timer.Appointment.SearchHire?.StatusId
+                                    },
+                                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                                }) + Environment.NewLine);
+                            // #endregion
                         }
                         break;
 
@@ -3982,8 +4758,85 @@ namespace newApi.Services
 
                         if (noResponseStatus != null && timer.Appointment != null)
                         {
+                            // #region agent log
+                            File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                                JsonSerializer.Serialize(new
+                                {
+                                    sessionId = "debug-session",
+                                    runId = "run2",
+                                    hypothesisId = "H6",
+                                    location = "AppointmentService.ProcessAppointmentTimerAsync:response-branch",
+                                    message = "Entering response branch",
+                                    data = new
+                                    {
+                                        timerId,
+                                        appointmentId = timer.AppointmentId,
+                                        searchHireId = timer.Appointment.SearchHireId,
+                                        appointmentStatus,
+                                        searchHireStatus
+                                    },
+                                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                                }) + Environment.NewLine);
+                            // #endregion
+
+                            // ✅ LOG: Inicio de procesamiento
+                            await _loggingService.LogInfoAsync(
+                                message: "Iniciando cancelación de cita por falta de respuesta",
+                                details: $"Timer {timerId} expirado. TimerType: response, AppointmentId: {timer.AppointmentId}, " +
+                                        $"AppointmentStatus actual: {appointmentStatus}, SearchHireId: {timer.Appointment.SearchHireId}, " +
+                                        $"SearchHireStatus: {searchHireStatus}",
+                                userId: timer.Appointment.SearchHire?.ClientId,
+                                source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                relatedEntityType: "Appointment",
+                                relatedEntityId: timer.Appointment.Id
+                            );
+
                             timer.Appointment.StatusId = noResponseStatus.Id;
                             timer.Appointment.UpdatedAt = DateTime.UtcNow;
+
+                            // ✅ LOG: Estado cambiado
+                            await _loggingService.LogInfoAsync(
+                                message: "Estado de cita cambiado",
+                                details: $"Cambiando estado de cita {timer.AppointmentId} a 'appointment_cancelled_by_expert_no_response'. " +
+                                        $"StatusId: {noResponseStatus.Id}",
+                                userId: timer.Appointment.SearchHire?.ClientId,
+                                source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                relatedEntityType: "Appointment",
+                                relatedEntityId: timer.Appointment.Id
+                            );
+
+                            // ✅ CRÍTICO: Guardar estado INMEDIATAMENTE antes de procesar dinero
+                            // Esto asegura que el estado se persista incluso si ProcessMoneyDistributionAsync falla
+                            await _context.SaveChangesAsync();
+                            
+                            // #region agent log
+                            File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                                JsonSerializer.Serialize(new
+                                {
+                                    sessionId = "debug-session",
+                                    runId = "run2",
+                                    hypothesisId = "H9",
+                                    location = "AppointmentService.ProcessAppointmentTimerAsync:response-after-save",
+                                    message = "Response branch saved state before money",
+                                    data = new
+                                    {
+                                        timerId,
+                                        appointmentId = timer.AppointmentId,
+                                        searchHireId = timer.Appointment.SearchHireId,
+                                        statusId = timer.Appointment.StatusId
+                                    },
+                                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                                }) + Environment.NewLine);
+                            // #endregion
+
+                            await _loggingService.LogInfoAsync(
+                                message: "Estado de cita guardado en base de datos",
+                                details: $"Estado de cita {timer.AppointmentId} guardado exitosamente. StatusId: {noResponseStatus.Id}",
+                                userId: timer.Appointment.SearchHire?.ClientId,
+                                source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                relatedEntityType: "Appointment",
+                                relatedEntityId: timer.Appointment.Id
+                            );
 
                             // Procesar dinero automáticamente
                             // ✅ MEJORA: Usar lógica automática de mapeo - ProcessMoneyDistributionAsync mapea automáticamente
@@ -3991,17 +4844,113 @@ namespace newApi.Services
                             // Usa los % del AppointmentStatus (100/0/0) porque tiene configuración
                             try
                             {
+                                // #region agent log
+                                File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                                    JsonSerializer.Serialize(new
+                                    {
+                                        sessionId = "debug-session",
+                                        runId = "run1",
+                                        hypothesisId = "H3",
+                                        location = "AppointmentService.ProcessAppointmentTimerAsync:response-money",
+                                        message = "Calling money distribution",
+                                        data = new
+                                        {
+                                            timerId,
+                                            appointmentId = timer.AppointmentId,
+                                            searchHireId = timer.Appointment.SearchHireId,
+                                            status = AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue()
+                                        },
+                                        timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                                    }) + Environment.NewLine);
+                                // #endregion
+
+                                // ✅ LOG: Iniciando procesamiento de dinero
+                                await _loggingService.LogInfoAsync(
+                                    message: "Iniciando procesamiento de distribución de dinero",
+                                    details: $"Llamando a ProcessMoneyDistributionAsync para SearchHireId: {timer.Appointment.SearchHireId}, " +
+                                            $"StatusValue: {AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue()}",
+                                    userId: timer.Appointment.SearchHire?.ClientId,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "Appointment",
+                                    relatedEntityId: timer.Appointment.Id
+                                );
+
                                 await _refundService.ProcessMoneyDistributionAsync(
                                     timer.Appointment.SearchHireId,
                                     AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
                                     "Expert did not respond within 24h - automatic cancellation",
                                     null,
                                     updateState: true); // ✅ updateState: true para que haga el mapeo automático
+
+                                // ✅ EMAIL: Notificar cancelación automática por falta de respuesta del experto
+                                if (timer.Appointment.SearchHire.Client != null && !string.IsNullOrEmpty(timer.Appointment.SearchHire.Client.Email))
+                                {
+                                    var expertName = timer.Appointment.SearchHire.Expert?.Name ?? "El experto";
+                                    await _notificationService.SendGeneralNotificationEmailAsync(
+                                        timer.Appointment.SearchHire.Client.Email,
+                                        timer.Appointment.SearchHire.Client.Name,
+                                        "❌ Cita Cancelada",
+                                        $"{expertName} no respondió a tu propuesta en el plazo de 24 horas. Hemos cancelado la cita y procesado tu reembolso completo.",
+                                        "Ver Reembolso",
+                                        "https://www.inspecciono.com/appointments"
+                                    );
+                                }
+
+                                if (timer.Appointment.SearchHire.Expert != null && !string.IsNullOrEmpty(timer.Appointment.SearchHire.Expert.Email))
+                                {
+                                    await _notificationService.SendGeneralNotificationEmailAsync(
+                                        timer.Appointment.SearchHire.Expert.Email,
+                                        timer.Appointment.SearchHire.Expert.Name,
+                                        "Cita Cancelada (Sin respuesta)",
+                                        "La cita ha sido cancelada porque no respondiste a la propuesta del cliente en el plazo de 24 horas."
+                                    );
+                                }
+                                
+                                // ✅ LOG: Procesamiento de dinero completado
+                                await _loggingService.LogInfoAsync(
+                                    message: "Distribución de dinero procesada",
+                                    details: $"ProcessMoneyDistributionAsync completado para SearchHireId: {timer.Appointment.SearchHireId}",
+                                    userId: timer.Appointment.SearchHire?.ClientId,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "Appointment",
+                                    relatedEntityId: timer.Appointment.Id
+                                );
                             }
-                            catch
+                            catch (Exception ex)
                             {
-                                // Log error pero continuar
+                                // ✅ LOG ERROR: Registrar el error completo para debugging
+                                await _loggingService.LogCriticalAsync(
+                                    message: "Money distribution failed after auto-cancel (response timer)",
+                                    details: $"Error al procesar distribución de dinero para cita {timer.AppointmentId}, SearchHireId: {timer.Appointment.SearchHireId}. " +
+                                            $"Estado ya guardado como appointment_cancelled_by_expert_no_response. Error: {ex.Message}. StackTrace: {ex.StackTrace}. InnerException: {ex.InnerException?.Message}",
+                                    userId: timer.Appointment.SearchHire?.ClientId,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "Appointment",
+                                    relatedEntityId: timer.Appointment.Id,
+                                    additionalData: new
+                                    {
+                                        TimerType = "response",
+                                        TimerId = timer.Id,
+                                        AppointmentStatus = AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
+                                        Exception = ex.Message,
+                                        StackTrace = ex.StackTrace
+                                    },
+                                    notifyUser: true
+                                );
                             }
+                        }
+                        else
+                        {
+                            // ✅ LOG WARNING: Estado no encontrado o Appointment null
+                            await _loggingService.LogWarningAsync(
+                                message: "No se pudo procesar cancelación - estado no encontrado o appointment null",
+                                details: $"Timer {timerId}. noResponseStatus es null: {noResponseStatus == null}, " +
+                                        $"timer.Appointment es null: {timer.Appointment == null}",
+                                userId: null,
+                                source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                relatedEntityType: "AppointmentTimer",
+                                relatedEntityId: timerId
+                            );
                         }
                         break;
 
@@ -4013,8 +4962,52 @@ namespace newApi.Services
 
                         if (noReportStatus != null && timer.Appointment != null)
                         {
+                            // #region agent log
+                            File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                                JsonSerializer.Serialize(new
+                                {
+                                    sessionId = "debug-session",
+                                    runId = "run2",
+                                    hypothesisId = "H6",
+                                    location = "AppointmentService.ProcessAppointmentTimerAsync:expert-report-branch",
+                                    message = "Entering expert_report branch",
+                                    data = new
+                                    {
+                                        timerId,
+                                        appointmentId = timer.AppointmentId,
+                                        searchHireId = timer.Appointment.SearchHireId,
+                                        appointmentStatus,
+                                        searchHireStatus
+                                    },
+                                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                                }) + Environment.NewLine);
+                            // #endregion
+
                             timer.Appointment.StatusId = noReportStatus.Id;
                             timer.Appointment.UpdatedAt = DateTime.UtcNow;
+
+                            // ✅ CRÍTICO: Guardar estado INMEDIATAMENTE antes de procesar dinero
+                            await _context.SaveChangesAsync();
+
+                            // #region agent log
+                            File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                                JsonSerializer.Serialize(new
+                                {
+                                    sessionId = "debug-session",
+                                    runId = "run2",
+                                    hypothesisId = "H9",
+                                    location = "AppointmentService.ProcessAppointmentTimerAsync:expert-report-after-save",
+                                    message = "Expert_report branch saved state before money",
+                                    data = new
+                                    {
+                                        timerId,
+                                        appointmentId = timer.AppointmentId,
+                                        searchHireId = timer.Appointment.SearchHireId,
+                                        statusId = timer.Appointment.StatusId
+                                    },
+                                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                                }) + Environment.NewLine);
+                            // #endregion
 
                             // Procesar dinero automáticamente
                             // ✅ MEJORA: Usar lógica automática de mapeo - ProcessMoneyDistributionAsync mapea automáticamente
@@ -4022,6 +5015,26 @@ namespace newApi.Services
                             // Usa los % del AppointmentStatus (95/0/5) porque tiene configuración
                             try
                             {
+                                // #region agent log
+                                File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                                    JsonSerializer.Serialize(new
+                                    {
+                                        sessionId = "debug-session",
+                                        runId = "run1",
+                                        hypothesisId = "H3",
+                                        location = "AppointmentService.ProcessAppointmentTimerAsync:expert-report-money",
+                                        message = "Calling money distribution",
+                                        data = new
+                                        {
+                                            timerId,
+                                            appointmentId = timer.AppointmentId,
+                                            searchHireId = timer.Appointment.SearchHireId,
+                                            status = AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue()
+                                        },
+                                        timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                                    }) + Environment.NewLine);
+                                // #endregion
+
                                 await _refundService.ProcessMoneyDistributionAsync(
                                     timer.Appointment.SearchHireId,
                                     AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue(),
@@ -4029,9 +5042,26 @@ namespace newApi.Services
                                     null,
                                     updateState: true); // ✅ updateState: true para que haga el mapeo automático
                             }
-                            catch
+                            catch (Exception moneyEx)
                             {
-                                // Log error pero continuar
+                                await _loggingService.LogCriticalAsync(
+                                    message: "Money distribution failed after auto-cancel (expert_report timer)",
+                                    details: $"Timer {timerId}, AppointmentId {timer.AppointmentId}, SearchHireId: {timer.Appointment.SearchHireId}. " +
+                                             $"Estado ya guardado como appointment_cancelled_by_no_report. Error: {moneyEx.Message}",
+                                    userId: timer.Appointment.SearchHire?.ClientId,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "Appointment",
+                                    relatedEntityId: timer.Appointment.Id,
+                                    additionalData: new
+                                    {
+                                        TimerType = "expert_report",
+                                        TimerId = timer.Id,
+                                        AppointmentStatus = AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue(),
+                                        Exception = moneyEx.Message,
+                                        StackTrace = moneyEx.StackTrace
+                                    },
+                                    notifyUser: true
+                                );
                             }
                         }
                         break;
@@ -4047,23 +5077,131 @@ namespace newApi.Services
                             
                             if (completedWithoutApprovalAppointmentStatus != null && timer.Appointment != null)
                             {
+                                // #region agent log
+                                File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                                    JsonSerializer.Serialize(new
+                                    {
+                                        sessionId = "debug-session",
+                                        runId = "run2",
+                                        hypothesisId = "H6",
+                                        location = "AppointmentService.ProcessAppointmentTimerAsync:client-decision-branch",
+                                        message = "Entering client_decision branch",
+                                        data = new
+                                        {
+                                            timerId,
+                                            appointmentId = timer.AppointmentId,
+                                            searchHireId = timer.Appointment.SearchHireId,
+                                            appointmentStatus,
+                                            searchHireStatus
+                                        },
+                                        timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                                    }) + Environment.NewLine);
+                                // #endregion
+
                                 timer.Appointment.StatusId = completedWithoutApprovalAppointmentStatus.Id;
                                 timer.Appointment.UpdatedAt = DateTime.UtcNow;
+                                
+                                // ✅ CRÍTICO: Guardar estado INMEDIATAMENTE antes de procesar dinero
+                                await _context.SaveChangesAsync();
+
+                                // #region agent log
+                                File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                                    JsonSerializer.Serialize(new
+                                    {
+                                        sessionId = "debug-session",
+                                        runId = "run2",
+                                        hypothesisId = "H9",
+                                        location = "AppointmentService.ProcessAppointmentTimerAsync:client-decision-after-save",
+                                        message = "Client_decision branch saved state before money",
+                                        data = new
+                                        {
+                                            timerId,
+                                            appointmentId = timer.AppointmentId,
+                                            searchHireId = timer.Appointment.SearchHireId,
+                                            statusId = timer.Appointment.StatusId
+                                        },
+                                        timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                                    }) + Environment.NewLine);
+                                // #endregion
                             }
 
                             // Procesar dinero automáticamente
                             // ✅ MEJORA: Usar lógica automática de mapeo - ProcessMoneyDistributionAsync mapea automáticamente
                             // appointment_completed_without_client_approval → completed (genérico)
                             // Usa los % del AppointmentStatus (0/100/0) porque tiene configuración
-                            var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
+                            bool moneySuccess = false;
+                            try
+                            {
+                                // #region agent log
+                                File.AppendAllText("c:\\Users\\Diego\\Downloads\\App\\App\\NewApi\\.cursor\\debug.log",
+                                    JsonSerializer.Serialize(new
+                                    {
+                                        sessionId = "debug-session",
+                                        runId = "run1",
+                                        hypothesisId = "H3",
+                                        location = "AppointmentService.ProcessAppointmentTimerAsync:client-decision-money",
+                                        message = "Calling money distribution",
+                                        data = new
+                                        {
+                                            timerId,
+                                            appointmentId = timer.AppointmentId,
+                                            searchHireId = timer.Appointment.SearchHireId,
+                                            status = AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue()
+                                        },
+                                        timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                                    }) + Environment.NewLine);
+                                // #endregion
+
+                                moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
                                 timer.Appointment.SearchHireId,
                                 AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue(),
                                 "Client did not respond within 24h - automatic completion in favor of expert",
                                 null,
                                 updateState: true); // ✅ updateState: true para que haga el mapeo automático
+                            }
+                            catch (Exception ex)
+                            {
+                                await _loggingService.LogCriticalAsync(
+                                    message: "Money distribution failed after auto-complete (client_decision timer)",
+                                    details: $"Timer {timerId}, AppointmentId {timer.AppointmentId}, SearchHireId: {timer.Appointment.SearchHireId}. " +
+                                             $"Estado ya guardado como appointment_completed_without_client_approval. Error: {ex.Message}",
+                                    userId: timer.Appointment.SearchHire?.ClientId,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "Appointment",
+                                    relatedEntityId: timer.Appointment.Id,
+                                    additionalData: new
+                                    {
+                                        TimerType = "client_decision",
+                                        TimerId = timer.Id,
+                                        AppointmentStatus = AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue(),
+                                        Exception = ex.Message,
+                                        StackTrace = ex.StackTrace
+                                    },
+                                    notifyUser: true
+                                );
+                            }
 
                             if (!moneySuccess)
                             {
+                                // ✅ NOTIFICAR ADMIN: Dinero no procesado aunque estado ya fue guardado
+                                await _loggingService.LogCriticalAsync(
+                                    message: "Money distribution returned false after auto-complete (client_decision timer)",
+                                    details: $"Timer {timerId}, AppointmentId {timer.AppointmentId}, SearchHireId: {timer.Appointment.SearchHireId}. " +
+                                             $"Estado ya guardado como appointment_completed_without_client_approval. Requiere revisión manual.",
+                                    userId: timer.Appointment.SearchHire?.ClientId,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "Appointment",
+                                    relatedEntityId: timer.Appointment.Id,
+                                    additionalData: new
+                                    {
+                                        TimerType = "client_decision",
+                                        TimerId = timer.Id,
+                                        AppointmentStatus = AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue(),
+                                        MoneySuccess = false
+                                    },
+                                    notifyUser: true
+                                );
+
                                 // ✅ FALLBACK: Verificar si el estado se cambió (puede haber fallado en Fase 1 o 2)
                                 // Si NO se cambió, cambiarlo manualmente para evitar que el sistema quede bloqueado
                                 var currentSearchHire = await _context.SearchHires
@@ -4207,8 +5345,36 @@ namespace newApi.Services
                                         ExpertId = timer.Appointment.SearchHire?.ExpertId,
                                         Status = AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue(),
                                         MoneyDistributionSuccess = true
-                                    }
+                                    },
+                                    notifyUser: false // Usar emails específicos
                                 );
+                                
+                                // ✅ EMAIL: Notificar al cliente que el servicio se completó (y pedir reseña)
+                                if (timer.Appointment.SearchHire?.Client != null && !string.IsNullOrEmpty(timer.Appointment.SearchHire.Client.Email))
+                                {
+                                    var serviceName = timer.Appointment.SearchHire.SearchService?.ServiceType?.Name ?? "Servicio de Inspección";
+                                    var expertName = timer.Appointment.SearchHire.Expert?.Name ?? "El experto";
+                                    
+                                    // Usar el template de finalización que invita a reseñar
+                                    await _notificationService.SendServiceCompletionEmailAsync(
+                                        timer.Appointment.SearchHire.Client.Email,
+                                        timer.Appointment.SearchHire.Client.Name,
+                                        serviceName,
+                                        expertName,
+                                        timer.Appointment.SearchHireId
+                                    );
+                                    
+                                    // Log adicional para el cliente explicando por qué se completó
+                                    await _loggingService.LogInfoAsync(
+                                        message: "Servicio finalizado automáticamente",
+                                        details: "El plazo de 24 horas para revisar el reporte ha finalizado sin acciones. El servicio se ha marcado como completado automáticamente.",
+                                        userId: timer.Appointment.SearchHire.ClientId,
+                                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                        relatedEntityType: "Appointment",
+                                        relatedEntityId: timer.Appointment.Id,
+                                        notifyUser: true
+                                    );
+                                }
                                 
                                 // ✅ Notificar al experto que el servicio se completó automáticamente a su favor
                                 if (timer.Appointment.SearchHire?.ExpertId.HasValue == true)
@@ -4220,8 +5386,18 @@ namespace newApi.Services
                                         source: "AppointmentService.ProcessAppointmentTimerAsync",
                                         relatedEntityType: "Appointment",
                                         relatedEntityId: timer.Appointment.Id,
-                                        notifyUser: true
+                                        notifyUser: false // Usar email específico
                                     );
+
+                                    if (timer.Appointment.SearchHire.Expert != null && !string.IsNullOrEmpty(timer.Appointment.SearchHire.Expert.Email))
+                                    {
+                                        await _notificationService.SendGeneralNotificationEmailAsync(
+                                            timer.Appointment.SearchHire.Expert.Email,
+                                            timer.Appointment.SearchHire.Expert.Name,
+                                            "🎉 Servicio Completado",
+                                            $"¡Enhorabuena! El servicio #{timer.Appointment.SearchHireId} se ha completado automáticamente porque el cliente no presentó objeciones en 24 horas. El pago ha sido liberado a tu cuenta."
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -4332,7 +5508,29 @@ namespace newApi.Services
                         break;
                 }
 
+                // ✅ LOG: Guardando cambios en base de datos
+                await _loggingService.LogInfoAsync(
+                    message: "Guardando cambios en base de datos",
+                    details: $"Timer {timerId} procesado. Guardando cambios: IsExpired=true, AppointmentStatusId={timer.Appointment?.StatusId}, " +
+                            $"AppointmentId={timer.AppointmentId}",
+                    userId: timer.Appointment?.SearchHire?.ClientId,
+                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                    relatedEntityType: "AppointmentTimer",
+                    relatedEntityId: timerId
+                );
+
                 await _context.SaveChangesAsync();
+
+                // ✅ LOG: Cambios guardados exitosamente
+                await _loggingService.LogInfoAsync(
+                    message: "Timer procesado exitosamente",
+                    details: $"Timer {timerId} procesado y cambios guardados en base de datos. " +
+                            $"AppointmentId: {timer.AppointmentId}, AppointmentStatus: {timer.Appointment?.Status?.StatusValue ?? "null"}",
+                    userId: timer.Appointment?.SearchHire?.ClientId,
+                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                    relatedEntityType: "AppointmentTimer",
+                    relatedEntityId: timerId
+                );
             }
             catch (Exception ex)
             {
@@ -4498,8 +5696,44 @@ namespace newApi.Services
                             source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
                             relatedEntityType: "Appointment",
                             relatedEntityId: appointment.Id,
-                            notifyUser: true
+                            notifyUser: false // Usar email específico
                         );
+
+                        if (searchHire.Expert != null && !string.IsNullOrEmpty(searchHire.Expert.Email))
+                        {
+                            await _notificationService.SendGeneralNotificationEmailAsync(
+                                searchHire.Expert.Email,
+                                searchHire.Expert.Name,
+                                "📝 Hora de Enviar el Reporte",
+                                $"Han pasado 3 horas desde la cita #{appointment.Id}. Tienes 24 horas para enviar el reporte del servicio. Si no lo envías a tiempo, la cita será cancelada automáticamente.",
+                                "Enviar Reporte",
+                                "https://www.inspecciono.com/appointments"
+                            );
+                        }
+                    }
+                    
+                    // ✅ Notificar al cliente que se está esperando el reporte
+                    if (searchHire.ClientId > 0)
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "Esperando reporte del experto",
+                            details: $"Han pasado 3 horas desde la cita. El experto tiene 24 horas para enviar el reporte del servicio. Te notificaremos cuando esté listo.",
+                            userId: searchHire.ClientId,
+                            source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: appointment.Id,
+                            notifyUser: false // Usar email específico
+                        );
+
+                        if (searchHire.Client != null && !string.IsNullOrEmpty(searchHire.Client.Email))
+                        {
+                            await _notificationService.SendGeneralNotificationEmailAsync(
+                                searchHire.Client.Email,
+                                searchHire.Client.Name,
+                                "⏳ Esperando Reporte",
+                                $"Han pasado 3 horas desde la cita #{appointment.Id}. El experto tiene 24 horas para enviar el reporte. Te notificaremos en cuanto esté disponible."
+                            );
+                        }
                     }
                     
                     // ✅ Marcar el timer de transición como expirado ya que el job se ejecutó exitosamente
@@ -4523,7 +5757,22 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                throw;
+                // 🚨 LOG CRÍTICO: Error en job de transición a awaiting_report
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Exception in ProcessAppointmentToAwaitingReportAsync",
+                    details: $"Failed to transition appointment {appointmentId} to awaiting_report status. " +
+                            $"Error: {ex.Message}. StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId,
+                    additionalData: new { 
+                        Action = "ProcessAppointmentToAwaitingReport",
+                        AppointmentId = appointmentId,
+                        Exception = ex.Message
+                    }
+                );
+                throw; // Rethrow para que Hangfire reintente
             }
         }
 
@@ -4803,13 +6052,49 @@ namespace newApi.Services
                 {
                     await _loggingService.LogInfoAsync(
                         message: "Reporte del experto recibido",
-                        details: $"El experto envió el reporte del servicio #{appointment.SearchHireId}. Tienes 24 horas para aprobar o disputar el servicio.",
+                        details: $"El experto envió el reporte del servicio #{appointment.SearchHireId}. Tienes 24 horas para aprobar o disputar el servicio. Si no actúas en 24 horas, se aprobará automáticamente.",
                         userId: appointment.SearchHire.ClientId,
                         source: "AppointmentService.SubmitExpertReportAsync",
                         relatedEntityType: "Appointment",
                         relatedEntityId: appointment.Id,
-                        notifyUser: true
+                        notifyUser: false // Usar email específico
                     );
+
+                    if (appointment.SearchHire.Client != null && !string.IsNullOrEmpty(appointment.SearchHire.Client.Email))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            appointment.SearchHire.Client.Email,
+                            appointment.SearchHire.Client.Name,
+                            "📄 Reporte Recibido",
+                            $"El experto ha enviado el reporte del servicio #{appointment.SearchHireId}.<br><br>Tienes 24 horas para revisar el reporte y aprobarlo o abrir una disputa. Si no realizas ninguna acción, el servicio se aprobará automáticamente.",
+                            "Revisar Reporte",
+                            "https://www.inspecciono.com/appointments"
+                        );
+                    }
+                }
+
+                // ✅ Notificar al experto que el reporte se envió correctamente
+                if (appointment.SearchHire?.ExpertId.HasValue == true)
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "Reporte enviado correctamente",
+                        details: $"Has enviado el reporte del servicio #{appointment.SearchHireId}. El cliente tiene 24 horas para aprobarlo o disputarlo.",
+                        userId: appointment.SearchHire.ExpertId.Value,
+                        source: "AppointmentService.SubmitExpertReportAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointment.Id,
+                        notifyUser: false // Usar email específico
+                    );
+
+                    if (appointment.SearchHire.Expert != null && !string.IsNullOrEmpty(appointment.SearchHire.Expert.Email))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            appointment.SearchHire.Expert.Email,
+                            appointment.SearchHire.Expert.Name,
+                            "✅ Reporte Enviado",
+                            $"Has enviado correctamente el reporte del servicio #{appointment.SearchHireId}. El cliente ha sido notificado y tiene 24 horas para revisar tu trabajo."
+                        );
+                    }
                 }
 
                 // Cargar la cita actualizada con todas las relaciones
@@ -5207,7 +6492,7 @@ namespace newApi.Services
         /// <summary>
 
         /// Valida que la fecha/hora propuesta para la cita esté dentro del horario de disponibilidad del experto
-
+        /// ✅ INTERNACIONALIZACIÓN: proposedDateTime viene en UTC, se convierte a hora local del experto para validar
         /// </summary>
 
         private async Task ValidateAppointmentAvailabilityAsync(SearchHire searchHire, DateTime proposedDateTime)
@@ -5217,6 +6502,9 @@ namespace newApi.Services
             try
 
             {
+
+                // ✅ INTERNACIONALIZACIÓN: proposedDateTime está en UTC, necesitamos convertir a hora local del experto
+                // para comparar con las horas de disponibilidad que están en hora local
 
                 // Cargar el SearchHire con el ExpertProfile
 
@@ -5254,7 +6542,14 @@ namespace newApi.Services
 
                 var expertProfileId = hire.SearchService.ExpertProfile.Id;
 
+                // ✅ INTERNACIONALIZACIÓN: Obtener timezone del experto (prioridad: SearchHire.ExpertTimezone > ExpertProfile.Timezone)
+                var expertTimezone = _timezoneService.GetEffectiveTimezone(
+                    hire.ExpertTimezone,
+                    hire.SearchService.ExpertProfile.Timezone
+                );
 
+                // ✅ INTERNACIONALIZACIÓN: Convertir fecha/hora UTC a hora local del experto
+                var proposedDateTimeLocal = _timezoneService.ConvertFromUtc(proposedDateTime, expertTimezone);
 
                 // Obtener la disponibilidad activa del experto
 
@@ -5306,9 +6601,8 @@ namespace newApi.Services
 
 
 
-                // Obtener el día de la semana de la fecha propuesta (en inglés)
-
-                var dayOfWeek = proposedDateTime.DayOfWeek.ToString(); // "Monday", "Tuesday", etc.
+                // ✅ INTERNACIONALIZACIÓN: Obtener el día de la semana de la fecha propuesta en hora LOCAL del experto
+                var dayOfWeek = proposedDateTimeLocal.DayOfWeek.ToString(); // "Monday", "Tuesday", etc.
 
 
 
@@ -5378,7 +6672,7 @@ namespace newApi.Services
 
                         $"Días disponibles: {availableDaysSpanish}. " +
 
-                        $"Fecha propuesta: {proposedDateTime:dd/MM/yyyy}"
+                        $"Fecha propuesta: {proposedDateTimeLocal:dd/MM/yyyy} ({expertTimezone})"
 
                     );
 
@@ -5386,16 +6680,14 @@ namespace newApi.Services
 
 
 
-                // Obtener la hora propuesta (solo horas y minutos, sin segundos)
-
-                var proposedTime = proposedDateTime.TimeOfDay;
+                // ✅ INTERNACIONALIZACIÓN: Obtener la hora propuesta en hora LOCAL del experto (solo horas y minutos, sin segundos)
+                var proposedTime = proposedDateTimeLocal.TimeOfDay;
 
                 var proposedTimeOnly = new TimeSpan(proposedTime.Hours, proposedTime.Minutes, 0);
 
 
 
-                // Verificar que la hora esté dentro del rango de disponibilidad
-
+                // ✅ INTERNACIONALIZACIÓN: Verificar que la hora LOCAL esté dentro del rango de disponibilidad LOCAL
                 if (proposedTimeOnly < availability.StartTime || proposedTimeOnly > availability.EndTime)
 
                 {
@@ -5410,11 +6702,11 @@ namespace newApi.Services
 
                     throw new InvalidOperationException(
 
-                        $"La hora propuesta ({proposedTimeFormatted}) está fuera del horario de disponibilidad del experto. " +
+                        $"La hora propuesta ({proposedTimeFormatted} {expertTimezone}) está fuera del horario de disponibilidad del experto. " +
 
-                        $"Horario disponible: {startTimeFormatted} - {endTimeFormatted}. " +
+                        $"Horario disponible: {startTimeFormatted} - {endTimeFormatted} ({expertTimezone}). " +
 
-                        $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm}"
+                        $"Fecha/hora propuesta: {proposedDateTimeLocal:dd/MM/yyyy HH:mm} {expertTimezone} (UTC: {proposedDateTime:dd/MM/yyyy HH:mm})"
 
                     );
 
@@ -5541,6 +6833,51 @@ namespace newApi.Services
         private AppointmentDto MapToDto(Appointment appointment)
 
         {
+            // ✅ INTERNACIONALIZACIÓN: Convertir fecha/hora UTC a hora local del experto
+            // Obtener timezone efectivo (prioridad: SearchHire.ExpertTimezone > ExpertProfile.Timezone > UTC)
+            string? expertTimezone = null;
+            DateTime? proposedDateLocal = null;
+            TimeSpan? proposedTimeLocal = null;
+            
+            // Solo convertir si hay fecha/hora propuesta
+            if (appointment.ProposedDate != default && appointment.ProposedTime != default)
+            {
+                // Asegurar que SearchHire y sus relaciones estén cargadas
+                if (appointment.SearchHire != null)
+                {
+                    if (appointment.SearchHire.SearchService == null)
+                    {
+                        _context.Entry(appointment.SearchHire)
+                            .Reference(sh => sh.SearchService)
+                            .Load();
+                    }
+                    
+                    if (appointment.SearchHire.SearchService?.ExpertProfile == null && 
+                        appointment.SearchHire.SearchService != null)
+                    {
+                        _context.Entry(appointment.SearchHire.SearchService)
+                            .Reference(ss => ss.ExpertProfile)
+                            .Load();
+                    }
+                }
+                
+                // Obtener timezone efectivo
+                expertTimezone = _timezoneService.GetEffectiveTimezone(
+                    appointment.SearchHire?.ExpertTimezone,
+                    appointment.SearchHire?.SearchService?.ExpertProfile?.Timezone
+                );
+                
+                // Construir DateTime UTC desde fecha y hora guardadas
+                var proposedDateTimeUtc = DateTime.SpecifyKind(
+                    appointment.ProposedDate.Date + appointment.ProposedTime,
+                    DateTimeKind.Utc
+                );
+                
+                // Convertir de UTC a hora local
+                var proposedDateTimeLocal = _timezoneService.ConvertFromUtc(proposedDateTimeUtc, expertTimezone);
+                proposedDateLocal = proposedDateTimeLocal.Date;
+                proposedTimeLocal = proposedDateTimeLocal.TimeOfDay;
+            }
 
             return new AppointmentDto
 
@@ -5552,9 +6889,15 @@ namespace newApi.Services
 
                 Status = appointment.Status?.StatusValue ?? string.Empty,
 
-                ProposedDate = appointment.ProposedDate,
+                ProposedDate = appointment.ProposedDate, // UTC (guardada en BD)
 
-                ProposedTime = appointment.ProposedTime,
+                ProposedTime = appointment.ProposedTime, // UTC (guardada en BD)
+                
+                // ✅ INTERNACIONALIZACIÓN: Fecha/hora en hora local para el frontend
+                ProposedDateLocal = proposedDateLocal,
+                ProposedTimeLocal = proposedTimeLocal,
+                Timezone = expertTimezone,
+                Country = appointment.SearchHire?.ExpertCountry, // ✅ INTERNACIONALIZACIÓN: País del experto al momento de la contratación
 
                 Location = appointment.Location,
 

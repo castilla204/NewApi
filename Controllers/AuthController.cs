@@ -51,6 +51,16 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid refresh token" });
                 }
 
+                // ✅ VALIDACIÓN: Usuario bloqueado - Revocar token y rechazar
+                if (storedToken.User.IsBlocked)
+                {
+                    storedToken.IsRevoked = true;
+                    storedToken.RevokedAt = DateTime.UtcNow;
+                    storedToken.RevokedByIp = GetClientIpAddress();
+                    await _context.SaveChangesAsync();
+                    return Unauthorized(new { message = "User account is blocked" });
+                }
+
                 if (storedToken.IsRevoked)
                 {
                     // ✅ SEGURIDAD: Token ya usado (posible ataque) - revocar todos los tokens del usuario
@@ -334,6 +344,12 @@ namespace newApi.Controllers
                 if (user == null)
                 {
                     return Unauthorized(new { message = "User not found" });
+                }
+
+                // ✅ VALIDACIÓN: Usuario bloqueado
+                if (user.IsBlocked)
+                {
+                    return Unauthorized(new { message = "User account is blocked" });
                 }
 
                 var accessToken = _userService.GenerateJwtToken(user);

@@ -165,6 +165,11 @@ namespace newApi.Controllers
                     await _context.SaveChangesAsync();
                 }
 
+                // Recargar review con SearchHire para obtener ExpertCountry
+                var reviewWithSearchHire = await _context.Reviews
+                    .Include(r => r.SearchHire)
+                    .FirstOrDefaultAsync(r => r.Id == review.Id);
+
                 // Preparar la respuesta
                 var response = new ReviewResponseDto
                 {
@@ -175,7 +180,9 @@ namespace newApi.Controllers
                     Score = review.Score,
                     Description = review.Description,
                     ImageUrls = imageUrls,
-                    CreatedAt = review.CreatedAt
+                    CreatedAt = review.CreatedAt,
+                    // ✅ INTERNACIONALIZACIÓN: País donde se realizó la contratación
+                    Country = reviewWithSearchHire?.SearchHire?.ExpertCountry
                 };
 
                 return Ok(new { message = "Review created successfully", review = response });
@@ -220,7 +227,7 @@ namespace newApi.Controllers
         }
 
         [HttpGet("expert/{expertId}")]
-        public async Task<IActionResult> GetExpertReviews(int expertId)
+        public async Task<IActionResult> GetExpertReviews(int expertId, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
@@ -231,11 +238,23 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Expert not found" });
                 }
 
-                // Obtener todas las reseñas para el experto especificado
-                var reviewEntities = await _context.Reviews
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+                var query = _context.Reviews
                     .Where(r => r.ExpertId == expertId)
                     .Include(r => r.Reviewer)
                     .Include(r => r.ImagesCollection)
+                    .Include(r => r.SearchHire); // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
+
+                var totalCount = await query.CountAsync();
+
+                // Obtener reseñas paginadas para el experto especificado
+                var reviewEntities = await query
+                    .OrderByDescending(r => r.CreatedAt)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
                     .ToListAsync();
 
                 var reviews = reviewEntities
@@ -251,16 +270,25 @@ namespace newApi.Controllers
                             .Select(ri => ResolveReviewImageUrl(ri))
                             .Where(url => !string.IsNullOrEmpty(url))
                             .ToList() ?? new List<string>(),
-                        CreatedAt = r.CreatedAt
+                        CreatedAt = r.CreatedAt,
+                        // ✅ INTERNACIONALIZACIÓN: País donde se realizó la contratación
+                        Country = r.SearchHire?.ExpertCountry
                     })
                     .ToList();
 
-                if (!reviews.Any())
+                return Ok(new
                 {
-                    return Ok(new { message = "No reviews found for this expert", reviews = new List<ReviewResponseDto>() });
-                }
-
-                return Ok(new { message = "Reviews retrieved successfully", reviews });
+                    reviews,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
+                });
             }
             catch (Exception ex)
             {

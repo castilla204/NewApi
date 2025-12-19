@@ -98,55 +98,66 @@ namespace newApi.Services
             using var timeoutCts = new CancellationTokenSource(_transactionTimeout);
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
             
+            // ═══════════════════════════════════════════════════════════════════════════════
+            // FASE 1: VALIDACIONES Y PROCESAMIENTO DE DINERO (FUERA de transacción global)
+            // ═══════════════════════════════════════════════════════════════════════════════
+            // ✅ CORRECCIÓN CRÍTICA: Procesar dinero ANTES de la transacción global
+            // Cada llamada a ProcessMoneyDistributionAsync tendrá su propia transacción atómica
+            // Esto evita que un rollback de eliminación de datos elimine registros de dinero ya movido en Stripe
+            
+            // 1. Verificar usuario
+            var user = await _context.Users
+                .IgnoreQueryFilters()
+                .Include(u => u.ExpertProfile)
+                .FirstOrDefaultAsync(u => u.Id == userId, linkedCts.Token);
+
+            if (user == null)
+            {
+                return new AccountDeletionResponseDto
+                {
+                    Success = false,
+                    Message = "Usuario no encontrado"
+                };
+            }
+            
+            // ✅ VALIDACIÓN: Verificar que el usuario no esté ya eliminado
+            if (user.IsDeleted)
+            {
+                return new AccountDeletionResponseDto
+                {
+                    Success = false,
+                    Message = $"Usuario ya fue eliminado el {user.DeletedAt:yyyy-MM-dd HH:mm:ss}"
+                };
+            }
+
+            // 2. Obtener contrataciones activas (fuera de transacción)
+            var activeContracts = await GetActiveContractsAsync(userId, linkedCts.Token);
+            var disputesCreated = new List<DisputeCreatedInfo>();
+            var processingErrors = new List<(int SearchHireId, string ErrorMessage, string ErrorType, decimal Amount)>();
+
+            // 3. Procesar dinero de contrataciones activas FUERA de transacción global
+            // ✅ CRÍTICO: Cada ProcessMoneyDistributionAsync usa su propia transacción atómica
+            // Si falla la eliminación posterior, el dinero ya está correctamente procesado y registrado
+            if (activeContracts.Any())
+            {
+                var result = await ProcessActiveContractsAsync(userId, activeContracts, request.Reason, linkedCts.Token);
+                disputesCreated = result.TransactionsProcessed;
+                processingErrors = result.ProcessingErrors;
+            }
+
+            // ═══════════════════════════════════════════════════════════════════════════════
+            // FASE 2: ELIMINACIÓN DE DATOS DEL USUARIO (DENTRO de transacción)
+            // ═══════════════════════════════════════════════════════════════════════════════
+            // ✅ La transacción solo cubre la eliminación de datos, NO el procesamiento de dinero
+            // Si esta fase falla, el dinero ya está seguro (procesado en Fase 1)
+            
             var strategy = _context.Database.CreateExecutionStrategy();
             return await strategy.ExecuteAsync(async () =>
             {
                 using var transaction = await _context.Database.BeginTransactionAsync(linkedCts.Token);
                 try
             {
-                // 1. Verificar usuario y contraseña
-                // ✅ MEJORA: IgnoreQueryFilters() para poder acceder a usuarios eliminados si es necesario
-                var user = await _context.Users
-                    .IgnoreQueryFilters() // Ignorar query filter para poder acceder a usuarios eliminados
-                    .Include(u => u.ExpertProfile)
-                    .FirstOrDefaultAsync(u => u.Id == userId, linkedCts.Token);
-
-                if (user == null)
-                {
-                    return new AccountDeletionResponseDto
-                    {
-                        Success = false,
-                        Message = "Usuario no encontrado"
-                    };
-                }
-                
-                // ✅ VALIDACIÓN: Verificar que el usuario no esté ya eliminado
-                if (user.IsDeleted)
-                {
-                    return new AccountDeletionResponseDto
-                    {
-                        Success = false,
-                        Message = $"Usuario ya fue eliminado el {user.DeletedAt:yyyy-MM-dd HH:mm:ss}"
-                    };
-                }
-
-                // No se requiere verificación de contraseña ya que el sistema solo usa autenticación con Google
-
-                // 2. Obtener contrataciones activas
-                var activeContracts = await GetActiveContractsAsync(userId, linkedCts.Token);
-                var disputesCreated = new List<DisputeCreatedInfo>();
-                // ✅ MEJORA: Acumular errores de procesamiento para determinar RequiresManualReview
-                var processingErrors = new List<(int SearchHireId, string ErrorMessage, string ErrorType, decimal Amount)>();
-
-                // 3. Procesar contrataciones activas
-                if (activeContracts.Any())
-                {
-                    var result = await ProcessActiveContractsAsync(userId, activeContracts, request.Reason, linkedCts.Token);
-                    disputesCreated = result.TransactionsProcessed;
-                    processingErrors = result.ProcessingErrors;
-                }
-
-                // 4. Eliminar datos del usuario
+                // 4. Eliminar datos del usuario (dentro de transacción)
                 await DeleteUserDataAsync(userId, linkedCts.Token);
 
                 // 5. Confirmar transacción PRIMERO (antes de notificaciones)
@@ -241,11 +252,20 @@ namespace newApi.Services
                     // ✅ MEJORA: Manejo específico de conflictos de concurrencia (PostgreSQL MVCC)
                     await transaction.RollbackAsync(linkedCts.Token);
                     
+                    // ✅ NOTA: El dinero ya fue procesado en Fase 1 (antes de esta transacción)
+                    // Solo se revierte la eliminación de datos del usuario
+                    var moneyAlreadyProcessed = disputesCreated.Any() || processingErrors.Any();
+                    
                     await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: Account deletion failed - concurrency conflict",
+                        message: "CRITICAL: Account deletion failed - concurrency conflict (money already processed)",
                         details: $"Account deletion transaction for user {userId} was rolled back due to concurrency conflict. " +
                                 $"Another process modified the user data concurrently. Error: {ex.Message}. " +
-                                $"All changes have been rolled back. User account remains intact. ACTION REQUIRED: Retry account deletion.",
+                                $"IMPORTANT: Only data deletion was rolled back. " +
+                                (moneyAlreadyProcessed 
+                                    ? $"MONEY WAS ALREADY PROCESSED: {disputesCreated.Count} transfers completed, {processingErrors.Count} failed. " +
+                                      $"User account remains intact but financial transactions are committed. " +
+                                      $"ACTION REQUIRED: Review processed transactions and retry account deletion."
+                                    : $"No money was processed. User account remains intact. ACTION REQUIRED: Retry account deletion."),
                         userId: userId,
                         source: "AccountDeletionService.DeleteAccountAsync",
                         relatedEntityType: "User",
@@ -258,7 +278,10 @@ namespace newApi.Services
                             InnerException = ex.InnerException?.Message,
                             TransactionRolledBack = true,
                             ErrorCategory = "ConcurrencyConflict",
-                            RetryRecommended = true
+                            RetryRecommended = true,
+                            MoneyAlreadyProcessed = moneyAlreadyProcessed,
+                            TransfersCompleted = disputesCreated.Count,
+                            TransfersFailed = processingErrors.Count
                         }
                     );
                     
@@ -268,6 +291,9 @@ namespace newApi.Services
                 {
                     // ✅ MEJORA: Manejo específico de errores de PostgreSQL
                     await transaction.RollbackAsync(linkedCts.Token);
+                    
+                    // ✅ NOTA: El dinero ya fue procesado en Fase 1 (antes de esta transacción)
+                    var moneyAlreadyProcessed = disputesCreated.Any() || processingErrors.Any();
                     
                     string errorCategory = "DatabaseError";
                     string actionRequired = "Review database error and retry if appropriate";
@@ -299,10 +325,14 @@ namespace newApi.Services
                     }
                     
                     await _loggingService.LogCriticalAsync(
-                        message: $"CRITICAL: Account deletion failed - PostgreSQL error ({pgEx.SqlState})",
+                        message: $"CRITICAL: Account deletion failed - PostgreSQL error ({pgEx.SqlState}) (money already processed)",
                         details: $"Account deletion transaction for user {userId} was rolled back due to PostgreSQL error. " +
                                 $"SQL State: {pgEx.SqlState}, Constraint: {pgEx.ConstraintName}, " +
-                                $"Message: {pgEx.Message}. All changes have been rolled back. User account remains intact. " +
+                                $"Message: {pgEx.Message}. IMPORTANT: Only data deletion was rolled back. " +
+                                (moneyAlreadyProcessed 
+                                    ? $"MONEY WAS ALREADY PROCESSED: {disputesCreated.Count} transfers completed, {processingErrors.Count} failed. " +
+                                      $"User account remains intact but financial transactions are committed. "
+                                    : $"No money was processed. User account remains intact. ") +
                                 $"ACTION REQUIRED: {actionRequired}",
                         userId: userId,
                         source: "AccountDeletionService.DeleteAccountAsync",
@@ -321,7 +351,10 @@ namespace newApi.Services
                             InnerException = dbEx.InnerException?.Message,
                             TransactionRolledBack = true,
                             ErrorCategory = errorCategory,
-                            RetryRecommended = errorCategory == "Deadlock" || errorCategory == "ConnectionError"
+                            RetryRecommended = errorCategory == "Deadlock" || errorCategory == "ConnectionError",
+                            MoneyAlreadyProcessed = moneyAlreadyProcessed,
+                            TransfersCompleted = disputesCreated.Count,
+                            TransfersFailed = processingErrors.Count
                         }
                     );
                     
@@ -332,10 +365,17 @@ namespace newApi.Services
                     // ✅ MEJORA: Manejo específico de timeout o cancelación
                     await transaction.RollbackAsync(linkedCts.Token);
                     
+                    // ✅ NOTA: El dinero ya fue procesado en Fase 1 (antes de esta transacción)
+                    var moneyAlreadyProcessed = disputesCreated.Any() || processingErrors.Any();
+                    
                     await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: Account deletion failed - transaction timeout",
+                        message: "CRITICAL: Account deletion failed - transaction timeout (money already processed)",
                         details: $"Account deletion transaction for user {userId} was cancelled due to timeout (5 minutes) or cancellation request. " +
-                                $"All changes have been rolled back. User account remains intact. " +
+                                $"IMPORTANT: Only data deletion was rolled back. " +
+                                (moneyAlreadyProcessed 
+                                    ? $"MONEY WAS ALREADY PROCESSED: {disputesCreated.Count} transfers completed, {processingErrors.Count} failed. " +
+                                      $"User account remains intact but financial transactions are committed. "
+                                    : $"No money was processed. User account remains intact. ") +
                                 $"ACTION REQUIRED: Review if operation should be retried or if there are performance issues.",
                         userId: userId,
                         source: "AccountDeletionService.DeleteAccountAsync",
@@ -349,7 +389,10 @@ namespace newApi.Services
                             TransactionRolledBack = true,
                             ErrorCategory = "Timeout",
                             RetryRecommended = true,
-                            TimeoutDuration = _transactionTimeout.TotalMinutes
+                            TimeoutDuration = _transactionTimeout.TotalMinutes,
+                            MoneyAlreadyProcessed = moneyAlreadyProcessed,
+                            TransfersCompleted = disputesCreated.Count,
+                            TransfersFailed = processingErrors.Count
                         }
                     );
                     
@@ -360,10 +403,18 @@ namespace newApi.Services
                     // ✅ MEJOR PRÁCTICA: Logging completo del error antes de rethrow (catch-all para otros errores)
                     await transaction.RollbackAsync(linkedCts.Token);
                     
+                    // ✅ NOTA: El dinero ya fue procesado en Fase 1 (antes de esta transacción)
+                    var moneyAlreadyProcessed = disputesCreated.Any() || processingErrors.Any();
+                    
                     await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: Account deletion transaction rolled back",
-                        details: $"Account deletion transaction for user {userId} was rolled back due to error. Error Type: {ex.GetType().Name}, Error Message: {ex.Message}, Stack Trace: {ex.StackTrace}. " +
-                                $"All changes have been rolled back. User account remains intact.",
+                        message: "CRITICAL: Account deletion transaction rolled back (money already processed)",
+                        details: $"Account deletion transaction for user {userId} was rolled back due to error. Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                                $"IMPORTANT: Only data deletion was rolled back. " +
+                                (moneyAlreadyProcessed 
+                                    ? $"MONEY WAS ALREADY PROCESSED: {disputesCreated.Count} transfers completed, {processingErrors.Count} failed. " +
+                                      $"User account remains intact but financial transactions are committed. " +
+                                      $"ACTION REQUIRED: Review processed transactions and manually complete account deletion if needed."
+                                    : $"No money was processed. User account remains intact. ACTION REQUIRED: Retry account deletion."),
                         userId: userId,
                         source: "AccountDeletionService.DeleteAccountAsync",
                         relatedEntityType: "User",
@@ -375,7 +426,10 @@ namespace newApi.Services
                             StackTrace = ex.StackTrace,
                             InnerException = ex.InnerException?.Message,
                             TransactionRolledBack = true,
-                            ErrorCategory = "Unknown"
+                            ErrorCategory = "Unknown",
+                            MoneyAlreadyProcessed = moneyAlreadyProcessed,
+                            TransfersCompleted = disputesCreated.Count,
+                            TransfersFailed = processingErrors.Count
                         }
                     );
                     

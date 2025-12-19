@@ -44,14 +44,14 @@ spec:
     - podSelector:
         matchLabels:
           app: rabbitmq
-  # DNS
+  # DNS - Fixed: use correct label for kube-system namespace
   - ports:
     - port: 53
       protocol: UDP
     to:
     - namespaceSelector:
         matchLabels:
-          name: kube-system
+          kubernetes.io/metadata.name: kube-system
   # HTTPS to Google APIs (for OAuth token validation)
   - ports:
     - port: 443

@@ -744,11 +744,15 @@ namespace newApi.Controllers
         /// Obtener todas las configuraciones granulares (Nivel 1 - Máxima Granularidad)
         /// </summary>
         [HttpGet("granular-configurations")]
-        public async Task<IActionResult> GetAllGranularConfigurations()
+        public async Task<IActionResult> GetAllGranularConfigurations([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
-                var configs = await _context.StatusConfigurations
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+                var query = _context.StatusConfigurations
                     .Include(sc => sc.Status)
                     .Include(sc => sc.Category)
                     .Include(sc => sc.ServiceTypeCategory)
@@ -756,9 +760,6 @@ namespace newApi.Controllers
                                 sc.IsActive && 
                                 sc.CategoryId != null && 
                                 sc.ServiceTypeCategoryId != null)
-                    .OrderBy(sc => sc.CategoryId)
-                    .ThenBy(sc => sc.ServiceTypeCategoryId)
-                    .ThenBy(sc => sc.Status.SortOrder)
                     .Select(sc => new
                     {
                         Id = sc.Id,
@@ -776,10 +777,31 @@ namespace newApi.Controllers
                         ServiceTypeCategoryName = sc.ServiceTypeCategory.Name,
                         CreatedAt = sc.CreatedAt,
                         UpdatedAt = sc.UpdatedAt
-                    })
+                    });
+
+                var totalCount = await query.CountAsync();
+
+                var configs = await query
+                    .OrderBy(sc => sc.CategoryId)
+                    .ThenBy(sc => sc.ServiceTypeCategoryId)
+                    .ThenBy(sc => sc.StatusValue)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
                     .ToListAsync();
 
-                return Ok(configs);
+                return Ok(new
+                {
+                    configs,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
+                });
             }
             catch (Exception ex)
             {
@@ -1177,14 +1199,16 @@ namespace newApi.Controllers
         /// Obtiene TODOS los estados del sistema para gestión administrativa
         /// </summary>
         [HttpGet("all-statuses")]
-        public async Task<IActionResult> GetAllStatuses()
+        public async Task<IActionResult> GetAllStatuses([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
-                var allStatuses = await _context.SystemStatuses
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+                var query = _context.SystemStatuses
                     .Where(s => s.IsActive)
-                    .OrderBy(s => s.StatusType)
-                    .ThenBy(s => s.SortOrder)
                     .Select(s => new
                     {
                         Id = s.Id,
@@ -1198,9 +1222,30 @@ namespace newApi.Controllers
                         IsFinalizationStatus = s.IsFinalizationStatus,
                         CreatedAt = s.CreatedAt,
                         UpdatedAt = s.UpdatedAt
-                    })
+                    });
+
+                var totalCount = await query.CountAsync();
+
+                var allStatuses = await query
+                    .OrderBy(s => s.StatusType)
+                    .ThenBy(s => s.SortOrder)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
                     .ToListAsync();
-                return Ok(allStatuses);
+
+                return Ok(new
+                {
+                    statuses = allStatuses,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
+                });
             }
             catch (Exception ex)
             {

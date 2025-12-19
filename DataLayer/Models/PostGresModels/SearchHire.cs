@@ -13,6 +13,18 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual SystemStatus Status { get; set; }
         public string? ExpertTransferId { get; set; }
         public decimal Amount { get; set; }
+        
+        /// <summary>
+        /// Base amount sin IVA/tax (pre-tax). Se calcula desde Stripe Tax breakdown.
+        /// Si es null, se usa Amount como fallback para compatibilidad con datos existentes.
+        /// </summary>
+        public decimal? BaseAmount { get; set; }
+        
+        /// <summary>
+        /// Monto de IVA/tax calculado por Stripe Tax. Si es null o 0, no hay tax aplicado.
+        /// </summary>
+        public decimal? TaxAmount { get; set; }
+        
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime? UpdatedAt { get; set; }
         public DateTime? CompletionDeadline { get; set; }
@@ -32,6 +44,20 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// </summary>
         public int? ExpertAvailabilityId { get; set; }
         public virtual ExpertAvailability? ExpertAvailability { get; set; }
+        
+        /// <summary>
+        /// Zona horaria del experto al momento de crear esta contratación (formato IANA)
+        /// CRÍTICO: Se guarda para que contrataciones activas mantengan el timezone original
+        /// aunque el experto cambie su ubicación/timezone después
+        /// </summary>
+        public string? ExpertTimezone { get; set; }
+        
+        /// <summary>
+        /// Código de país del experto al momento de crear esta contratación (ISO 3166-1 alpha-2)
+        /// CRÍTICO: Se guarda para que contrataciones activas mantengan el país original
+        /// aunque el experto cambie su ubicación después
+        /// </summary>
+        public string? ExpertCountry { get; set; }
     }
 
 }

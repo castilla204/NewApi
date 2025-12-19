@@ -30,6 +30,7 @@ namespace newApi.Controllers
         /// </summary>
         /// <returns>Lista de categorías activas</returns>
         [HttpGet]
+        [AllowAnonymous] // ✅ PÚBLICO: Permitir acceso sin autenticación para explorar servicios
         public async Task<IActionResult> GetServiceTypeCategories()
         {
             try

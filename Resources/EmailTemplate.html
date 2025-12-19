@@ -1,0 +1,110 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html dir="ltr" lang="es" xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta content="text/html; charset=utf-8" http-equiv="Content-Type" />
+    <meta content="width=device-width" name="viewport" />
+    <title>{{TITLE}} - Inspecciono</title>
+    <style>
+      body {
+        background-color: #f5f7fa;
+        margin: 0;
+        padding: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        font-size: 14px;
+        line-height: 1.6;
+        color: #374151;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+        background-color: #ffffff;
+      }
+      .header-image {
+        width: 100%;
+        height: 160px;
+        object-fit: cover;
+        display: block;
+      }
+      .content {
+        padding: 40px 48px;
+      }
+      .title {
+        font-size: 20px;
+        font-weight: 600;
+        color: #111827;
+        margin: 0 0 16px 0;
+      }
+      .text {
+        margin: 0 0 16px 0;
+        color: #4B5563;
+      }
+      .footer {
+        background-color: #f9fafb;
+        padding: 24px 48px;
+        text-align: center;
+        border-top: 1px solid #e5e7eb;
+      }
+      .footer-text {
+        font-size: 12px;
+        color: #9CA3AF;
+        margin: 0;
+      }
+      .footer-link {
+        color: #6B7280;
+        text-decoration: underline;
+      }
+      @media only screen and (max-width: 600px) {
+        .content {
+          padding: 24px;
+        }
+        .footer {
+          padding: 24px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <table role="presentation" cellpadding="0" cellspacing="0">
+      <tr>
+        <td align="center" style="padding: 20px 0;">
+          <table role="presentation" cellpadding="0" cellspacing="0" class="container">
+            <!-- Header Image -->
+            <tr>
+              <td>
+                <img src="https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?ixlib=rb-1.2.1&auto=format&fit=crop&w=1200&h=400&q=80" alt="Inspecciono" class="header-image" width="600" height="160" style="width: 100%; max-width: 600px; height: auto;" />
+              </td>
+            </tr>
+            
+            <!-- Main Content -->
+            <tr>
+              <td class="content">
+                <h1 class="title">{{TITLE}}</h1>
+                <div class="text">
+                  {{CONTENT}}
+                </div>
+                {{ACTION_BUTTON}}
+              </td>
+            </tr>
+
+            <!-- Footer -->
+            <tr>
+              <td class="footer">
+                <p class="footer-text">
+                  © {{YEAR}} Inspecciono · <a href="https://inspecciono.com" class="footer-link">inspecciono.com</a>
+                </p>
+                <p class="footer-text" style="margin-top: 8px;">
+                  Este es un mensaje automático, por favor no respondas a este correo.<br>
+                  <a href="https://inspecciono.com/privacy" class="footer-link">Privacidad</a> · <a href="https://inspecciono.com/terms" class="footer-link">Términos</a>
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

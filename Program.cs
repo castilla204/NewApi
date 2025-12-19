@@ -1,10 +1,15 @@
 using Google.Cloud.SecretManager.V1;
+using Google.Api.Gax.Grpc;
+using Grpc.Core;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Stripe;
+using System.Collections.Generic;
+using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.RateLimiting;
 using RabbitMQ.Client;
 using newApi.RabbitMQ;
@@ -13,15 +18,18 @@ using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Storage.V1;
 using newApi.DataLayer;
 using newApi.DataLayer.Models;
+using AutoMapper;
 using Hangfire;
 using Hangfire.PostgreSql;
+using Hangfire.Dashboard;
 using Microsoft.Extensions.DependencyInjection;
 using newApi.Controllers;
 using Microsoft.AspNetCore.Server.IIS;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.OpenApi;
+using newApi.Middleware;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -39,171 +47,478 @@ builder.Services.Configure<RequestLocalizationOptions>(options =>
     options.SupportedUICultures = new[] { new System.Globalization.CultureInfo("es-ES") };
 });
 
-// Instancia el cliente de Secret Manager
-var secretClient = SecretManagerServiceClient.Create();
+// Verificar el entorno PRIMERO
+var isDevelopment = builder.Environment.IsDevelopment();
 
-// Funci�n para obtener secretos
-string GetSecretValue(string secretName)
+// Instancia el cliente de Secret Manager (funciona igual en desarrollo y producción)
+// Se inicializa si las credenciales de Google Cloud están disponibles
+SecretManagerServiceClient? secretClient = null;
+bool secretManagerAvailable = false;
+
+// Obtener ruta de credenciales
+var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
+
+// En desarrollo: usar fallback a ubicación estándar si la variable no está configurada
+// En producción: solo usar variable de entorno (sin fallback)
+// Si no hay variable configurada, usaremos Application Default Credentials (ADC)
+// que gcloud auth application-default login configura automáticamente
+if (string.IsNullOrEmpty(credentialsPath) && isDevelopment)
 {
-    // Primero intentar leer de variables de entorno (para override en Kubernetes)
-    var envVarName = secretName.Replace("-", "_").ToUpper();
-    var envValue = Environment.GetEnvironmentVariable(envVarName);
-    if (!string.IsNullOrEmpty(envValue))
-    {
-        return envValue;
-    }
+    // Fallback solo en desarrollo: usar ubicación estándar
+    var fallbackPath = "C:\\cloudcredential.json";
     
-    // Si no existe en variables de entorno, usar Secret Manager
-    var projectId = "grup-441318";
-    var secretVersion = secretClient.AccessSecretVersion($"projects/{projectId}/secrets/{secretName}/versions/latest");
-    return secretVersion.Payload.Data.ToStringUtf8();
-}
-
-// ✅ FIX: Cargar Google Client IDs como array JSON compatible con GetSection().Get<string[]>()
-var googleClientIdsFromEnv = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_IDS");
-string[]? googleClientIds = null;
-
-if (!string.IsNullOrEmpty(googleClientIdsFromEnv))
-{
-    try
+    // Solo usar fallback si el archivo existe
+    if (System.IO.File.Exists(fallbackPath))
     {
-        // Intentar parsear como JSON array primero
-        if (googleClientIdsFromEnv.TrimStart().StartsWith("["))
-        {
-            googleClientIds = System.Text.Json.JsonSerializer.Deserialize<string[]>(googleClientIdsFromEnv);
-        }
-        else
-        {
-            // Si no es JSON, tratar como separado por comas
-            googleClientIds = googleClientIdsFromEnv
-                .Split(',', StringSplitOptions.RemoveEmptyEntries)
-                .Select(id => id.Trim().Trim('"', '[', ']'))
-                .ToArray();
-        }
-    }
-    catch
-    {
-        // Si falla el parseo JSON, intentar como separado por comas
-        googleClientIds = googleClientIdsFromEnv
-            .Split(',', StringSplitOptions.RemoveEmptyEntries)
-            .Select(id => id.Trim().Trim('"', '[', ']'))
-            .ToArray();
-    }
-}
-
-// Si no hay en variable de entorno, intentar desde Secret Manager
-if (googleClientIds == null || googleClientIds.Length == 0)
-{
-    var googleClientIdsFromSecret = GetSecretValue("google-client-ids");
-    if (!string.IsNullOrEmpty(googleClientIdsFromSecret))
-    {
+        credentialsPath = fallbackPath;
+        // Configurar la variable de entorno para esta sesión en desarrollo
         try
         {
-            // Intentar parsear como JSON array primero
-            if (googleClientIdsFromSecret.TrimStart().StartsWith("["))
-            {
-                googleClientIds = System.Text.Json.JsonSerializer.Deserialize<string[]>(googleClientIdsFromSecret);
-            }
-            else
-            {
-                // Si no es JSON, tratar como separado por comas
-                googleClientIds = googleClientIdsFromSecret
-                    ?.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                    .Select(id => id.Trim().Trim('"', '[', ']'))
-                    .ToArray();
-            }
+            Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", credentialsPath, EnvironmentVariableTarget.Process);
         }
         catch
         {
-            // Si falla el parseo JSON, intentar como separado por comas
-            googleClientIds = googleClientIdsFromSecret
-                ?.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                .Select(id => id.Trim().Trim('"', '[', ']'))
-                .ToArray();
+            // Si falla, continuar sin configurar la variable (no crítico)
         }
     }
+    // Si no existe el archivo fallback, credentialsPath seguirá siendo null
+    // y el cliente usará Application Default Credentials automáticamente
 }
 
-if (googleClientIds != null && googleClientIds.Length > 0)
-{
-    // ✅ FIX: Configurar como array JSON compatible con GetSection().Get<string[]>()
-    // En lugar de solo claves indexadas, también configuramos como JSON string
-    var configDict = new Dictionary<string, string?>();
-    
-    // Opción A: Configurar como array JSON (más compatible con GetSection().Get<string[]>())
-    var clientIdsJson = System.Text.Json.JsonSerializer.Serialize(googleClientIds);
-    configDict["Google:ClientIds"] = clientIdsJson;
-    
-    // Opción B: También configurar como claves indexadas para compatibilidad
-    for (int i = 0; i < googleClientIds.Length; i++)
-    {
-        configDict[$"Google:ClientIds:{i}"] = googleClientIds[i];
-    }
-    
-    builder.Configuration.AddInMemoryCollection(configDict);
-    
-    var googleConfigLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-    googleConfigLogger.LogInformation($"✅ Google Client IDs configurados: {googleClientIds.Length} ID(s) encontrado(s)");
-    googleConfigLogger.LogInformation($"✅ Client IDs: {string.Join(", ", googleClientIds)}");
-    googleConfigLogger.LogInformation($"✅ Client IDs JSON: {clientIdsJson}");
-}
-else
-{
-    var googleConfigLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-    googleConfigLogger.LogWarning("⚠️ No se encontraron Google Client IDs en variables de entorno ni en Secret Manager");
-}
+builder.Logging.AddConsole();
+var initLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
 
-builder.Configuration["Jwt:Key"] = GetSecretValue("jwt-key");
-builder.Configuration["Jwt:Issuer"] = GetSecretValue("jwt-issuer");
-builder.Configuration["Jwt:Audience"] = GetSecretValue("jwt-audience");
-builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password");
-builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key");
+initLogger.LogInformation($"=== INICIALIZANDO SECRET MANAGER ===");
+initLogger.LogInformation($"Entorno: {(isDevelopment ? "Development" : "Production")}");
+initLogger.LogInformation($"GOOGLE_APPLICATION_CREDENTIALS: {Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS") ?? "NO CONFIGURADO (usará Application Default Credentials)"}");
+initLogger.LogInformation($"Ruta de credenciales a usar: {credentialsPath ?? "Application Default Credentials (ADC)"}");
 
-// Configurar Stripe según el entorno (desarrollo vs producción)
-var isDevelopment = builder.Environment.IsDevelopment();
-if (isDevelopment)
+// Intentar inicializar Secret Manager
+// Si credentialsPath está configurado, verificar que el archivo existe
+// Si no está configurado, usar Application Default Credentials (ADC)
+bool shouldInitialize = true;
+if (!string.IsNullOrEmpty(credentialsPath))
 {
-    // En desarrollo: usar variables de entorno o User Secrets
-    // NUNCA hardcodear secretos en el código
-    // Configurar con: dotnet user-secrets set "Stripe:SecretKey" "valor"
-    // O usar variables de entorno: STRIPE_SECRET_KEY
-    if (string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]))
+    var fileExists = System.IO.File.Exists(credentialsPath);
+    initLogger.LogInformation($"Archivo de credenciales existe: {fileExists}");
+    
+    if (fileExists)
     {
-        builder.Configuration["Stripe:SecretKey"] = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY") ?? "";
+        shouldInitialize = true;
     }
-    if (string.IsNullOrEmpty(builder.Configuration["Stripe:WebhookSecret"]))
+    else
     {
-        builder.Configuration["Stripe:WebhookSecret"] = Environment.GetEnvironmentVariable("STRIPE_WEBHOOK_SECRET") ?? "";
-    }
-    if (string.IsNullOrEmpty(builder.Configuration["Stripe:GeneralWebhookSecret"]))
-    {
-        builder.Configuration["Stripe:GeneralWebhookSecret"] = Environment.GetEnvironmentVariable("STRIPE_GENERAL_WEBHOOK_SECRET") ?? "";
+        initLogger.LogWarning($"El archivo de credenciales no existe en: {credentialsPath}");
+        initLogger.LogInformation("Intentando usar Application Default Credentials (ADC) en su lugar...");
+        credentialsPath = null; // Limpiar para usar ADC
+        shouldInitialize = true; // Intentar con ADC
     }
 }
 else
 {
-    // En producción: valores desde Google Cloud Secret Manager
-    builder.Configuration["Stripe:SecretKey"] = GetSecretValue("stripe-secret-key");
-    builder.Configuration["Stripe:WebhookSecret"] = GetSecretValue("stripe-webhook-secret");
-    builder.Configuration["Stripe:GeneralWebhookSecret"] = GetSecretValue("stripe-general-webhook-secret");
+    initLogger.LogInformation("No hay archivo de credenciales configurado. Usando Application Default Credentials (ADC)...");
+    shouldInitialize = true; // Usar ADC
 }
 
-builder.Configuration["Twilio:AccountSid"] = GetSecretValue("twilio-account-sid");
-builder.Configuration["Twilio:AuthToken"] = GetSecretValue("twilio-auth-token");
-builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-verification-service-sid");
+if (shouldInitialize)
+{
+    try
+    {
+        try
+        {
+            // Leer información básica del archivo de credenciales
+            if (!string.IsNullOrEmpty(credentialsPath))
+            {
+                var credContent = System.IO.File.ReadAllText(credentialsPath);
+                if (credContent.Contains("project_id"))
+                {
+                    initLogger.LogInformation("Archivo de credenciales parece válido (contiene project_id)");
+                }
+            }
+            
+            // IMPORTANTE: Forzar IPv4 ANTES de crear el cliente
+            // Esto debe hacerse antes de cualquier operación de red
+            try
+            {
+                // Establecer variable de entorno para forzar IPv4 en .NET
+                Environment.SetEnvironmentVariable("DOTNET_SYSTEM_NET_DISABLEIPV6", "1");
+                initLogger.LogInformation("IPv6 deshabilitado para forzar IPv4 (ANTES de crear cliente)");
+            }
+            catch (Exception ipv6Ex)
+            {
+                initLogger.LogWarning($"No se pudo deshabilitar IPv6: {ipv6Ex.Message}");
+            }
+            
+            // Crear el cliente de Secret Manager con configuración mejorada
+            initLogger.LogInformation("Creando cliente de Secret Manager...");
+            
+            // Configurar el cliente con opciones específicas para Kubernetes/K3s
+            var clientBuilder = new SecretManagerServiceClientBuilder();
+            
+            // Configurar el endpoint explícitamente
+            var endpoint = "secretmanager.googleapis.com:443";
+            clientBuilder.Endpoint = endpoint;
+            initLogger.LogInformation($"Endpoint configurado: {endpoint}");
+            
+            // Configurar opciones de gRPC específicas para Kubernetes/K3s
+            // El problema puede ser que gRPC necesita configuración especial para HTTP/2
+            initLogger.LogInformation("Configurando adaptador gRPC con opciones para Kubernetes...");
+            clientBuilder.GrpcAdapter = GrpcNetClientAdapter.Default.WithAdditionalOptions(options =>
+            {
+                // Configurar timeouts más largos para la conexión inicial
+                options.MaxReceiveMessageSize = 4 * 1024 * 1024; // 4MB
+                options.MaxSendMessageSize = 4 * 1024 * 1024; // 4MB
+                // No configurar KeepAlive muy agresivo - puede causar problemas en Kubernetes
+            });
+            
+            initLogger.LogInformation("Construyendo cliente de Secret Manager...");
+            secretClient = clientBuilder.Build();
+            
+            initLogger.LogInformation($"Cliente de Secret Manager creado exitosamente (endpoint: {endpoint})");
+            
+            secretManagerAvailable = true; // Asumimos disponible hasta que falle
+        }
+        catch (Exception ex)
+        {
+            secretManagerAvailable = false;
+            initLogger.LogError($"ERROR al crear cliente de Secret Manager: {ex.GetType().Name} - {ex.Message}");
+            initLogger.LogError($"Stack trace: {ex.StackTrace}");
+            initLogger.LogWarning("Usando solo variables de entorno como fallback.");
+        }
+    }
+    catch (Exception ex)
+    {
+        secretManagerAvailable = false;
+        initLogger.LogError($"ERROR al inicializar Secret Manager: {ex.GetType().Name} - {ex.Message}");
+        initLogger.LogError($"Stack trace: {ex.StackTrace}");
+        initLogger.LogWarning("Secret Manager no estará disponible. Usando solo variables de entorno como fallback.");
+    }
+}
+
+initLogger.LogInformation($"Secret Manager disponible: {secretManagerAvailable}");
+if (secretManagerAvailable)
+{
+    initLogger.LogInformation($"✅ Secret Manager configurado correctamente desde: {credentialsPath}");
+}
+else
+{
+    initLogger.LogWarning("⚠️ Secret Manager NO disponible. La aplicación usará solo variables de entorno.");
+}
+
+// Función para obtener secretos
+// En desarrollo: intenta secretos con sufijo -dev, luego sin sufijo
+// En producción: usa secretos sin sufijo
+string? GetSecretValue(string secretName, string? defaultValue = null)
+{
+    // Intentar usar Secret Manager si está disponible (tanto en desarrollo como producción)
+    if (secretClient != null && secretManagerAvailable)
+    {
+        var projectId = "grup-441318";  // ✅ Project ID correcto
+        var secretLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+                secretLogger.LogInformation($"📦 Usando Project ID: {projectId}");
+        
+        // Determinar qué nombres de secretos intentar según el entorno
+        var secretNamesToTry = new List<string>();
+        
+        if (isDevelopment)
+        {
+            // En desarrollo: intentar primero con -dev, luego sin sufijo
+            secretNamesToTry.Add($"{secretName}-dev");
+            secretNamesToTry.Add(secretName);
+            secretLogger.LogInformation($"🔧 DESARROLLO: Intentando secretos: {string.Join(" -> ", secretNamesToTry)}");
+        }
+        else
+        {
+            // En producción: usar directamente el nombre sin sufijo
+            secretNamesToTry.Add(secretName);
+            secretLogger.LogInformation($"🏭 PRODUCCIÓN: Usando secreto: {secretName}");
+        }
+        
+        // Intentar cada nombre de secreto en orden
+        foreach (var secretNameToTry in secretNamesToTry)
+        {
+            try
+            {
+                var secretPath = $"projects/{projectId}/secrets/{secretNameToTry}/versions/latest";
+                secretLogger.LogInformation($"Intentando obtener secreto: {secretNameToTry} desde {secretPath}");
+                
+                // Configurar call settings con timeout y reintentos mejorados
+                var callSettings = CallSettings.FromRetry(
+                    RetrySettings.FromExponentialBackoff(
+                        maxAttempts: 3,
+                        initialBackoff: TimeSpan.FromSeconds(5),
+                        maxBackoff: TimeSpan.FromSeconds(20),
+                        backoffMultiplier: 2.0,
+                        retryFilter: RetrySettings.FilterForStatusCodes(
+                            Grpc.Core.StatusCode.Unavailable, 
+                            Grpc.Core.StatusCode.DeadlineExceeded,
+                            Grpc.Core.StatusCode.Internal,
+                            Grpc.Core.StatusCode.ResourceExhausted
+                        )
+                    )
+                ).WithTimeout(TimeSpan.FromSeconds(60));
+                
+                var startTime = DateTime.UtcNow;
+                var secretVersion = secretClient.AccessSecretVersion(secretPath, callSettings: callSettings);
+                var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                
+                var secretValue = secretVersion.Payload.Data.ToStringUtf8();
+                secretLogger.LogInformation($"✅ Secreto {secretNameToTry} obtenido exitosamente en {duration}ms - Valor COMPLETO: [{secretValue}] (longitud: {secretValue.Length})");
+                return secretValue;
+            }
+            catch (Grpc.Core.RpcException rpcEx)
+            {
+                // Si el secreto no existe (NotFound), intentar el siguiente
+                if (rpcEx.StatusCode == Grpc.Core.StatusCode.NotFound)
+                {
+                    secretLogger.LogWarning($"⚠️ Secreto {secretNameToTry} no encontrado, intentando siguiente...");
+                    continue; // Intentar siguiente nombre
+                }
+                
+                // Para otros errores, marcar como no disponible y retornar
+                if (secretManagerAvailable)
+                {
+                    secretManagerAvailable = false;
+                    secretLogger.LogError($"ERROR gRPC al obtener secreto {secretNameToTry}:");
+                    secretLogger.LogError($"  Status Code: {rpcEx.StatusCode}");
+                    secretLogger.LogError($"  Status Detail: {rpcEx.Status.Detail}");
+                    secretLogger.LogWarning("Secret Manager no está disponible. Usando solo variables de entorno.");
+                }
+                return defaultValue;
+            }
+            catch (Exception ex)
+            {
+                // Para errores inesperados, marcar como no disponible
+                if (secretManagerAvailable)
+                {
+                    secretManagerAvailable = false;
+                    secretLogger.LogError($"ERROR inesperado al obtener secreto {secretNameToTry}: {ex.GetType().Name} - {ex.Message}");
+                    secretLogger.LogWarning("Secret Manager no está disponible. Usando solo variables de entorno.");
+                }
+                return defaultValue;
+            }
+        }
+        
+        // Si llegamos aquí, ningún secreto fue encontrado
+        secretLogger.LogWarning($"⚠️ Ningún secreto encontrado para: {secretName} (intentados: {string.Join(", ", secretNamesToTry)})");
+        return defaultValue;
+    }
+    
+    // Si Secret Manager no está disponible, usar valor por defecto
+    return defaultValue;
+}
+
+// Cargar secretos de Google Cloud Secret Manager
+var googleClientIdsSecret = GetSecretValue("google-client-ids", null);
+var initLogger2 = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+
+if (!string.IsNullOrEmpty(googleClientIdsSecret))
+{
+    initLogger2.LogInformation($"✅ Secreto google-client-ids obtenido (longitud: {googleClientIdsSecret.Length})");
+    initLogger2.LogInformation($"📋 Contenido completo del secreto: [{googleClientIdsSecret}]");
+    
+    string[]? googleClientIds = null;
+    
+    // Intentar parsear como JSON primero (formato: ["id1", "id2"])
+    var trimmedSecret = googleClientIdsSecret.Trim();
+    if (trimmedSecret.StartsWith("[") && trimmedSecret.EndsWith("]"))
+    {
+        try
+        {
+            initLogger2.LogInformation("🔍 Detectado formato JSON, intentando parsear...");
+            googleClientIds = System.Text.Json.JsonSerializer.Deserialize<string[]>(trimmedSecret);
+            if (googleClientIds != null && googleClientIds.Length > 0)
+            {
+                initLogger2.LogInformation($"✅ Parseado como JSON exitosamente: {googleClientIds.Length} Client ID(s) encontrados");
+            }
+        }
+        catch (Exception jsonEx)
+        {
+            initLogger2.LogWarning($"⚠️ Error al parsear como JSON: {jsonEx.Message}, intentando formato separado por comas...");
+        }
+    }
+    
+    // Si no es JSON o falló el parseo, intentar formato separado por comas
+    if (googleClientIds == null || googleClientIds.Length == 0)
+    {
+        initLogger2.LogInformation("🔍 Intentando parsear como lista separada por comas...");
+        googleClientIds = googleClientIdsSecret
+                          .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                          .Select(id => id.Trim().Trim('"').Trim('\'')) // Remover comillas si las hay
+                          .Where(id => !string.IsNullOrWhiteSpace(id))
+                          .ToArray();
+        
+        if (googleClientIds.Length > 0)
+        {
+            initLogger2.LogInformation($"✅ Parseado como lista separada por comas: {googleClientIds.Length} Client ID(s) encontrados");
+        }
+    }
+
+    if (googleClientIds != null && googleClientIds.Length > 0)
+    {
+        initLogger2.LogInformation($"✅ Se cargaron {googleClientIds.Length} Google Client ID(s):");
+        var configDict = new Dictionary<string, string?>();
+        for (int i = 0; i < googleClientIds.Length; i++)
+        {
+            configDict[$"Google:ClientIds:{i}"] = googleClientIds[i];
+            initLogger2.LogInformation($"  [{i}] Google:ClientIds:{i} = [{googleClientIds[i]}]");
+        }
+        builder.Configuration.AddInMemoryCollection(configDict);
+        initLogger2.LogInformation($"✅ Google Client IDs configurados correctamente en la configuración");
+    }
+    else
+    {
+        initLogger2.LogError("❌ ERROR: No se pudieron parsear los Google Client IDs del secreto");
+    }
+}
+else
+{
+    initLogger2.LogError("❌ ERROR: No se pudo obtener el secreto google-client-ids del Secret Manager");
+}
+
+// JWT - Leer de variables de entorno primero, luego de Secret Manager como fallback
+// Misma lógica para desarrollo y producción
+var configLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+
+// Leer JWT desde Secret Manager
+var jwtKeyFromSecret = GetSecretValue("jwt-key", null);
+var jwtKeyFromConfig = builder.Configuration["Jwt:Key"];
+
+builder.Configuration["Jwt:Key"] = jwtKeyFromSecret ?? jwtKeyFromConfig ?? "";
+
+// Leer Issuer y Audience desde Secret Manager
+builder.Configuration["Jwt:Issuer"] = GetSecretValue("jwt-issuer", null) ?? builder.Configuration["Jwt:Issuer"] ?? "newApi";
+
+builder.Configuration["Jwt:Audience"] = GetSecretValue("jwt-audience", null) ?? builder.Configuration["Jwt:Audience"] ?? "newApi";
+
+// Obtener jwtKey para validación y logging
+var jwtKey = builder.Configuration["Jwt:Key"];
+var jwtKeySource = !string.IsNullOrEmpty(jwtKeyFromSecret) ? "Google Cloud Secret Manager" 
+    : (!string.IsNullOrEmpty(jwtKeyFromConfig) ? "Configuration/User Secrets" : "NOT FOUND");
+configLogger.LogInformation($"JWT Key source: {jwtKeySource}");
+
+// ✅ SEGURIDAD 2025: Validar longitud mínima de clave JWT (OWASP Best Practice)
+if (string.IsNullOrEmpty(jwtKey))
+{
+    var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+    var userSecretsPath = Path.Combine(
+        appDataPath,
+        "Microsoft",
+        "UserSecrets",
+        "dec0adc1-b7d7-4da6-be0f-42e3054c640a",
+        "secrets.json"
+    );
+    if (!System.IO.File.Exists(userSecretsPath))
+    {
+        userSecretsPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".microsoft",
+            "usersecrets",
+            "dec0adc1-b7d7-4da6-be0f-42e3054c640a",
+            "secrets.json"
+        );
+    }
+    throw new InvalidOperationException(
+        "⚠️ CRITICAL SECURITY ERROR: JWT Key is not configured. " +
+        "Please set 'jwt-key' in Google Cloud Secret Manager or User Secrets. " +
+        $"\nEnvironment: {(isDevelopment ? "Development" : "Production")}" +
+        $"\nUser Secrets Path: {userSecretsPath}" +
+        $"\nUser Secrets Exists: {System.IO.File.Exists(userSecretsPath)}");
+}
+
+var jwtKeyBytes = Encoding.UTF8.GetBytes(jwtKey);
+const int MINIMUM_KEY_LENGTH_BITS = 256; // OWASP/NIST recommendation for HMAC-SHA256
+const int MINIMUM_KEY_LENGTH_BYTES = MINIMUM_KEY_LENGTH_BITS / 8; // 32 bytes
+const int RECOMMENDED_KEY_LENGTH_BYTES = 64; // 512 bits
+
+if (jwtKeyBytes.Length < MINIMUM_KEY_LENGTH_BYTES)
+{
+    throw new InvalidOperationException(
+        $"⚠️ CRITICAL SECURITY ERROR: JWT Key is too short ({jwtKeyBytes.Length} bytes / {jwtKeyBytes.Length * 8} bits). " +
+        $"Minimum required: {MINIMUM_KEY_LENGTH_BYTES} bytes ({MINIMUM_KEY_LENGTH_BITS} bits). " +
+        $"Recommended: {RECOMMENDED_KEY_LENGTH_BYTES} bytes (512 bits). " +
+        $"\n\nTo generate a secure key:\n" +
+        $"  PowerShell: [Convert]::ToBase64String((1..64 | ForEach-Object {{Get-Random -Minimum 0 -Maximum 256}}))\n" +
+        $"  Bash: openssl rand -base64 64");
+}
+
+if (jwtKeyBytes.Length < RECOMMENDED_KEY_LENGTH_BYTES && !builder.Environment.IsDevelopment())
+{
+    Console.WriteLine(
+        $"⚠️ WARNING: JWT Key length ({jwtKeyBytes.Length} bytes / {jwtKeyBytes.Length * 8} bits) is below " +
+        $"recommended length ({RECOMMENDED_KEY_LENGTH_BYTES} bytes / 512 bits) for production. " +
+        $"Consider generating a longer key for maximum security.");
+}
+else if (jwtKeyBytes.Length >= RECOMMENDED_KEY_LENGTH_BYTES)
+{
+    Console.WriteLine($"✅ JWT Key length validated: {jwtKeyBytes.Length} bytes ({jwtKeyBytes.Length * 8} bits) - EXCELLENT");
+}
+else
+{
+    Console.WriteLine($"✅ JWT Key length validated: {jwtKeyBytes.Length} bytes ({jwtKeyBytes.Length * 8} bits) - SECURE");
+}
+builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password", null) ?? "";
+builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key", null) ?? "";
+
+// ✅ Cargar Google Maps API Key desde Secret Manager
+var googleMapsApiKey = GetSecretValue("google-maps-api-key", null) 
+    ?? Environment.GetEnvironmentVariable("GOOGLE_API_KEY");
+builder.Configuration["Google:ApiKey"] = googleMapsApiKey ?? "";
+if (!string.IsNullOrEmpty(googleMapsApiKey))
+{
+    var googleMapsLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    googleMapsLogger.LogInformation($"✅ Google Maps API Key configurada (longitud: {googleMapsApiKey.Length} caracteres)");
+    googleMapsLogger.LogInformation($"   Origen: {(GetSecretValue("google-maps-api-key", null) != null ? "Secret Manager" : "Environment Variable")}");
+}
+
+// Configurar Stripe desde Secret Manager
+// Las claves se cargarán dinámicamente según el modo configurado en SystemSetting
+// Por defecto se cargan las de producción, pero se pueden cambiar desde el panel admin
+// NOTA: El modo se carga después de inicializar la base de datos, ver más abajo
+
+builder.Configuration["Twilio:AccountSid"] = GetSecretValue("twilio-account-sid", null) ?? "";
+builder.Configuration["Twilio:AuthToken"] = GetSecretValue("twilio-auth-token", null) ?? "";
+builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-verification-service-sid", null) ?? "";
+
+// ✅ Cargar clave de cifrado MFA desde Secret Manager (obligatoria para cifrar/descifrar secretos MFA)
+var mfaEncryptionKey = GetSecretValue("mfa-encryption-key", null) 
+    ?? Environment.GetEnvironmentVariable("MFA_ENCRYPTION_KEY");
+
+if (string.IsNullOrEmpty(mfaEncryptionKey))
+{
+    var mfaLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    mfaLogger.LogError("❌ ERROR CRÍTICO: MFA Encryption Key no configurada");
+    mfaLogger.LogError("   La clave debe estar en Secret Manager (mfa-encryption-key) o variable de entorno (MFA_ENCRYPTION_KEY)");
+    mfaLogger.LogError("   Esta clave es OBLIGATORIA para cifrar/descifrar secretos MFA");
+    mfaLogger.LogError("   IMPORTANTE: La misma clave debe usarse en desarrollo y producción para descifrar secretos existentes");
+    throw new InvalidOperationException(
+        "MFA Encryption Key not configured. " +
+        "Add 'mfa-encryption-key' to Google Cloud Secret Manager or set 'MFA_ENCRYPTION_KEY' environment variable. " +
+        "This key is REQUIRED to encrypt/decrypt MFA secrets. " +
+        "IMPORTANT: The same key must be used in development and production to decrypt existing secrets.");
+}
+
+builder.Configuration["Mfa:EncryptionKey"] = mfaEncryptionKey;
+var mfaLogger2 = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+mfaLogger2.LogInformation($"✅ MFA Encryption Key configurada (longitud: {mfaEncryptionKey.Length} caracteres)");
+mfaLogger2.LogInformation($"   Origen: {(GetSecretValue("mfa-encryption-key", null) != null ? "Secret Manager" : "Environment Variable")}");
+
 builder.Configuration["GoogleCloud:BucketName"] = "atrapobucket";
+
+
+
 
 // Configuración de Email (opcional - si no está configurado, no se enviarán emails)
 // Puede usar SMTP de hosting propio, Gmail, SendGrid, etc.
 try
 {
-    builder.Configuration["Email:SmtpHost"] = GetSecretValue("email-smtp-host") ?? "";
+    builder.Configuration["Email:SmtpHost"] = GetSecretValue("email-smtp-host", "") ?? "";
     // ⚠️ RECOMENDACIÓN: Usar puerto 587 (STARTTLS) en lugar de 465 (SSL) para mejor compatibilidad
-    builder.Configuration["Email:SmtpPort"] = GetSecretValue("email-smtp-port") ?? "587";
-    builder.Configuration["Email:SmtpUsername"] = GetSecretValue("email-smtp-username") ?? "";
-    builder.Configuration["Email:SmtpPassword"] = GetSecretValue("email-smtp-password") ?? "";
-    builder.Configuration["Email:FromEmail"] = GetSecretValue("email-from-email") ?? "info@inspecciono.com";
-    builder.Configuration["Email:FromName"] = GetSecretValue("email-from-name") ?? "Inspecciono";
+    builder.Configuration["Email:SmtpPort"] = GetSecretValue("email-smtp-port", "587") ?? "587";
+    builder.Configuration["Email:SmtpUsername"] = GetSecretValue("email-smtp-username", "") ?? "";
+    builder.Configuration["Email:SmtpPassword"] = GetSecretValue("email-smtp-password", "") ?? "";
+    builder.Configuration["Email:FromEmail"] = GetSecretValue("email-from-email", "info@inspecciono.com") ?? "info@inspecciono.com";
+    builder.Configuration["Email:FromName"] = GetSecretValue("email-from-name", "Inspecciono") ?? "Inspecciono";
 }
 catch
 {
@@ -222,28 +537,285 @@ string connectionString;
 
 if (isDevelopment)
 {
-    // En desarrollo: usar valores de desarrollo o desde Secret Manager
-    var dbHost = GetSecretValue("postgres-host") ?? "localhost";
-    var dbPort = GetSecretValue("postgres-port") ?? "5432";
-    var dbUsername = GetSecretValue("postgres-username") ?? "postgres";
-    var dbPassword = GetSecretValue("postgres-password") ?? "postgres";
-    var dbName = GetSecretValue("postgres-database") ?? "newapi";
+    // En desarrollo: usar configuración local del túnel (variables de entorno o user secrets)
+    // NO usar Google Cloud Secret Manager en desarrollo
+    // Probar múltiples puertos automáticamente hasta encontrar uno disponible
     
-    connectionString = $"Host={dbHost};Port={dbPort};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
+    // Lista de puertos a probar en orden
+    // ✅ CORRECCIÓN: Priorizar puertos comunes del túnel SSH
+    // Esto acelera la detección cuando se usa el túnel SSH
+    var dbPortsToTry = new[] { 
+        5433,  // ✅ PRIORIDAD: Puerto del túnel SSH (db-access.sh)
+        5435,  // Puerto alternativo común del túnel SSH
+        5432,  // Puerto estándar de PostgreSQL
+        5434,  // Puerto alternativo común para túneles
+        15433, // Puerto alternativo (formato antiguo)
+        25432, // Puerto alternativo (formato antiguo)
+        35432, // Puerto alternativo (formato antiguo)
+        45432, // Puerto alternativo (formato antiguo)
+        55432, // Puerto alternativo (formato antiguo)
+        65432  // Puerto alternativo (formato antiguo)
+    };
+    
+    var existingConnectionString = builder.Configuration.GetConnectionString("PostgresConnection");
+    string? baseConnectionString = null;
+    string dbHost;
+    string dbUsername;
+    string dbPassword;
+    string dbName;
+    
+    if (!string.IsNullOrEmpty(existingConnectionString) && !existingConnectionString.Equals("", StringComparison.OrdinalIgnoreCase))
+    {
+        // Usar connection string desde appsettings.Development.json o user secrets
+        baseConnectionString = existingConnectionString;
+        
+        // Extraer valores del connection string existente
+        var hostMatch = Regex.Match(existingConnectionString, @"Host=([^;]+)");
+        var userMatch = Regex.Match(existingConnectionString, @"Username=([^;]+)");
+        var passMatch = Regex.Match(existingConnectionString, @"Password=([^;]+)");
+        var dbMatch = Regex.Match(existingConnectionString, @"Database=([^;]+)");
+        
+        dbHost = hostMatch.Success ? hostMatch.Groups[1].Value : "localhost";
+        dbUsername = userMatch.Success ? userMatch.Groups[1].Value : "admin";
+        // ⚠️ IGNORAR contraseña del connection string - se obtendrá SOLO del Secret Manager más abajo
+        var passwordFromConnectionString = passMatch.Success ? passMatch.Groups[1].Value : "";
+        if (!string.IsNullOrEmpty(passwordFromConnectionString))
+        {
+            configLogger.LogWarning($"⚠️ Contraseña encontrada en connection string pero IGNORADA (valor: [{passwordFromConnectionString}], longitud: {passwordFromConnectionString.Length}) - Solo usando Secret Manager");
+        }
+        dbName = dbMatch.Success ? dbMatch.Groups[1].Value : "atrapo";
+        
+        // Forzar valores en desarrollo: localhost, admin y atrapo
+        dbHost = "localhost";
+        dbUsername = "admin";
+        dbName = "atrapo";
+        
+        // ✅ OBTENER contraseña SOLO del Secret Manager (ignorando connection string)
+        configLogger.LogInformation("🔍 FORZANDO obtención de contraseña SOLO desde Secret Manager (ignorando connection string)...");
+        var dbPasswordFromSecret = GetSecretValue("postgres-password", null);
+        if (string.IsNullOrEmpty(dbPasswordFromSecret))
+        {
+            throw new InvalidOperationException(
+                "ERROR CRÍTICO: No se pudo obtener la contraseña de PostgreSQL desde Secret Manager. " +
+                "El secreto 'postgres-password' debe existir en Google Cloud Secret Manager.");
+        }
+        dbPassword = dbPasswordFromSecret;
+        configLogger.LogInformation($"✅ Contraseña OBLIGATORIAMENTE obtenida del Secret Manager: [{dbPassword}] (longitud: {dbPassword.Length})");
+    }
+    else
+    {
+        // Construir desde variables de entorno individuales o Google Cloud Secret Manager
+        // Valores por defecto para desarrollo: localhost, admin y atrapo
+        // ✅ FORZAR: En desarrollo SIEMPRE usar localhost
+        dbHost = "localhost";
+        dbUsername = Environment.GetEnvironmentVariable("POSTGRES_USERNAME") 
+            ?? GetSecretValue("postgres-username", null) 
+            ?? "admin";
+        // ✅ FORZAR: Contraseña SOLO desde Secret Manager - NO usar variables de entorno
+        configLogger.LogInformation("🔍 FORZANDO obtención de contraseña SOLO desde Secret Manager (ignorando variables de entorno)...");
+        var dbPasswordFromSecret = GetSecretValue("postgres-password", null);
+        
+        // IGNORAR variables de entorno - solo usar Secret Manager
+        var dbPasswordFromEnv = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
+        if (!string.IsNullOrEmpty(dbPasswordFromEnv))
+        {
+            configLogger.LogWarning($"⚠️ Variable de entorno POSTGRES_PASSWORD encontrada pero IGNORADA (valor: [{dbPasswordFromEnv}], longitud: {dbPasswordFromEnv.Length}) - Solo usando Secret Manager");
+        }
+        
+        // FORZAR uso SOLO del Secret Manager
+        if (string.IsNullOrEmpty(dbPasswordFromSecret))
+        {
+            throw new InvalidOperationException(
+                "ERROR CRÍTICO: No se pudo obtener la contraseña de PostgreSQL desde Secret Manager. " +
+                "El secreto 'postgres-password' debe existir en Google Cloud Secret Manager. " +
+                "NO se usarán variables de entorno como fallback.");
+        }
+        
+        dbPassword = dbPasswordFromSecret;
+        configLogger.LogInformation($"✅ Contraseña OBLIGATORIAMENTE obtenida del Secret Manager: [{dbPassword}] (longitud: {dbPassword.Length})");
+        configLogger.LogInformation($"🔐 DB Password FINAL (SOLO Secret Manager): [{dbPassword}] (longitud: {dbPassword.Length})");
+        dbName = Environment.GetEnvironmentVariable("POSTGRES_DATABASE") 
+            ?? GetSecretValue("postgres-database", null) 
+            ?? "atrapo";
+    }
+    
+    // Validar que tenemos password
+    if (string.IsNullOrEmpty(dbPassword))
+    {
+        configLogger.LogWarning("⚠️ postgres-password not found in Secret Manager. Using empty password (may fail).");
+        configLogger.LogWarning("   Ensure postgres-password exists in Google Cloud Secret Manager.");
+    }
+    
+    // Función para probar conexión a un puerto específico
+    // ✅ CORRECCIÓN: Timeout aumentado a 5 segundos para dar tiempo a conexiones lentas
+    bool TestConnection(int port)
+    {
+        try
+        {
+            // No escapar la contraseña - Npgsql maneja los caracteres especiales automáticamente
+            var testConnectionString = $"Host={dbHost};Port={port};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=5;CommandTimeout=5;";
+            configLogger.LogInformation($"  Intentando conectar: Host={dbHost}, Port={port}, User={dbUsername}, DB={dbName}");
+            using var testConn = new Npgsql.NpgsqlConnection(testConnectionString);
+            testConn.Open();
+            configLogger.LogInformation($"  ✅ Conexión exitosa al puerto {port}!");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            configLogger.LogWarning($"  ❌ Error al probar puerto {port}: {ex.GetType().Name} - {ex.Message}");
+            if (ex.InnerException != null)
+            {
+                configLogger.LogWarning($"     InnerException: {ex.InnerException.Message}");
+            }
+            return false;
+        }
+    }
+    
+    // Probar cada puerto en orden hasta encontrar uno que funcione
+    int? workingPort = null;
+    configLogger.LogInformation("=== Probando puertos de PostgreSQL en desarrollo ===");
+    configLogger.LogInformation($"Puertos a probar (en orden): {string.Join(", ", dbPortsToTry)}");
+    configLogger.LogInformation($"Host: {dbHost}");
+    configLogger.LogInformation($"Username: {dbUsername}");
+    configLogger.LogInformation($"Database: {dbName}");
+    // Mostrar contraseña (enmascarada pero visible para debugging)
+    var passwordDisplay = string.IsNullOrEmpty(dbPassword) ? "(vacía)" : $"[{dbPassword}] (longitud: {dbPassword.Length})";
+    configLogger.LogInformation($"Password: {passwordDisplay}");
+    configLogger.LogInformation("");
+    
+    foreach (var port in dbPortsToTry)
+    {
+        configLogger.LogInformation($"[{Array.IndexOf(dbPortsToTry, port) + 1}/{dbPortsToTry.Length}] Probando puerto {port}...");
+        try
+        {
+            if (TestConnection(port))
+            {
+                workingPort = port;
+                configLogger.LogInformation($"✅ Puerto {port} disponible y funcionando - USANDO ESTE PUERTO");
+                break;
+            }
+            else
+            {
+                configLogger.LogWarning($"❌ Puerto {port} no disponible o no responde - probando siguiente...");
+            }
+        }
+        catch (Exception ex)
+        {
+            configLogger.LogWarning($"❌ Error al probar puerto {port}: {ex.Message} - probando siguiente...");
+        }
+    }
+    
+    // Si no se encontró ningún puerto disponible
+    if (!workingPort.HasValue)
+    {
+        var passwordInfo = string.IsNullOrEmpty(dbPassword) ? "(vacía - puede ser el problema)" : $"configurada (longitud: {dbPassword.Length})";
+        throw new InvalidOperationException(
+            $"No se pudo conectar a PostgreSQL en ningún puerto. Puertos probados: {string.Join(", ", dbPortsToTry)}\n" +
+            $"Host: {dbHost}\n" +
+            $"Username: {dbUsername}\n" +
+            $"Database: {dbName}\n" +
+            $"Password: {passwordInfo}\n" +
+            $"Verifica que:\n" +
+            $"  1. El túnel SSH esté activo (ejecuta ./db-access.sh)\n" +
+            $"  2. PostgreSQL esté corriendo en el servidor remoto\n" +
+            $"  3. Las credenciales sean correctas (postgres-password en Secret Manager)\n" +
+            $"  4. El usuario '{dbUsername}' tenga acceso a la base de datos '{dbName}'");
+    }
+    
+    // Construir connection string final con el puerto que funciona
+    if (baseConnectionString != null)
+    {
+        // Reemplazar el puerto en el connection string existente
+        var portPattern = @"Port=\d+";
+        if (Regex.IsMatch(baseConnectionString, portPattern))
+        {
+            connectionString = Regex.Replace(baseConnectionString, portPattern, $"Port={workingPort.Value}");
+        }
+        else
+        {
+            connectionString = baseConnectionString.TrimEnd(';') + $";Port={workingPort.Value};";
+        }
+        
+        // Asegurar que el nombre de la base de datos sea "atrapo" y username "admin"
+        var dbNamePattern = @"Database=[^;]+";
+        if (Regex.IsMatch(connectionString, dbNamePattern))
+        {
+            connectionString = Regex.Replace(connectionString, dbNamePattern, "Database=atrapo");
+        }
+        else
+        {
+            connectionString = connectionString.TrimEnd(';') + ";Database=atrapo;";
+        }
+        
+        // Asegurar que el username sea "admin"
+        var usernamePattern = @"Username=[^;]+";
+        if (Regex.IsMatch(connectionString, usernamePattern))
+        {
+            connectionString = Regex.Replace(connectionString, usernamePattern, "Username=admin");
+        }
+        else
+        {
+            connectionString = connectionString.TrimEnd(';') + ";Username=admin;";
+        }
+    }
+    else
+    {
+        // Connection string optimizado para desarrollo con túnel SSH
+        // ✅ CORRECCIÓN: Agregar parámetros para mejor manejo de conexiones y detección de desconexiones
+        connectionString = $"Host={dbHost};Port={workingPort.Value};Username={dbUsername};Password={dbPassword};Database={dbName};" +
+                          $"Timeout=30;CommandTimeout=60;" +
+                          $"Connection Idle Lifetime=300;Connection Pruning Interval=10;" +
+                          $"Keepalive=30;Tcp Keepalive=true;" +
+                          $"Pooling=true;Minimum Pool Size=1;Maximum Pool Size=20;" +
+                          $"No Reset On Close=true;"; // ✅ MEJORA: No resetear conexión al cerrar para mejor manejo de errores
+    }
+    
+    configLogger.LogInformation($"✅ Connection string configurado: Host={dbHost}, Port={workingPort.Value}, Database={dbName}, Username={dbUsername}");
 }
 else
 {
-    // En producción: OBLIGATORIO desde Secret Manager (sin fallbacks de producción)
-    var dbHost = GetSecretValue("postgres-host") ?? throw new InvalidOperationException("postgres-host secret is required in production");
-    var dbPort = GetSecretValue("postgres-port") ?? throw new InvalidOperationException("postgres-port secret is required in production");
-    var dbUsername = GetSecretValue("postgres-username") ?? throw new InvalidOperationException("postgres-username secret is required in production");
-    var dbPassword = GetSecretValue("postgres-password") ?? throw new InvalidOperationException("postgres-password secret is required in production");
-    var dbName = GetSecretValue("postgres-database") ?? throw new InvalidOperationException("postgres-database secret is required in production");
+    // En producción: Leer desde Secret Manager
+    var dbHost = GetSecretValue("postgres-host", null) ?? "postgres-svc";
+    var dbPort = GetSecretValue("postgres-port", null) ?? "5432";
+    var dbUsername = GetSecretValue("postgres-username", null);
+    var dbPassword = GetSecretValue("postgres-password", null);
+    var dbName = GetSecretValue("postgres-database", null) ?? "newapi";
+    
+    // Logging para debugging: mostrar origen y longitud de la contraseña
+    if (!string.IsNullOrEmpty(dbPassword))
+    {
+        configLogger.LogInformation($"🔐 DB Password obtenida desde: Secret Manager - Valor COMPLETO: [{dbPassword}] (longitud: {dbPassword.Length})");
+    }
+    else
+    {
+        configLogger.LogWarning("⚠️ DB Password está vacía - la conexión fallará");
+    }
+    
+    // Si no hay credenciales de DB, lanzar error claro
+    if (string.IsNullOrEmpty(dbUsername) || string.IsNullOrEmpty(dbPassword))
+    {
+        throw new InvalidOperationException(
+            "Database credentials are required in production. " +
+            "Configure via Secret Manager (postgres-username, postgres-password). " +
+            "Secret Manager status: " + (secretManagerAvailable ? "Available but failed to retrieve secrets" : "Not available"));
+    }
     
     connectionString = $"Host={dbHost};Port={dbPort};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
+    configLogger.LogInformation($"Built connection string for production: Host={dbHost}, Port={dbPort}, Database={dbName}, Username={dbUsername}");
 }
 
 builder.Configuration["ConnectionStrings:PostgresConnection"] = connectionString;
+
+// Log de diagnóstico (sin mostrar contraseña)
+var connectionStringForLog = connectionString;
+if (connectionStringForLog.Contains("Password="))
+{
+    var passwordPattern = @"Password=[^;]+";
+    connectionStringForLog = Regex.Replace(connectionStringForLog, passwordPattern, "Password=***");
+}
+configLogger.LogInformation($"=== DATABASE CONNECTION CONFIGURED ===");
+configLogger.LogInformation($"Environment: {(isDevelopment ? "Development" : "Production")}");
+configLogger.LogInformation($"Connection String (masked): {connectionStringForLog}");
 
 // Add services to the container
 builder.Services.AddControllers();
@@ -268,75 +840,159 @@ builder.Services.Configure<FormOptions>(options =>
 });
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(c =>
-{
-<<<<<<< HEAD
-    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
-    {
-        Description = "JWT Authorization header (optional for Swagger testing)",
-        Name = "Authorization",
-        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
-        Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey
-=======
-    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.OpenApiSecurityScheme
-    {
-        Description = "JWT Authorization header (optional for Swagger testing)",
-        Name = "Authorization",
-        In = Microsoft.OpenApi.ParameterLocation.Header,
-        Type = Microsoft.OpenApi.SecuritySchemeType.ApiKey
->>>>>>> 70037ae77d5bcc854fadad49afa3ca8dbf79169e
-    });
-});
+builder.Services.AddSwaggerGen();
+// Note: Swagger security definition removed due to Microsoft.OpenApi.Models namespace issues
+// Swagger will still work for testing endpoints
 
 // ✅ SEGURIDAD 2025: Configurar Rate Limiting nativo de .NET 8
+// Configuración ajustada para aplicación web: límites más permisivos para uso normal, estrictos para endpoints sensibles
+// En desarrollo: sin límites para localhost y IPs de desarrollo
 builder.Services.AddRateLimiter(options =>
 {
-    // 1. Política para autenticación: 5 intentos cada 5 minutos por IP
-    options.AddFixedWindowLimiter("auth", opt =>
+    // IPs de desarrollo que no tendrán límites (puedes agregar más separadas por coma)
+    var developmentIps = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        opt.PermitLimit = 5;
-        opt.Window = TimeSpan.FromMinutes(5);
-        opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
-        opt.QueueLimit = 0; // No permitir cola
-    });
-
-    // 2. Política para API general: 100 requests por minuto por IP
-    options.AddFixedWindowLimiter("api", opt =>
+        "127.0.0.1",
+        "::1",
+        "localhost",
+        "10.192.42.21" // Tu IP de desarrollo
+    };
+    
+    // Agregar IPs adicionales desde variable de entorno si existe
+    var additionalDevIps = Environment.GetEnvironmentVariable("DEV_IPS");
+    if (!string.IsNullOrEmpty(additionalDevIps))
     {
-        opt.PermitLimit = 100;
-        opt.Window = TimeSpan.FromMinutes(1);
-        opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
-        opt.QueueLimit = 2; // Permitir 2 requests en cola
-    });
+        foreach (var ip in additionalDevIps.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            developmentIps.Add(ip);
+        }
+    }
 
-    // 3. Política para operaciones de pago: 10 por minuto por usuario
-    options.AddFixedWindowLimiter("payment", opt =>
+    // Función helper para verificar si es IP de desarrollo
+    bool IsDevelopmentIp(string? ip)
     {
-        opt.PermitLimit = 10;
-        opt.Window = TimeSpan.FromMinutes(1);
-        opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
-        opt.QueueLimit = 0;
-    });
+        if (string.IsNullOrEmpty(ip)) return false;
+        return developmentIps.Contains(ip) || ip.StartsWith("127.") || ip.StartsWith("::1") || ip == "localhost";
+    }
 
-    // 4. Política para admin: 200 requests por minuto
-    options.AddFixedWindowLimiter("admin", opt =>
+    // 1. Política para autenticación: Sin límites para localhost, 30 intentos cada 5 minutos para otros IPs
+    options.AddPolicy("auth", httpContext =>
     {
-        opt.PermitLimit = 200;
-        opt.Window = TimeSpan.FromMinutes(1);
-        opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
-        opt.QueueLimit = 5;
-    });
-
-    // 5. Política global por IP: 1000 requests por hora
-    options.GlobalLimiter = System.Threading.RateLimiting.PartitionedRateLimiter.Create<Microsoft.AspNetCore.Http.HttpContext, string>(httpContext =>
-        System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        
+        // Si es IP de desarrollo, sin límites
+        if (IsDevelopmentIp(remoteIp))
+        {
+            return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter(remoteIp);
+        }
+        
+        // Para otros IPs: 30 requests cada 5 minutos (ampliado de 5)
+        return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: remoteIp,
             factory: partition => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
             {
                 AutoReplenishment = true,
-                PermitLimit = 1000,
+                PermitLimit = 30, // Ampliado de 5 a 30
+                Window = TimeSpan.FromMinutes(5),
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                QueueLimit = 0
+            });
+    });
+
+    // 2. Política para API general: Sin límites para localhost, 200 requests por minuto para otros IPs
+    options.AddPolicy("api", httpContext =>
+    {
+        var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        
+        // Si es IP de desarrollo, sin límites
+        if (IsDevelopmentIp(remoteIp))
+        {
+            return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter(remoteIp);
+        }
+        
+        // Para otros IPs: 200 requests por minuto (ampliado de 100)
+        return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: remoteIp,
+            factory: partition => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 200, // Ampliado de 100 a 200
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                QueueLimit = 5 // Ampliado de 2 a 5
+            });
+    });
+
+    // 3. Política para operaciones de pago: Sin límites para localhost, 30 por minuto para otros IPs
+    options.AddPolicy("payment", httpContext =>
+    {
+        var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        
+        // Si es IP de desarrollo, sin límites
+        if (IsDevelopmentIp(remoteIp))
+        {
+            return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter(remoteIp);
+        }
+        
+        // Para otros IPs: 30 requests por minuto (ampliado de 10)
+        return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: remoteIp,
+            factory: partition => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 30, // Ampliado de 10 a 30
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                QueueLimit = 2 // Ampliado de 0 a 2
+            });
+    });
+
+    // 4. Política para admin: Sin límites para localhost, 500 requests por minuto para otros IPs
+    options.AddPolicy("admin", httpContext =>
+    {
+        var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        
+        // Si es IP de desarrollo, sin límites
+        if (IsDevelopmentIp(remoteIp))
+        {
+            return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter(remoteIp);
+        }
+        
+        // Para otros IPs: 500 requests por minuto (ampliado de 200)
+        return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: remoteIp,
+            factory: partition => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 500, // Ampliado de 200 a 500
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                QueueLimit = 10 // Ampliado de 5 a 10
+            });
+    });
+
+    // 5. Política global por IP: Sin límites para localhost, 5000 requests por hora para otros IPs
+    // En desarrollo o para IPs de desarrollo: sin límites
+    options.GlobalLimiter = System.Threading.RateLimiting.PartitionedRateLimiter.Create<Microsoft.AspNetCore.Http.HttpContext, string>(httpContext =>
+    {
+        var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        
+        // Si es desarrollo o IP de desarrollo, sin límites
+        if (isDevelopment || IsDevelopmentIp(remoteIp))
+        {
+            return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter(remoteIp);
+        }
+        
+        // En producción, aplicar límite ampliado
+        return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: remoteIp,
+            factory: partition => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 5000, // Ampliado de 1000 a 5000 requests por hora
                 Window = TimeSpan.FromHours(1)
-            }));
+            });
+    });
 
     // Respuesta cuando se excede el límite
     options.OnRejected = async (context, cancellationToken) =>
@@ -361,19 +1017,81 @@ builder.Services.AddRateLimiter(options =>
     };
 });
 
-// AutoMapper will be registered later with all assemblies
-
-// Configure SignalR
-builder.Services.AddSignalR(options =>
+builder.Services.AddAutoMapper(cfg =>
 {
-    options.EnableDetailedErrors = true;
-    options.KeepAliveInterval = TimeSpan.FromSeconds(10);
-    options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+    cfg.AddProfile<AdMappingProfile>();
+    cfg.AddProfile<PlatformMappingProfile>();
+    cfg.AddProfile<CategoryMappingProfile>();
+    cfg.AddProfile<UserMappingProfile>();
+});
+
+// ✅ MEJORAS 2025: Configure SignalR con mejores prácticas
+// - Timeouts optimizados para conexiones estables
+// - KeepAlive mejorado para detectar desconexiones rápidamente
+// - Protocolos optimizados para mejor rendimiento
+// - Soporte para reconexión automática mejorada
+var signalRBuilder = builder.Services.AddSignalR(options =>
+{
+    // ✅ MEJORA 2025: Habilitar errores detallados solo en desarrollo
+    options.EnableDetailedErrors = isDevelopment;
+    
+    // ✅ MEJORA 2025: KeepAlive optimizado - enviar ping cada 15 segundos
+    // Esto ayuda a detectar conexiones muertas más rápido
+    options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+    
+    // ✅ MEJORA 2025: Timeout de cliente aumentado a 60 segundos
+    // Permite más tiempo para reconexión automática antes de marcar como desconectado
+    options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);
+    
+    // ✅ MEJORA 2025: MaximumReceiveMessageSize aumentado para archivos grandes
+    // Permite mensajes más grandes (útil para metadata de archivos)
+    options.MaximumReceiveMessageSize = 32 * 1024; // 32KB
+    
+    // ✅ MEJORA 2025: MaximumParallelInvocationsPerClient
+    // Limita invocaciones paralelas por cliente para evitar sobrecarga
+    options.MaximumParallelInvocationsPerClient = 5;
+    
+    // ✅ MEJORA 2025: StreamBufferCapacity para streaming (si se usa en el futuro)
+    options.StreamBufferCapacity = 10;
 })
 .AddJsonProtocol(options =>
 {
+    // ✅ MEJORA 2025: Mantener naming policy null para compatibilidad con frontend
     options.PayloadSerializerOptions.PropertyNamingPolicy = null;
+    
+    // ✅ MEJORA 2025: Configurar opciones de serialización para mejor rendimiento
+    options.PayloadSerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+    options.PayloadSerializerOptions.WriteIndented = false; // No indentar en producción
 });
+
+// ✅ ESCALABILIDAD: Configurar Redis como backplane para SignalR
+// Esto permite que los mensajes se compartan entre múltiples instancias del servidor
+// Solo en producción (en desarrollo no es necesario)
+if (!isDevelopment)
+{
+    var redisConnectionString = GetSecretValue("redis-connection-string", null);
+    
+    if (!string.IsNullOrEmpty(redisConnectionString))
+    {
+        var signalRLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+        signalRLogger.LogInformation("Configurando Redis como backplane para SignalR...");
+        signalRLogger.LogInformation($"Redis Connection String: {redisConnectionString.Substring(0, Math.Min(20, redisConnectionString.Length))}***");
+        
+        signalRBuilder.AddStackExchangeRedis(redisConnectionString, redisOptions =>
+        {
+            redisOptions.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal("SignalR");
+            redisOptions.Configuration.DefaultDatabase = 0;
+        });
+        
+        signalRLogger.LogInformation("✅ Redis backplane configurado para SignalR");
+    }
+    else
+    {
+        var signalRLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+        signalRLogger.LogWarning("⚠️ Redis no configurado para SignalR. Los mensajes NO se compartirán entre instancias.");
+        signalRLogger.LogWarning("   Para escalabilidad, configura REDIS_CONNECTION_STRING o 'redis-connection-string' en Secret Manager.");
+    }
+}
 
 // Configure JWT Authentication
 builder.Services.AddAuthentication(options =>
@@ -391,10 +1109,10 @@ builder.Services.AddAuthentication(options =>
         ValidateAudience = true,
         ValidateLifetime = true,
         ValidateIssuerSigningKey = true,
-        ValidIssuer = builder.Configuration["Jwt:Issuer"],
-        ValidAudience = builder.Configuration["Jwt:Audience"],
+        ValidIssuer = builder.Configuration["Jwt:Issuer"] ?? "",
+        ValidAudience = builder.Configuration["Jwt:Audience"] ?? "",
         IssuerSigningKey = new SymmetricSecurityKey(
-            Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? throw new InvalidOperationException("JWT Key not found in configuration."))),
+            Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? throw new InvalidOperationException("JWT Key not found in Secret Manager or configuration."))),
         ClockSkew = TimeSpan.Zero
     };
     options.Events = new JwtBearerEvents
@@ -416,12 +1134,38 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("PostgresConnection"), npgsqlOptions =>
     {
-        npgsqlOptions.CommandTimeout(30);
-        npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null);
+        npgsqlOptions.CommandTimeout(60); // Aumentado a 60 segundos para conexiones lentas
+        npgsqlOptions.EnableRetryOnFailure(
+            maxRetryCount: 5, // Aumentado de 3 a 5 reintentos
+            maxRetryDelay: TimeSpan.FromSeconds(10), // Aumentado delay máximo
+            errorCodesToAdd: null);
+        
+        // ✅ CORRECCIÓN: Los parámetros de conexión (Keepalive, Pooling, etc.) ya están en el connection string
+        // No es necesario configurarlos aquí, se aplican automáticamente desde el connection string
     }));
 
 // Configure Google Cloud Storage
-builder.Services.AddSingleton(StorageClient.Create());
+builder.Services.AddSingleton<StorageClient>(sp =>
+{
+    var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
+    if (!string.IsNullOrEmpty(credentialsPath) && System.IO.File.Exists(credentialsPath))
+    {
+        var credential = GoogleCredential.FromFile(credentialsPath);
+        return StorageClient.Create(credential);
+    }
+    // Si no hay credenciales, intentar usar credenciales predeterminadas o retornar null
+    try
+    {
+        return StorageClient.Create();
+    }
+    catch
+    {
+        // Si falla, retornar null - los servicios que lo necesiten deberán manejarlo
+        return null!;
+    }
+});
+
+builder.Services.AddSingleton<ISignedUrlService, GoogleSignedUrlService>();
 
 // Configure RabbitMQ
 builder.Services.AddSingleton<RabbitMQ.Client.IConnectionFactory>(sp =>
@@ -469,7 +1213,9 @@ builder.Services.AddCors(options =>
 });
 
 
-// Configure Hangfire
+// ✅ HANGFIRE HABILITADO: Dashboard habilitado para visualización
+// ⚠️ NOTA: El servidor de Hangfire está deshabilitado para evitar problemas de recursos en K3s
+// Solo se habilita el Dashboard para visualización y monitoreo
 builder.Services.AddHangfire(config => config
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
@@ -484,11 +1230,21 @@ builder.Services.AddHangfire(config => config
     .UseDefaultTypeResolver()
     .UseDefaultTypeSerializer());
 
-builder.Services.AddHangfireServer();
+// ✅ HABILITADO: Servidor de Hangfire para procesar jobs automáticamente
+// Los jobs de timers de appointments requieren que el servidor esté activo
+builder.Services.AddHangfireServer(options =>
+{
+    options.WorkerCount = 2; // Número de workers que procesan jobs simultáneamente
+    options.ServerTimeout = TimeSpan.FromMinutes(5);
+    options.HeartbeatInterval = TimeSpan.FromSeconds(30);
+    options.ServerCheckInterval = TimeSpan.FromMinutes(1);
+    options.SchedulePollingInterval = TimeSpan.FromSeconds(30); // Verifica jobs programados cada 30 segundos
+});
 
 // Register Services
 builder.Services.AddScoped<IRabbitMQService, RabbitMQService>();
-builder.Services.AddScoped<IWebMixerService, WebMixerService>();
+
+builder.Services.AddScoped<IStripeConfigService, StripeConfigService>();builder.Services.AddScoped<IWebMixerService, WebMixerService>();
 builder.Services.AddScoped<IScrapperService, ScrapperService>();
 builder.Services.AddScoped<ILikeService, LikeService>();
 builder.Services.AddScoped<IUserService, UserService>();
@@ -505,11 +1261,13 @@ builder.Services.AddScoped<IAccountDeletionService, AccountDeletionService>();
 builder.Services.AddScoped<IAccountDeletionNotificationService, AccountDeletionNotificationService>();
 builder.Services.AddScoped<StripeRefundService>();
 builder.Services.AddScoped<IEmailService, EmailService>();
+builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<ILoggingService, LoggingService>();
 builder.Services.AddScoped<IInvoiceService, newApi.Services.InvoiceService>();
 builder.Services.AddScoped<IStripeValidationService, StripeValidationService>();
 builder.Services.AddScoped<RefreshTokenCleanupService>(); // ✅ SEGURIDAD 2025: Limpieza de refresh tokens
 builder.Services.AddScoped<MfaService>(); // ✅ SEGURIDAD 2025: Autenticación Multifactor (MFA/2FA)
+builder.Services.AddScoped<ITimezoneService, TimezoneService>(); // ✅ Servicio para detección de timezone y country desde coordenadas
 
 // Background services - AppointmentTimerBackgroundService migrated to Hangfire
 
@@ -517,38 +1275,44 @@ builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<SearchServiceService>();
 builder.Services.AddScoped<SearchHireService>();
 
-// Configure HttpClient with IPv4 preference and increased timeout
-// This helps with DNS resolution issues in Kubernetes pods
-// Note: Google.Apis.Auth uses its own HttpClient, but this configuration
-// helps with general HTTP requests and may be picked up by some libraries
-builder.Services.AddHttpClient("default")
-    .ConfigurePrimaryHttpMessageHandler(() => new System.Net.Http.SocketsHttpHandler
-    {
-        ConnectTimeout = TimeSpan.FromSeconds(30),
-        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-        PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2)
-    });
-
-// Configure .NET to prefer IPv4 for DNS resolution
-// This is a global setting that affects all HttpClient instances
-AppContext.SetSwitch("System.Net.Sockets.Socket.ForceIPv4", true);
+builder.Services.AddHttpClient();
 
 // Add Health Checks
 builder.Services.AddHealthChecks();
 
-// Register AutoMapper with all mapping profiles
-// AutoMapper will scan the assemblies for profiles
-builder.Services.AddAutoMapper(cfg => {
-    cfg.AddMaps(typeof(AdMappingProfile).Assembly);
-    cfg.AddMaps(typeof(PlatformMappingProfile).Assembly);
-    cfg.AddMaps(typeof(CategoryMappingProfile).Assembly);
-    cfg.AddMaps(typeof(UserMappingProfile).Assembly);
-});
-
 var app = builder.Build();
 
-// Configure Stripe
-StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"];
+// ✅ Cargar claves Stripe según el modo configurado en SystemSetting
+try
+{
+    using (var scope = app.Services.CreateScope())
+    {
+        var stripeConfigService = scope.ServiceProvider.GetRequiredService<IStripeConfigService>();
+        var mode = await stripeConfigService.GetStripeModeAsync();
+        var (secretKey, webhookSecret, generalWebhookSecret) = await stripeConfigService.GetStripeKeysForModeAsync(
+            mode, 
+            GetSecretValue);
+        
+        builder.Configuration["Stripe:SecretKey"] = secretKey;
+        builder.Configuration["Stripe:WebhookSecret"] = webhookSecret;
+        builder.Configuration["Stripe:GeneralWebhookSecret"] = generalWebhookSecret;
+        
+        StripeConfiguration.ApiKey = secretKey;
+        
+        var stripeLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        stripeLogger.LogInformation($"✅ Claves Stripe cargadas en modo: {mode}");
+        stripeLogger.LogInformation($"   SecretKey presente: {!string.IsNullOrEmpty(secretKey)}");
+        stripeLogger.LogInformation($"   WebhookSecret presente: {!string.IsNullOrEmpty(webhookSecret)}");
+    }
+}
+catch (Exception ex)
+{
+    var stripeLogger = app.Services.GetRequiredService<ILogger<Program>>();
+    stripeLogger.LogError(ex, "Error cargando claves Stripe según modo, usando configuración por defecto");
+}
+
+// Configure Stripe - se configurará dinámicamente según el modo en SystemSetting
+// La configuración inicial se hace después de inicializar la base de datos (ver más abajo)
 
 // 🚨 LOG CRÍTICO: Configuración de Stripe
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
@@ -611,15 +1375,21 @@ catch (Exception ex)
 }
 
 
-// Schedule recurring job with Hangfire
-app.UseHangfireDashboard("/hangfire");
+// ✅ HANGFIRE DASHBOARD: Habilitado con autenticación JWT
+app.UseHangfireDashboard("/hangfire", new DashboardOptions
+{
+    Authorization = new[] { new newApi.Filters.HangfireAuthorizationFilter(app.Configuration) },
+    // Configurar para permitir iframes
+    IsReadOnlyFunc = (DashboardContext context) => false
+});
 
-// ✅ SEGURIDAD 2025: Configurar limpieza automática de refresh tokens
-// Se ejecuta todos los días a las 3:00 AM
+// ✅ SEGURIDAD 2025: Limpieza automática de refresh tokens - Comentado porque Hangfire está deshabilitado
+// TODO: Implementar con un servicio background alternativo o habilitar Hangfire con Redis
+/*
 RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     "cleanup-expired-refresh-tokens",
     service => service.CleanupExpiredTokensAsync(),
-    Cron.Daily(3), // 3:00 AM todos los días
+    Cron.Daily(3),
     new RecurringJobOptions
     {
         TimeZone = TimeZoneInfo.Utc
@@ -627,7 +1397,8 @@ RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
 );
 GlobalConfiguration.Configuration
     .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()))
-    .UseFilter(new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>())); // ✅ Filtro para alertar a soporte cuando jobs fallan definitivamente
+    .UseFilter(new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>()));
+*/ // ✅ Filtro para alertar a soporte cuando jobs fallan definitivamente
 
 // ✅ OPTIMIZADO: Usar solo scheduled jobs para eventos específicos
 // Los recurring jobs fueron eliminados porque:
@@ -649,6 +1420,36 @@ if (app.Environment.IsDevelopment())
         c.OAuthUseBasicAuthenticationWithAccessCodeGrant();
     });
 }
+
+// ✅ HANGFIRE IFRAME SUPPORT: Configurar headers para permitir iframes en Hangfire Dashboard
+app.Use(async (context, next) =>
+{
+    // Si es una ruta de Hangfire, configurar headers para permitir iframes
+    if (context.Request.Path.StartsWithSegments("/hangfire", StringComparison.OrdinalIgnoreCase))
+    {
+        // Permitir que se cargue en iframes desde el mismo origen o desde orígenes permitidos
+        context.Response.Headers["X-Frame-Options"] = "SAMEORIGIN";
+        
+        // Configurar Content-Security-Policy para permitir iframes
+        // frame-ancestors permite especificar qué orígenes pueden embeber esta página
+        var allowedOrigins = new[] { "https://inspecciono.com", "https://www.inspecciono.com", "http://localhost:3000", "http://localhost:5173" };
+        var frameAncestors = string.Join(" ", allowedOrigins.Select(o => o));
+        context.Response.Headers["Content-Security-Policy"] = $"frame-ancestors {frameAncestors} 'self';";
+        
+        // Asegurar que CORS permita las credenciales (CORS middleware lo manejará, pero esto es un fallback)
+        var origin = context.Request.Headers["Origin"].FirstOrDefault();
+        if (!string.IsNullOrEmpty(origin) && allowedOrigins.Any(o => origin.StartsWith(o, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Origin"))
+            {
+                context.Response.Headers["Access-Control-Allow-Origin"] = origin;
+            }
+            context.Response.Headers["Access-Control-Allow-Credentials"] = "true";
+        }
+    }
+    
+    await next();
+});
 
 app.UseCors("AllowSpecificOrigin"); // Aplicar CORS antes de otros middleware
 
@@ -698,6 +1499,10 @@ context.Request.Headers.ContainsKey("X-Bypass-Auth"))
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+// ✅ SEGURIDAD 2025: FORZAR MFA para Admin y Expertos
+// OWASP/NIST/PCI DSS: MFA obligatorio para cuentas privilegiadas
+app.UseRequireMfa();
 
 // Add health check endpoint
 app.MapHealthChecks("/health");

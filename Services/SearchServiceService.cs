@@ -82,6 +82,10 @@ namespace newApi.Services
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
                             .ThenInclude(r => r.ImagesCollection) // ✅ NUEVO: Incluir imágenes de las reviews
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire) // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                     .Include(ss => ss.SelectedDeliverableTypes)
@@ -138,7 +142,15 @@ namespace newApi.Services
             }
         }
 
-        public async Task<ExpertMapResponseDto> GetMapExperts(int categoryId, int serviceTypeId)
+        public async Task<ExpertMapResponseDto> GetMapExperts(
+            int categoryId, 
+            int serviceTypeId,
+            decimal? northeastLat = null,
+            decimal? northeastLng = null,
+            decimal? southwestLat = null,
+            decimal? southwestLng = null,
+            int? zoom = null,
+            int limit = 100)
         {
             try
             {
@@ -147,11 +159,57 @@ namespace newApi.Services
                     throw new ArgumentException("CategoryId and ServiceTypeId must be greater than 0");
                 }
 
+                // ✅ Validar bounds si se proporcionan
+                bool hasBounds = northeastLat.HasValue && northeastLng.HasValue && 
+                                southwestLat.HasValue && southwestLng.HasValue;
+                
+                if (hasBounds)
+                {
+                    // Validar que northeast > southwest
+                    if (northeastLat.Value <= southwestLat.Value || northeastLng.Value <= southwestLng.Value)
+                    {
+                        throw new ArgumentException("Invalid bounds: northeast must be greater than southwest");
+                    }
+                    
+                    // Validar rangos de coordenadas
+                    if (northeastLat.Value < -90m || northeastLat.Value > 90m ||
+                        southwestLat.Value < -90m || southwestLat.Value > 90m ||
+                        northeastLng.Value < -180m || northeastLng.Value > 180m ||
+                        southwestLng.Value < -180m || southwestLng.Value > 180m)
+                    {
+                        throw new ArgumentException("Invalid coordinate ranges. Latitude must be between -90 and 90, Longitude between -180 and 180");
+                    }
+                }
+
+                // ✅ Determinar límite según zoom
+                int maxResults = limit;
+                if (zoom.HasValue)
+                {
+                    maxResults = zoom.Value switch
+                    {
+                        >= 15 => Math.Min(limit, 200),  // Zoom alto: más servicios
+                        >= 12 => Math.Min(limit, 100),  // Zoom medio
+                        _ => Math.Min(limit, 50)        // Zoom bajo: menos servicios
+                    };
+                }
+
                 var query = _context.SearchServices
                     .AsNoTracking() // ✅ CORRECCIÓN: Forzar consulta desde BD, evitar tracking de EF Core
                     .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId && ss.IsActive && !ss.ExpertProfile.IsOnVacation
                         && (ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted
                             || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)) // ✅ FIX: Permitir PendingVerification
+                    .Where(ss => !string.IsNullOrEmpty(ss.ExpertProfile.Latitude) && !string.IsNullOrEmpty(ss.ExpertProfile.Longitude)); // ✅ MEJORA: Filtrar coordenadas vacías en SQL
+
+                // ✅ OPTIMIZACIÓN: Aplicar límite temprano cuando hay bounds para reducir datos cargados
+                // Aunque el filtrado final sea en memoria, limitamos la cantidad de datos desde SQL
+                if (hasBounds)
+                {
+                    // Aplicar un límite generoso antes de cargar (para reducir memoria)
+                    // El límite real se aplica después del filtrado por bounds
+                    query = query.Take(maxResults * 3); // Cargar 3x el límite para tener margen después del filtrado
+                }
+
+                query = query
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
@@ -160,9 +218,61 @@ namespace newApi.Services
                     .Include(ss => ss.ServiceType);
 
                 var services = await query.ToListAsync();
-                services = services
-                    .Where(ss => ss.IsActive && !string.IsNullOrEmpty(ss.ExpertProfile?.Latitude) && !string.IsNullOrEmpty(ss.ExpertProfile?.Longitude)) // ✅ CORRECCIÓN: Filtrar explícitamente por IsActive después de cargar
-                    .ToList();
+
+                // ✅ OPTIMIZACIÓN: Filtrar por bounds en memoria (necesario porque coordenadas son strings)
+                // Nota: Aunque no podemos filtrar directamente en SQL con CAST fácilmente en EF Core,
+                // al menos limitamos la cantidad de datos cargados antes del filtrado
+                if (hasBounds)
+                {
+                    services = services.Where(ss =>
+                    {
+                        if (!decimal.TryParse(ss.ExpertProfile.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLat) ||
+                            !decimal.TryParse(ss.ExpertProfile.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLng))
+                        {
+                            return false;
+                        }
+
+                        // Verificar que el experto esté dentro de los bounds
+                        // Nota: Para longitudes que cruzan el meridiano 180/-180, se necesita lógica adicional
+                        bool latInBounds = expertLat >= southwestLat.Value && expertLat <= northeastLat.Value;
+                        bool lngInBounds = expertLng >= southwestLng.Value && expertLng <= northeastLng.Value;
+                        
+                        return latInBounds && lngInBounds;
+                    }).ToList();
+
+                    // ✅ OPTIMIZACIÓN: Ordenar por distancia al centro del bounds
+                    var centerLat = (northeastLat.Value + southwestLat.Value) / 2;
+                    var centerLng = (northeastLng.Value + southwestLng.Value) / 2;
+                    
+                    services = services.OrderBy(ss =>
+                    {
+                        if (!decimal.TryParse(ss.ExpertProfile.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLat) ||
+                            !decimal.TryParse(ss.ExpertProfile.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLng))
+                        {
+                            return decimal.MaxValue; // Poner al final si no se puede parsear
+                        }
+                        return CalculateDistance(centerLat, centerLng, expertLat, expertLng);
+                    }).ToList();
+
+                    // ✅ OPTIMIZACIÓN: Aplicar límite después del filtrado y ordenamiento
+                    if (services.Count > maxResults)
+                    {
+                        services = services.Take(maxResults).ToList();
+                    }
+                }
+
+                // ✅ NUEVO: Cargar todas las disponibilidades activas de los expertos en una sola consulta
+                var expertProfileIds = services.Select(ss => ss.ExpertProfileId).Distinct().ToList();
+                var availabilities = await _context.ExpertAvailabilities
+                    .Where(ea => expertProfileIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                    .OrderByDescending(ea => ea.EffectiveFrom)
+                    .ToListAsync();
+
+                // Agrupar por ExpertId y tomar la más reciente (si hay duplicados)
+                var availabilityByExpert = availabilities
+                    .GroupBy(ea => ea.ExpertId)
+                    .ToDictionary(g => g.Key, g => g.First());
+
                 // Agrupar servicios por experto para evitar duplicados
                 var expertGroups = services.GroupBy(ss => ss.ExpertProfile.User.Id);
 
@@ -171,6 +281,21 @@ namespace newApi.Services
                     var firstService = expertGroup.First();
                     var expert = firstService.ExpertProfile.User;
                     
+                    // Obtener disponibilidad
+                    CurrentExpertAvailabilityDto? availabilityDto = null;
+                    if (availabilityByExpert.TryGetValue(firstService.ExpertProfile.Id, out var currentAvailability))
+                    {
+                        var daysOfWeek = System.Text.Json.JsonSerializer.Deserialize<List<string>>(currentAvailability.DaysOfWeek) ?? new List<string>();
+                        availabilityDto = new CurrentExpertAvailabilityDto
+                        {
+                            Id = currentAvailability.Id,
+                            DaysOfWeek = daysOfWeek,
+                            StartTime = currentAvailability.StartTime,
+                            EndTime = currentAvailability.EndTime,
+                            EffectiveFrom = currentAvailability.EffectiveFrom
+                        };
+                    }
+
                     return new ExpertMapDto
                     {
                         Id = expert.Id,
@@ -183,7 +308,14 @@ namespace newApi.Services
                         CompletedSearches = expert.SearchHiresAsExpert?.Count(sh => sh.Status.StatusValue == "completed") ?? 0,
                         RegisteredSince = firstService.ExpertProfile.CreatedAt,
                         Latitude = firstService.ExpertProfile.Latitude,
-                        Longitude = firstService.ExpertProfile.Longitude
+                        Longitude = firstService.ExpertProfile.Longitude,
+                        // ✅ NUEVO: Precio del servicio
+                        Price = firstService.Price,
+                        // ✅ NUEVO: Datos adicionales solicitados (descripciones, tipos y horarios)
+                        ServiceDescription = firstService.Conditions,
+                        ServiceTypeName = firstService.ServiceType?.Name ?? "Unknown",
+                        ServiceTypeDescription = firstService.ServiceType?.Description ?? string.Empty,
+                        CurrentAvailability = availabilityDto
                     };
                 }).ToList();
 
@@ -213,10 +345,14 @@ namespace newApi.Services
             return (decimal)(R * c);
         }
 
-        public async Task<IEnumerable<SearchServiceResponseDto>> GetExpertServices(int expertId, int? serviceTypeId = null)
+        public async Task<(IEnumerable<SearchServiceResponseDto> services, int totalCount)> GetExpertServices(int expertId, int? serviceTypeId = null, int page = 1, int pageSize = 20)
         {
             try
             {
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
                 IQueryable<SearchService> query = _context.SearchServices
                     .AsNoTracking() // ✅ CORRECCIÓN: Forzar consulta desde BD, evitar tracking de EF Core
                     .Where(ss => ss.ExpertProfileId == expertId && ss.IsActive);
@@ -226,21 +362,26 @@ namespace newApi.Services
                     query = query.Where(ss => ss.ServiceTypeId == serviceTypeId.Value);
                 }
 
+                var totalCount = await query.CountAsync();
+
                 query = query
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire) // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                     .Include(ss => ss.SelectedDeliverableTypes)
-                        .ThenInclude(ssdt => ssdt.DeliverableType);
+                        .ThenInclude(ssdt => ssdt.DeliverableType)
+                    .OrderByDescending(ss => ss.CreatedAt)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize);
 
                 var services = await query.ToListAsync();
                 
-                
                 var mappedServices = services.Select(ss => MapToResponseDto(ss)).ToList();
-                return mappedServices;
+                return (mappedServices, totalCount);
             }
             catch (Exception ex)
             {
@@ -264,6 +405,10 @@ namespace newApi.Services
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
                             .ThenInclude(r => r.ImagesCollection) // ✅ NUEVO: Incluir imágenes de las reviews
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire) // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                         .ThenInclude(st => st.ServiceTypeCategory)
@@ -314,6 +459,7 @@ namespace newApi.Services
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire) // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
                         .ThenInclude(st => st.ServiceTypeCategory)
@@ -536,6 +682,7 @@ namespace newApi.Services
                 CategoryId = ss.CategoryId,
                 ServiceTypeId = ss.ServiceTypeId,
                 ServiceTypeName = ss.ServiceType?.Name ?? "Unknown Service Type",
+                ServiceTypeDescription = ss.ServiceType?.Description ?? string.Empty, // ✅ NUEVO
                 ServiceTypeCategoryId = ss.ServiceType?.ServiceTypeCategoryId,
                 RequiresAppointment = ss.ServiceType?.RequiresAppointment ?? false,
                 Price = ss.Price,
@@ -586,7 +733,9 @@ namespace newApi.Services
                     ImageUrls = r.ImagesCollection?
                         .Select(img => ResolveReviewImageUrl(img))
                         .Where(url => !string.IsNullOrEmpty(url))
-                        .ToList() ?? new List<string>()
+                        .ToList() ?? new List<string>(),
+                    // ✅ INTERNACIONALIZACIÓN: País donde se realizó la contratación
+                    Country = r.SearchHire?.ExpertCountry
                 }).ToList() ?? new List<ReviewDto>();
 
                 // ✅ NUEVO: Obtener la disponibilidad actual activa del experto
@@ -622,7 +771,10 @@ namespace newApi.Services
                     CurrentAvailability = availabilityDto, // ✅ NUEVO: Incluir horarios de disponibilidad
                     // ✅ FUTURE REQUIREMENTS
                     StripeFutureRequirements = ss.ExpertProfile.StripeFutureRequirements,
-                    StripeFutureDueAt = ss.ExpertProfile.StripeFutureDueAt
+                    StripeFutureDueAt = ss.ExpertProfile.StripeFutureDueAt,
+                    // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto
+                    Timezone = ss.ExpertProfile.Timezone,
+                    Country = ss.ExpertProfile.Country
                 };
             }
 
@@ -634,6 +786,7 @@ namespace newApi.Services
                 CategoryId = baseDto.CategoryId,
                 ServiceTypeId = baseDto.ServiceTypeId,
                 ServiceTypeName = baseDto.ServiceTypeName,
+                ServiceTypeDescription = baseDto.ServiceTypeDescription, // ✅ FIXED: Copiar descripción
                 ServiceTypeCategoryId = baseDto.ServiceTypeCategoryId, // ✅ CORRECCIÓN: Incluir ServiceTypeCategoryId
                 RequiresAppointment = baseDto.RequiresAppointment, // ✅ CORRECCIÓN: Incluir RequiresAppointment
                 Price = baseDto.Price,
@@ -663,6 +816,7 @@ namespace newApi.Services
                 CategoryId = ss.CategoryId,
                 ServiceTypeId = ss.ServiceTypeId,
                 ServiceTypeName = ss.ServiceType?.Name ?? "Unknown Service Type",
+                ServiceTypeDescription = ss.ServiceType?.Description ?? string.Empty, // ✅ NUEVO
                 ServiceTypeCategoryId = ss.ServiceType?.ServiceTypeCategoryId,
                 RequiresAppointment = ss.ServiceType?.RequiresAppointment ?? false,
                 Price = ss.Price,
@@ -713,7 +867,9 @@ namespace newApi.Services
                     ImageUrls = r.ImagesCollection?
                         .Select(img => ResolveReviewImageUrl(img))
                         .Where(url => !string.IsNullOrEmpty(url))
-                        .ToList() ?? new List<string>()
+                        .ToList() ?? new List<string>(),
+                    // ✅ INTERNACIONALIZACIÓN: País donde se realizó la contratación
+                    Country = r.SearchHire?.ExpertCountry
                 }).ToList() ?? new List<ReviewDto>();
 
                 expertProfileDto = new ExpertProfileDto
@@ -729,7 +885,10 @@ namespace newApi.Services
                     IsOnVacation = ss.ExpertProfile.IsOnVacation,
                     // ✅ FUTURE REQUIREMENTS
                     StripeFutureRequirements = ss.ExpertProfile.StripeFutureRequirements,
-                    StripeFutureDueAt = ss.ExpertProfile.StripeFutureDueAt
+                    StripeFutureDueAt = ss.ExpertProfile.StripeFutureDueAt,
+                    // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto
+                    Timezone = ss.ExpertProfile.Timezone,
+                    Country = ss.ExpertProfile.Country
                 };
             }
 

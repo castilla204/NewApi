@@ -17,7 +17,7 @@ namespace newApi.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "8.0.1")
+                .HasAnnotation("ProductVersion", "10.0.0")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -62,7 +62,7 @@ namespace newApi.Migrations
                     b.Property<int?>("AdScore")
                         .HasColumnType("integer");
 
-                    b.Property<string[]>("BadThings")
+                    b.PrimitiveCollection<string[]>("BadThings")
                         .IsRequired()
                         .HasColumnType("text[]");
 
@@ -87,14 +87,14 @@ namespace newApi.Migrations
                     b.Property<int?>("FinalScore")
                         .HasColumnType("integer");
 
-                    b.Property<string[]>("GoodThings")
+                    b.PrimitiveCollection<string[]>("GoodThings")
                         .IsRequired()
                         .HasColumnType("text[]");
 
                     b.Property<bool>("Highlighted")
                         .HasColumnType("boolean");
 
-                    b.Property<string[]>("Images")
+                    b.PrimitiveCollection<string[]>("Images")
                         .IsRequired()
                         .HasColumnType("text[]");
 
@@ -131,7 +131,7 @@ namespace newApi.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<string[]>("Tags")
+                    b.PrimitiveCollection<string[]>("Tags")
                         .IsRequired()
                         .HasColumnType("text[]");
 
@@ -569,6 +569,9 @@ namespace newApi.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("Country")
+                        .HasColumnType("text");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -614,6 +617,10 @@ namespace newApi.Migrations
                         .HasColumnType("integer");
 
                     b.Property<string>("StripeStatusDetails")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Timezone")
+                        .IsRequired()
                         .HasColumnType("text");
 
                     b.Property<int>("UserId")
@@ -1116,7 +1123,7 @@ namespace newApi.Migrations
                     b.Property<int?>("ExpertId")
                         .HasColumnType("integer");
 
-                    b.Property<string[]>("Images")
+                    b.PrimitiveCollection<string[]>("Images")
                         .IsRequired()
                         .HasColumnType("text[]");
 
@@ -1231,6 +1238,9 @@ namespace newApi.Migrations
                     b.Property<decimal>("Amount")
                         .HasColumnType("numeric");
 
+                    b.Property<decimal?>("BaseAmount")
+                        .HasColumnType("numeric");
+
                     b.Property<bool?>("ClientApproved")
                         .HasColumnType("boolean");
 
@@ -1246,8 +1256,14 @@ namespace newApi.Migrations
                     b.Property<int?>("ExpertAvailabilityId")
                         .HasColumnType("integer");
 
+                    b.Property<string>("ExpertCountry")
+                        .HasColumnType("text");
+
                     b.Property<int?>("ExpertId")
                         .HasColumnType("integer");
+
+                    b.Property<string>("ExpertTimezone")
+                        .HasColumnType("text");
 
                     b.Property<string>("ExpertTransferId")
                         .HasColumnType("text");
@@ -1260,6 +1276,9 @@ namespace newApi.Migrations
 
                     b.Property<int>("StatusId")
                         .HasColumnType("integer");
+
+                    b.Property<decimal?>("TaxAmount")
+                        .HasColumnType("numeric");
 
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -1865,6 +1884,17 @@ namespace newApi.Migrations
 
                     b.Property<bool>("IsWhatsAppNotificationEnabled")
                         .HasColumnType("boolean");
+
+                    b.Property<string>("StripeMode")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime?>("StripeModeChangedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("StripeModeChangedByUserId")
+                        .HasColumnType("integer");
 
                     b.Property<string>("Theme")
                         .IsRequired()

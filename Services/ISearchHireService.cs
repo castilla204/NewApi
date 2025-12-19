@@ -5,8 +5,8 @@ namespace newApi.Services
 {
     public interface ISearchHireService
     {
-        Task<IEnumerable<SearchHireResponseDto>> GetClientHires(int userId);
-        Task<IEnumerable<SearchHireResponseDto>> GetExpertHires(int userId);
+        Task<(IEnumerable<SearchHireResponseDto> hires, int totalCount)> GetClientHires(int userId, int page, int pageSize);
+        Task<(IEnumerable<SearchHireResponseDto> hires, int totalCount)> GetExpertHires(int userId, int page, int pageSize);
         Task<(bool Success, string ErrorMessage)> UpdateHireStatus(int userId, int hireId, string status);
     }
 }

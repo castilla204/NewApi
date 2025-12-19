@@ -17,11 +17,19 @@ namespace newApi.Services
      string longitude,
      int locationRange);
 
-        Task<ExpertMapResponseDto> GetMapExperts(int categoryId, int serviceTypeId);
+        Task<ExpertMapResponseDto> GetMapExperts(
+            int categoryId, 
+            int serviceTypeId,
+            decimal? northeastLat = null,
+            decimal? northeastLng = null,
+            decimal? southwestLat = null,
+            decimal? southwestLng = null,
+            int? zoom = null,
+            int limit = 100);
 
         Task<SearchServiceDetailDto> GetServiceByHireId(int id);
 
-        Task<IEnumerable<SearchServiceResponseDto>> GetExpertServices(int expertId, int? serviceTypeId = null);
+        Task<(IEnumerable<SearchServiceResponseDto> services, int totalCount)> GetExpertServices(int expertId, int? serviceTypeId = null, int page = 1, int pageSize = 20);
 
         Task<SearchServiceDetailDto> GetServiceById(int id);
 

@@ -537,8 +537,8 @@ namespace newApi.Controllers
                     var linkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.StripeAccountId,
-                        RefreshUrl = "https://atrapo.io/refresh-onboarding",
-                        ReturnUrl = "https://atrapo.io/complete-onboarding",
+                        RefreshUrl = "https://inspecciono.com/refresh-onboarding",
+                        ReturnUrl = "https://inspecciono.com/complete-onboarding",
                         Type = "account_onboarding"
                     };
                     
@@ -561,8 +561,8 @@ namespace newApi.Controllers
                     var linkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.PendingStripeAccountId,
-                        RefreshUrl = "https://atrapo.io/refresh-onboarding",
-                        ReturnUrl = "https://atrapo.io/complete-onboarding",
+                        RefreshUrl = "https://inspecciono.com/refresh-onboarding",
+                        ReturnUrl = "https://inspecciono.com/complete-onboarding",
                         Type = "account_onboarding",
                         Collect = "eventually_due"
                     };
@@ -631,8 +631,8 @@ namespace newApi.Controllers
                     var linkOptions = new AccountLinkCreateOptions
                     {
                         Account = account.Id,
-                        RefreshUrl = "https://atrapo.io/refresh-onboarding",
-                        ReturnUrl = "https://atrapo.io/complete-onboarding",
+                        RefreshUrl = "https://inspecciono.com/refresh-onboarding",
+                        ReturnUrl = "https://inspecciono.com/complete-onboarding",
                         Type = "account_onboarding",
                         Collect = "eventually_due"
                     };
@@ -736,8 +736,8 @@ namespace newApi.Controllers
                 var accountLinkOptions = new Stripe.AccountLinkCreateOptions
                 {
                     Account = expertProfile.StripeAccountId,
-                    RefreshUrl = "https://atrapo.io/expert-panel?refresh=true", // URL si necesita refrescar
-                    ReturnUrl = "https://atrapo.io/expert-panel", // URL de retorno después de actualizar datos
+                    RefreshUrl = "https://inspecciono.com/expert-panel?refresh=true", // URL si necesita refrescar
+                    ReturnUrl = "https://inspecciono.com/expert-panel", // URL de retorno después de actualizar datos
                     Type = linkType // ✅ account_update para cuentas aprobadas, account_onboarding para requirements pendientes
                 };
 
@@ -1067,8 +1067,8 @@ namespace newApi.Controllers
                     var restartLinkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.StripeAccountId,
-                        RefreshUrl = "https://atrapo.io/refresh-onboarding",
-                        ReturnUrl = "https://atrapo.io/complete-onboarding",
+                        RefreshUrl = "https://inspecciono.com/refresh-onboarding",
+                        ReturnUrl = "https://inspecciono.com/complete-onboarding",
                         Type = "account_onboarding"
                     };
                     
@@ -1095,8 +1095,8 @@ namespace newApi.Controllers
                 var pendingLinkOptions = new AccountLinkCreateOptions
                 {
                     Account = expertProfile.PendingStripeAccountId,
-                    RefreshUrl = "https://atrapo.io/refresh-onboarding",
-                    ReturnUrl = "https://atrapo.io/complete-onboarding",
+                    RefreshUrl = "https://inspecciono.com/refresh-onboarding",
+                    ReturnUrl = "https://inspecciono.com/complete-onboarding",
                     Type = "account_onboarding",
                     Collect = "eventually_due"
                 };
@@ -1145,7 +1145,21 @@ namespace newApi.Controllers
                     return NotFound(new { message = "User not found" });
                 }
 
-                var domain = "https://atrapo.io";
+                // ✅ VALIDACIÓN: Usuario bloqueado no puede realizar pagos
+                if (user.IsBlocked)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Blocked user attempted to load money",
+                        details: $"Blocked user {user.Id} ({user.Email}) attempted to load money",
+                        userId: user.Id,
+                        source: "SubscriptionController.LoadMoney",
+                        relatedEntityType: "User",
+                        relatedEntityId: user.Id
+                    );
+                    return Unauthorized(new { message = "User account is blocked" });
+                }
+
+                var domain = "https://inspecciono.com";
                 var options = new SessionCreateOptions
                 {
                     PaymentMethodTypes = new List<string> { "card" },
@@ -1160,10 +1174,17 @@ namespace newApi.Controllers
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {
                                     Name = "Load Money"
-                                }
+                                },
+                                // ✅ STRIPE TAX: Configurar tax como inclusivo
+                                TaxBehavior = "inclusive"
                             },
                             Quantity = 1
                         }
+                    },
+                    // ✅ STRIPE TAX: Habilitar cálculo automático de tax
+                    AutomaticTax = new SessionAutomaticTaxOptions
+                    {
+                        Enabled = true
                     },
                     Mode = "payment",
                     SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}",
@@ -1284,6 +1305,20 @@ namespace newApi.Controllers
                     return NotFound(new { message = "User not found" });
                 }
 
+                // ✅ VALIDACIÓN: Usuario bloqueado no puede contratar servicios
+                if (user.IsBlocked)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Blocked user attempted to pay for service",
+                        details: $"Blocked user {user.Id} ({user.Email}) attempted to pay for service {request.ServiceId}",
+                        userId: user.Id,
+                        source: "SubscriptionController.LoadMoneyService",
+                        relatedEntityType: "User",
+                        relatedEntityId: user.Id
+                    );
+                    return Unauthorized(new { message = "User account is blocked" });
+                }
+
                 // 🚨 VALIDACIÓN CRÍTICA: Verificar teléfono antes del pago
                 // ✅ IMPORTANTE: Esta validación DEBE hacerse ANTES de crear el checkout session
 
@@ -1310,7 +1345,7 @@ namespace newApi.Controllers
                 // 💳 SIEMPRE PAGAR CON STRIPE - NO USAR SALDO INTERNO
                 var amountToCharge = service.Price;
 
-                var domain = "https://atrapo.io";
+                var domain = "https://inspecciono.com";
                 var options = new SessionCreateOptions
                 {
                     PaymentMethodTypes = new List<string> { "card" },
@@ -1325,10 +1360,17 @@ namespace newApi.Controllers
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {
                                     Name = $"Payment for Service {service.Id}"
-                                }
+                                },
+                                // ✅ STRIPE TAX: Configurar tax como inclusivo (el precio ya incluye IVA)
+                                TaxBehavior = "inclusive" // Stripe hace reverse calc automático
                             },
                             Quantity = 1
                         }
+                    },
+                    // ✅ STRIPE TAX: Habilitar cálculo automático de tax basado en ubicación del comprador
+                    AutomaticTax = new SessionAutomaticTaxOptions
+                    {
+                        Enabled = true // Habilita cálculo auto basado en IP, billing/shipping address
                     },
                     Mode = "payment",
                     SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}",
@@ -1413,6 +1455,10 @@ namespace newApi.Controllers
             Request.Body.Position = 0; // ✅ CORRECCIÓN: Reposicionar DESPUÉS de leer
             // ✅ SEGURIDAD: Convertir StringValues a string (puede venir como array)
             var signatureHeader = Request.Headers["Stripe-Signature"].ToString();
+            string? currentEventId = null;
+            string? currentEventType = null;
+            string? currentAccountId = null;
+            bool eventMarkedProcessing = false;
             try
             {
                 // ✅ SEGURIDAD CRÍTICA: Validar signature antes de procesar
@@ -1484,7 +1530,38 @@ namespace newApi.Controllers
                     return BadRequest(new { error = "Stripe signature header missing" });
                 }
                 
-                var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, webhookSecretToUse);
+                // ✅ STRIPE API VERSION: Permitir diferentes versiones de API con advertencia
+                // El webhook endpoint en Stripe Dashboard puede estar configurado con una versión diferente
+                // a la que espera el SDK. Esto es seguro siempre que validemos la signature correctamente.
+                var stripeEvent = EventUtility.ConstructEvent(
+                    json, 
+                    signatureHeader, 
+                    webhookSecretToUse,
+                    throwOnApiVersionMismatch: false // ⚠️ Permite procesar eventos de diferentes versiones de API
+                );
+                
+                // ⚠️ ADVERTENCIA: Si hay mismatch de versión, loguear para actualizar el webhook endpoint
+                if (stripeEvent.ApiVersion != null)
+                {
+                    var expectedVersion = "2025-11-17.clover"; // Versión esperada por Stripe.NET 50.0.0
+                    if (stripeEvent.ApiVersion != expectedVersion)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Stripe webhook API version mismatch",
+                            details: $"Webhook event received with API version '{stripeEvent.ApiVersion}', but SDK expects '{expectedVersion}'. " +
+                                    $"Consider updating the webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}' for better compatibility.",
+                            userId: null,
+                            source: "SubscriptionController.HandleStripeWebhook",
+                            relatedEntityType: "Webhook",
+                            relatedEntityId: null
+                        );
+                    }
+                }
+                
+                currentEventId = stripeEvent.Id;
+                currentEventType = stripeEvent.Type;
+                currentAccountId = stripeEvent.Account;
+
                 // 🔒 IDEMPOTENCIA COMPLETA: Verificar si el evento ya fue procesado
                 if (await IsEventProcessedAsync(stripeEvent.Id))
                 {
@@ -1493,7 +1570,8 @@ namespace newApi.Controllers
 
                 // ✅ CORRECCIÓN CRÍTICA: Marcar idempotencia ANTES de procesar (Stripe Best Practices)
                 // Esto previene procesamiento duplicado si hay error durante el procesamiento
-                await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type);
+                await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account, null, "Processing");
+                eventMarkedProcessing = true;
 
                 switch (stripeEvent.Type)
                 {
@@ -1663,6 +1741,17 @@ namespace newApi.Controllers
                         catch (Exception logicEx)
                         {
                             await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, profileToUpdate.UserId, "Error", logicEx.Message);
+                            if (eventMarkedProcessing && currentEventId != null)
+                            {
+                                await MarkEventAsProcessedAsync(
+                                    currentEventId,
+                                    currentEventType ?? stripeEvent.Type,
+                                    currentAccountId,
+                                    null,
+                                    "Error",
+                                    logicEx.Message);
+                                eventMarkedProcessing = false;
+                            }
                             return Ok(new { message = "Event processed with errors" });
                         }
 
@@ -1715,14 +1804,46 @@ namespace newApi.Controllers
                                             searchHire.Id,
                                             new { TransferId = transfer.Id, ExpertId = failedTransaction.UserId, Amount = failedTransaction.Amount }
                                         );
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL: Transfer failure requires admin action",
+                                            details: $"Transfer {transfer.Id} for SearchHire {searchHire.Id} failed and was marked for manual review.",
+                                            userId: null,
+                                            source: "SubscriptionController.transfer.failed",
+                                            relatedEntityType: "SearchHire",
+                                            relatedEntityId: searchHire.Id,
+                                            additionalData: new { TransferId = transfer.Id, ExpertId = failedTransaction.UserId, Amount = failedTransaction.Amount }
+                                        );
                                     }
                                     
-                                    // ✅ ACTUALIZAR ESTADO A COMPLETED - El servicio está completado, solo falló el transfer
-                                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Completed.ToStringValue());
-                                searchHire.UpdatedAt = DateTime.UtcNow;
+                                    var transferFailedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.TransferFailed.ToStringValue());
+                                    searchHire.StatusId = transferFailedStatusId;
+                                    searchHire.UpdatedAt = DateTime.UtcNow;
                                     
                                 await _context.SaveChangesAsync();
                                     await transaction.CommitAsync();
+
+                                    if (searchHire.ExpertId.HasValue)
+                                    {
+                                        await _loggingService.LogWarningAsync(
+                                            message: "Transferencia pendiente con error",
+                                            details: $"La transferencia de tu servicio #{searchHire.Id} falló. El equipo de pagos la reintentará y te avisaremos.",
+                                            userId: searchHire.ExpertId.Value,
+                                            source: "SubscriptionController.transfer.failed",
+                                            relatedEntityType: "SearchHire",
+                                            relatedEntityId: searchHire.Id,
+                                            notifyUser: true
+                                        );
+                                    }
+
+                                    await _loggingService.LogWarningAsync(
+                                        message: "Pago al experto en revisión",
+                                        details: $"La transferencia al experto del servicio #{searchHire.Id} falló. Un administrador está revisando el caso para garantizar que el dinero esté seguro.",
+                                        userId: searchHire.ClientId,
+                                        source: "SubscriptionController.transfer.failed",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHire.Id,
+                                        notifyUser: true
+                                    );
                                 }
                                 catch (Exception ex)
                                 {
@@ -1742,8 +1863,11 @@ namespace newApi.Controllers
                         break;
                 }
 
-                // 🚨 MARCAR EVENTO PRINCIPAL COMO PROCESADO
-                await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type);
+                if (eventMarkedProcessing)
+                {
+                    await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account, null, "Success");
+                    eventMarkedProcessing = false;
+                }
                 return Ok();
             }
             catch (StripeException e)
@@ -1781,7 +1905,17 @@ namespace newApi.Controllers
                         Payload = json?.Substring(0, Math.Min(500, json?.Length ?? 0))
                     }
                 );
-                
+                if (eventMarkedProcessing && currentEventId != null)
+                {
+                    await MarkEventAsProcessedAsync(
+                        currentEventId,
+                        currentEventType ?? "unknown",
+                        currentAccountId,
+                        null,
+                        "Failed",
+                        e.Message);
+                    eventMarkedProcessing = false;
+                }
                 return BadRequest(new { error = e.Message });
             }
             catch (Exception e)
@@ -1799,7 +1933,17 @@ namespace newApi.Controllers
                         Payload = json?.Substring(0, Math.Min(500, json?.Length ?? 0))
                     }
                 );
-                
+                if (eventMarkedProcessing && currentEventId != null)
+                {
+                    await MarkEventAsProcessedAsync(
+                        currentEventId,
+                        currentEventType ?? "unknown",
+                        currentAccountId,
+                        null,
+                        "Failed",
+                        e.Message);
+                    eventMarkedProcessing = false;
+                }
                 return StatusCode(500, new { error = "Internal server error" });
             }
         }
@@ -1814,6 +1958,10 @@ namespace newApi.Controllers
             Request.Body.Position = 0; // ✅ CORRECCIÓN: Reposicionar DESPUÉS de leer
             // ✅ SEGURIDAD: Convertir StringValues a string (puede venir como array)
             var signatureHeader = Request.Headers["Stripe-Signature"].ToString();
+            string? currentEventId = null;
+            string? currentEventType = null;
+            string? currentAccountId = null;
+            bool eventMarkedProcessing = false;
             try
             {
                 // ✅ SEGURIDAD CRÍTICA: Validar signature antes de procesar
@@ -1829,12 +1977,45 @@ namespace newApi.Controllers
                     return BadRequest(new { error = "Stripe signature header missing" });
                 }
                 
-                var stripeEvent = EventUtility.ConstructEvent(json, signatureHeader, _generalWebhookSecret);
+                // ✅ STRIPE API VERSION: Permitir diferentes versiones de API con advertencia
+                // El webhook endpoint en Stripe Dashboard puede estar configurado con una versión diferente
+                // a la que espera el SDK. Esto es seguro siempre que validemos la signature correctamente.
+                var stripeEvent = EventUtility.ConstructEvent(
+                    json, 
+                    signatureHeader, 
+                    _generalWebhookSecret,
+                    throwOnApiVersionMismatch: false // ⚠️ Permite procesar eventos de diferentes versiones de API
+                );
+                
+                // ⚠️ ADVERTENCIA: Si hay mismatch de versión, loguear para actualizar el webhook endpoint
+                if (stripeEvent.ApiVersion != null)
+                {
+                    var expectedVersion = "2025-11-17.clover"; // Versión esperada por Stripe.NET 50.0.0
+                    if (stripeEvent.ApiVersion != expectedVersion)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Stripe webhook API version mismatch",
+                            details: $"Webhook event received with API version '{stripeEvent.ApiVersion}', but SDK expects '{expectedVersion}'. " +
+                                    $"Consider updating the webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}' for better compatibility.",
+                            userId: null,
+                            source: "SubscriptionController.HandleGeneralStripeWebhook",
+                            relatedEntityType: "Webhook",
+                            relatedEntityId: null
+                        );
+                    }
+                }
+                
+                currentEventId = stripeEvent.Id;
+                currentEventType = stripeEvent.Type;
+                currentAccountId = stripeEvent.Account;
                 // 🔒 IDEMPOTENCIA COMPLETA: Verificar si el evento ya fue procesado
                 if (await IsEventProcessedAsync(stripeEvent.Id))
                 {
                     return Ok(new { message = "Event already processed" });
                 }
+
+                await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account, null, "Processing");
+                eventMarkedProcessing = true;
 
                 switch (stripeEvent.Type)
                 {
@@ -1867,6 +2048,17 @@ namespace newApi.Controllers
                             // ✅ VALIDACIÓN: Verificar que PaymentIntentId no sea null
                             if (string.IsNullOrEmpty(session.PaymentIntentId))
                             {
+                                if (eventMarkedProcessing && currentEventId != null)
+                                {
+                                    await MarkEventAsProcessedAsync(
+                                        currentEventId,
+                                        currentEventType ?? stripeEvent.Type,
+                                        currentAccountId,
+                                        null,
+                                        "Failed",
+                                        "PaymentIntentId is missing from session");
+                                    eventMarkedProcessing = false;
+                                }
                                 return BadRequest(new { error = "PaymentIntentId is missing from session" });
                             }
 
@@ -1877,6 +2069,16 @@ namespace newApi.Controllers
 
                             if (existingTransaction != null)
                             {
+                                if (eventMarkedProcessing && currentEventId != null)
+                                {
+                                    await MarkEventAsProcessedAsync(
+                                        currentEventId,
+                                        currentEventType ?? stripeEvent.Type,
+                                        currentAccountId,
+                                        null,
+                                        "Success");
+                                    eventMarkedProcessing = false;
+                                }
                                 return Ok(new { message = "Event already processed" }); // ✅ Idempotencia
                             }
 
@@ -1913,6 +2115,17 @@ namespace newApi.Controllers
                                     }
                                 );
                                 
+                                if (eventMarkedProcessing && currentEventId != null)
+                                {
+                                    await MarkEventAsProcessedAsync(
+                                        currentEventId,
+                                        currentEventType ?? stripeEvent.Type,
+                                        currentAccountId,
+                                        null,
+                                        "Failed",
+                                        "Invalid metadata format");
+                                    eventMarkedProcessing = false;
+                                }
                                 return BadRequest(new { error = "Invalid metadata format" });
                             }
                         }
@@ -1937,8 +2150,11 @@ namespace newApi.Controllers
                         break;
                 }
 
-                // 🚨 MARCAR EVENTO GENERAL COMO PROCESADO
-                await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type);
+                if (eventMarkedProcessing)
+                {
+                    await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account, null, "Success");
+                    eventMarkedProcessing = false;
+                }
                 return Ok();
             }
             catch (StripeException e)
@@ -1976,7 +2192,17 @@ namespace newApi.Controllers
                         Payload = json?.Substring(0, Math.Min(500, json?.Length ?? 0))
                     }
                 );
-                
+                if (eventMarkedProcessing && currentEventId != null)
+                {
+                    await MarkEventAsProcessedAsync(
+                        currentEventId,
+                        currentEventType ?? "unknown",
+                        currentAccountId,
+                        null,
+                        "Failed",
+                        e.Message);
+                    eventMarkedProcessing = false;
+                }
                 return BadRequest(new { error = e.Message });
             }
             catch (Exception e)
@@ -1994,7 +2220,17 @@ namespace newApi.Controllers
                         Payload = json?.Substring(0, Math.Min(500, json?.Length ?? 0))
                     }
                 );
-                
+                if (eventMarkedProcessing && currentEventId != null)
+                {
+                    await MarkEventAsProcessedAsync(
+                        currentEventId,
+                        currentEventType ?? "unknown",
+                        currentAccountId,
+                        null,
+                        "Failed",
+                        e.Message);
+                    eventMarkedProcessing = false;
+                }
                 return StatusCode(500, new { error = "Internal server error" });
             }
         }
@@ -2096,6 +2332,7 @@ namespace newApi.Controllers
             await strategy.ExecuteAsync(async () =>
             {
             using var transaction = await _context.Database.BeginTransactionAsync();
+            SearchHire? searchHire = null;
             try
             {
                     // ✅ REMOVED: Balance system eliminated - all payments are direct Stripe
@@ -2181,18 +2418,94 @@ namespace newApi.Controllers
                     currentAvailabilityId = currentAvailability?.Id;
                 }
 
+                // ✅ INTERNACIONALIZACIÓN: Obtener timezone y country del experto al momento de crear la contratación
+                // Esto crea un snapshot que protege las contrataciones activas si el experto cambia de ubicación
+                var expertTimezone = expertProfile?.Timezone ?? "UTC";
+                var expertCountry = expertProfile?.Country;
+
+                // ✅ STRIPE TAX: Obtener tax breakdown de la Checkout Session (NO PaymentIntent)
+                // El tax breakdown está en la Session, no en el PaymentIntent
+                decimal totalAmount = service.Price;
+                decimal? taxAmount = null;
+                decimal? baseAmount = null;
+                
+                try
+                {
+                    var sessionService = new SessionService();
+                    var sessionGetOptions = new SessionGetOptions
+                    {
+                        Expand = new List<string> { "total_details.breakdown" } // Opcional pero recomendado para breakdown detallado
+                    };
+                    var sessionWithTax = await sessionService.GetAsync(session.Id, sessionGetOptions);
+                    
+                    if (sessionWithTax.AmountTotal.HasValue)
+                    {
+                        totalAmount = sessionWithTax.AmountTotal.Value / 100m; // Total pagado (en centavos, dividir por 100)
+                        taxAmount = (sessionWithTax.TotalDetails?.AmountTax ?? 0) / 100m; // IVA (en centavos, dividir por 100)
+                        baseAmount = totalAmount - taxAmount; // Base pre-tax
+                        
+                        // ✅ VALIDACIÓN: Si AutomaticTax no aplicó (ej. exención B2B), AmountTax será 0
+                        if (sessionWithTax.AutomaticTax?.Status == "requires_location_inputs")
+                        {
+                            // Stripe necesita más información de ubicación - usar precio completo como fallback
+                            await _loggingService.LogWarningAsync(
+                                message: "Stripe Tax requires location inputs - using full amount as base",
+                                details: $"Session {session.Id} requires location inputs for tax calculation. Using full amount {totalAmount}€ as base amount.",
+                                userId: userId,
+                                source: "SubscriptionController.HandlePendingHireCompleted",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: null
+                            );
+                            baseAmount = totalAmount;
+                            taxAmount = 0;
+                        }
+                    }
+                    else
+                    {
+                        // ✅ FALLBACK: Si AmountTotal no tiene valor, usar service.Price como base
+                        await _loggingService.LogWarningAsync(
+                            message: "Stripe Session AmountTotal is null - using service price as base",
+                            details: $"Session {session.Id} does not have AmountTotal. Using service price {totalAmount}€ as base amount.",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: null
+                        );
+                        baseAmount = totalAmount; // totalAmount ya es service.Price
+                        taxAmount = 0;
+                    }
+                }
+                catch (Exception taxEx)
+                {
+                    // Si falla obtener tax breakdown, usar precio completo como fallback
+                    await _loggingService.LogWarningAsync(
+                        message: "Failed to get tax breakdown from Stripe Session - using full amount as base",
+                        details: $"Error getting tax breakdown from Session {session.Id}: {taxEx.Message}. Using full amount {totalAmount}€ as base amount.",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: null
+                    );
+                    baseAmount = totalAmount;
+                    taxAmount = 0;
+                }
+
                 // Create search hire
-                var searchHire = new SearchHire
+                searchHire = new SearchHire
                 {
                     ClientId = userId,
                     ExpertId = expertuserid,
                     SearchServiceId = service.Id,
                     SearchId = search.Id,
                         StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Pending.ToStringValue()),
-                    Amount = service.Price,
+                    Amount = totalAmount, // Total con IVA (€110)
+                    BaseAmount = baseAmount, // Base sin IVA (€90.91) ✅ STRIPE TAX
+                    TaxAmount = taxAmount, // IVA (€19.09) ✅ STRIPE TAX
                     CreatedAt = DateTime.UtcNow,
                     CompletionDeadline = DateTime.UtcNow.AddDays(7),
-                    ExpertAvailabilityId = currentAvailabilityId // Guardar la disponibilidad usada
+                    ExpertAvailabilityId = currentAvailabilityId, // Guardar la disponibilidad usada
+                    ExpertTimezone = expertTimezone, // ✅ INTERNACIONALIZACIÓN: Snapshot del timezone del lugar de contratación
+                    ExpertCountry = expertCountry // ✅ INTERNACIONALIZACIÓN: Snapshot del país del lugar de contratación
                 };
                     // ✅ REMOVED: Balance verification eliminated - all payments are direct Stripe
 
@@ -2216,6 +2529,20 @@ namespace newApi.Controllers
                 _context.FinancialTransactions.Add(paymentTransaction);
 
                 await _context.SaveChangesAsync();
+
+                if (string.IsNullOrEmpty(session.PaymentIntentId))
+                {
+                    await LogPaymentCaptureFailureAsync(
+                        paymentIntentId: "missing",
+                        userId: userId,
+                        serviceId: serviceId,
+                        failureReason: "Stripe checkout session did not include a PaymentIntentId.",
+                        searchHireId: searchHire.Id);
+                    throw new InvalidOperationException("PaymentIntentId is missing from checkout session.");
+                }
+
+                await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHire.Id);
+
                 await transaction.CommitAsync();
 
                 // ✅ Crear automáticamente la cita en estado "awaiting_appointment" con timer de 24h
@@ -2274,15 +2601,24 @@ namespace newApi.Controllers
                 }
                 catch (Exception ex)
                 {
-                    // Log error pero no fallar la creación de la contratación
-                    await _loggingService.LogWarningAsync(
-                        message: "Failed to create automatic appointment",
-                        details: $"Error creating automatic appointment for SearchHire {searchHire.Id}: {ex.Message}",
+                    // 🚨 LOG CRÍTICO: Error al crear cita automática y timer inicial
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Failed to create automatic appointment and initial timer",
+                        details: $"Error creating automatic appointment for SearchHire {searchHire.Id} in HandlePendingHireCompleted. " +
+                                $"The SearchHire was confirmed but the Appointment/Timer flow failed. " +
+                                $"Error: {ex.Message}. StackTrace: {ex.StackTrace}",
                         userId: userId,
                         source: "SubscriptionController.HandlePendingHireCompleted",
                         relatedEntityType: "SearchHire",
                         relatedEntityId: searchHire.Id,
-                        notifyUser: false
+                        additionalData: new { 
+                            Action = "CreateAutomaticAppointment",
+                            SearchHireId = searchHire.Id,
+                            ClientId = userId,
+                            ExpertId = expertuserid,
+                            Exception = ex.Message
+                        },
+                        notifyUser: false // No asustar al usuario, pero alertar a admins
                     );
                 }
 
@@ -2319,87 +2655,97 @@ namespace newApi.Controllers
                     );
                 }
 
-                // ✅ CAPTURA MANUAL: Capturar el PaymentIntent SOLO después de validar todo exitosamente
-                // Esto evita perder comisiones si algo falla antes de capturar
-                // ⚡ OPTIMIZACIÓN: Captura rápida y no-bloqueante para mantener respuesta <5s (Stripe Docs recomendación)
-                if (!string.IsNullOrEmpty(session.PaymentIntentId))
-                {
-                    try
-                    {
-                        var paymentIntentService = new PaymentIntentService();
-                        
-                        // ✅ EDGE CASE: Verificar el estado del PaymentIntent antes de capturar
-                        // En modo manual, debe estar en "requires_capture" para poder capturarse
-                        var paymentIntent = await paymentIntentService.GetAsync(session.PaymentIntentId);
-                        
-                        if (paymentIntent.Status == "requires_capture")
-                        {
-                            // ✅ CAPTURA RÁPIDA (no bloquea >2s) - Mantiene respuesta webhook <5s
-                            await paymentIntentService.CaptureAsync(session.PaymentIntentId);
-                        }
-                        else if (paymentIntent.Status == "succeeded")
-                        {
-                            // ✅ Ya está capturado (no debería pasar con captura manual, pero puede ser edge case)
-                        }
-                        else
-                        {
-                            // ❌ Estado inesperado: No se puede capturar
-                            await _loggingService.LogCriticalAsync(
-                                $"PaymentIntent in unexpected state - cannot capture",
-                                $"PaymentIntentId: {session.PaymentIntentId}, Status: {paymentIntent.Status}, UserId: {userId}, ServiceId: {serviceId}, SearchHireId: {searchHire.Id}",
-                    userId, 
-                                "SubscriptionController.HandlePendingHireCompleted",
-                                "Payment",
-                                serviceId,
-                                new { PaymentIntentId = session.PaymentIntentId, Status = paymentIntent.Status, SearchHireId = searchHire.Id }
-                            );
-                        }
-                    }
-                    catch (StripeException stripeEx)
-                    {
-                        // Si falla la captura o la obtención, registrar crítico pero no lanzar excepción
-                        // El PaymentIntent queda en estado "requires_capture" y expira en 7 días
-                    await _loggingService.LogCriticalAsync(
-                            $"Failed to capture PaymentIntent after successful hire creation",
-                            $"PaymentIntentId: {session.PaymentIntentId}, UserId: {userId}, ServiceId: {serviceId}, SearchHireId: {searchHire.Id}, Error: {stripeEx.Message}",
-                        userId,
-                            "SubscriptionController.HandlePendingHireCompleted",
-                        "Payment",
-                        serviceId,
-                            new { PaymentIntentId = session.PaymentIntentId, SearchHireId = searchHire.Id, Error = stripeEx.Message }
-                    );
-                        // No lanzar excepción - el webhook debe retornar 200 OK
-                        // El PaymentIntent expirará en 7 días automáticamente sin comisiones perdidas
-                    }
-                }
             }
             catch (Exception ex)
             {
                 await transaction.RollbackAsync();
-                    // ✅ CON CAPTURA MANUAL: NO hacer refund - simplemente NO capturar el PaymentIntent
-                    // El PaymentIntent queda en estado "requires_capture" y expira en 7 días automáticamente
-                    // Esto evita perder comisiones porque nunca se capturó el pago
-                    if (session != null && !string.IsNullOrEmpty(session.PaymentIntentId))
-                    {
-                        await _loggingService.LogCriticalAsync(
-                            $"Error processing hire - PaymentIntent not captured",
-                            $"PaymentIntentId: {session.PaymentIntentId}, UserId: {userId}, ServiceId: {serviceId}, Error: {ex.Message}. The PaymentIntent will expire in 7 days without fees.",
-                            userId,
-                            "SubscriptionController.HandlePendingHireCompleted",
-                            "Payment",
-                            serviceId,
-                            new { PaymentIntentId = session.PaymentIntentId, Error = ex.Message }
-                        );
-                    }
-                    
-                    // ✅ NO RELANZAR EXCEPCIÓN: El webhook debe retornar 200 OK para evitar reintentos de Stripe
-                    // El PaymentIntent no se capturará y expirará automáticamente sin comisiones
-                    return; // ✅ Retornar silenciosamente
+
+                if (!string.IsNullOrEmpty(session?.PaymentIntentId))
+                {
+                    await LogPaymentCaptureFailureAsync(
+                        paymentIntentId: session.PaymentIntentId,
+                        userId: userId,
+                        serviceId: serviceId,
+                        failureReason: ex.Message,
+                        searchHireId: searchHire?.Id);
+
+                    await _loggingService.LogWarningAsync(
+                        message: "Intento de pago no capturado",
+                        details: $"No pudimos completar el cobro del servicio {serviceId}. El cargo no se realizó y el cliente debe reintentar el pago.",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: serviceId,
+                        additionalData: new { PaymentIntentId = session.PaymentIntentId, SearchHireId = searchHire?.Id },
+                        notifyUser: true
+                    );
+                }
+
+                throw;
             }
             });
         }
 
         // ❌ ELIMINADO: ProcessAutomaticRefundOnError - No se usa (reemplazado por captura manual)
+
+        private async Task EnsurePaymentCapturedAsync(string paymentIntentId, int userId, int serviceId, int searchHireId)
+        {
+            var paymentIntentService = new PaymentIntentService();
+            PaymentIntent paymentIntent;
+
+            try
+            {
+                paymentIntent = await paymentIntentService.GetAsync(paymentIntentId);
+            }
+            catch (StripeException ex)
+            {
+                await LogPaymentCaptureFailureAsync(paymentIntentId, userId, serviceId, $"Stripe error retrieving PaymentIntent: {ex.Message}", searchHireId, ex);
+                throw;
+            }
+
+            if (paymentIntent.Status == "requires_capture")
+            {
+                try
+                {
+                    await paymentIntentService.CaptureAsync(paymentIntentId);
+                }
+                catch (StripeException ex)
+                {
+                    await LogPaymentCaptureFailureAsync(paymentIntentId, userId, serviceId, $"Stripe error capturing PaymentIntent: {ex.Message}", searchHireId, ex);
+                    throw;
+                }
+            }
+            else if (paymentIntent.Status == "succeeded")
+            {
+                return;
+            }
+            else
+            {
+                var message = $"PaymentIntent {paymentIntentId} is in '{paymentIntent.Status}' state and cannot be captured.";
+                await LogPaymentCaptureFailureAsync(paymentIntentId, userId, serviceId, message, searchHireId);
+                throw new InvalidOperationException(message);
+            }
+        }
+
+        private async Task LogPaymentCaptureFailureAsync(string paymentIntentId, int userId, int serviceId, string failureReason, int? searchHireId = null, Exception? exception = null)
+        {
+            await _loggingService.LogCriticalAsync(
+                message: "CRITICAL: Payment capture failure",
+                details: $"Failed to capture PaymentIntent {paymentIntentId}. Reason: {failureReason}",
+                userId: null,
+                source: "SubscriptionController.HandlePendingHireCompleted",
+                relatedEntityType: "Payment",
+                relatedEntityId: serviceId,
+                additionalData: new
+                {
+                    PaymentIntentId = paymentIntentId,
+                    SearchHireId = searchHireId,
+                    ClientId = userId,
+                    Reason = failureReason,
+                    Exception = exception?.Message
+                }
+            );
+        }
 
         /// <summary>
         /// Registra fallos críticos de refund para alertar a administradores
@@ -2773,7 +3119,7 @@ namespace newApi.Controllers
                 }
 
                 // 💳 SIEMPRE PAGAR CON STRIPE - NO USAR SALDO INTERNO
-                var domain = "https://atrapo.io";
+                var domain = "https://inspecciono.com";
                 var options = new SessionCreateOptions
                 {
                     PaymentMethodTypes = new List<string> { "card" },
@@ -2788,10 +3134,17 @@ namespace newApi.Controllers
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {
                                     Name = $"Payment for Service {service.Id}"
-                                }
+                                },
+                                // ✅ STRIPE TAX: Configurar tax como inclusivo (el precio ya incluye IVA)
+                                TaxBehavior = "inclusive" // Stripe hace reverse calc automático
                             },
                             Quantity = 1
                         }
+                    },
+                    // ✅ STRIPE TAX: Habilitar cálculo automático de tax basado en ubicación del comprador
+                    AutomaticTax = new SessionAutomaticTaxOptions
+                    {
+                        Enabled = true // Habilita cálculo auto basado en IP, billing/shipping address
                     },
                     Mode = "payment",
                     SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}",
@@ -3352,8 +3705,12 @@ namespace newApi.Controllers
         {
             try
             {
+                var processingCutoff = DateTime.UtcNow.AddMinutes(-5);
                 return await _context.ProcessedWebhookEvents
-                    .AnyAsync(e => e.EventId == eventId);
+                    .AnyAsync(e => e.EventId == eventId &&
+                        (e.Status == "Success"
+                         || e.Status == "Skipped"
+                         || (e.Status == "Processing" && e.ProcessedAt >= processingCutoff)));
             }
             catch (Exception ex)
             {
@@ -3749,7 +4106,7 @@ namespace newApi.Controllers
         }
 
         [HttpGet("all-money-distribution-configs")]
-        public async Task<IActionResult> GetAllMoneyDistributionConfigs()
+        public async Task<IActionResult> GetAllMoneyDistributionConfigs([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
@@ -3759,14 +4116,15 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
-                var configs = await _context.StatusConfigurations
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+                var query = _context.StatusConfigurations
                     .Include(sc => sc.Status)
                     .Include(sc => sc.Category)
                     .Include(sc => sc.ServiceTypeCategory)
                     .Where(c => c.IsActive)
-                    .OrderBy(c => c.CategoryId)
-                    .ThenBy(c => c.ServiceTypeCategoryId)
-                    .ThenBy(c => c.Status.StatusValue)
                     .Select(c => new
                     {
                         StatusId = c.StatusId,
@@ -3782,13 +4140,30 @@ namespace newApi.Controllers
                         IsActive = c.IsActive,
                         CreatedAt = c.CreatedAt,
                         UpdatedAt = c.UpdatedAt
-                    })
+                    });
+
+                var totalCount = await query.CountAsync();
+
+                var configs = await query
+                    .OrderBy(c => c.CategoryId)
+                    .ThenBy(c => c.ServiceTypeCategoryId)
+                    .ThenBy(c => c.StatusValue)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
                     .ToListAsync();
 
                 return Ok(new { 
                     message = "All money distribution configurations",
-                    count = configs.Count,
-                    configs 
+                    configs,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
                 });
             }
             catch (Exception ex)

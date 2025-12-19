@@ -29,6 +29,7 @@ namespace newApi.Controllers
         private readonly IInvoiceService _invoiceService;
         private readonly IAppointmentService _appointmentService;
         private readonly ISignedUrlService _signedUrlService;
+        private readonly INotificationService _notificationService;
 
         public SearchHireController(
             SearchHireService searchHireService,
@@ -39,7 +40,8 @@ namespace newApi.Controllers
             ILoggingService loggingService,
             IInvoiceService invoiceService,
             IAppointmentService appointmentService,
-            ISignedUrlService signedUrlService)
+            ISignedUrlService signedUrlService,
+            INotificationService notificationService)
         {
             _searchHireService = searchHireService;
             _context = context;
@@ -50,6 +52,7 @@ namespace newApi.Controllers
             _invoiceService = invoiceService;
             _appointmentService = appointmentService;
             _signedUrlService = signedUrlService;
+            _notificationService = notificationService;
             StripeConfiguration.ApiKey = configuration["Stripe:SecretKey"];
         }
 
@@ -90,6 +93,20 @@ namespace newApi.Controllers
                 if (user == null)
                 {
                     return NotFound(new { message = "User not found" });
+                }
+
+                // ✅ VALIDACIÓN: Usuario bloqueado no puede crear contrataciones
+                if (user.IsBlocked)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Blocked user attempted to create search hire",
+                        details: $"Blocked user {user.Id} ({user.Email}) attempted to create a search hire",
+                        userId: user.Id,
+                        source: "SearchHireController.CreateSearchHire",
+                        relatedEntityType: "User",
+                        relatedEntityId: user.Id
+                    );
+                    return Unauthorized(new { message = "User account is blocked" });
                 }
 
                 if (user.Role == UserRole.Expert || user.ExpertProfile != null)
@@ -161,6 +178,11 @@ namespace newApi.Controllers
                     .OrderByDescending(ea => ea.EffectiveFrom)
                     .FirstOrDefaultAsync();
 
+                // ✅ INTERNACIONALIZACIÓN: Obtener timezone y country del experto al momento de crear la contratación
+                // Esto crea un snapshot que protege las contrataciones activas si el experto cambia de ubicación
+                var expertTimezone = expert.ExpertProfile?.Timezone ?? "UTC";
+                var expertCountry = expert.ExpertProfile?.Country;
+
                 var searchHire = new SearchHire
                 {
                     SearchId = dto.SearchId,
@@ -169,8 +191,13 @@ namespace newApi.Controllers
                     SearchServiceId = searchService.Id,
                     StatusId = await GetStatusIdByValueAsync("pending"),
                     Amount = searchService.Price,
+                    // ✅ STRIPE TAX: Si no hay pago de Stripe (creación directa), usar Amount como BaseAmount y TaxAmount = 0
+                    BaseAmount = searchService.Price, // Sin pago Stripe, el precio completo es la base
+                    TaxAmount = 0, // Sin pago Stripe, no hay tax calculado
                     CreatedAt = DateTime.UtcNow,
                     ExpertAvailabilityId = currentAvailability?.Id, // Guardar la disponibilidad usada
+                    ExpertTimezone = expertTimezone, // ✅ INTERNACIONALIZACIÓN: Snapshot del timezone del lugar de contratación
+                    ExpertCountry = expertCountry, // ✅ INTERNACIONALIZACIÓN: Snapshot del país del lugar de contratación
                     Conversations = new List<Conversation>()
                 };
 
@@ -249,15 +276,24 @@ namespace newApi.Controllers
                 }
                 catch (Exception ex)
                 {
-                    // Log error pero no fallar la creación de la contratación
-                    await _loggingService.LogWarningAsync(
-                        message: "Failed to create automatic appointment",
-                        details: $"Error creating automatic appointment for SearchHire {searchHire.Id}: {ex.Message}",
+                    // 🚨 LOG CRÍTICO: Error al crear cita automática y timer inicial
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Failed to create automatic appointment and initial timer",
+                        details: $"Error creating automatic appointment for SearchHire {searchHire.Id}. " +
+                                $"The SearchHire was created but the Appointment/Timer flow failed. " +
+                                $"Error: {ex.Message}. StackTrace: {ex.StackTrace}",
                         userId: searchHire.ClientId,
                         source: "SearchHireController.CreateSearchHire",
                         relatedEntityType: "SearchHire",
                         relatedEntityId: searchHire.Id,
-                        notifyUser: false
+                        additionalData: new { 
+                            Action = "CreateAutomaticAppointment",
+                            SearchHireId = searchHire.Id,
+                            ClientId = searchHire.ClientId,
+                            ExpertId = searchHire.ExpertId,
+                            Exception = ex.Message
+                        },
+                        notifyUser: false // No asustar al usuario, pero alertar a admins
                     );
                 }
 
@@ -266,8 +302,8 @@ namespace newApi.Controllers
                 if (client != null)
                 {
                     await _loggingService.LogInfoAsync(
-                        message: "Contratación creada",
-                        details: $"Tu contratación #{searchHire.Id} ha sido creada exitosamente. El experto ha sido notificado.",
+                        message: "Contratación creada - Acción requerida",
+                        details: $"Tu contratación #{searchHire.Id} ha sido creada. Tienes 24 horas para proponer una fecha y hora para la cita. Si no lo haces, la contratación se cancelará automáticamente.",
                         userId: searchHire.ClientId,
                         source: "SearchHireController.CreateSearchHire",
                         relatedEntityType: "SearchHire",
@@ -289,7 +325,7 @@ namespace newApi.Controllers
                 {
                     await _loggingService.LogInfoAsync(
                         message: "Nueva contratación recibida",
-                        details: $"Has recibido una nueva contratación #{searchHire.Id} por {searchService.Price}€. Revisa los detalles y contacta con el cliente.",
+                        details: $"Has recibido una nueva contratación #{searchHire.Id} por {searchService.Price}€. El cliente tiene 24 horas para proponer una fecha para la cita. Te avisaremos cuando lo haga.",
                         userId: searchHire.ExpertId.Value,
                         source: "SearchHireController.CreateSearchHire",
                         relatedEntityType: "SearchHire",
@@ -407,6 +443,7 @@ namespace newApi.Controllers
                 var reviewEntity = await _context.Reviews
                     .Include(r => r.Reviewer)
                     .Include(r => r.ImagesCollection)
+                    .Include(r => r.SearchHire) // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
                     .FirstOrDefaultAsync(r => r.SearchHireId == searchHire.Id);
 
                 if (reviewEntity != null)
@@ -427,7 +464,9 @@ namespace newApi.Controllers
                         ImageUrls = reviewEntity.ImagesCollection?
                             .Select(img => ResolveReviewImageUrl(img))
                             .Where(url => !string.IsNullOrEmpty(url))
-                            .ToList() ?? new List<string>()
+                            .ToList() ?? new List<string>(),
+                        // ✅ INTERNACIONALIZACIÓN: País donde se realizó la contratación
+                        Country = reviewEntity.SearchHire?.ExpertCountry
                     };
                 }
 
@@ -478,7 +517,10 @@ namespace newApi.Controllers
                         IsOnVacation = expertProfile.IsOnVacation,
                         CurrentAvailability = availabilityDto,
                         StripeFutureRequirements = expertProfile.StripeFutureRequirements,
-                        StripeFutureDueAt = expertProfile.StripeFutureDueAt
+                        StripeFutureDueAt = expertProfile.StripeFutureDueAt,
+                        // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto
+                        Timezone = expertProfile.Timezone,
+                        Country = expertProfile.Country
                     };
                 }
 
@@ -615,7 +657,7 @@ namespace newApi.Controllers
 
         // GET: api/searchhire/client
         [HttpGet("client")]
-        public async Task<IActionResult> GetClientHires()
+        public async Task<IActionResult> GetClientHires([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
@@ -625,8 +667,25 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                var hires = await _searchHireService.GetClientHires(userId);
-                return Ok(hires);
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+                var (hires, totalCount) = await _searchHireService.GetClientHires(userId, page, pageSize);
+                
+                return Ok(new
+                {
+                    hires,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
+                });
             }
             catch (Exception ex)
             {
@@ -636,7 +695,7 @@ namespace newApi.Controllers
 
         // GET: api/searchhire/expert
         [HttpGet("expert")]
-        public async Task<IActionResult> GetExpertHires()
+        public async Task<IActionResult> GetExpertHires([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
             {
@@ -646,8 +705,25 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                var hires = await _searchHireService.GetExpertHires(userId);
-                return Ok(hires);
+                // Validar parámetros
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+                var (hires, totalCount) = await _searchHireService.GetExpertHires(userId, page, pageSize);
+                
+                return Ok(new
+                {
+                    hires,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
+                });
             }
             catch (Exception ex)
             {
@@ -665,6 +741,13 @@ namespace newApi.Controllers
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
                     return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                // ✅ VALIDACIÓN: Verificar si el usuario está bloqueado
+                var user = await _context.Users.FindAsync(userId);
+                if (user != null && user.IsBlocked)
+                {
+                    return Unauthorized(new { message = "User account is blocked" });
                 }
 
                 var result = await _searchHireService.UpdateHireStatus(userId, hireId, request.Status);
@@ -726,6 +809,21 @@ namespace newApi.Controllers
                             return Unauthorized(new { message = "Unauthorized to complete this service" });
                         }
 
+                        // ✅ VALIDACIÓN: Usuario bloqueado no puede completar servicios
+                        if (searchHire.Client.IsBlocked)
+                        {
+                            await transaction.RollbackAsync();
+                            await _loggingService.LogWarningAsync(
+                                message: "Blocked user attempted to complete service",
+                                details: $"Blocked user {userId} attempted to complete service {request.SearchHireId}",
+                                userId: userId,
+                                source: "SearchHireController.CompleteService",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: request.SearchHireId
+                            );
+                            return Unauthorized(new { message = "User account is blocked" });
+                        }
+
                         if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue() &&
                             searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
                         {
@@ -743,12 +841,21 @@ namespace newApi.Controllers
 
                             await _context.SaveChangesAsync();
                             await ExpireClientDecisionTimersAsync(searchHire.Id);
+                            
+                            // ✅ COMMIT para asegurar que el estado de disputa se guarde
+                            await transaction.CommitAsync();
                         }
                         else
                         {
                             await _context.SaveChangesAsync();
                             await ExpireClientDecisionTimersAsync(searchHire.Id);
+                            
+                            // ✅ COMMIT PREVIO: Guardar "ClientApproved = true" ANTES de procesar dinero
+                            // Esto asegura que la decisión del cliente quede registrada incluso si el pago falla después
+                            await transaction.CommitAsync();
 
+                            // ✅ Procesar distribución de dinero (El servicio gestionará su propia transacción para cambiar el estado a Completed)
+                            // Esto cumple el requisito: "El estado debe cambiar aunque el pago falle"
                             var ok = await _refundService.ProcessMoneyDistributionAsync(
                                 searchHire.Id,
                                 SearchHireStatus.Completed.ToStringValue(),
@@ -773,7 +880,8 @@ namespace newApi.Controllers
                                     message = "Failed to process payment to expert",
                                     logId = lastCriticalLog?.Id,
                                     errorMessage = lastCriticalLog?.Message,
-                                    searchHireId = searchHire.Id
+                                    searchHireId = searchHire.Id,
+                                    note = "Service state was updated but payment failed."
                                 });
                             }
 
@@ -802,6 +910,21 @@ namespace newApi.Controllers
                                     relatedEntityType: "SearchHire",
                                     relatedEntityId: searchHire.Id,
                                     notifyUser: true
+                                );
+                            }
+
+                            // ✅ EMAIL: Enviar correo de finalización y solicitud de reseña al cliente
+                            if (searchHire.Client != null && !string.IsNullOrEmpty(searchHire.Client.Email))
+                            {
+                                var expertName = searchHire.Expert?.Name ?? "El experto";
+                                var serviceName = searchHire.SearchService?.ServiceType?.Name ?? "Servicio de inspección";
+                                
+                                await _notificationService.SendServiceCompletionEmailAsync(
+                                    searchHire.Client.Email,
+                                    searchHire.Client.Name,
+                                    serviceName,
+                                    expertName,
+                                    searchHire.Id
                                 );
                             }
                         }

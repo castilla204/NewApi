@@ -14,6 +14,34 @@ namespace newApi.DataLayer.Models.DTOs
         public UserDto? Expert { get; set; }
         public ServiceInfo? Service { get; set; } // ✅ NUEVO: Información del servicio
         public SystemStatusDto? StatusInfo { get; set; } // ✅ NUEVO: Información completa del estado
+        
+        /// <summary>
+        /// Monto total pagado (con IVA incluido). Este es el precio final que pagó el cliente.
+        /// </summary>
+        public decimal? Amount { get; set; }
+        
+        /// <summary>
+        /// Base amount sin IVA/tax (pre-tax). Se calcula desde Stripe Tax breakdown.
+        /// Si es null, significa que es un dato antiguo o no hay tax calculado.
+        /// En ese caso, usar Amount como fallback.
+        /// </summary>
+        public decimal? BaseAmount { get; set; }
+        
+        /// <summary>
+        /// Monto de IVA/tax calculado por Stripe Tax. Si es null o 0, no hay tax aplicado.
+        /// </summary>
+        public decimal? TaxAmount { get; set; }
+        
+        // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto al momento de la contratación
+        /// <summary>
+        /// Timezone IANA del experto al momento de crear la contratación (ej: "Europe/Madrid", "America/Mexico_City")
+        /// </summary>
+        public string? ExpertTimezone { get; set; }
+        
+        /// <summary>
+        /// País del experto al momento de crear la contratación (ISO 3166-1 alpha-2, ej: "ES", "MX")
+        /// </summary>
+        public string? ExpertCountry { get; set; }
     }
 
     public class ServiceInfo
@@ -51,6 +79,19 @@ namespace newApi.DataLayer.Models.DTOs
         public string StatusTranslated { get; set; } = string.Empty; // ✅ NUEVO: Estado traducido al español
         public string? ExpertTransferId { get; set; }
         public decimal Amount { get; set; }
+        
+        /// <summary>
+        /// Base amount sin IVA/tax (pre-tax). Se calcula desde Stripe Tax breakdown.
+        /// Si es null, significa que es un dato antiguo o no hay tax calculado.
+        /// En ese caso, usar Amount como fallback.
+        /// </summary>
+        public decimal? BaseAmount { get; set; }
+        
+        /// <summary>
+        /// Monto de IVA/tax calculado por Stripe Tax. Si es null o 0, no hay tax aplicado.
+        /// </summary>
+        public decimal? TaxAmount { get; set; }
+        
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
         public UserDto? Client { get; set; } // ✅ Nullable para manejar usuarios eliminados
@@ -63,6 +104,17 @@ namespace newApi.DataLayer.Models.DTOs
         public string? SearchTitle { get; set; } // Título de la contratación
         public string? SearchDescription { get; set; } // Descripción de la contratación
         public int UnreadMessagesCount { get; set; } // Número de mensajes pendientes de leer
+        
+        // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto al momento de la contratación
+        /// <summary>
+        /// Timezone IANA del experto al momento de crear la contratación (ej: "Europe/Madrid", "America/Mexico_City")
+        /// </summary>
+        public string? ExpertTimezone { get; set; }
+        
+        /// <summary>
+        /// País del experto al momento de crear la contratación (ISO 3166-1 alpha-2, ej: "ES", "MX")
+        /// </summary>
+        public string? ExpertCountry { get; set; }
     }
 
     public class UpdateSearchHireStatusDto
@@ -76,6 +128,7 @@ namespace newApi.DataLayer.Models.DTOs
         public int CategoryId { get; set; }
         public int ServiceTypeId { get; set; }
         public string ServiceTypeName { get; set; }
+        public string ServiceTypeDescription { get; set; } // ✅ NUEVO
         public int? ServiceTypeCategoryId { get; set; }
         public bool RequiresAppointment { get; set; }
         public decimal Price { get; set; }
@@ -114,6 +167,17 @@ namespace newApi.DataLayer.Models.DTOs
         // ✅ FUTURE REQUIREMENTS: Requirements que se deben completar en el futuro según Stripe
         public string? StripeFutureRequirements { get; set; }
         public DateTime? StripeFutureDueAt { get; set; }
+        
+        // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto
+        /// <summary>
+        /// Timezone IANA del experto (ej: "Europe/Madrid", "America/Mexico_City")
+        /// </summary>
+        public string? Timezone { get; set; }
+        
+        /// <summary>
+        /// País del experto (ISO 3166-1 alpha-2, ej: "ES", "MX")
+        /// </summary>
+        public string? Country { get; set; }
     }
 
     public class UserDto
@@ -132,6 +196,13 @@ namespace newApi.DataLayer.Models.DTOs
         public DateTime CreatedAt { get; set; }
         public UserDto Reviewer { get; set; } // ✅ NUEVO: Información del revisor
         public List<string> ImageUrls { get; set; } = new List<string>(); // ✅ NUEVO: URLs de las imágenes
+        
+        // ✅ INTERNACIONALIZACIÓN: País donde se realizó la contratación
+        /// <summary>
+        /// País donde se realizó la contratación (ISO 3166-1 alpha-2, ej: "ES", "MX")
+        /// Obtenido del SearchHire.ExpertCountry al momento de crear la contratación
+        /// </summary>
+        public string? Country { get; set; }
     }
 
     public class CreateSearchServiceRequestDto
@@ -139,7 +210,15 @@ namespace newApi.DataLayer.Models.DTOs
         public int ExpertProfileId { get; set; }
         public int CategoryId { get; set; }
         public int ServiceTypeId { get; set; }
+        
+        /// <summary>
+        /// Precio del servicio CON IVA incluido.
+        /// Este es el precio final que pagará el cliente.
+        /// Stripe calculará automáticamente el IVA según la ubicación del comprador.
+        /// Ejemplo: Si quieres que el cliente pague €110, establece Price = 110.
+        /// </summary>
         public decimal Price { get; set; }
+        
         public string Conditions { get; set; }
         public int? DurationInHours { get; set; }
         public List<IFormFile> Images { get; set; }
@@ -151,7 +230,15 @@ namespace newApi.DataLayer.Models.DTOs
         public int ServiceId { get; set; }
         public int CategoryId { get; set; }
         public int ServiceTypeId { get; set; }
+        
+        /// <summary>
+        /// Precio del servicio CON IVA incluido.
+        /// Este es el precio final que pagará el cliente.
+        /// Stripe calculará automáticamente el IVA según la ubicación del comprador.
+        /// Ejemplo: Si quieres que el cliente pague €110, establece Price = 110.
+        /// </summary>
         public decimal Price { get; set; }
+        
         public string Conditions { get; set; }
         public int? DurationInHours { get; set; }
         public List<IFormFile>? Images { get; set; }

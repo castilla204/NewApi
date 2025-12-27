@@ -348,9 +348,9 @@ namespace newApi.Controllers
                                     maxBackoff: TimeSpan.FromSeconds(5),
                                     backoffMultiplier: 2.0,
                                     retryFilter: RetrySettings.FilterForStatusCodes(
-                                        StatusCode.Unavailable,
-                                        StatusCode.DeadlineExceeded,
-                                        StatusCode.NotFound
+                                        Grpc.Core.StatusCode.Unavailable,
+                                        Grpc.Core.StatusCode.DeadlineExceeded,
+                                        Grpc.Core.StatusCode.NotFound
                                     )
                                 )
                             ).WithTimeout(TimeSpan.FromSeconds(10));
@@ -366,7 +366,7 @@ namespace newApi.Controllers
                                     return secretValue;
                                 }
                             }
-                            catch (RpcException rpcEx) when (rpcEx.StatusCode == StatusCode.NotFound)
+                            catch (RpcException rpcEx) when (rpcEx.StatusCode == Grpc.Core.StatusCode.NotFound)
                             {
                                 // Secreto no encontrado, continuar con fallbacks
                                 _logger.LogDebug($"Secreto {secretName} no encontrado en Secret Manager");

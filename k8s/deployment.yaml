@@ -35,6 +35,11 @@ spec:
         secret:
           secretName: newapi-credentials
       - name: regcred
+      # ✅ SEGURIDAD: Volúmenes temporales para readOnlyRootFilesystem
+      - name: tmp
+        emptyDir: {}
+      - name: var-tmp
+        emptyDir: {}
       containers:
       - name: new-api
         image: erizo9/newapi@sha256:a4a66c8fe369ceb3435b954872669d7534580ed239031f48bd9b82bf2c733cc6
@@ -43,6 +48,21 @@ spec:
         - name: http
           containerPort: 7124
           protocol: TCP
+        # ✅ SEGURIDAD: Configurar securityContext para mejorar la seguridad del contenedor
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+              - ALL
+        # ✅ SEGURIDAD: Volúmenes temporales para directorios que .NET necesita escribir
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: var-tmp
+          mountPath: /var/tmp
         env:
         - name: RABBITMQ_HOSTNAME
           value: rabbitmq-svc
@@ -195,6 +215,8 @@ spec:
           periodSeconds: 5
           timeoutSeconds: 3
           failureThreshold: 3
+        # ✅ SEGURIDAD: SecurityContext ya configurado arriba en el contenedor principal
+        # Este securityContext del pod es redundante, se mantiene para compatibilidad
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false

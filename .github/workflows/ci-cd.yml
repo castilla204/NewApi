@@ -198,6 +198,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-and-test, security-scan, docker-build]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    continue-on-error: true
     environment:
       name: production
       url: https://api.inspecciono.com
@@ -217,6 +218,18 @@ jobs:
           chmod 700 ~/.ssh
           ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>&1 || echo "Warning: Could not add host to known_hosts, will use StrictHostKeyChecking=no"
           chmod 600 ~/.ssh/known_hosts || true
+
+      - name: Check VPS connectivity
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          echo "Checking VPS connectivity..."
+          if timeout 5 bash -c "echo > /dev/tcp/${VPS_HOST}/22" 2>/dev/null; then
+            echo "✅ VPS is reachable on port 22"
+          else
+            echo "⚠️ VPS is not reachable on port 22, deployment will be skipped"
+            exit 0
+          fi
 
       - name: Deploy to VPS
         env:

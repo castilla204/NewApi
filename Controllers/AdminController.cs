@@ -5,6 +5,11 @@ using Microsoft.EntityFrameworkCore;
 using newApi.DataLayer.Models;
 using newApi.Services;
 using System.Security.Claims;
+using Stripe;
+using Microsoft.Extensions.Configuration;
+using Google.Cloud.SecretManager.V1;
+using Google.Api.Gax.Grpc;
+using Grpc.Core;
 
 namespace newApi.Controllers
 {
@@ -17,15 +22,21 @@ namespace newApi.Controllers
         private readonly AppDbContext _context;
         private readonly StripeRefundService _refundService;
         private readonly ILogger<AdminController> _logger;
+        private readonly IStripeConfigService _stripeConfigService;
+        private readonly IConfiguration _configuration;
 
         public AdminController(
             AppDbContext context, 
             StripeRefundService refundService,
-            ILogger<AdminController> logger)
+            ILogger<AdminController> logger,
+            IStripeConfigService stripeConfigService,
+            IConfiguration configuration)
         {
             _context = context;
             _refundService = refundService;
             _logger = logger;
+            _stripeConfigService = stripeConfigService;
+            _configuration = configuration;
         }
 
         /// <summary>
@@ -51,9 +62,9 @@ namespace newApi.Controllers
                         UserId = u.Id,
                         Email = u.Email,
                         Name = u.Name,
-                        LastActivity = u.UpdatedAt,
+                        LastActivity = u.DeletedAt ?? u.CreatedAt, // Usar DeletedAt si existe, sino CreatedAt
                         // En producción, esto debería venir de logs de requests
-                        // Por ahora, usamos una aproximación basada en UpdatedAt
+                        // Por ahora, usamos una aproximación basada en CreatedAt/DeletedAt
                         SuspiciousReason = "High request rate detected"
                     })
                     .ToListAsync();
@@ -181,6 +192,257 @@ namespace newApi.Controllers
                     error = ex.Message
                 });
             }
+        }
+
+        /// <summary>
+        /// ✅ Obtener el modo actual de Stripe (development/production)
+        /// </summary>
+        [HttpGet("stripe/mode")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> GetStripeMode()
+        {
+            try
+            {
+                var setting = await _context.SystemSettings.FirstOrDefaultAsync();
+                return Ok(new
+                {
+                    mode = setting?.StripeMode ?? "production",
+                    changedAt = setting?.StripeModeChangedAt,
+                    changedByUserId = setting?.StripeModeChangedByUserId
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error obteniendo modo Stripe");
+                return StatusCode(500, new { success = false, message = "Error obteniendo modo Stripe", error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// ✅ Establecer el modo de Stripe (development/production)
+        /// </summary>
+        [HttpPost("stripe/mode")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> SetStripeMode([FromBody] SetStripeModeRequest request)
+        {
+            try
+            {
+                if (request == null || string.IsNullOrEmpty(request.Mode))
+                {
+                    return BadRequest(new { success = false, message = "El campo 'Mode' es requerido" });
+                }
+
+                if (request.Mode != "development" && request.Mode != "production")
+                {
+                    return BadRequest(new { success = false, message = "El modo debe ser 'development' o 'production'" });
+                }
+
+                var userId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "0");
+                var success = await _stripeConfigService.SetStripeModeAsync(request.Mode, userId);
+
+                if (!success)
+                {
+                    return StatusCode(500, new { success = false, message = "Error cambiando modo Stripe" });
+                }
+
+                // ✅ RECARGAR CLAVES DINÁMICAMENTE después de cambiar el modo
+                await ReloadStripeKeysAsync(request.Mode);
+
+                _logger.LogInformation($"✅ Modo Stripe cambiado a {request.Mode} por usuario {userId} - Claves recargadas");
+
+                return Ok(new
+                {
+                    success = true,
+                    message = $"Modo Stripe cambiado a {request.Mode}",
+                    mode = request.Mode,
+                    warning = "Las claves Stripe se han recargado. Las URLs de webhooks en Stripe Dashboard deben configurarse manualmente para cada modo."
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error estableciendo modo Stripe");
+                return StatusCode(500, new { success = false, message = "Error estableciendo modo Stripe", error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// ✅ Alternar el modo de Stripe automáticamente (development ↔ production)
+        /// </summary>
+        [HttpPost("stripe/toggle-mode")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> ToggleStripeMode()
+        {
+            try
+            {
+                var currentMode = await _stripeConfigService.GetStripeModeAsync();
+                var newMode = currentMode == "development" ? "production" : "development";
+
+                var userId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "0");
+                var success = await _stripeConfigService.SetStripeModeAsync(newMode, userId);
+
+                if (!success)
+                {
+                    return StatusCode(500, new { success = false, message = "Error alternando modo Stripe" });
+                }
+
+                // ✅ RECARGAR CLAVES DINÁMICAMENTE después de cambiar el modo
+                await ReloadStripeKeysAsync(newMode);
+
+                _logger.LogInformation($"✅ Modo Stripe alternado de {currentMode} a {newMode} por usuario {userId} - Claves recargadas");
+
+                return Ok(new
+                {
+                    success = true,
+                    message = $"Modo Stripe cambiado de {currentMode} a {newMode}",
+                    previousMode = currentMode,
+                    newMode = newMode,
+                    warning = "Las claves Stripe se han recargado. Las URLs de webhooks en Stripe Dashboard deben configurarse manualmente para cada modo."
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error alternando modo Stripe");
+                return StatusCode(500, new { success = false, message = "Error alternando modo Stripe", error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// ✅ Recargar las claves Stripe dinámicamente según el modo actual
+        /// Este método obtiene las claves desde Secret Manager y actualiza la configuración en memoria.
+        /// SubscriptionController ahora lee las claves dinámicamente desde IConfiguration, por lo que
+        /// los cambios se aplican inmediatamente sin reiniciar la aplicación.
+        /// </summary>
+        private async Task ReloadStripeKeysAsync(string mode)
+        {
+            try
+            {
+                // Función helper para obtener secretos desde Secret Manager o configuración
+                // Usa el mismo patrón que GetSecretValue en Program.cs
+                Func<string, string?, string?> getSecretValue = (secretName, defaultValue) =>
+                {
+                    // Primero intentar desde Secret Manager (si está disponible)
+                    try
+                    {
+                        var projectId = "grup-441318";
+                        SecretManagerServiceClient? secretClient = null;
+                        
+                        // Intentar crear cliente de Secret Manager
+                        try
+                        {
+                            secretClient = new SecretManagerServiceClientBuilder().Build();
+                        }
+                        catch (Exception clientEx)
+                        {
+                            _logger.LogDebug($"No se pudo crear cliente Secret Manager: {clientEx.Message}");
+                            // Continuar con fallbacks
+                        }
+                        
+                        if (secretClient != null)
+                        {
+                            var secretPath = $"projects/{projectId}/secrets/{secretName}/versions/latest";
+                            
+                            var callSettings = CallSettings.FromRetry(
+                                RetrySettings.FromExponentialBackoff(
+                                    maxAttempts: 2,
+                                    initialBackoff: TimeSpan.FromSeconds(2),
+                                    maxBackoff: TimeSpan.FromSeconds(5),
+                                    backoffMultiplier: 2.0,
+                                    retryFilter: RetrySettings.FilterForStatusCodes(
+                                        StatusCode.Unavailable,
+                                        StatusCode.DeadlineExceeded,
+                                        StatusCode.NotFound
+                                    )
+                                )
+                            ).WithTimeout(TimeSpan.FromSeconds(10));
+                            
+                            try
+                            {
+                                var secretVersion = secretClient.AccessSecretVersion(secretPath, callSettings: callSettings);
+                                var secretValue = secretVersion.Payload.Data.ToStringUtf8();
+                                
+                                if (!string.IsNullOrEmpty(secretValue))
+                                {
+                                    _logger.LogInformation($"✅ Secreto {secretName} obtenido desde Secret Manager");
+                                    return secretValue;
+                                }
+                            }
+                            catch (RpcException rpcEx) when (rpcEx.StatusCode == StatusCode.NotFound)
+                            {
+                                // Secreto no encontrado, continuar con fallbacks
+                                _logger.LogDebug($"Secreto {secretName} no encontrado en Secret Manager");
+                            }
+                            catch (Exception secretEx)
+                            {
+                                _logger.LogDebug($"Error obteniendo secreto {secretName} desde Secret Manager: {secretEx.Message}");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Si falla Secret Manager completamente, continuar con otros métodos
+                        _logger.LogDebug($"Secret Manager no disponible para {secretName}: {ex.Message}");
+                    }
+
+                    // Fallback: Intentar desde configuración
+                    var configKey = secretName.Replace("stripe-", "Stripe:").Replace("-", ":");
+                    var value = _configuration[configKey];
+                    if (!string.IsNullOrEmpty(value))
+                    {
+                        _logger.LogDebug($"Secreto {secretName} obtenido desde configuración");
+                        return value;
+                    }
+
+                    // Fallback: Intentar desde variables de entorno
+                    var envKey = secretName.ToUpper().Replace("-", "_");
+                    value = Environment.GetEnvironmentVariable(envKey);
+                    if (!string.IsNullOrEmpty(value))
+                    {
+                        _logger.LogDebug($"Secreto {secretName} obtenido desde variable de entorno");
+                        return value;
+                    }
+
+                    _logger.LogWarning($"⚠️ Secreto {secretName} no encontrado en ninguna fuente");
+                    return defaultValue;
+                };
+
+                var (secretKey, webhookSecret, generalWebhookSecret) = await _stripeConfigService.GetStripeKeysForModeAsync(
+                    mode,
+                    getSecretValue);
+
+                // Actualizar configuración en memoria (IConfiguration es mutable en runtime)
+                // Esto actualizará las claves para futuras lecturas desde IConfiguration
+                if (!string.IsNullOrEmpty(secretKey))
+                {
+                    _configuration["Stripe:SecretKey"] = secretKey;
+                    StripeConfiguration.ApiKey = secretKey;
+                }
+                if (!string.IsNullOrEmpty(webhookSecret))
+                {
+                    _configuration["Stripe:WebhookSecret"] = webhookSecret;
+                }
+                if (!string.IsNullOrEmpty(generalWebhookSecret))
+                {
+                    _configuration["Stripe:GeneralWebhookSecret"] = generalWebhookSecret;
+                }
+
+                _logger.LogInformation($"✅ Claves Stripe recargadas para modo {mode}");
+                _logger.LogInformation($"   SecretKey presente: {!string.IsNullOrEmpty(secretKey)}");
+                _logger.LogInformation($"   WebhookSecret presente: {!string.IsNullOrEmpty(webhookSecret)}");
+                _logger.LogInformation($"   GeneralWebhookSecret presente: {!string.IsNullOrEmpty(generalWebhookSecret)}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error recargando claves Stripe");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Request model para establecer modo Stripe
+        /// </summary>
+        public class SetStripeModeRequest
+        {
+            public string Mode { get; set; } = string.Empty;
         }
     }
 }

@@ -9,7 +9,7 @@ namespace newApi.Services
 {
     /// <summary>
     /// Servicio para procesamiento asíncrono de webhooks de Stripe
-    /// ✅ BEST PRACTICE: Procesar webhooks en segundo plano para responder < 1s
+    /// ✅ BEST PRACTICE: Procesar webhooks en segundo plano para responder &lt; 1s
     /// </summary>
     public class WebhookProcessingService : IWebhookProcessingService
     {

@@ -140,7 +140,7 @@ jobs:
           echo "📊 Review the Trivy scan results above for any CRITICAL or HIGH severity issues"
 
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always() && steps.trivy-scan.outcome != 'failure'
         continue-on-error: true
         with:

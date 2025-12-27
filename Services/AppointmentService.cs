@@ -6724,22 +6724,10 @@ namespace newApi.Services
 
         }
 
-
-
         /// <summary>
-
-        /// Calcula la distancia entre dos puntos geográficos usando la fórmula de Haversine
-
-        /// </summary>
-
-        /// <summary>
-
-        /// Envía un mensaje automático al chat cuando cambia el estado de una cita
-
+        /// Envía un mensaje automático al chat cuando cambia el estado de una cita.
         /// Formato: "APPointmentStatusChange:{status_value}"
-
         /// </summary>
-
         private async Task SendAppointmentStatusChangeMessageAsync(int searchHireId, string statusValue, int senderId)
 
         {

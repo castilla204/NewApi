@@ -14,5 +14,16 @@ RUN dotnet publish "newApi.csproj" -c Release -o /app/publish
 
 FROM base AS final
 WORKDIR /app
+
+# ✅ SEGURIDAD: Crear usuario no-root para ejecutar la aplicación
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
 COPY --from=publish /app/publish .
+
+# ✅ SEGURIDAD: Cambiar ownership de los archivos al usuario no-root
+RUN chown -R appuser:appuser /app
+
+# ✅ SEGURIDAD: Cambiar a usuario no-root
+USER appuser
+
 ENTRYPOINT ["dotnet", "newApi.dll"]

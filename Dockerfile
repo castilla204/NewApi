@@ -16,16 +16,9 @@ FROM base AS final
 WORKDIR /app
 
 # ✅ SEGURIDAD: Crear usuario no-root con UID 1000 para ejecutar la aplicación
-# Crear grupo primero, luego usuario, verificando que se crearon correctamente
-RUN set -eux; \
-    # Intentar crear grupo, ignorar si ya existe
-    (groupadd -r -g 1000 appuser 2>/dev/null || getent group 1000 >/dev/null 2>&1 || true) && \
-    # Intentar crear usuario, ignorar si ya existe
-    (useradd -r -u 1000 -g appuser appuser 2>/dev/null || getent passwd 1000 >/dev/null 2>&1 || true) && \
-    # Verificar que el usuario existe, si no, crear con nombre alternativo
-    (id appuser >/dev/null 2>&1 || useradd -r -u 1000 -g 1000 -s /bin/false appuser) && \
-    # Verificar creación exitosa
-    id appuser
+RUN groupadd -r -g 1000 appuser 2>/dev/null || true && \
+    useradd -r -u 1000 -g appuser -s /bin/false appuser 2>/dev/null || true && \
+    id appuser || (groupadd -r -g 1000 appuser && useradd -r -u 1000 -g appuser -s /bin/false appuser)
 
 # ✅ SEGURIDAD: Copiar archivos con ownership correcto desde el inicio
 COPY --chown=appuser:appuser --from=publish /app/publish .

@@ -57,12 +57,6 @@ spec:
           capabilities:
             drop:
               - ALL
-        # ✅ SEGURIDAD: Volúmenes temporales para directorios que .NET necesita escribir
-        volumeMounts:
-        - name: tmp
-          mountPath: /tmp
-        - name: var-tmp
-          mountPath: /var/tmp
         env:
         - name: RABBITMQ_HOSTNAME
           value: rabbitmq-svc
@@ -192,6 +186,11 @@ spec:
         - name: google-credentials
           mountPath: /etc/google
           readOnly: true
+        # ✅ SEGURIDAD: Volúmenes temporales para directorios que .NET necesita escribir (readOnlyRootFilesystem)
+        - name: tmp
+          mountPath: /tmp
+        - name: var-tmp
+          mountPath: /var/tmp
         resources:
           requests:
             memory: 256Mi

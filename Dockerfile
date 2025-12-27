@@ -16,7 +16,9 @@ FROM base AS final
 WORKDIR /app
 
 # ✅ SEGURIDAD: Crear usuario no-root con UID 1000 para ejecutar la aplicación
-RUN groupadd -r -g 1000 appuser && useradd -r -u 1000 -g appuser appuser
+# Usar enfoque simple que ignora errores si el grupo/usuario ya existe
+RUN groupadd -r -g 1000 appuser 2>/dev/null || true && \
+    useradd -r -u 1000 -g appuser appuser 2>/dev/null || true
 
 COPY --from=publish /app/publish .
 

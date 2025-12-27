@@ -6806,6 +6806,9 @@ namespace newApi.Services
 
 
 
+        /// <summary>
+        /// Calcula la distancia entre dos puntos geográficos usando la fórmula de Haversine
+        /// </summary>
         private static decimal CalculateDistance(decimal lat1, decimal lon1, decimal lat2, decimal lon2)
 
         {

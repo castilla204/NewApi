@@ -213,10 +213,13 @@ jobs:
           ssh-private-key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
 
       - name: Add VPS to known hosts
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '65002' }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>&1 || echo "Warning: Could not add host to known_hosts, will use StrictHostKeyChecking=no"
+          ssh-keyscan -p ${VPS_SSH_PORT} -H ${VPS_HOST} >> ~/.ssh/known_hosts 2>&1 || echo "Warning: Could not add host to known_hosts, will use StrictHostKeyChecking=no"
           chmod 600 ~/.ssh/known_hosts || true
 
       - name: Check VPS connectivity

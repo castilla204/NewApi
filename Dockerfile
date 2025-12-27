@@ -15,8 +15,8 @@ RUN dotnet publish "newApi.csproj" -c Release -o /app/publish
 FROM base AS final
 WORKDIR /app
 
-# ✅ SEGURIDAD: Crear usuario no-root para ejecutar la aplicación
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+# ✅ SEGURIDAD: Crear usuario no-root con UID 1000 para ejecutar la aplicación
+RUN groupadd -r -g 1000 appuser && useradd -r -u 1000 -g appuser appuser
 
 COPY --from=publish /app/publish .
 

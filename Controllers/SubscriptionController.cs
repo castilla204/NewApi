@@ -35,8 +35,8 @@ namespace newApi.Controllers
         private readonly ISubscriptionService _subscriptionService;
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
-        private readonly string? _webhookSecret;
-        private readonly string? _generalWebhookSecret;
+        // ✅ CAMBIO: Eliminados campos readonly - ahora se leen dinámicamente desde IConfiguration
+        // Esto permite que las claves se actualicen cuando cambia el modo Stripe sin reiniciar la aplicación
         private readonly SystemStatusService _systemStatusService;
         private readonly StripeRefundService _refundService;
         private readonly IAuthorizationServices _authService;
@@ -44,6 +44,11 @@ namespace newApi.Controllers
         private readonly IInvoiceService _invoiceService;
         private readonly IStripeValidationService _stripeValidationService;
         private readonly IAppointmentService _appointmentService;
+
+        // ✅ Propiedades para leer claves dinámicamente desde configuración
+        private string? WebhookSecret => _configuration["Stripe:WebhookSecret"];
+        private string? GeneralWebhookSecret => _configuration["Stripe:GeneralWebhookSecret"];
+        private string? StripeSecretKey => _configuration["Stripe:SecretKey"];
 
         public SubscriptionController(AppDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService, IInvoiceService invoiceService, IAppointmentService appointmentService)
         {
@@ -58,9 +63,22 @@ namespace newApi.Controllers
             _stripeValidationService = stripeValidationService;
             _invoiceService = invoiceService;
             _appointmentService = appointmentService;
-            _webhookSecret = _configuration["Stripe:WebhookSecret"];
-            _generalWebhookSecret = _configuration["Stripe:GeneralWebhookSecret"];
-            StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
+            
+            // ✅ Actualizar StripeConfiguration.ApiKey dinámicamente
+            // Se actualizará cada vez que se acceda a StripeSecretKey
+            UpdateStripeApiKey();
+        }
+
+        /// <summary>
+        /// ✅ Actualizar StripeConfiguration.ApiKey desde configuración
+        /// </summary>
+        private void UpdateStripeApiKey()
+        {
+            var secretKey = StripeSecretKey;
+            if (!string.IsNullOrEmpty(secretKey))
+            {
+                StripeConfiguration.ApiKey = secretKey;
+            }
         }
 
         /// <summary>
@@ -1465,14 +1483,17 @@ namespace newApi.Controllers
                 // EventUtility.ConstructEvent valida la signature y lanza StripeException si es inválida
                 // Esto previene ataques de replay e inyección de eventos falsos
                 
+                // ✅ Actualizar Stripe API Key antes de usar (por si cambió el modo)
+                UpdateStripeApiKey();
+                
                 // 🔍 DIAGNÓSTICO: Determinar qué webhook secret usar
-                string? webhookSecretToUse = _webhookSecret;
+                string? webhookSecretToUse = WebhookSecret;
                 
                 // ✅ FALLBACK: Si el webhook secret principal está vacío, intentar usar el general
                 // Esto es útil en desarrollo cuando solo se configura un webhook secret
                 if (string.IsNullOrEmpty(webhookSecretToUse))
                 {
-                    webhookSecretToUse = _generalWebhookSecret;
+                    webhookSecretToUse = GeneralWebhookSecret;
                     if (!string.IsNullOrEmpty(webhookSecretToUse))
                     {
                         await _loggingService.LogWarningAsync(
@@ -1493,7 +1514,7 @@ namespace newApi.Controllers
                     
                     await _loggingService.LogCriticalAsync(
                         message: "CRITICAL: Webhook secret not configured for Connect events",
-                        details: $"Both _webhookSecret and _generalWebhookSecret are empty. Event type: {eventType}, Account: {accountId}. " +
+                        details: $"Both WebhookSecret and GeneralWebhookSecret are empty. Event type: {eventType}, Account: {accountId}. " +
                                 $"INSTRUCCIONES: 1) Ve al Dashboard de Stripe → Developers → Webhooks → Tu endpoint → Signing secret. " +
                                 $"2) Copia el secret (whsec_...). " +
                                 $"3) Configúralo con: dotnet user-secrets set \"Stripe:WebhookSecret\" \"whsec_...\" " +
@@ -1502,8 +1523,8 @@ namespace newApi.Controllers
                         relatedEntityType: "Webhook",
                         relatedEntityId: null,
                         additionalData: new { 
-                            HasWebhookSecret = !string.IsNullOrEmpty(_webhookSecret),
-                            HasGeneralWebhookSecret = !string.IsNullOrEmpty(_generalWebhookSecret),
+                            HasWebhookSecret = !string.IsNullOrEmpty(WebhookSecret),
+                            HasGeneralWebhookSecret = !string.IsNullOrEmpty(GeneralWebhookSecret),
                             EventType = eventType,
                             AccountId = accountId,
                             HasSignature = !string.IsNullOrEmpty(signatureHeader),
@@ -1967,7 +1988,10 @@ namespace newApi.Controllers
                 // ✅ SEGURIDAD CRÍTICA: Validar signature antes de procesar
                 // EventUtility.ConstructEvent valida la signature y lanza StripeException si es inválida
                 // Esto previene ataques de replay e inyección de eventos falsos
-                if (string.IsNullOrEmpty(_generalWebhookSecret))
+                // ✅ Actualizar Stripe API Key antes de usar (por si cambió el modo)
+                UpdateStripeApiKey();
+                
+                if (string.IsNullOrEmpty(GeneralWebhookSecret))
                 {
                     return BadRequest(new { error = "Webhook secret not configured" });
                 }
@@ -1983,7 +2007,7 @@ namespace newApi.Controllers
                 var stripeEvent = EventUtility.ConstructEvent(
                     json, 
                     signatureHeader, 
-                    _generalWebhookSecret,
+                    GeneralWebhookSecret,
                     throwOnApiVersionMismatch: false // ⚠️ Permite procesar eventos de diferentes versiones de API
                 );
                 

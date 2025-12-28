@@ -42,7 +42,7 @@ spec:
         emptyDir: {}
       containers:
       - name: new-api
-        image: erizo9/newapi@sha256:a4a66c8fe369ceb3435b954872669d7534580ed239031f48bd9b82bf2c733cc6
+        image: erizo9/newapi:latest
         imagePullPolicy: Always
         ports:
         - name: http

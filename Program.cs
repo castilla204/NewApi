@@ -1514,8 +1514,8 @@ app.UseAuthorization();
 
 // ✅ SEGURIDAD 2025: FORZAR MFA para Admin y Expertos
 // OWASP/NIST/PCI DSS: MFA obligatorio para cuentas privilegiadas
-// IMPORTANTE: Este middleware debe estar ANTES de mapear endpoints
-// pero el middleware internamente verifica rutas públicas
+// IMPORTANTE: El middleware verifica rutas públicas internamente
+// por lo que puede estar antes de mapear endpoints
 app.UseRequireMfa();
 
 // Add health check endpoint

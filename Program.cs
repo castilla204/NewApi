@@ -1512,17 +1512,17 @@ context.Request.Headers.ContainsKey("X-Bypass-Auth"))
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Add health check endpoint - DEBE estar ANTES del middleware de MFA
+// ✅ SEGURIDAD 2025: FORZAR MFA para Admin y Expertos
+// OWASP/NIST/PCI DSS: MFA obligatorio para cuentas privilegiadas
+// IMPORTANTE: Este middleware debe estar ANTES de mapear endpoints
+// pero el middleware internamente verifica rutas públicas
+app.UseRequireMfa();
+
+// Add health check endpoint
 app.MapHealthChecks("/health");
 
 app.MapControllers();
 app.MapHub<ChatHub>("/chatHub");
-
-// ✅ SEGURIDAD 2025: FORZAR MFA para Admin y Expertos
-// OWASP/NIST/PCI DSS: MFA obligatorio para cuentas privilegiadas
-// IMPORTANTE: Este middleware debe estar DESPUÉS de mapear los endpoints
-// para que pueda verificar las rutas correctamente
-app.UseRequireMfa();
 
 app.Urls.Add("http://0.0.0.0:7124");
 

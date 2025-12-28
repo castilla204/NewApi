@@ -257,12 +257,12 @@ jobs:
             # Update Kubernetes deployment
             if [ -f "k8s/deployment.yaml" ]; then
               kubectl apply -f k8s/deployment.yaml --namespace=default
-              kubectl rollout status deployment/newapi --namespace=default --timeout=5m
+              kubectl rollout status deployment/new-api --namespace=default --timeout=5m
             fi
             
             # Verify deployment
-            kubectl get pods -l app=newapi --namespace=default
-            kubectl get svc -l app=newapi --namespace=default
+            kubectl get pods -l app=new-api --namespace=default
+            kubectl get svc -l app=new-api --namespace=default
             
             echo "✅ Deployment completed successfully!"
           EOF

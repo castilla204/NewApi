@@ -27,6 +27,16 @@ namespace newApi.Services
             int? zoom = null,
             int limit = 100);
 
+        Task<IEnumerable<SearchServiceDetailDto>> GetMapExpertsWithDetails(
+            int categoryId, 
+            int serviceTypeId,
+            decimal northeastLat,
+            decimal northeastLng,
+            decimal southwestLat,
+            decimal southwestLng,
+            int? zoom = null,
+            int limit = 100);
+
         Task<SearchServiceDetailDto> GetServiceByHireId(int id);
 
         Task<(IEnumerable<SearchServiceResponseDto> services, int totalCount)> GetExpertServices(int expertId, int? serviceTypeId = null, int page = 1, int pageSize = 20);

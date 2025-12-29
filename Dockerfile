@@ -15,22 +15,12 @@ RUN dotnet publish "newApi.csproj" -c Release -o /app/publish
 FROM base AS final
 WORKDIR /app
 
-# ✅ SEGURIDAD: Crear usuario no-root con UID 1000 para ejecutar la aplicación
-# Crear grupo primero, luego usuario, verificando que se crearon correctamente
-RUN set -eux; \
-    # Intentar crear grupo, ignorar si ya existe
-    (groupadd -r -g 1000 appuser 2>/dev/null || getent group 1000 >/dev/null 2>&1 || true) && \
-    # Intentar crear usuario, ignorar si ya existe
-    (useradd -r -u 1000 -g appuser appuser 2>/dev/null || getent passwd 1000 >/dev/null 2>&1 || true) && \
-    # Verificar que el usuario existe, si no, crear con nombre alternativo
-    (id appuser >/dev/null 2>&1 || useradd -r -u 1000 -g 1000 -s /bin/false appuser) && \
-    # Verificar creación exitosa
-    id appuser
-
-# ✅ SEGURIDAD: Copiar archivos con ownership correcto desde el inicio
-COPY --chown=appuser:appuser --from=publish /app/publish .
+# ✅ SEGURIDAD: Usar el usuario no-root 'app' que viene en la imagen de .NET
+# Las imágenes de .NET 8+ incluyen un usuario 'app' con UID 1654
+# No es necesario crear un usuario personalizado
+COPY --chown=app:app --from=publish /app/publish .
 
 # ✅ SEGURIDAD: Cambiar a usuario no-root
-USER appuser
+USER app
 
 ENTRYPOINT ["dotnet", "newApi.dll"]

@@ -3,7 +3,7 @@
     "tasks": [
         {
             "label": "build",
-            "command": "dotnet",
+            "command": "C:\\Program Files\\dotnet\\dotnet.exe",
             "type": "process",
             "args": [
                 "build",
@@ -15,7 +15,7 @@
         },
         {
             "label": "publish",
-            "command": "dotnet",
+            "command": "C:\\Program Files\\dotnet\\dotnet.exe",
             "type": "process",
             "args": [
                 "publish",
@@ -27,7 +27,7 @@
         },
         {
             "label": "watch",
-            "command": "dotnet",
+            "command": "C:\\Program Files\\dotnet\\dotnet.exe",
             "type": "process",
             "args": [
                 "watch",

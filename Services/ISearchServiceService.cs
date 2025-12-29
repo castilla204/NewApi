@@ -43,5 +43,17 @@ namespace newApi.Services
 
         Task<bool> DeleteSearchService(int serviceId, int userId);
 
+        Task<(IEnumerable<SearchServiceDetailDto> services, int totalCount)> GetNearbyServices(
+            string? latitude,
+            string? longitude,
+            string? countryCode,
+            int locationRange,
+            int page = 1,
+            int pageSize = 20);
+
+        Task<(IEnumerable<SearchServiceDetailDto> services, int totalCount)> GetPopularServices(
+            int page = 1,
+            int pageSize = 20);
+
     }
 }

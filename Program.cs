@@ -818,7 +818,17 @@ configLogger.LogInformation($"Environment: {(isDevelopment ? "Development" : "Pr
 configLogger.LogInformation($"Connection String (masked): {connectionStringForLog}");
 
 // Add services to the container
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        // ✅ CORRECCIÓN: Configurar JSON para evitar referencias circulares
+        // ReferenceHandler.IgnoreCycles está disponible desde .NET 6
+        options.JsonSerializerOptions.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
+        options.JsonSerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+        options.JsonSerializerOptions.WriteIndented = false;
+        // ✅ MEJORA: Configurar para mejor rendimiento
+        options.JsonSerializerOptions.PropertyNamingPolicy = null; // Mantener nombres de propiedades como están
+    });
 
 // Configure request size limits for file uploads
 builder.Services.Configure<IISServerOptions>(options =>
@@ -1421,6 +1431,10 @@ if (app.Environment.IsDevelopment())
     });
 }
 
+// ✅ CORS DEBE SER EL PRIMERO: Aplicar CORS ANTES de cualquier otro middleware
+// Esto asegura que los headers CORS se envíen incluso si hay errores
+app.UseCors("AllowSpecificOrigin");
+
 // ✅ HANGFIRE IFRAME SUPPORT: Configurar headers para permitir iframes en Hangfire Dashboard
 app.Use(async (context, next) =>
 {
@@ -1450,8 +1464,6 @@ app.Use(async (context, next) =>
     
     await next();
 });
-
-app.UseCors("AllowSpecificOrigin"); // Aplicar CORS antes de otros middleware
 
 // ✅ SEGURIDAD 2025: Aplicar Rate Limiting
 app.UseRateLimiter();
@@ -1502,6 +1514,8 @@ app.UseAuthorization();
 
 // ✅ SEGURIDAD 2025: FORZAR MFA para Admin y Expertos
 // OWASP/NIST/PCI DSS: MFA obligatorio para cuentas privilegiadas
+// IMPORTANTE: El middleware verifica rutas públicas internamente
+// por lo que puede estar antes de mapear endpoints
 app.UseRequireMfa();
 
 // Add health check endpoint

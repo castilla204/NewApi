@@ -113,23 +113,32 @@ namespace newApi.Controllers
                     });
                 }
 
-                var categories = await _context.Categories
+                // ✅ CORRECCIÓN: Consulta más robusta - usar Select para evitar problemas de referencia circular
+                // y cargar solo las subcategorías activas directamente en la consulta
+                var categoryData = await _context.Categories
                     .AsNoTracking() // ✅ MEJORA: No tracking para mejor rendimiento y evitar problemas de conexión
                     .Where(c => c.IsActive)
-                    .Include(c => c.Subcategories)
+                    .Select(c => new
+                    {
+                        Category = c,
+                        ActiveSubcategories = c.Subcategories != null 
+                            ? c.Subcategories.Where(sc => sc.IsActive && sc != null).ToList()
+                            : new List<Category>()
+                    })
                     .ToListAsync();
 
-                var categoryDtos = categories.Select(c => new CategoryWithDetailsDto
+                // Construir el resultado final mapeando a DTO
+                var categoryDtos = categoryData.Select(x => new CategoryWithDetailsDto
                 {
-                    Id = c.Id,
-                    Name = c.Name,
-                    ParentId = c.ParentId,
-                    IsActive = c.IsActive,
-                    CreatedAt = c.CreatedAt,
-                    UpdatedAt = c.UpdatedAt,
-                    IsParent = c.ParentId == null,
-                    HasSubcategories = c.Subcategories != null && c.Subcategories.Any(sc => sc.IsActive),
-                    SubcategoriesCount = c.Subcategories != null ? c.Subcategories.Count(sc => sc.IsActive) : 0
+                    Id = x.Category.Id,
+                    Name = x.Category.Name ?? string.Empty, // ✅ Protección contra null
+                    ParentId = x.Category.ParentId,
+                    IsActive = x.Category.IsActive,
+                    CreatedAt = x.Category.CreatedAt,
+                    UpdatedAt = x.Category.UpdatedAt,
+                    IsParent = x.Category.ParentId == null,
+                    HasSubcategories = x.ActiveSubcategories.Any(),
+                    SubcategoriesCount = x.ActiveSubcategories.Count
                 }).ToList();
 
                 return Ok(categoryDtos);
@@ -155,12 +164,28 @@ namespace newApi.Controllers
                     details = dbEx.InnerException?.Message ?? dbEx.Message
                 });
             }
+            catch (NullReferenceException nullEx)
+            {
+                // ✅ NUEVO: Manejo específico de NullReferenceException
+                return StatusCode(500, new { 
+                    message = "Failed to retrieve categories: Null reference error",
+                    error = "NULL_REFERENCE_ERROR",
+                    details = nullEx.Message,
+                    stackTrace = nullEx.StackTrace,
+                    source = nullEx.Source
+                });
+            }
             catch (Exception ex)
             {
+                // ✅ MEJORA: Incluir más información de depuración
                 return StatusCode(500, new { 
                     message = "Failed to retrieve categories",
                     error = "UNKNOWN_ERROR",
-                    details = ex.Message
+                    errorType = ex.GetType().Name,
+                    details = ex.Message,
+                    innerException = ex.InnerException?.Message,
+                    stackTrace = ex.StackTrace,
+                    source = ex.Source
                 });
             }
         }

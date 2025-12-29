@@ -15,14 +15,16 @@ namespace newApi.Controllers
     {
         private readonly SearchServiceService _searchServiceService;
         private readonly AppDbContext _context;
+        private readonly ILoggingService _loggingService;
 
         public SearchServiceController(
             SearchServiceService searchServiceService,
-
-            AppDbContext context)
+            AppDbContext context,
+            ILoggingService loggingService)
         {
             _searchServiceService = searchServiceService;
             _context = context;
+            _loggingService = loggingService;
         }
 
         private string GetStripeStatusMessage(StripeStatus status)
@@ -554,6 +556,115 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 return StatusCode(500, new { message = "Failed to delete search service", detail = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Obtiene el muro de servicios para la homepage con servicios cercanos y populares
+        /// </summary>
+        /// <param name="latitude">Latitud del usuario (opcional, si no se proporciona usa capital del país)</param>
+        /// <param name="longitude">Longitud del usuario (opcional, si no se proporciona usa capital del país)</param>
+        /// <param name="countryCode">Código de país ISO 3166-1 alpha-2 (opcional, por defecto ES - Madrid)</param>
+        /// <param name="locationRange">Rango de búsqueda en km (por defecto 50)</param>
+        /// <param name="nearbyPage">Página para servicios cercanos (por defecto 1)</param>
+        /// <param name="nearbyPageSize">Tamaño de página para servicios cercanos (por defecto 20, máximo 50)</param>
+        /// <param name="popularPage">Página para servicios populares (por defecto 1)</param>
+        /// <param name="popularPageSize">Tamaño de página para servicios populares (por defecto 20, máximo 50)</param>
+        /// <returns>Muro con servicios cercanos y populares paginados</returns>
+        [HttpGet("homepage-wall")]
+        public async Task<IActionResult> GetHomepageWall(
+            [FromQuery] string? latitude = null,
+            [FromQuery] string? longitude = null,
+            [FromQuery] string? countryCode = null,
+            [FromQuery] int locationRange = 50,
+            [FromQuery] int nearbyPage = 1,
+            [FromQuery] int nearbyPageSize = 20,
+            [FromQuery] int popularPage = 1,
+            [FromQuery] int popularPageSize = 20)
+        {
+            try
+            {
+                // Validar parámetros de paginación
+                if (nearbyPage < 1) nearbyPage = 1;
+                if (nearbyPageSize < 1 || nearbyPageSize > 50) nearbyPageSize = 20;
+                if (popularPage < 1) popularPage = 1;
+                if (popularPageSize < 1 || popularPageSize > 50) popularPageSize = 20;
+                if (locationRange <= 0) locationRange = 50;
+
+                // Obtener servicios cercanos
+                var (nearbyServices, nearbyTotalCount) = await _searchServiceService.GetNearbyServices(
+                    latitude,
+                    longitude,
+                    countryCode,
+                    locationRange,
+                    nearbyPage,
+                    nearbyPageSize);
+
+                // Obtener servicios populares
+                var (popularServices, popularTotalCount) = await _searchServiceService.GetPopularServices(
+                    popularPage,
+                    popularPageSize);
+
+                return Ok(new
+                {
+                    nearbyServices = new
+                    {
+                        services = nearbyServices,
+                        pagination = new
+                        {
+                            page = nearbyPage,
+                            pageSize = nearbyPageSize,
+                            totalCount = nearbyTotalCount,
+                            totalPages = (int)Math.Ceiling(nearbyTotalCount / (double)nearbyPageSize),
+                            hasNextPage = nearbyPage * nearbyPageSize < nearbyTotalCount,
+                            hasPreviousPage = nearbyPage > 1
+                        }
+                    },
+                    popularServices = new
+                    {
+                        services = popularServices,
+                        pagination = new
+                        {
+                            page = popularPage,
+                            pageSize = popularPageSize,
+                            totalCount = popularTotalCount,
+                            totalPages = (int)Math.Ceiling(popularTotalCount / (double)popularPageSize),
+                            hasNextPage = popularPage * popularPageSize < popularTotalCount,
+                            hasPreviousPage = popularPage > 1
+                        }
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                // Log del error con información detallada
+                var requestParams = new
+                {
+                    latitude,
+                    longitude,
+                    countryCode,
+                    locationRange,
+                    nearbyPage,
+                    nearbyPageSize,
+                    popularPage,
+                    popularPageSize
+                };
+
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener el muro de homepage",
+                    details: $"Exception: {ex.Message}\nStackTrace: {ex.StackTrace}",
+                    source: "SearchServiceController.GetHomepageWall",
+                    relatedEntityType: "HomepageWall",
+                    additionalData: new
+                    {
+                        requestParameters = requestParams,
+                        innerException = ex.InnerException?.Message,
+                        exceptionType = ex.GetType().Name
+                    },
+                    notifyUser: false
+                );
+
+                return StatusCode(500, new { message = "Failed to retrieve homepage wall", detail = ex.Message });
             }
         }
     }

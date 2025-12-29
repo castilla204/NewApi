@@ -818,4 +818,359 @@ export default function HomePage() {
 
 El endpoint está listo y devuelve exactamente el mismo formato que los otros endpoints de servicios, así que puedes reutilizar los componentes y tipos que ya tengas implementados.
 
+---
+
+## 🎨 Componente con Flechas de Navegación y "Show All"
+
+Aquí tienes un ejemplo completo con flechas de navegación horizontal y botón "Show All":
+
+```typescript
+// components/HomepageWallWithNavigation.tsx
+import React, { useState } from 'react';
+import { useGeolocation } from '@/hooks/useGeolocation';
+import { useHomepageWall } from '@/hooks/useHomepageWall';
+import { SearchServiceDetailDto } from '@/types/service';
+
+export const HomepageWallWithNavigation: React.FC = () => {
+  const { latitude, longitude, error: geoError, loading: geoLoading } = useGeolocation();
+  const [nearbyPage, setNearbyPage] = useState(1);
+  const [popularPage, setPopularPage] = useState(1);
+  const [showAllNearby, setShowAllNearby] = useState(false);
+  const [showAllPopular, setShowAllPopular] = useState(false);
+  
+  const countryCode = 'ES';
+  const pageSize = 20;
+
+  const { data, loading, error } = useHomepageWall({
+    latitude,
+    longitude,
+    countryCode,
+    locationRange: 50,
+    nearbyPage: showAllNearby ? 1 : nearbyPage,
+    nearbyPageSize: showAllNearby ? 1000 : pageSize, // Si showAll, pedir muchos
+    popularPage: showAllPopular ? 1 : popularPage,
+    popularPageSize: showAllPopular ? 1000 : pageSize,
+  });
+
+  if (loading || geoLoading) {
+    return <div>Cargando servicios...</div>;
+  }
+
+  if (error) {
+    return <div>Error: {error}</div>;
+  }
+
+  if (!data) {
+    return <div>No hay datos disponibles</div>;
+  }
+
+  const nearbyServices = showAllNearby 
+    ? data.nearbyServices.services 
+    : data.nearbyServices.services.slice(0, pageSize);
+
+  const popularServices = showAllPopular 
+    ? data.popularServices.services 
+    : data.popularServices.services.slice(0, pageSize);
+
+  return (
+    <div className="homepage-wall">
+      {/* Sección: Servicios Cercanos */}
+      <section className="nearby-services">
+        <div className="section-header">
+          <div className="header-top">
+            <h2>
+              {latitude && longitude 
+                ? 'Servicios cerca de ti' 
+                : `Servicios en ${countryCode === 'ES' ? 'Madrid' : 'tu ciudad'}`}
+            </h2>
+            {!showAllNearby && data.nearbyServices.pagination.totalCount > pageSize && (
+              <button 
+                className="show-all-btn"
+                onClick={() => setShowAllNearby(true)}
+              >
+                Ver todos ({data.nearbyServices.pagination.totalCount})
+              </button>
+            )}
+          </div>
+          {geoError && (
+            <p className="geo-warning">
+              No se pudo obtener tu ubicación. Mostrando servicios de la capital.
+            </p>
+          )}
+        </div>
+
+        <div className="services-container">
+          {!showAllNearby && data.nearbyServices.pagination.hasPreviousPage && (
+            <button 
+              className="nav-arrow nav-arrow-left"
+              onClick={() => setNearbyPage(nearbyPage - 1)}
+              aria-label="Anterior"
+            >
+              ‹
+            </button>
+          )}
+          
+          <div className="services-grid">
+            {nearbyServices.map((service) => (
+              <ServiceCard key={service.id} service={service} />
+            ))}
+          </div>
+
+          {!showAllNearby && data.nearbyServices.pagination.hasNextPage && (
+            <button 
+              className="nav-arrow nav-arrow-right"
+              onClick={() => setNearbyPage(nearbyPage + 1)}
+              aria-label="Siguiente"
+            >
+              ›
+            </button>
+          )}
+        </div>
+
+        {!showAllNearby && (
+          <div className="pagination-info">
+            <span>
+              Página {nearbyPage} de {data.nearbyServices.pagination.totalPages} 
+              ({data.nearbyServices.pagination.totalCount} servicios)
+            </span>
+          </div>
+        )}
+
+        {showAllNearby && (
+          <button 
+            className="show-less-btn"
+            onClick={() => {
+              setShowAllNearby(false);
+              setNearbyPage(1);
+            }}
+          >
+            Mostrar menos
+          </button>
+        )}
+      </section>
+
+      {/* Sección: Servicios Populares */}
+      <section className="popular-services">
+        <div className="section-header">
+          <div className="header-top">
+            <h2>Servicios Populares</h2>
+            {!showAllPopular && data.popularServices.pagination.totalCount > pageSize && (
+              <button 
+                className="show-all-btn"
+                onClick={() => setShowAllPopular(true)}
+              >
+                Ver todos ({data.popularServices.pagination.totalCount})
+              </button>
+            )}
+          </div>
+          <p className="subtitle">
+            Los servicios mejor valorados por nuestros usuarios
+          </p>
+        </div>
+
+        <div className="services-container">
+          {!showAllPopular && data.popularServices.pagination.hasPreviousPage && (
+            <button 
+              className="nav-arrow nav-arrow-left"
+              onClick={() => setPopularPage(popularPage - 1)}
+              aria-label="Anterior"
+            >
+              ‹
+            </button>
+          )}
+          
+          <div className="services-grid">
+            {popularServices.map((service) => (
+              <ServiceCard key={service.id} service={service} />
+            ))}
+          </div>
+
+          {!showAllPopular && data.popularServices.pagination.hasNextPage && (
+            <button 
+              className="nav-arrow nav-arrow-right"
+              onClick={() => setPopularPage(popularPage + 1)}
+              aria-label="Siguiente"
+            >
+              ›
+            </button>
+          )}
+        </div>
+
+        {!showAllPopular && (
+          <div className="pagination-info">
+            <span>
+              Página {popularPage} de {data.popularServices.pagination.totalPages} 
+              ({data.popularServices.pagination.totalCount} servicios)
+            </span>
+          </div>
+        )}
+
+        {showAllPopular && (
+          <button 
+            className="show-less-btn"
+            onClick={() => {
+              setShowAllPopular(false);
+              setPopularPage(1);
+            }}
+          >
+            Mostrar menos
+          </button>
+        )}
+      </section>
+    </div>
+  );
+};
+```
+
+### Estilos CSS para las Flechas y Botones:
+
+```css
+/* Estilos para el contenedor de servicios con navegación */
+.services-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.services-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.5rem;
+  flex: 1;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+
+.services-grid::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
+}
+
+/* Flechas de navegación */
+.nav-arrow {
+  background: white;
+  border: 2px solid #e0e0e0;
+  border-radius: 50%;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  font-weight: bold;
+  color: #333;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  flex-shrink: 0;
+  z-index: 10;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.nav-arrow:hover:not(:disabled) {
+  background: #f5f5f5;
+  border-color: #007bff;
+  color: #007bff;
+  transform: scale(1.1);
+  box-shadow: 0 4px 12px rgba(0, 123, 255, 0.2);
+}
+
+.nav-arrow:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.nav-arrow-left {
+  left: -24px;
+}
+
+.nav-arrow-right {
+  right: -24px;
+}
+
+/* Header con botón Show All */
+.header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.show-all-btn {
+  background: #007bff;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.show-all-btn:hover {
+  background: #0056b3;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 123, 255, 0.3);
+}
+
+.show-less-btn {
+  background: #6c757d;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  margin-top: 1rem;
+  transition: all 0.3s ease;
+}
+
+.show-less-btn:hover {
+  background: #5a6268;
+}
+
+.pagination-info {
+  text-align: center;
+  margin-top: 1rem;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .nav-arrow {
+    width: 40px;
+    height: 40px;
+    font-size: 1.5rem;
+  }
+
+  .services-container {
+    gap: 0.5rem;
+  }
+
+  .header-top {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .show-all-btn {
+    width: 100%;
+  }
+}
+```
+
+### Características del Componente:
+
+✅ **Flechas de navegación**: Izquierda y derecha para navegar entre páginas  
+✅ **Botón "Ver todos"**: Muestra todos los servicios cuando hay más de los visibles  
+✅ **Botón "Mostrar menos"**: Vuelve a la vista paginada  
+✅ **Información de paginación**: Muestra página actual, total de páginas y cantidad de servicios  
+✅ **Responsive**: Se adapta a móviles y tablets  
+✅ **Smooth scrolling**: Desplazamiento suave al navegar  
+
 

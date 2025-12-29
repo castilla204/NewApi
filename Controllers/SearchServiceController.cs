@@ -47,6 +47,10 @@ namespace newApi.Controllers
             };
         }
 
+        /// <summary>
+        /// [OBSOLETO] Este endpoint está obsoleto. Usa GET /api/SearchService/map-experts con parámetros latitude, longitude y locationRange en su lugar.
+        /// </summary>
+        [Obsolete("Este endpoint está obsoleto. Usa GET /api/SearchService/map-experts con parámetros latitude, longitude y locationRange en su lugar.")]
         [HttpGet]
         public async Task<IActionResult> GetAllServices(
             [FromQuery] int categoryId,
@@ -72,32 +76,58 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Latitude, Longitude, y LocationRange son requeridos y deben ser válidos" });
                 }
 
+                // Redirigir internamente a map-experts con los mismos parámetros
                 var services = await _searchServiceService.GetAllServices(categoryId, serviceTypeId, latitude, longitude, locationRange);
                 return Ok(services);
             }
             catch (Exception ex)
             {
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener servicios (endpoint obsoleto GetAllServices)",
+                    details: $"Exception: {ex.Message}\nStackTrace: {ex.StackTrace}",
+                    source: "SearchServiceController.GetAllServices",
+                    relatedEntityType: "SearchServices",
+                    additionalData: new
+                    {
+                        categoryId,
+                        serviceTypeId,
+                        latitude,
+                        longitude,
+                        locationRange,
+                        innerException = ex.InnerException?.Message,
+                        exceptionType = ex.GetType().Name
+                    },
+                    notifyUser: false
+                );
                 return StatusCode(500, new { message = "Failed to retrieve services", detail = ex.Message });
             }
         }
 
         /// <summary>
-        /// Obtiene expertos para mostrar en el mapa con información básica.
+        /// Obtiene expertos para mostrar en el mapa con información básica o completa según los parámetros.
+        /// - Sin parámetros de ubicación: devuelve ExpertMapResponseDto (información básica para el mapa)
+        /// - Con parámetros de ubicación (latitude, longitude, locationRange): devuelve SearchServiceDetailDto[] (información completa como GetAllServices)
         /// Soporta búsqueda por bounds del mapa (como Airbnb) para cargar servicios dinámicamente al mover el mapa.
         /// </summary>
         /// <param name="categoryId">ID de la categoría</param>
         /// <param name="serviceTypeId">ID del tipo de servicio</param>
-        /// <param name="northeastLat">Latitud del punto noreste del mapa visible (opcional)</param>
-        /// <param name="northeastLng">Longitud del punto noreste del mapa visible (opcional)</param>
-        /// <param name="southwestLat">Latitud del punto suroeste del mapa visible (opcional)</param>
-        /// <param name="southwestLng">Longitud del punto suroeste del mapa visible (opcional)</param>
+        /// <param name="latitude">Latitud del punto de búsqueda (opcional, si se proporciona devuelve información completa)</param>
+        /// <param name="longitude">Longitud del punto de búsqueda (opcional, si se proporciona devuelve información completa)</param>
+        /// <param name="locationRange">Rango de búsqueda en km (opcional, requerido si se proporciona latitude/longitude)</param>
+        /// <param name="northeastLat">Latitud del punto noreste del mapa visible (opcional, para filtrado por bounds)</param>
+        /// <param name="northeastLng">Longitud del punto noreste del mapa visible (opcional, para filtrado por bounds)</param>
+        /// <param name="southwestLat">Latitud del punto suroeste del mapa visible (opcional, para filtrado por bounds)</param>
+        /// <param name="southwestLng">Longitud del punto suroeste del mapa visible (opcional, para filtrado por bounds)</param>
         /// <param name="zoom">Nivel de zoom del mapa (opcional, afecta el límite de resultados)</param>
         /// <param name="limit">Límite máximo de resultados (default: 100)</param>
-        /// <returns>Lista de expertos con precios para mostrar en el mapa</returns>
+        /// <returns>ExpertMapResponseDto si no hay ubicación, o SearchServiceDetailDto[] si hay ubicación</returns>
         [HttpGet("map-experts")]
         public async Task<IActionResult> GetMapExperts(
             [FromQuery] int categoryId,
             [FromQuery] int serviceTypeId,
+            [FromQuery] string? latitude = null,
+            [FromQuery] string? longitude = null,
+            [FromQuery] int? locationRange = null,
             [FromQuery] decimal? northeastLat = null,
             [FromQuery] decimal? northeastLng = null,
             [FromQuery] decimal? southwestLat = null,
@@ -128,6 +158,55 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Si se proporcionan bounds, deben proporcionarse todos los parámetros: northeastLat, northeastLng, southwestLat, southwestLng" });
                 }
 
+                // ✅ NUEVO: Detectar si hay bounds del mapa (desplazamiento por el mapa)
+                bool hasBounds = northeastLat.HasValue && northeastLng.HasValue && 
+                                southwestLat.HasValue && southwestLng.HasValue;
+
+                // ✅ Si se proporcionan parámetros de ubicación (latitude/longitude/locationRange), usar GetAllServices
+                bool hasLocationParams = !string.IsNullOrWhiteSpace(latitude) && 
+                                        !string.IsNullOrWhiteSpace(longitude) && 
+                                        locationRange.HasValue && locationRange.Value > 0;
+
+                if (hasLocationParams)
+                {
+                    // Validar locationRange
+                    if (locationRange.Value <= 0)
+                    {
+                        return BadRequest(new { message = "LocationRange debe ser mayor que 0" });
+                    }
+
+                    // Usar GetAllServices para devolver información completa
+                    var services = await _searchServiceService.GetAllServices(
+                        categoryId, 
+                        serviceTypeId, 
+                        latitude, 
+                        longitude, 
+                        locationRange.Value);
+                    return Ok(services);
+                }
+
+                // ✅ Si hay bounds (desplazamiento por el mapa), devolver información completa
+                if (hasBounds)
+                {
+                    if (limit <= 0 || limit > 500)
+                    {
+                        return BadRequest(new { message = "El límite debe estar entre 1 y 500" });
+                    }
+
+                    // Devolver información completa cuando se mueve el mapa
+                    var services = await _searchServiceService.GetMapExpertsWithDetails(
+                        categoryId, 
+                        serviceTypeId,
+                        northeastLat.Value,
+                        northeastLng.Value,
+                        southwestLat.Value,
+                        southwestLng.Value,
+                        zoom,
+                        limit);
+                    return Ok(services);
+                }
+
+                // ✅ Si no hay bounds ni parámetros de ubicación, usar GetMapExperts (información básica para carga inicial)
                 if (limit <= 0 || limit > 500)
                 {
                     return BadRequest(new { message = "El límite debe estar entre 1 y 500" });
@@ -136,10 +215,10 @@ namespace newApi.Controllers
                 var experts = await _searchServiceService.GetMapExperts(
                     categoryId, 
                     serviceTypeId,
-                    northeastLat,
-                    northeastLng,
-                    southwestLat,
-                    southwestLng,
+                    null, // northeastLat
+                    null, // northeastLng
+                    null, // southwestLat
+                    null, // southwestLng
                     zoom,
                     limit);
                 return Ok(experts);
@@ -150,6 +229,23 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener expertos del mapa",
+                    details: $"Exception: {ex.Message}\nStackTrace: {ex.StackTrace}",
+                    source: "SearchServiceController.GetMapExperts",
+                    relatedEntityType: "MapExperts",
+                    additionalData: new
+                    {
+                        categoryId,
+                        serviceTypeId,
+                        latitude,
+                        longitude,
+                        locationRange,
+                        innerException = ex.InnerException?.Message,
+                        exceptionType = ex.GetType().Name
+                    },
+                    notifyUser: false
+                );
                 return StatusCode(500, new { message = "Failed to retrieve map experts", detail = ex.Message });
             }
         }

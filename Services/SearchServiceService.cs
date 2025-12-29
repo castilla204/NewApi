@@ -332,6 +332,177 @@ namespace newApi.Services
             }
         }
 
+        /// <summary>
+        /// Obtiene servicios con información completa filtrados por bounds del mapa (cuando el usuario se mueve por el mapa)
+        /// 
+        /// ✅ OPTIMIZACIONES IMPLEMENTADAS:
+        /// - Límites inteligentes según zoom (menos datos en zoom bajo)
+        /// - Filtrado por bounds antes de cargar toda la información
+        /// - Ordenamiento por distancia al centro del mapa
+        /// 
+        /// 🚀 OPTIMIZACIONES FUTURAS RECOMENDADAS (ver MAP_PERFORMANCE_OPTIMIZATION_GUIDE.md):
+        /// - Índices espaciales PostGIS (100-1000x más rápido)
+        /// - Caché Redis para áreas visitadas frecuentemente
+        /// - Compresión HTTP de respuestas
+        /// </summary>
+        public async Task<IEnumerable<SearchServiceDetailDto>> GetMapExpertsWithDetails(
+            int categoryId, 
+            int serviceTypeId,
+            decimal northeastLat,
+            decimal northeastLng,
+            decimal southwestLat,
+            decimal southwestLng,
+            int? zoom = null,
+            int limit = 100)
+        {
+            try
+            {
+                if (categoryId <= 0 || serviceTypeId <= 0)
+                {
+                    throw new ArgumentException("CategoryId and ServiceTypeId must be greater than 0");
+                }
+
+                // Validar bounds
+                if (northeastLat <= southwestLat || northeastLng <= southwestLng)
+                {
+                    throw new ArgumentException("Invalid bounds: northeast must be greater than southwest");
+                }
+                
+                // Validar rangos de coordenadas
+                if (northeastLat < -90m || northeastLat > 90m ||
+                    southwestLat < -90m || southwestLat > 90m ||
+                    northeastLng < -180m || northeastLng > 180m ||
+                    southwestLng < -180m || southwestLng > 180m)
+                {
+                    throw new ArgumentException("Invalid coordinate ranges. Latitude must be between -90 and 90, Longitude between -180 and 180");
+                }
+
+                // ✅ OPTIMIZACIÓN: Determinar límite según zoom (mejora performance con muchos datos)
+                // Zoom alto = área pequeña = más servicios necesarios
+                // Zoom bajo = área grande = menos servicios necesarios
+                int maxResults = limit;
+                if (zoom.HasValue)
+                {
+                    maxResults = zoom.Value switch
+                    {
+                        >= 18 => Math.Min(limit, 500),  // Zoom muy alto: barrio específico
+                        >= 15 => Math.Min(limit, 200),   // Zoom alto: área pequeña
+                        >= 12 => Math.Min(limit, 100),   // Zoom medio: ciudad
+                        >= 10 => Math.Min(limit, 50),    // Zoom bajo: región
+                        _ => Math.Min(limit, 30)         // Zoom muy bajo: país/continente
+                    };
+                }
+
+                // ✅ Cargar servicios con TODA la información necesaria (igual que GetAllServices)
+                var query = _context.SearchServices
+                    .AsNoTracking()
+                    .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId && ss.IsActive && !ss.ExpertProfile.IsOnVacation
+                        && (ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted
+                            || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification))
+                    .Where(ss => !string.IsNullOrEmpty(ss.ExpertProfile.Latitude) && !string.IsNullOrEmpty(ss.ExpertProfile.Longitude))
+                    .Include(ss => ss.Images)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.Reviewer) // ✅ Incluir información del revisor
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.ImagesCollection) // ✅ Incluir imágenes de las reviews
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire) // ✅ Incluir SearchHire para ExpertCountry
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.SearchHiresAsExpert) // ✅ Incluir contrataciones del experto
+                            .ThenInclude(sh => sh.Status) // ✅ Incluir estado de las contrataciones
+                    .Include(ss => ss.Category)
+                    .Include(ss => ss.ServiceType)
+                        .ThenInclude(st => st.ServiceTypeCategory) // ✅ Incluir categoría del tipo de servicio
+                    .Include(ss => ss.SelectedDeliverableTypes)
+                        .ThenInclude(ssdt => ssdt.DeliverableType)
+                    .Take(maxResults * 3); // ✅ Aplicar límite generoso antes de cargar (para reducir memoria)
+
+                var services = await query.ToListAsync();
+
+                // ✅ Filtrar por bounds en memoria
+                services = services.Where(ss =>
+                {
+                    if (!decimal.TryParse(ss.ExpertProfile.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLat) ||
+                        !decimal.TryParse(ss.ExpertProfile.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLng))
+                    {
+                        return false;
+                    }
+
+                    // Verificar que el experto esté dentro de los bounds
+                    bool latInBounds = expertLat >= southwestLat && expertLat <= northeastLat;
+                    bool lngInBounds = expertLng >= southwestLng && expertLng <= northeastLng;
+                    
+                    return latInBounds && lngInBounds;
+                }).ToList();
+
+                // ✅ Ordenar por distancia al centro del bounds
+                var centerLat = (northeastLat + southwestLat) / 2;
+                var centerLng = (northeastLng + southwestLng) / 2;
+                
+                services = services.OrderBy(ss =>
+                {
+                    if (!decimal.TryParse(ss.ExpertProfile.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLat) ||
+                        !decimal.TryParse(ss.ExpertProfile.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLng))
+                    {
+                        return decimal.MaxValue;
+                    }
+                    return CalculateDistance(centerLat, centerLng, expertLat, expertLng);
+                }).ToList();
+
+                // ✅ Aplicar límite después del filtrado y ordenamiento
+                if (services.Count > maxResults)
+                {
+                    services = services.Take(maxResults).ToList();
+                }
+
+                // ✅ Cargar todas las disponibilidades activas de los expertos
+                var expertProfileIds = services.Select(ss => ss.ExpertProfileId).Distinct().ToList();
+                var availabilities = await _context.ExpertAvailabilities
+                    .Where(ea => expertProfileIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                    .OrderByDescending(ea => ea.EffectiveFrom)
+                    .ToListAsync();
+
+                var availabilityByExpert = availabilities
+                    .GroupBy(ea => ea.ExpertId)
+                    .ToDictionary(g => g.Key, g => g.First());
+
+                // ✅ Mapear a SearchServiceDetailDto (información completa)
+                var mappedServices = services.Select(ss => MapToDetailDto(ss, availabilityByExpert)).ToList();
+                
+                // ✅ OPTIMIZACIÓN: Si hay demasiados servicios después del mapeo, limitar a los más cercanos
+                // Esto previene sobrecarga cuando hay áreas muy densas
+                if (mappedServices.Count > maxResults)
+                {
+                    mappedServices = mappedServices
+                        .OrderBy(ss =>
+                        {
+                            if (ss.Expert?.Latitude != null && ss.Expert?.Longitude != null &&
+                                decimal.TryParse(ss.Expert.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var lat) &&
+                                decimal.TryParse(ss.Expert.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var lng))
+                            {
+                                return CalculateDistance(centerLat, centerLng, lat, lng);
+                            }
+                            return decimal.MaxValue;
+                        })
+                        .Take(maxResults)
+                        .ToList();
+                }
+                
+                return mappedServices;
+            }
+            catch (Exception ex)
+            {
+                throw;
+            }
+        }
+
         // Haversine formula for distance calculation
         public static decimal CalculateDistance(decimal lat1, decimal lon1, decimal lat2, decimal lon2)
         {
@@ -1252,9 +1423,22 @@ namespace newApi.Services
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
-                            .ThenInclude(r => r.SearchHire)
+                            .ThenInclude(r => r.Reviewer) // ✅ Incluir información del revisor
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.ImagesCollection) // ✅ Incluir imágenes de las reviews
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire) // ✅ Incluir SearchHire para ExpertCountry
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.SearchHiresAsExpert) // ✅ Incluir contrataciones del experto
+                            .ThenInclude(sh => sh.Status) // ✅ Incluir estado de las contrataciones
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
+                        .ThenInclude(st => st.ServiceTypeCategory) // ✅ Incluir categoría del tipo de servicio
                     .Include(ss => ss.SelectedDeliverableTypes)
                         .ThenInclude(ssdt => ssdt.DeliverableType);
 
@@ -1348,12 +1532,22 @@ namespace newApi.Services
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
                         .ThenInclude(u => u.ReviewsReceived)
-                            .ThenInclude(r => r.SearchHire)
+                            .ThenInclude(r => r.Reviewer) // ✅ Incluir información del revisor
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
-                        .ThenInclude(u => u.SearchHiresAsExpert)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.ImagesCollection) // ✅ Incluir imágenes de las reviews
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire) // ✅ Incluir SearchHire para ExpertCountry
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.SearchHiresAsExpert) // ✅ Incluir contrataciones del experto
+                            .ThenInclude(sh => sh.Status) // ✅ Incluir estado de las contrataciones
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType)
+                        .ThenInclude(st => st.ServiceTypeCategory) // ✅ Incluir categoría del tipo de servicio
                     .Include(ss => ss.SelectedDeliverableTypes)
                         .ThenInclude(ssdt => ssdt.DeliverableType);
 

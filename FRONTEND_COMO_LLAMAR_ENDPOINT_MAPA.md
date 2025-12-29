@@ -1,17 +1,31 @@
 # 📱 Frontend: Cómo Llamar al Endpoint del Mapa
 
+## ⚠️ IMPORTANTE: Cambio de Endpoint
+
+**El endpoint anterior `GET /api/SearchService` con `latitude`, `longitude` y `locationRange` ya NO existe.**
+
+Ahora **TODO** se maneja a través del endpoint unificado:
+```
+GET /api/SearchService/map-experts
+```
+
+📖 **Ver documentación completa de migración:** `FRONTEND_MAP_ENDPOINT_MIGRATION.md`
+
+---
+
 ## 🎯 Resumen Rápido
 
-El endpoint funciona en **2 modos**:
-1. **Carga inicial** (sin bounds) → Todos los servicios
-2. **Al mover mapa** (con bounds) → Solo servicios visibles
+El endpoint funciona en **3 modos**:
+1. **Carga inicial** (sin parámetros) → Información básica de todos los expertos
+2. **Al mover mapa** (con bounds) → Información completa de servicios visibles
+3. **Búsqueda por ubicación** (con latitude/longitude/locationRange) → Información completa filtrada por distancia
 
 ---
 
 ## 🔌 Endpoint
 
 ```
-GET /api/searchservice/map-experts
+GET /api/SearchService/map-experts
 ```
 
 ---
@@ -33,7 +47,13 @@ const response = await fetch(
 - ❌ NO incluir bounds
 
 ### **Qué devuelve:**
-- **TODOS** los servicios disponibles
+```typescript
+{
+  experts: ExpertMapDto[],  // Información básica
+  totalCount: number
+}
+```
+- **TODOS** los expertos disponibles (información básica)
 - Úsalo para mostrar el primer servicio por defecto
 - Coloca todos los marcadores en el mapa
 
@@ -42,6 +62,9 @@ const response = await fetch(
 ## 📋 Modo 2: Al Mover el Mapa (CON bounds)
 
 ### **Cuándo:** Cuando el usuario mueve o hace zoom en el mapa
+
+### **🎯 Funcionamiento:**
+Cada vez que mueves el mapa, el endpoint recibe los **bounds** (límites del área visible) y devuelve **solo los servicios que están dentro de esa área**, con **información completa**. Esto permite cargar dinámicamente todo lo visible mientras te desplazas, igual que Airbnb.
 
 ### **⚠️ IMPORTANTE: Usar Debouncing**
 ```typescript
@@ -92,9 +115,13 @@ const response = await fetch(
 - ✅ `limit` (máximo de resultados, recomendado: 30-50)
 
 ### **Qué devuelve:**
+```typescript
+SearchServiceDetailDto[]  // Información COMPLETA
+```
 - **SOLO** los servicios visibles en el área del mapa
 - Máximo según el `limit` especificado
 - Ordenados por distancia al centro del mapa
+- **Información completa** (imágenes, reviews, disponibilidades, etc.)
 
 ---
 
@@ -271,6 +298,7 @@ northeastLat, northeastLng // ❌ Falta southwest
 
 ## 📊 Estructura de Respuesta
 
+### Modo 1: Carga Inicial (sin bounds)
 ```typescript
 {
   "experts": [
@@ -282,7 +310,7 @@ northeastLat, northeastLng // ❌ Falta southwest
       "totalReviews": 10,
       "latitude": "41.54660957575336",
       "longitude": "-0.9480622482776679",
-      "price": 150.00,  // ✅ Precio del servicio
+      "price": 150.00,
       "serviceDescription": "...",
       "serviceTypeName": "Consulta"
     }
@@ -290,6 +318,31 @@ northeastLat, northeastLng // ❌ Falta southwest
   "totalCount": 1
 }
 ```
+
+### Modo 2 y 3: Con bounds o ubicación (información completa)
+```typescript
+[
+  {
+    "id": 123,
+    "categoryId": 2,
+    "serviceTypeId": 1,
+    "price": 150.00,
+    "imageUrls": ["https://..."],
+    "expert": {
+      "id": 40,
+      "name": "Diego Castilla",
+      "profilePictureUrl": "https://...",
+      "latitude": "41.54660957575336",
+      "longitude": "-0.9480622482776679",
+      "reviews": [...],
+      // ... más información completa
+    },
+    // ... más campos completos
+  }
+]
+```
+
+📖 **Ver documentación completa:** `FRONTEND_MAP_ENDPOINT_MIGRATION.md`
 
 ---
 
@@ -305,13 +358,31 @@ northeastLat, northeastLng // ❌ Falta southwest
 
 ---
 
+## 🔄 Migración desde Endpoint Anterior
+
+### ❌ Endpoint Anterior (OBSOLETO)
+```typescript
+// ❌ YA NO FUNCIONA
+GET /api/SearchService?categoryId=2&serviceTypeId=1&latitude=40.4168&longitude=-3.7038&locationRange=25
+```
+
+### ✅ Nuevo Endpoint (ACTUAL)
+```typescript
+// ✅ USA ESTE (mismos parámetros, diferente URL)
+GET /api/SearchService/map-experts?categoryId=2&serviceTypeId=1&latitude=40.4168&longitude=-3.7038&locationRange=25
+```
+
+📖 **Ver documentación completa de migración:** `FRONTEND_MAP_ENDPOINT_MIGRATION.md`
+
+---
+
 ## 🚀 Listo
 
 El backend está listo. Solo implementa:
-1. Carga inicial (sin bounds)
-2. Debouncing (300ms)
-3. Obtener bounds al mover mapa
-4. Llamar endpoint con bounds
+1. Carga inicial (sin bounds) → Modo 1
+2. Debouncing (300ms) → Modo 2
+3. Obtener bounds al mover mapa → Modo 2
+4. Búsqueda por ubicación → Modo 3
 
 **¡Funcionará como Airbnb!** 🎉
 

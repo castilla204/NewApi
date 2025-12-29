@@ -305,7 +305,7 @@ namespace newApi.Services
                             ? expert.ReviewsReceived.Average(r => r.Score)
                             : 0,
                         TotalReviews = expert.ReviewsReceived?.Count ?? 0,
-                        CompletedSearches = expert.SearchHiresAsExpert?.Count(sh => sh.Status.StatusValue == "completed") ?? 0,
+                        CompletedSearches = expert.SearchHiresAsExpert?.Count(sh => sh.Status != null && sh.Status.StatusValue == "completed") ?? 0,
                         RegisteredSince = firstService.ExpertProfile.CreatedAt,
                         Latitude = firstService.ExpertProfile.Latitude,
                         Longitude = firstService.ExpertProfile.Longitude,
@@ -798,7 +798,7 @@ namespace newApi.Services
                 Expert = baseDto.Expert,
                 SelectedDeliverableTypes = baseDto.SelectedDeliverableTypes,
                 CategoryName = ss.Category?.Name ?? "Unknown Category",
-                CompletedSearches = ss.ExpertProfile?.User?.SearchHiresAsExpert?.Count(sh => sh.Status.StatusValue == "completed") ?? 0,
+                CompletedSearches = ss.ExpertProfile?.User?.SearchHiresAsExpert?.Count(sh => sh.Status != null && sh.Status.StatusValue == "completed") ?? 0,
                 AverageRating = ss.ExpertProfile?.User?.ReviewsReceived != null && ss.ExpertProfile.User.ReviewsReceived.Any()
                     ? ss.ExpertProfile.User.ReviewsReceived.Average(r => r.Score)
                     : 0
@@ -1153,6 +1153,270 @@ namespace newApi.Services
 
             var fallback = string.IsNullOrWhiteSpace(image.ImageUrl) ? string.Empty : image.ImageUrl;
             return _signedUrlService.GetSignedUrl(image.ImageObjectName ?? string.Empty) ?? fallback;
+        }
+
+        /// <summary>
+        /// Diccionario de coordenadas de capitales por código de país (ISO 3166-1 alpha-2)
+        /// </summary>
+        private static readonly Dictionary<string, (decimal Latitude, decimal Longitude)> CapitalCoordinates = new()
+        {
+            { "ES", (40.4168m, -3.7038m) },      // Madrid, España
+            { "MX", (19.4326m, -99.1332m) },     // Ciudad de México, México
+            { "US", (38.9072m, -77.0369m) },     // Washington D.C., Estados Unidos
+            { "AR", (-34.6037m, -58.3816m) },    // Buenos Aires, Argentina
+            { "CO", (4.7110m, -74.0721m) },     // Bogotá, Colombia
+            { "CL", (-33.4489m, -70.6693m) },    // Santiago, Chile
+            { "PE", (-12.0464m, -77.0428m) },    // Lima, Perú
+            { "VE", (10.4806m, -66.9036m) },     // Caracas, Venezuela
+            { "EC", (-0.1807m, -78.4678m) },     // Quito, Ecuador
+            { "BO", (-16.2902m, -63.5887m) },    // La Paz, Bolivia
+            { "PY", (-25.2637m, -57.5759m) },    // Asunción, Paraguay
+            { "UY", (-34.9011m, -56.1645m) },    // Montevideo, Uruguay
+            { "BR", (-15.7942m, -47.8822m) },    // Brasilia, Brasil
+            { "PT", (38.7223m, -9.1393m) },      // Lisboa, Portugal
+            { "FR", (48.8566m, 2.3522m) },      // París, Francia
+            { "IT", (41.9028m, 12.4964m) },      // Roma, Italia
+            { "DE", (52.5200m, 13.4050m) },      // Berlín, Alemania
+            { "GB", (51.5074m, -0.1278m) },      // Londres, Reino Unido
+            { "CA", (45.4215m, -75.6972m) },     // Ottawa, Canadá
+            { "AU", (-35.2809m, 149.1300m) },    // Canberra, Australia
+            { "JP", (35.6762m, 139.6503m) },     // Tokio, Japón
+            { "CN", (39.9042m, 116.4074m) },     // Pekín, China
+            { "IN", (28.6139m, 77.2090m) },      // Nueva Delhi, India
+        };
+
+        /// <summary>
+        /// Obtiene las coordenadas de la capital de un país
+        /// </summary>
+        private (decimal Latitude, decimal Longitude) GetCapitalCoordinates(string? countryCode)
+        {
+            // Si no se proporciona código de país o no está en el diccionario, usar Madrid por defecto
+            if (string.IsNullOrWhiteSpace(countryCode) || !CapitalCoordinates.TryGetValue(countryCode.ToUpperInvariant(), out var coords))
+            {
+                return CapitalCoordinates["ES"]; // Madrid por defecto
+            }
+            return coords;
+        }
+
+        /// <summary>
+        /// Obtiene servicios cercanos a una ubicación. Si no se proporciona ubicación, usa la capital del país.
+        /// </summary>
+        public async Task<(IEnumerable<SearchServiceDetailDto> services, int totalCount)> GetNearbyServices(
+            string? latitude,
+            string? longitude,
+            string? countryCode,
+            int locationRange,
+            int page = 1,
+            int pageSize = 20)
+        {
+            try
+            {
+                // Validar parámetros de paginación
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+                if (locationRange <= 0) locationRange = 50; // Rango por defecto de 50km
+
+                decimal searchLatitude;
+                decimal searchLongitude;
+
+                // Si no se proporciona ubicación, usar la capital del país (o Madrid por defecto)
+                if (string.IsNullOrWhiteSpace(latitude) || string.IsNullOrWhiteSpace(longitude))
+                {
+                    var capitalCoords = GetCapitalCoordinates(countryCode);
+                    searchLatitude = capitalCoords.Latitude;
+                    searchLongitude = capitalCoords.Longitude;
+                }
+                else
+                {
+                    // Validar que las coordenadas sean válidas
+                    if (!decimal.TryParse(latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out searchLatitude) ||
+                        !decimal.TryParse(longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out searchLongitude))
+                    {
+                        // Si las coordenadas no son válidas, usar capital
+                        var capitalCoords = GetCapitalCoordinates(countryCode);
+                        searchLatitude = capitalCoords.Latitude;
+                        searchLongitude = capitalCoords.Longitude;
+                    }
+                }
+
+                // Consulta base: servicios activos con expertos aprobados
+                var query = _context.SearchServices
+                    .AsNoTracking()
+                    .Where(ss => ss.IsActive 
+                        && !ss.ExpertProfile.IsOnVacation
+                        && (ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted
+                            || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)
+                        && !string.IsNullOrEmpty(ss.ExpertProfile.Latitude) 
+                        && !string.IsNullOrEmpty(ss.ExpertProfile.Longitude))
+                    .Include(ss => ss.Images)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire)
+                    .Include(ss => ss.Category)
+                    .Include(ss => ss.ServiceType)
+                    .Include(ss => ss.SelectedDeliverableTypes)
+                        .ThenInclude(ssdt => ssdt.DeliverableType);
+
+                var services = await query.ToListAsync();
+
+                // Calcular distancia para todos los servicios
+                var servicesWithDistance = services
+                    .Select(ss =>
+                    {
+                        if (ss.ExpertProfile == null || 
+                            string.IsNullOrEmpty(ss.ExpertProfile.Latitude) || 
+                            string.IsNullOrEmpty(ss.ExpertProfile.Longitude) ||
+                            !decimal.TryParse(ss.ExpertProfile.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLat) ||
+                            !decimal.TryParse(ss.ExpertProfile.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLng))
+                        {
+                            return null;
+                        }
+
+                        var distance = CalculateDistance(searchLatitude, searchLongitude, expertLat, expertLng);
+                        return new { Service = ss, Distance = distance };
+                    })
+                    .Where(x => x != null)
+                    .OrderBy(x => x!.Distance)
+                    .ToList();
+
+                // Si hay servicios dentro del rango, usarlos. Si no, usar los más cercanos disponibles
+                var servicesInRange = servicesWithDistance.Where(x => x!.Distance <= locationRange).ToList();
+                
+                // Si no hay servicios en el rango, usar los más cercanos disponibles (sin límite de distancia)
+                // Esto asegura que siempre haya servicios si existen en la base de datos
+                var servicesToUse = servicesInRange.Count > 0 
+                    ? servicesInRange 
+                    : servicesWithDistance; // Si no hay en rango, usar todos ordenados por distancia
+
+                // El totalCount siempre refleja los servicios que se están usando
+                var totalCount = servicesToUse.Count;
+
+                // Aplicar paginación
+                var paginatedServices = servicesToUse
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .Select(x => x!.Service)
+                    .ToList();
+
+                // Cargar disponibilidades de expertos
+                var expertProfileIds = paginatedServices
+                    .Where(ss => ss.ExpertProfileId.HasValue)
+                    .Select(ss => ss.ExpertProfileId.Value)
+                    .Distinct()
+                    .ToList();
+                
+                var availabilities = await _context.ExpertAvailabilities
+                    .Where(ea => expertProfileIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                    .OrderByDescending(ea => ea.EffectiveFrom)
+                    .ToListAsync();
+
+                var availabilityByExpert = availabilities
+                    .GroupBy(ea => ea.ExpertId)
+                    .ToDictionary(g => g.Key, g => g.First());
+
+                var mappedServices = paginatedServices.Select(ss => MapToDetailDto(ss, availabilityByExpert)).ToList();
+                return (mappedServices, totalCount);
+            }
+            catch (Exception ex)
+            {
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Obtiene servicios populares ordenados por rating y número de contrataciones completadas
+        /// </summary>
+        public async Task<(IEnumerable<SearchServiceDetailDto> services, int totalCount)> GetPopularServices(
+            int page = 1,
+            int pageSize = 20)
+        {
+            try
+            {
+                // Validar parámetros de paginación
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+                // Consulta base: servicios activos con expertos aprobados
+                var query = _context.SearchServices
+                    .AsNoTracking()
+                    .Where(ss => ss.IsActive 
+                        && !ss.ExpertProfile.IsOnVacation
+                        && (ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted
+                            || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification))
+                    .Include(ss => ss.Images)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.SearchHiresAsExpert)
+                    .Include(ss => ss.Category)
+                    .Include(ss => ss.ServiceType)
+                    .Include(ss => ss.SelectedDeliverableTypes)
+                        .ThenInclude(ssdt => ssdt.DeliverableType);
+
+                var services = await query.ToListAsync();
+
+                // Calcular popularidad: combinación de rating promedio y número de contrataciones completadas
+                var servicesWithPopularity = services
+                    .Select(ss =>
+                    {
+                        var expert = ss.ExpertProfile?.User;
+                        var reviews = expert?.ReviewsReceived ?? new List<Review>();
+                        var completedSearches = expert?.SearchHiresAsExpert?.Count(sh => sh.Status != null && sh.Status.StatusValue == "completed") ?? 0;
+                        
+                        var averageRating = reviews.Any() ? reviews.Average(r => r.Score) : 0;
+                        
+                        // Score de popularidad: rating * 0.6 + (min(completedSearches, 100) / 100) * 0.4
+                        // Esto da más peso al rating pero también considera las contrataciones
+                        var popularityScore = ((decimal)averageRating * 0.6m) + (Math.Min(completedSearches, 100) / 100m * 0.4m);
+                        
+                        return new 
+                        { 
+                            Service = ss, 
+                            PopularityScore = popularityScore,
+                            AverageRating = averageRating,
+                            CompletedSearches = completedSearches
+                        };
+                    })
+                    .OrderByDescending(x => x.PopularityScore)
+                    .ThenByDescending(x => x.CompletedSearches)
+                    .ToList();
+
+                var totalCount = servicesWithPopularity.Count;
+
+                // Aplicar paginación
+                var paginatedServices = servicesWithPopularity
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .Select(x => x.Service)
+                    .ToList();
+
+                // Cargar disponibilidades de expertos
+                var expertProfileIds = paginatedServices
+                    .Where(ss => ss.ExpertProfileId.HasValue)
+                    .Select(ss => ss.ExpertProfileId.Value)
+                    .Distinct()
+                    .ToList();
+                
+                var availabilities = await _context.ExpertAvailabilities
+                    .Where(ea => expertProfileIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                    .OrderByDescending(ea => ea.EffectiveFrom)
+                    .ToListAsync();
+
+                var availabilityByExpert = availabilities
+                    .GroupBy(ea => ea.ExpertId)
+                    .ToDictionary(g => g.Key, g => g.First());
+
+                var mappedServices = paginatedServices.Select(ss => MapToDetailDto(ss, availabilityByExpert)).ToList();
+                return (mappedServices, totalCount);
+            }
+            catch (Exception ex)
+            {
+                throw;
+            }
         }
     }
 }

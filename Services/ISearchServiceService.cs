@@ -10,12 +10,14 @@ namespace newApi.Services
 
 
 
-        Task<IEnumerable<SearchServiceDetailDto>> GetAllServices(
+        Task<(IEnumerable<SearchServiceDetailDto> services, int totalCount)> GetAllServices(
      int categoryId,
      int serviceTypeId,
      string latitude,
      string longitude,
-     int locationRange);
+     int locationRange,
+     int page = 1,
+     int pageSize = 50);
 
         Task<ExpertMapResponseDto> GetMapExperts(
             int categoryId, 
@@ -27,7 +29,7 @@ namespace newApi.Services
             int? zoom = null,
             int limit = 100);
 
-        Task<IEnumerable<SearchServiceDetailDto>> GetMapExpertsWithDetails(
+        Task<(IEnumerable<SearchServiceDetailDto> services, int totalCount)> GetMapExpertsWithDetails(
             int categoryId, 
             int serviceTypeId,
             decimal northeastLat,
@@ -35,7 +37,9 @@ namespace newApi.Services
             decimal southwestLat,
             decimal southwestLng,
             int? zoom = null,
-            int limit = 100);
+            int limit = 100,
+            int page = 1,
+            int pageSize = 50);
 
         Task<SearchServiceDetailDto> GetServiceByHireId(int id);
 

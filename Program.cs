@@ -854,6 +854,21 @@ builder.Services.AddSwaggerGen();
 // Note: Swagger security definition removed due to Microsoft.OpenApi.Models namespace issues
 // Swagger will still work for testing endpoints
 
+// ✅ OPTIMIZACIÓN: Habilitar compresión HTTP (reduce tamaño 60-80%)
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProvider>();
+    options.MimeTypes = Microsoft.AspNetCore.ResponseCompression.ResponseCompressionDefaults.MimeTypes.Concat(
+        new[] { "application/json", "application/json; charset=utf-8" });
+});
+
+builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProviderOptions>(options =>
+{
+    options.Level = System.IO.Compression.CompressionLevel.Fastest;
+});
+
 // ✅ SEGURIDAD 2025: Configurar Rate Limiting nativo de .NET 8
 // Configuración ajustada para aplicación web: límites más permisivos para uso normal, estrictos para endpoints sensibles
 // En desarrollo: sin límites para localhost y IPs de desarrollo
@@ -1430,6 +1445,12 @@ if (app.Environment.IsDevelopment())
         c.OAuthUseBasicAuthenticationWithAccessCodeGrant();
     });
 }
+
+// ✅ OPTIMIZACIÓN: Habilitar compresión de respuestas (debe ir antes de otros middlewares)
+app.UseResponseCompression();
+
+// ✅ OPTIMIZACIÓN: Habilitar compresión de respuestas (debe ir antes de otros middlewares)
+app.UseResponseCompression();
 
 // ✅ CORS DEBE SER EL PRIMERO: Aplicar CORS ANTES de cualquier otro middleware
 // Esto asegura que los headers CORS se envíen incluso si hay errores

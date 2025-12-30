@@ -175,14 +175,33 @@ namespace newApi.Controllers
                         return BadRequest(new { message = "LocationRange debe ser mayor que 0" });
                     }
 
-                    // Usar GetAllServices para devolver información completa
-                    var services = await _searchServiceService.GetAllServices(
+                    // Obtener parámetros de paginación (opcionales)
+                    var page = Request.Query.ContainsKey("page") && int.TryParse(Request.Query["page"], out var pageValue) ? pageValue : 1;
+                    var pageSize = Request.Query.ContainsKey("pageSize") && int.TryParse(Request.Query["pageSize"], out var pageSizeValue) ? pageSizeValue : 50;
+
+                    // Usar GetAllServices para devolver información completa con paginación
+                    var (services, totalCount) = await _searchServiceService.GetAllServices(
                         categoryId, 
                         serviceTypeId, 
                         latitude, 
                         longitude, 
-                        locationRange.Value);
-                    return Ok(services);
+                        locationRange.Value,
+                        page,
+                        pageSize);
+                    
+                    return Ok(new
+                    {
+                        services = services,
+                        pagination = new
+                        {
+                            page = page,
+                            pageSize = pageSize,
+                            totalCount = totalCount,
+                            totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                            hasNextPage = page * pageSize < totalCount,
+                            hasPreviousPage = page > 1
+                        }
+                    });
                 }
 
                 // ✅ Si hay bounds (desplazamiento por el mapa), devolver información completa
@@ -193,8 +212,12 @@ namespace newApi.Controllers
                         return BadRequest(new { message = "El límite debe estar entre 1 y 500" });
                     }
 
-                    // Devolver información completa cuando se mueve el mapa
-                    var services = await _searchServiceService.GetMapExpertsWithDetails(
+                    // Obtener parámetros de paginación (opcionales)
+                    var page = Request.Query.ContainsKey("page") && int.TryParse(Request.Query["page"], out var pageValue) ? pageValue : 1;
+                    var pageSize = Request.Query.ContainsKey("pageSize") && int.TryParse(Request.Query["pageSize"], out var pageSizeValue) ? pageSizeValue : 50;
+
+                    // Devolver información completa cuando se mueve el mapa con paginación
+                    var (services, totalCount) = await _searchServiceService.GetMapExpertsWithDetails(
                         categoryId, 
                         serviceTypeId,
                         northeastLat.Value,
@@ -202,8 +225,23 @@ namespace newApi.Controllers
                         southwestLat.Value,
                         southwestLng.Value,
                         zoom,
-                        limit);
-                    return Ok(services);
+                        limit,
+                        page,
+                        pageSize);
+                    
+                    return Ok(new
+                    {
+                        services = services,
+                        pagination = new
+                        {
+                            page = page,
+                            pageSize = pageSize,
+                            totalCount = totalCount,
+                            totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                            hasNextPage = page * pageSize < totalCount,
+                            hasPreviousPage = page > 1
+                        }
+                    });
                 }
 
                 // ✅ Si no hay bounds ni parámetros de ubicación, usar GetMapExperts (información básica para carga inicial)

@@ -6,6 +6,7 @@ using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
 using System.Security.Claims;
 using newApi.DataLayer.Models;
+using System.Threading;
 
 namespace newApi.Controllers
 {
@@ -135,6 +136,7 @@ namespace newApi.Controllers
             [FromQuery] int? zoom = null,
             [FromQuery] int limit = 100)
         {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // Timeout de 30 segundos
             try
             {
                 if (categoryId <= 0)
@@ -187,7 +189,8 @@ namespace newApi.Controllers
                         longitude, 
                         locationRange.Value,
                         page,
-                        pageSize);
+                        pageSize,
+                        cts.Token);
                     
                     return Ok(new
                     {
@@ -227,7 +230,8 @@ namespace newApi.Controllers
                         zoom,
                         limit,
                         page,
-                        pageSize);
+                        pageSize,
+                        cts.Token);
                     
                     return Ok(new
                     {
@@ -258,8 +262,21 @@ namespace newApi.Controllers
                     null, // southwestLat
                     null, // southwestLng
                     zoom,
-                    limit);
+                    limit,
+                    cts.Token);
                 return Ok(experts);
+            }
+            catch (OperationCanceledException)
+            {
+                await _loggingService.LogErrorAsync(
+                    message: "Timeout al obtener expertos del mapa",
+                    details: "La operación excedió el tiempo máximo de espera (30 segundos)",
+                    source: "SearchServiceController.GetMapExperts",
+                    relatedEntityType: "MapExperts",
+                    additionalData: new { categoryId, serviceTypeId },
+                    notifyUser: false
+                );
+                return StatusCode(408, new { message = "Request timeout. Please try again.", detail = "The request took too long to complete" });
             }
             catch (ArgumentException ex)
             {
@@ -716,6 +733,7 @@ namespace newApi.Controllers
             [FromQuery] int popularPage = 1,
             [FromQuery] int popularPageSize = 20)
         {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // Timeout de 30 segundos
             try
             {
                 // Validar parámetros de paginación
@@ -732,12 +750,14 @@ namespace newApi.Controllers
                     countryCode,
                     locationRange,
                     nearbyPage,
-                    nearbyPageSize);
+                    nearbyPageSize,
+                    cts.Token);
 
                 // Obtener servicios populares
                 var (popularServices, popularTotalCount) = await _searchServiceService.GetPopularServices(
                     popularPage,
-                    popularPageSize);
+                    popularPageSize,
+                    cts.Token);
 
                 return Ok(new
                 {
@@ -768,6 +788,18 @@ namespace newApi.Controllers
                         }
                     }
                 });
+            }
+            catch (OperationCanceledException)
+            {
+                await _loggingService.LogErrorAsync(
+                    message: "Timeout al obtener el muro de homepage",
+                    details: "La operación excedió el tiempo máximo de espera (30 segundos)",
+                    source: "SearchServiceController.GetHomepageWall",
+                    relatedEntityType: "HomepageWall",
+                    additionalData: new { latitude, longitude, countryCode },
+                    notifyUser: false
+                );
+                return StatusCode(408, new { message = "Request timeout. Please try again.", detail = "The request took too long to complete" });
             }
             catch (Exception ex)
             {

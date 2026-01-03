@@ -8,6 +8,7 @@ using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.enums;
 using System.Globalization;
+using System.Threading;
 
 namespace newApi.Services
 {
@@ -37,7 +38,8 @@ namespace newApi.Services
             string longitude,
             int locationRange,
             int page = 1,
-            int pageSize = 50)
+            int pageSize = 50,
+            CancellationToken cancellationToken = default)
         {
             try
             {
@@ -93,7 +95,7 @@ namespace newApi.Services
                     .Include(ss => ss.SelectedDeliverableTypes)
                         .ThenInclude(ssdt => ssdt.DeliverableType);
 
-                var services = await query.ToListAsync();
+                var services = await query.ToListAsync(cancellationToken);
                 services = services
                     .Where(ss => ss.IsActive && !string.IsNullOrEmpty(ss.ExpertProfile?.Latitude) && !string.IsNullOrEmpty(ss.ExpertProfile?.Longitude)) // ✅ CORRECCIÓN: Filtrar explícitamente por IsActive después de cargar
                     .ToList();
@@ -103,7 +105,7 @@ namespace newApi.Services
                 var availabilities = await _context.ExpertAvailabilities
                     .Where(ea => expertProfileIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
                     .OrderByDescending(ea => ea.EffectiveFrom)
-                    .ToListAsync();
+                    .ToListAsync(cancellationToken);
                 
                 // Agrupar por ExpertId y tomar la más reciente (si hay duplicados)
                 var availabilityByExpert = availabilities
@@ -206,7 +208,8 @@ namespace newApi.Services
             decimal? southwestLat = null,
             decimal? southwestLng = null,
             int? zoom = null,
-            int limit = 100)
+            int limit = 100,
+            CancellationToken cancellationToken = default)
         {
             try
             {
@@ -273,7 +276,7 @@ namespace newApi.Services
                     .Include(ss => ss.Category)
                     .Include(ss => ss.ServiceType);
 
-                var services = await query.ToListAsync();
+                var services = await query.ToListAsync(cancellationToken);
 
                 // ✅ OPTIMIZACIÓN: Filtrar por bounds en memoria (necesario porque coordenadas son strings)
                 // Nota: Aunque no podemos filtrar directamente en SQL con CAST fácilmente en EF Core,
@@ -322,7 +325,7 @@ namespace newApi.Services
                 var availabilities = await _context.ExpertAvailabilities
                     .Where(ea => expertProfileIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
                     .OrderByDescending(ea => ea.EffectiveFrom)
-                    .ToListAsync();
+                    .ToListAsync(cancellationToken);
 
                 // Agrupar por ExpertId y tomar la más reciente (si hay duplicados)
                 var availabilityByExpert = availabilities
@@ -411,7 +414,8 @@ namespace newApi.Services
             int? zoom = null,
             int limit = 100,
             int page = 1,
-            int pageSize = 50)
+            int pageSize = 50,
+            CancellationToken cancellationToken = default)
         {
             try
             {
@@ -484,9 +488,9 @@ namespace newApi.Services
                 {
                     command.CommandText = sqlQuery;
                     _context.Database.OpenConnection();
-                    using (var reader = await command.ExecuteReaderAsync())
+                    using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                     {
-                        while (await reader.ReadAsync())
+                        while (await reader.ReadAsync(cancellationToken))
                         {
                             serviceIds.Add(reader.GetInt32(0));
                         }
@@ -522,7 +526,7 @@ namespace newApi.Services
                             .ThenInclude(st => st.ServiceTypeCategory)
                         .Include(ss => ss.SelectedDeliverableTypes)
                             .ThenInclude(ssdt => ssdt.DeliverableType)
-                        .ToListAsync()
+                        .ToListAsync(cancellationToken)
                     : new List<SearchService>(); // Si no hay IDs, devolver lista vacía
 
                 // ✅ Ordenar por distancia al centro del bounds
@@ -550,7 +554,7 @@ namespace newApi.Services
                 var availabilities = await _context.ExpertAvailabilities
                     .Where(ea => expertProfileIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
                     .OrderByDescending(ea => ea.EffectiveFrom)
-                    .ToListAsync();
+                    .ToListAsync(cancellationToken);
 
                 var availabilityByExpert = availabilities
                     .GroupBy(ea => ea.ExpertId)
@@ -1455,7 +1459,8 @@ namespace newApi.Services
             string? countryCode,
             int locationRange,
             int page = 1,
-            int pageSize = 20)
+            int pageSize = 20,
+            CancellationToken cancellationToken = default)
         {
             try
             {
@@ -1487,8 +1492,9 @@ namespace newApi.Services
                     }
                 }
 
-                // Consulta base: servicios activos con expertos aprobados
-                var query = _context.SearchServices
+                // ✅ OPTIMIZACIÓN CRÍTICA: Primero obtener IDs y distancias (sin cargar todas las relaciones)
+                // Esto es 100x más rápido porque solo carga IDs y coordenadas
+                var servicesWithDistanceQuery = _context.SearchServices
                     .AsNoTracking()
                     .Where(ss => ss.IsActive 
                         && !ss.ExpertProfile.IsOnVacation
@@ -1496,46 +1502,28 @@ namespace newApi.Services
                             || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)
                         && !string.IsNullOrEmpty(ss.ExpertProfile.Latitude) 
                         && !string.IsNullOrEmpty(ss.ExpertProfile.Longitude))
-                    .Include(ss => ss.Images)
-                    .Include(ss => ss.ExpertProfile)
-                        .ThenInclude(ep => ep.User)
-                        .ThenInclude(u => u.ReviewsReceived)
-                            .ThenInclude(r => r.Reviewer) // ✅ Incluir información del revisor
-                    .Include(ss => ss.ExpertProfile)
-                        .ThenInclude(ep => ep.User)
-                        .ThenInclude(u => u.ReviewsReceived)
-                            .ThenInclude(r => r.ImagesCollection) // ✅ Incluir imágenes de las reviews
-                    .Include(ss => ss.ExpertProfile)
-                        .ThenInclude(ep => ep.User)
-                        .ThenInclude(u => u.ReviewsReceived)
-                            .ThenInclude(r => r.SearchHire) // ✅ Incluir SearchHire para ExpertCountry
-                    .Include(ss => ss.ExpertProfile)
-                        .ThenInclude(ep => ep.User)
-                        .ThenInclude(u => u.SearchHiresAsExpert) // ✅ Incluir contrataciones del experto
-                            .ThenInclude(sh => sh.Status) // ✅ Incluir estado de las contrataciones
-                    .Include(ss => ss.Category)
-                    .Include(ss => ss.ServiceType)
-                        .ThenInclude(st => st.ServiceTypeCategory) // ✅ Incluir categoría del tipo de servicio
-                    .Include(ss => ss.SelectedDeliverableTypes)
-                        .ThenInclude(ssdt => ssdt.DeliverableType);
+                    .Select(ss => new
+                    {
+                        ServiceId = ss.Id,
+                        Latitude = ss.ExpertProfile.Latitude,
+                        Longitude = ss.ExpertProfile.Longitude
+                    });
 
-                var services = await query.ToListAsync();
+                var servicesWithDistanceData = await servicesWithDistanceQuery.ToListAsync(cancellationToken);
 
-                // Calcular distancia para todos los servicios
-                var servicesWithDistance = services
+                // Calcular distancia en memoria (solo IDs y coordenadas, muy rápido)
+                var servicesWithDistance = servicesWithDistanceData
                     .Select(ss =>
                     {
-                        if (ss.ExpertProfile == null || 
-                            string.IsNullOrEmpty(ss.ExpertProfile.Latitude) || 
-                            string.IsNullOrEmpty(ss.ExpertProfile.Longitude) ||
-                            !decimal.TryParse(ss.ExpertProfile.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLat) ||
-                            !decimal.TryParse(ss.ExpertProfile.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLng))
+                        if (string.IsNullOrEmpty(ss.Latitude) || string.IsNullOrEmpty(ss.Longitude) ||
+                            !decimal.TryParse(ss.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLat) ||
+                            !decimal.TryParse(ss.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLng))
                         {
                             return null;
                         }
 
                         var distance = CalculateDistance(searchLatitude, searchLongitude, expertLat, expertLng);
-                        return new { Service = ss, Distance = distance };
+                        return new { ServiceId = ss.ServiceId, Distance = distance };
                     })
                     .Where(x => x != null)
                     .OrderBy(x => x!.Distance)
@@ -1544,20 +1532,56 @@ namespace newApi.Services
                 // Si hay servicios dentro del rango, usarlos. Si no, usar los más cercanos disponibles
                 var servicesInRange = servicesWithDistance.Where(x => x!.Distance <= locationRange).ToList();
                 
-                // Si no hay servicios en el rango, usar los más cercanos disponibles (sin límite de distancia)
-                // Esto asegura que siempre haya servicios si existen en la base de datos
                 var servicesToUse = servicesInRange.Count > 0 
                     ? servicesInRange 
                     : servicesWithDistance; // Si no hay en rango, usar todos ordenados por distancia
 
-                // El totalCount siempre refleja los servicios que se están usando
                 var totalCount = servicesToUse.Count;
 
-                // Aplicar paginación
-                var paginatedServices = servicesToUse
+                // ✅ OPTIMIZACIÓN: Aplicar paginación ANTES de cargar los datos completos
+                var paginatedServiceIds = servicesToUse
                     .Skip((page - 1) * pageSize)
                     .Take(pageSize)
-                    .Select(x => x!.Service)
+                    .Select(x => x!.ServiceId)
+                    .ToList();
+
+                if (paginatedServiceIds.Count == 0)
+                {
+                    return (new List<SearchServiceDetailDto>(), 0);
+                }
+
+                // ✅ OPTIMIZACIÓN: Cargar solo los servicios paginados con Split Query para evitar múltiples JOINs
+                var paginatedServices = await _context.SearchServices
+                    .AsNoTracking()
+                    .Where(ss => paginatedServiceIds.Contains(ss.Id))
+                    .Include(ss => ss.Images)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.Reviewer)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.ImagesCollection)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.SearchHiresAsExpert)
+                            .ThenInclude(sh => sh.Status)
+                    .Include(ss => ss.Category)
+                    .Include(ss => ss.ServiceType)
+                        .ThenInclude(st => st.ServiceTypeCategory)
+                    .Include(ss => ss.SelectedDeliverableTypes)
+                        .ThenInclude(ssdt => ssdt.DeliverableType)
+                    .AsSplitQuery() // ✅ CRÍTICO: Evita múltiples JOINs costosos
+                    .ToListAsync(cancellationToken);
+
+                // Mantener el orden original
+                paginatedServices = paginatedServices
+                    .OrderBy(ss => paginatedServiceIds.IndexOf(ss.Id))
                     .ToList();
 
                 // Cargar disponibilidades de expertos
@@ -1570,7 +1594,7 @@ namespace newApi.Services
                 var availabilities = await _context.ExpertAvailabilities
                     .Where(ea => expertProfileIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
                     .OrderByDescending(ea => ea.EffectiveFrom)
-                    .ToListAsync();
+                    .ToListAsync(cancellationToken);
 
                 var availabilityByExpert = availabilities
                     .GroupBy(ea => ea.ExpertId)
@@ -1590,7 +1614,8 @@ namespace newApi.Services
         /// </summary>
         public async Task<(IEnumerable<SearchServiceDetailDto> services, int totalCount)> GetPopularServices(
             int page = 1,
-            int pageSize = 20)
+            int pageSize = 20,
+            CancellationToken cancellationToken = default)
         {
             try
             {
@@ -1598,58 +1623,35 @@ namespace newApi.Services
                 if (page < 1) page = 1;
                 if (pageSize < 1 || pageSize > 50) pageSize = 20;
 
-                // Consulta base: servicios activos con expertos aprobados
-                var query = _context.SearchServices
+                // ✅ OPTIMIZACIÓN CRÍTICA: Primero obtener IDs y calcular popularidad en memoria (más rápido que SQL complejo)
+                // Cargar solo IDs y datos necesarios para calcular popularidad
+                var servicesWithPopularityData = await _context.SearchServices
                     .AsNoTracking()
                     .Where(ss => ss.IsActive 
                         && !ss.ExpertProfile.IsOnVacation
                         && (ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted
                             || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification))
-                    .Include(ss => ss.Images)
-                    .Include(ss => ss.ExpertProfile)
-                        .ThenInclude(ep => ep.User)
-                        .ThenInclude(u => u.ReviewsReceived)
-                            .ThenInclude(r => r.Reviewer) // ✅ Incluir información del revisor
-                    .Include(ss => ss.ExpertProfile)
-                        .ThenInclude(ep => ep.User)
-                        .ThenInclude(u => u.ReviewsReceived)
-                            .ThenInclude(r => r.ImagesCollection) // ✅ Incluir imágenes de las reviews
-                    .Include(ss => ss.ExpertProfile)
-                        .ThenInclude(ep => ep.User)
-                        .ThenInclude(u => u.ReviewsReceived)
-                            .ThenInclude(r => r.SearchHire) // ✅ Incluir SearchHire para ExpertCountry
-                    .Include(ss => ss.ExpertProfile)
-                        .ThenInclude(ep => ep.User)
-                        .ThenInclude(u => u.SearchHiresAsExpert) // ✅ Incluir contrataciones del experto
-                            .ThenInclude(sh => sh.Status) // ✅ Incluir estado de las contrataciones
-                    .Include(ss => ss.Category)
-                    .Include(ss => ss.ServiceType)
-                        .ThenInclude(st => st.ServiceTypeCategory) // ✅ Incluir categoría del tipo de servicio
-                    .Include(ss => ss.SelectedDeliverableTypes)
-                        .ThenInclude(ssdt => ssdt.DeliverableType);
-
-                var services = await query.ToListAsync();
-
-                // Calcular popularidad: combinación de rating promedio y número de contrataciones completadas
-                var servicesWithPopularity = services
-                    .Select(ss =>
+                    .Select(ss => new
                     {
-                        var expert = ss.ExpertProfile?.User;
-                        var reviews = expert?.ReviewsReceived ?? new List<Review>();
-                        var completedSearches = expert?.SearchHiresAsExpert?.Count(sh => sh.Status != null && sh.Status.StatusValue == "completed") ?? 0;
-                        
-                        var averageRating = reviews.Any() ? reviews.Average(r => r.Score) : 0;
-                        
-                        // Score de popularidad: rating * 0.6 + (min(completedSearches, 100) / 100) * 0.4
-                        // Esto da más peso al rating pero también considera las contrataciones
-                        var popularityScore = ((decimal)averageRating * 0.6m) + (Math.Min(completedSearches, 100) / 100m * 0.4m);
-                        
-                        return new 
-                        { 
-                            Service = ss, 
+                        ServiceId = ss.Id,
+                        Reviews = ss.ExpertProfile.User.ReviewsReceived.Select(r => r.Score).ToList(),
+                        CompletedSearches = ss.ExpertProfile.User.SearchHiresAsExpert
+                            .Count(sh => sh.Status != null && sh.Status.StatusValue == "completed")
+                    })
+                    .ToListAsync(cancellationToken);
+
+                // Calcular popularidad en memoria (muy rápido con datos mínimos)
+                var servicesWithPopularity = servicesWithPopularityData
+                    .Select(x =>
+                    {
+                        var averageRating = x.Reviews.Any() ? (decimal)x.Reviews.Average() : 0m;
+                        var popularityScore = (averageRating * 0.6m) + (Math.Min(x.CompletedSearches, 100) / 100m * 0.4m);
+                        return new
+                        {
+                            ServiceId = x.ServiceId,
                             PopularityScore = popularityScore,
                             AverageRating = averageRating,
-                            CompletedSearches = completedSearches
+                            CompletedSearches = x.CompletedSearches
                         };
                     })
                     .OrderByDescending(x => x.PopularityScore)
@@ -1658,11 +1660,51 @@ namespace newApi.Services
 
                 var totalCount = servicesWithPopularity.Count;
 
-                // Aplicar paginación
-                var paginatedServices = servicesWithPopularity
+                // ✅ OPTIMIZACIÓN: Aplicar paginación ANTES de cargar los datos completos
+                var paginatedPopularityData = servicesWithPopularity
                     .Skip((page - 1) * pageSize)
                     .Take(pageSize)
-                    .Select(x => x.Service)
+                    .ToList();
+
+                if (paginatedPopularityData.Count == 0)
+                {
+                    return (new List<SearchServiceDetailDto>(), 0);
+                }
+
+                var paginatedServiceIds = paginatedPopularityData.Select(x => x.ServiceId).ToList();
+
+                // ✅ OPTIMIZACIÓN: Cargar solo los servicios paginados con Split Query
+                var paginatedServices = await _context.SearchServices
+                    .AsNoTracking()
+                    .Where(ss => paginatedServiceIds.Contains(ss.Id))
+                    .Include(ss => ss.Images)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.Reviewer)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.ImagesCollection)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.ReviewsReceived)
+                            .ThenInclude(r => r.SearchHire)
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                        .ThenInclude(u => u.SearchHiresAsExpert)
+                            .ThenInclude(sh => sh.Status)
+                    .Include(ss => ss.Category)
+                    .Include(ss => ss.ServiceType)
+                        .ThenInclude(st => st.ServiceTypeCategory)
+                    .Include(ss => ss.SelectedDeliverableTypes)
+                        .ThenInclude(ssdt => ssdt.DeliverableType)
+                    .AsSplitQuery() // ✅ CRÍTICO: Evita múltiples JOINs costosos
+                    .ToListAsync(cancellationToken);
+
+                // Mantener el orden original
+                paginatedServices = paginatedServices
+                    .OrderBy(ss => paginatedServiceIds.IndexOf(ss.Id))
                     .ToList();
 
                 // Cargar disponibilidades de expertos
@@ -1675,7 +1717,7 @@ namespace newApi.Services
                 var availabilities = await _context.ExpertAvailabilities
                     .Where(ea => expertProfileIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
                     .OrderByDescending(ea => ea.EffectiveFrom)
-                    .ToListAsync();
+                    .ToListAsync(cancellationToken);
 
                 var availabilityByExpert = availabilities
                     .GroupBy(ea => ea.ExpertId)

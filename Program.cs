@@ -586,6 +586,15 @@ var existingConnectionString = builder.Configuration.GetConnectionString("Postgr
 
 if (string.IsNullOrEmpty(existingConnectionString))
 {
+    // ⚠️ TEMPORALMENTE DESHABILITADO: Construcción desde Secret Manager
+    // TODO: Habilitar cuando se configuren los secrets en Google Cloud Secret Manager
+    // Por ahora, usar siempre Supabase desde appsettings.json tanto en desarrollo como producción
+    throw new InvalidOperationException(
+        "Database connection string not configured. " +
+        $"Set 'PostgresConnection' in appsettings.{(isDevelopment ? "Development" : "")}.json with your Supabase connection string. " +
+        "NOTA: Temporalmente usando Supabase directamente, no Secret Manager.");
+    
+    /*
     // Si no hay connection string en configuración, intentar construir desde Secret Manager (solo producción)
     if (!isDevelopment)
     {
@@ -614,6 +623,7 @@ if (string.IsNullOrEmpty(existingConnectionString))
             "Database connection string not configured. " +
             "Set 'PostgresConnection' in appsettings.Development.json with your Supabase connection string.");
     }
+    */
 }
 else
 {
@@ -631,8 +641,9 @@ else
     var dbUsername = userMatch.Success ? userMatch.Groups[1].Value : "unknown";
     var dbName = dbMatch.Success ? dbMatch.Groups[1].Value : "unknown";
     
-    configLogger.LogInformation($"✅ Connection string desde configuración: Host={dbHost}, Port={dbPort}, Database={dbName}, Username={dbUsername}");
+    configLogger.LogInformation($"✅ Connection string desde configuración (Supabase): Host={dbHost}, Port={dbPort}, Database={dbName}, Username={dbUsername}");
     configLogger.LogInformation($"   Entorno: {(isDevelopment ? "Development" : "Production")}");
+    configLogger.LogInformation($"   ⚠️  NOTA: Usando Supabase directamente desde appsettings.json (temporalmente, Secret Manager deshabilitado)");
 }
 
 

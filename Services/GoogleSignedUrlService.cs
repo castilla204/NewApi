@@ -5,6 +5,7 @@ using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Storage.V1;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Hosting;
 
 namespace newApi.Services
 {
@@ -12,12 +13,14 @@ namespace newApi.Services
     {
         private readonly IConfiguration _configuration;
         private readonly ILogger<GoogleSignedUrlService> _logger;
+        private readonly IWebHostEnvironment _environment;
         private readonly Lazy<UrlSigner> _lazySigner;
 
-        public GoogleSignedUrlService(IConfiguration configuration, ILogger<GoogleSignedUrlService> logger)
+        public GoogleSignedUrlService(IConfiguration configuration, ILogger<GoogleSignedUrlService> logger, IWebHostEnvironment environment)
         {
             _configuration = configuration;
             _logger = logger;
+            _environment = environment;
             _lazySigner = new Lazy<UrlSigner>(CreateSigner);
         }
 
@@ -51,6 +54,28 @@ namespace newApi.Services
 
         private UrlSigner CreateSigner()
         {
+            // En producción (Azure App Services): intentar leer de GoogleCredentialJson primero
+            if (!_environment.IsDevelopment())
+            {
+                var credentialsJson = Environment.GetEnvironmentVariable("GoogleCredentialJson");
+                if (!string.IsNullOrEmpty(credentialsJson))
+                {
+                    try
+                    {
+                        var credential = GoogleCredential.FromJson(credentialsJson);
+                        if (credential.UnderlyingCredential is ServiceAccountCredential serviceAccountCredential)
+                        {
+                            _logger.LogInformation("✅ Usando credenciales desde GoogleCredentialJson (Azure App Services)");
+                            return UrlSigner.FromServiceAccountCredential(serviceAccountCredential);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error al crear UrlSigner desde GoogleCredentialJson, intentando fallback...");
+                    }
+                }
+            }
+
             // First attempt: use explicit credentials path if provided
             var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
             if (!string.IsNullOrEmpty(credentialsPath) && File.Exists(credentialsPath))
@@ -59,10 +84,10 @@ namespace newApi.Services
             }
 
             // Second attempt: use application default credentials and ensure they are service account creds
-            var credential = GoogleCredential.GetApplicationDefault();
-            if (credential.UnderlyingCredential is ServiceAccountCredential serviceAccountCredential)
+            var defaultCredential = GoogleCredential.GetApplicationDefault();
+            if (defaultCredential.UnderlyingCredential is ServiceAccountCredential defaultServiceAccountCredential)
             {
-                return UrlSigner.FromServiceAccountCredential(serviceAccountCredential);
+                return UrlSigner.FromServiceAccountCredential(defaultServiceAccountCredential);
             }
 
             throw new InvalidOperationException("Unable to create UrlSigner. Service account credentials are required to generate signed URLs.");

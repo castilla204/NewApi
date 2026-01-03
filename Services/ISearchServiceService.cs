@@ -1,6 +1,7 @@
 ﻿using Google.Cloud.Storage.V1;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
+using System.Threading;
 
 
 namespace newApi.Services
@@ -17,7 +18,8 @@ namespace newApi.Services
      string longitude,
      int locationRange,
      int page = 1,
-     int pageSize = 50);
+     int pageSize = 50,
+     CancellationToken cancellationToken = default);
 
         Task<ExpertMapResponseDto> GetMapExperts(
             int categoryId, 
@@ -27,7 +29,8 @@ namespace newApi.Services
             decimal? southwestLat = null,
             decimal? southwestLng = null,
             int? zoom = null,
-            int limit = 100);
+            int limit = 100,
+            CancellationToken cancellationToken = default);
 
         Task<(IEnumerable<SearchServiceDetailDto> services, int totalCount)> GetMapExpertsWithDetails(
             int categoryId, 
@@ -39,7 +42,8 @@ namespace newApi.Services
             int? zoom = null,
             int limit = 100,
             int page = 1,
-            int pageSize = 50);
+            int pageSize = 50,
+            CancellationToken cancellationToken = default);
 
         Task<SearchServiceDetailDto> GetServiceByHireId(int id);
 
@@ -63,11 +67,13 @@ namespace newApi.Services
             string? countryCode,
             int locationRange,
             int page = 1,
-            int pageSize = 20);
+            int pageSize = 20,
+            CancellationToken cancellationToken = default);
 
         Task<(IEnumerable<SearchServiceDetailDto> services, int totalCount)> GetPopularServices(
             int page = 1,
-            int pageSize = 20);
+            int pageSize = 20,
+            CancellationToken cancellationToken = default);
 
     }
 }

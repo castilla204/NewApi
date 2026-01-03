@@ -11,8 +11,6 @@ using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.RateLimiting;
-using RabbitMQ.Client;
-using newApi.RabbitMQ;
 using newApi.Services;
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Storage.V1;
@@ -50,46 +48,94 @@ builder.Services.Configure<RequestLocalizationOptions>(options =>
 // Verificar el entorno PRIMERO
 var isDevelopment = builder.Environment.IsDevelopment();
 
+// Crear logger para inicialización
+builder.Logging.AddConsole();
+var initLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+
 // Instancia el cliente de Secret Manager (funciona igual en desarrollo y producción)
 // Se inicializa si las credenciales de Google Cloud están disponibles
 SecretManagerServiceClient? secretClient = null;
 bool secretManagerAvailable = false;
 
-// Obtener ruta de credenciales
-var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
+// Obtener ruta de credenciales o JSON de credenciales
+string? credentialsPath = null;
+string? credentialsJson = null;
 
-// En desarrollo: usar fallback a ubicación estándar si la variable no está configurada
-// En producción: solo usar variable de entorno (sin fallback)
-// Si no hay variable configurada, usaremos Application Default Credentials (ADC)
-// que gcloud auth application-default login configura automáticamente
-if (string.IsNullOrEmpty(credentialsPath) && isDevelopment)
+if (isDevelopment)
 {
-    // Fallback solo en desarrollo: usar ubicación estándar
-    var fallbackPath = "C:\\cloudcredential.json";
+    // En desarrollo: usar fallback a ubicación estándar si la variable no está configurada
+    credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
     
-    // Solo usar fallback si el archivo existe
-    if (System.IO.File.Exists(fallbackPath))
+    if (string.IsNullOrEmpty(credentialsPath))
     {
-        credentialsPath = fallbackPath;
-        // Configurar la variable de entorno para esta sesión en desarrollo
+        // Fallback solo en desarrollo: usar ubicación estándar
+        var fallbackPath = "C:\\cloudcredential.json";
+        
+        // Solo usar fallback si el archivo existe
+        if (System.IO.File.Exists(fallbackPath))
+        {
+            credentialsPath = fallbackPath;
+            // Configurar la variable de entorno para esta sesión en desarrollo
+            try
+            {
+                Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", credentialsPath, EnvironmentVariableTarget.Process);
+            }
+            catch
+            {
+                // Si falla, continuar sin configurar la variable (no crítico)
+            }
+        }
+        // Si no existe el archivo fallback, credentialsPath seguirá siendo null
+        // y el cliente usará Application Default Credentials automáticamente
+    }
+}
+else
+{
+    // En producción (Azure App Services): leer de variable GoogleCredentialJson
+    credentialsJson = Environment.GetEnvironmentVariable("GoogleCredentialJson");
+    
+    if (!string.IsNullOrEmpty(credentialsJson))
+    {
+        initLogger.LogInformation("✅ Credenciales de Google Cloud encontradas en variable GoogleCredentialJson (Azure App Services)");
+        
+        // Crear archivo temporal con las credenciales JSON
         try
         {
+            var tempPath = Path.Combine(Path.GetTempPath(), $"google-credentials-{Guid.NewGuid()}.json");
+            System.IO.File.WriteAllText(tempPath, credentialsJson);
+            credentialsPath = tempPath;
+            
+            // Configurar la variable de entorno para esta sesión
             Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", credentialsPath, EnvironmentVariableTarget.Process);
+            initLogger.LogInformation($"✅ Archivo temporal de credenciales creado: {tempPath}");
         }
-        catch
+        catch (Exception ex)
         {
-            // Si falla, continuar sin configurar la variable (no crítico)
+            initLogger.LogError($"❌ Error al crear archivo temporal de credenciales: {ex.Message}");
+            // Continuar sin archivo temporal, intentará usar Application Default Credentials
         }
     }
-    // Si no existe el archivo fallback, credentialsPath seguirá siendo null
-    // y el cliente usará Application Default Credentials automáticamente
+    else
+    {
+        // En producción, también intentar GOOGLE_APPLICATION_CREDENTIALS como fallback
+        credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
+        if (!string.IsNullOrEmpty(credentialsPath))
+        {
+            initLogger.LogInformation("✅ Usando GOOGLE_APPLICATION_CREDENTIALS como fallback en producción");
+        }
+        else
+        {
+            initLogger.LogWarning("⚠️ No se encontró GoogleCredentialJson ni GOOGLE_APPLICATION_CREDENTIALS en producción. Intentando Application Default Credentials...");
+        }
+    }
 }
-
-builder.Logging.AddConsole();
-var initLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
 
 initLogger.LogInformation($"=== INICIALIZANDO SECRET MANAGER ===");
 initLogger.LogInformation($"Entorno: {(isDevelopment ? "Development" : "Production")}");
+if (!isDevelopment && !string.IsNullOrEmpty(credentialsJson))
+{
+    initLogger.LogInformation($"✅ Usando GoogleCredentialJson desde Azure App Services (longitud: {credentialsJson.Length} caracteres)");
+}
 initLogger.LogInformation($"GOOGLE_APPLICATION_CREDENTIALS: {Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS") ?? "NO CONFIGURADO (usará Application Default Credentials)"}");
 initLogger.LogInformation($"Ruta de credenciales a usar: {credentialsPath ?? "Application Default Credentials (ADC)"}");
 
@@ -457,7 +503,6 @@ else
 {
     Console.WriteLine($"✅ JWT Key length validated: {jwtKeyBytes.Length} bytes ({jwtKeyBytes.Length * 8} bits) - SECURE");
 }
-builder.Configuration["RabbitMQ:Password"] = GetSecretValue("rabbitmq-password", null) ?? "";
 builder.Configuration["OpenAI:ApiKey"] = GetSecretValue("openai-api-key", null) ?? "";
 
 // ✅ Cargar Google Maps API Key desde Secret Manager
@@ -532,277 +577,64 @@ catch
 }
 
 // Configurar la cadena de conexi�n seg�n el entorno
-// Configurar la cadena de conexión desde Secret Manager
+// ✅ SIMPLIFICADO: Conectar directamente a Supabase tanto en desarrollo como en producción
+// Usar la misma conexión a Supabase configurada en appsettings.Development.json
 string connectionString;
 
-if (isDevelopment)
+// Obtener connection string desde configuración (appsettings.Development.json o appsettings.json)
+var existingConnectionString = builder.Configuration.GetConnectionString("PostgresConnection");
+
+if (string.IsNullOrEmpty(existingConnectionString))
 {
-    // En desarrollo: usar configuración local del túnel (variables de entorno o user secrets)
-    // NO usar Google Cloud Secret Manager en desarrollo
-    // Probar múltiples puertos automáticamente hasta encontrar uno disponible
-    
-    // Lista de puertos a probar en orden
-    // ✅ CORRECCIÓN: Priorizar puertos comunes del túnel SSH
-    // Esto acelera la detección cuando se usa el túnel SSH
-    var dbPortsToTry = new[] { 
-        5433,  // ✅ PRIORIDAD: Puerto del túnel SSH (db-access.sh)
-        5435,  // Puerto alternativo común del túnel SSH
-        5432,  // Puerto estándar de PostgreSQL
-        5434,  // Puerto alternativo común para túneles
-        15433, // Puerto alternativo (formato antiguo)
-        25432, // Puerto alternativo (formato antiguo)
-        35432, // Puerto alternativo (formato antiguo)
-        45432, // Puerto alternativo (formato antiguo)
-        55432, // Puerto alternativo (formato antiguo)
-        65432  // Puerto alternativo (formato antiguo)
-    };
-    
-    var existingConnectionString = builder.Configuration.GetConnectionString("PostgresConnection");
-    string? baseConnectionString = null;
-    string dbHost;
-    string dbUsername;
-    string dbPassword;
-    string dbName;
-    
-    if (!string.IsNullOrEmpty(existingConnectionString) && !existingConnectionString.Equals("", StringComparison.OrdinalIgnoreCase))
+    // Si no hay connection string en configuración, intentar construir desde Secret Manager (solo producción)
+    if (!isDevelopment)
     {
-        // Usar connection string desde appsettings.Development.json o user secrets
-        baseConnectionString = existingConnectionString;
+        var dbHost = GetSecretValue("postgres-host", null);
+        var dbPort = GetSecretValue("postgres-port", null) ?? "5432";
+        var dbUsername = GetSecretValue("postgres-username", null);
+        var dbPassword = GetSecretValue("postgres-password", null);
+        var dbName = GetSecretValue("postgres-database", null) ?? "postgres";
         
-        // Extraer valores del connection string existente
-        var hostMatch = Regex.Match(existingConnectionString, @"Host=([^;]+)");
-        var userMatch = Regex.Match(existingConnectionString, @"Username=([^;]+)");
-        var passMatch = Regex.Match(existingConnectionString, @"Password=([^;]+)");
-        var dbMatch = Regex.Match(existingConnectionString, @"Database=([^;]+)");
-        
-        dbHost = hostMatch.Success ? hostMatch.Groups[1].Value : "localhost";
-        dbUsername = userMatch.Success ? userMatch.Groups[1].Value : "admin";
-        // ⚠️ IGNORAR contraseña del connection string - se obtendrá SOLO del Secret Manager más abajo
-        var passwordFromConnectionString = passMatch.Success ? passMatch.Groups[1].Value : "";
-        if (!string.IsNullOrEmpty(passwordFromConnectionString))
-        {
-            configLogger.LogWarning($"⚠️ Contraseña encontrada en connection string pero IGNORADA (valor: [{passwordFromConnectionString}], longitud: {passwordFromConnectionString.Length}) - Solo usando Secret Manager");
-        }
-        dbName = dbMatch.Success ? dbMatch.Groups[1].Value : "atrapo";
-        
-        // Forzar valores en desarrollo: localhost, admin y atrapo
-        dbHost = "localhost";
-        dbUsername = "admin";
-        dbName = "atrapo";
-        
-        // ✅ OBTENER contraseña SOLO del Secret Manager (ignorando connection string)
-        configLogger.LogInformation("🔍 FORZANDO obtención de contraseña SOLO desde Secret Manager (ignorando connection string)...");
-        var dbPasswordFromSecret = GetSecretValue("postgres-password", null);
-        if (string.IsNullOrEmpty(dbPasswordFromSecret))
+        if (string.IsNullOrEmpty(dbHost) || string.IsNullOrEmpty(dbUsername) || string.IsNullOrEmpty(dbPassword))
         {
             throw new InvalidOperationException(
-                "ERROR CRÍTICO: No se pudo obtener la contraseña de PostgreSQL desde Secret Manager. " +
-                "El secreto 'postgres-password' debe existir en Google Cloud Secret Manager.");
+                "Database connection string not configured. " +
+                "Set 'PostgresConnection' in appsettings.json or configure via Secret Manager " +
+                "(postgres-host, postgres-username, postgres-password, postgres-database).");
         }
-        dbPassword = dbPasswordFromSecret;
-        configLogger.LogInformation($"✅ Contraseña OBLIGATORIAMENTE obtenida del Secret Manager: [{dbPassword}] (longitud: {dbPassword.Length})");
+        
+        connectionString = $"Host={dbHost};Port={dbPort};Username={dbUsername};Password={dbPassword};Database={dbName};" +
+                          $"SslMode=Require;Timeout=30;CommandTimeout=60;Pooling=true;";
+        
+        configLogger.LogInformation($"✅ Connection string construido desde Secret Manager: Host={dbHost}, Port={dbPort}, Database={dbName}, Username={dbUsername}");
     }
     else
     {
-        // Construir desde variables de entorno individuales o Google Cloud Secret Manager
-        // Valores por defecto para desarrollo: localhost, admin y atrapo
-        // ✅ FORZAR: En desarrollo SIEMPRE usar localhost
-        dbHost = "localhost";
-        dbUsername = Environment.GetEnvironmentVariable("POSTGRES_USERNAME") 
-            ?? GetSecretValue("postgres-username", null) 
-            ?? "admin";
-        // ✅ FORZAR: Contraseña SOLO desde Secret Manager - NO usar variables de entorno
-        configLogger.LogInformation("🔍 FORZANDO obtención de contraseña SOLO desde Secret Manager (ignorando variables de entorno)...");
-        var dbPasswordFromSecret = GetSecretValue("postgres-password", null);
-        
-        // IGNORAR variables de entorno - solo usar Secret Manager
-        var dbPasswordFromEnv = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
-        if (!string.IsNullOrEmpty(dbPasswordFromEnv))
-        {
-            configLogger.LogWarning($"⚠️ Variable de entorno POSTGRES_PASSWORD encontrada pero IGNORADA (valor: [{dbPasswordFromEnv}], longitud: {dbPasswordFromEnv.Length}) - Solo usando Secret Manager");
-        }
-        
-        // FORZAR uso SOLO del Secret Manager
-        if (string.IsNullOrEmpty(dbPasswordFromSecret))
-        {
-            throw new InvalidOperationException(
-                "ERROR CRÍTICO: No se pudo obtener la contraseña de PostgreSQL desde Secret Manager. " +
-                "El secreto 'postgres-password' debe existir en Google Cloud Secret Manager. " +
-                "NO se usarán variables de entorno como fallback.");
-        }
-        
-        dbPassword = dbPasswordFromSecret;
-        configLogger.LogInformation($"✅ Contraseña OBLIGATORIAMENTE obtenida del Secret Manager: [{dbPassword}] (longitud: {dbPassword.Length})");
-        configLogger.LogInformation($"🔐 DB Password FINAL (SOLO Secret Manager): [{dbPassword}] (longitud: {dbPassword.Length})");
-        dbName = Environment.GetEnvironmentVariable("POSTGRES_DATABASE") 
-            ?? GetSecretValue("postgres-database", null) 
-            ?? "atrapo";
-    }
-    
-    // Validar que tenemos password
-    if (string.IsNullOrEmpty(dbPassword))
-    {
-        configLogger.LogWarning("⚠️ postgres-password not found in Secret Manager. Using empty password (may fail).");
-        configLogger.LogWarning("   Ensure postgres-password exists in Google Cloud Secret Manager.");
-    }
-    
-    // Función para probar conexión a un puerto específico
-    // ✅ CORRECCIÓN: Timeout aumentado a 5 segundos para dar tiempo a conexiones lentas
-    bool TestConnection(int port)
-    {
-        try
-        {
-            // No escapar la contraseña - Npgsql maneja los caracteres especiales automáticamente
-            var testConnectionString = $"Host={dbHost};Port={port};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=5;CommandTimeout=5;";
-            configLogger.LogInformation($"  Intentando conectar: Host={dbHost}, Port={port}, User={dbUsername}, DB={dbName}");
-            using var testConn = new Npgsql.NpgsqlConnection(testConnectionString);
-            testConn.Open();
-            configLogger.LogInformation($"  ✅ Conexión exitosa al puerto {port}!");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            configLogger.LogWarning($"  ❌ Error al probar puerto {port}: {ex.GetType().Name} - {ex.Message}");
-            if (ex.InnerException != null)
-            {
-                configLogger.LogWarning($"     InnerException: {ex.InnerException.Message}");
-            }
-            return false;
-        }
-    }
-    
-    // Probar cada puerto en orden hasta encontrar uno que funcione
-    int? workingPort = null;
-    configLogger.LogInformation("=== Probando puertos de PostgreSQL en desarrollo ===");
-    configLogger.LogInformation($"Puertos a probar (en orden): {string.Join(", ", dbPortsToTry)}");
-    configLogger.LogInformation($"Host: {dbHost}");
-    configLogger.LogInformation($"Username: {dbUsername}");
-    configLogger.LogInformation($"Database: {dbName}");
-    // Mostrar contraseña (enmascarada pero visible para debugging)
-    var passwordDisplay = string.IsNullOrEmpty(dbPassword) ? "(vacía)" : $"[{dbPassword}] (longitud: {dbPassword.Length})";
-    configLogger.LogInformation($"Password: {passwordDisplay}");
-    configLogger.LogInformation("");
-    
-    foreach (var port in dbPortsToTry)
-    {
-        configLogger.LogInformation($"[{Array.IndexOf(dbPortsToTry, port) + 1}/{dbPortsToTry.Length}] Probando puerto {port}...");
-        try
-        {
-            if (TestConnection(port))
-            {
-                workingPort = port;
-                configLogger.LogInformation($"✅ Puerto {port} disponible y funcionando - USANDO ESTE PUERTO");
-                break;
-            }
-            else
-            {
-                configLogger.LogWarning($"❌ Puerto {port} no disponible o no responde - probando siguiente...");
-            }
-        }
-        catch (Exception ex)
-        {
-            configLogger.LogWarning($"❌ Error al probar puerto {port}: {ex.Message} - probando siguiente...");
-        }
-    }
-    
-    // Si no se encontró ningún puerto disponible
-    if (!workingPort.HasValue)
-    {
-        var passwordInfo = string.IsNullOrEmpty(dbPassword) ? "(vacía - puede ser el problema)" : $"configurada (longitud: {dbPassword.Length})";
         throw new InvalidOperationException(
-            $"No se pudo conectar a PostgreSQL en ningún puerto. Puertos probados: {string.Join(", ", dbPortsToTry)}\n" +
-            $"Host: {dbHost}\n" +
-            $"Username: {dbUsername}\n" +
-            $"Database: {dbName}\n" +
-            $"Password: {passwordInfo}\n" +
-            $"Verifica que:\n" +
-            $"  1. El túnel SSH esté activo (ejecuta ./db-access.sh)\n" +
-            $"  2. PostgreSQL esté corriendo en el servidor remoto\n" +
-            $"  3. Las credenciales sean correctas (postgres-password en Secret Manager)\n" +
-            $"  4. El usuario '{dbUsername}' tenga acceso a la base de datos '{dbName}'");
+            "Database connection string not configured. " +
+            "Set 'PostgresConnection' in appsettings.Development.json with your Supabase connection string.");
     }
-    
-    // Construir connection string final con el puerto que funciona
-    if (baseConnectionString != null)
-    {
-        // Reemplazar el puerto en el connection string existente
-        var portPattern = @"Port=\d+";
-        if (Regex.IsMatch(baseConnectionString, portPattern))
-        {
-            connectionString = Regex.Replace(baseConnectionString, portPattern, $"Port={workingPort.Value}");
-        }
-        else
-        {
-            connectionString = baseConnectionString.TrimEnd(';') + $";Port={workingPort.Value};";
-        }
-        
-        // Asegurar que el nombre de la base de datos sea "atrapo" y username "admin"
-        var dbNamePattern = @"Database=[^;]+";
-        if (Regex.IsMatch(connectionString, dbNamePattern))
-        {
-            connectionString = Regex.Replace(connectionString, dbNamePattern, "Database=atrapo");
-        }
-        else
-        {
-            connectionString = connectionString.TrimEnd(';') + ";Database=atrapo;";
-        }
-        
-        // Asegurar que el username sea "admin"
-        var usernamePattern = @"Username=[^;]+";
-        if (Regex.IsMatch(connectionString, usernamePattern))
-        {
-            connectionString = Regex.Replace(connectionString, usernamePattern, "Username=admin");
-        }
-        else
-        {
-            connectionString = connectionString.TrimEnd(';') + ";Username=admin;";
-        }
-    }
-    else
-    {
-        // Connection string optimizado para desarrollo con túnel SSH
-        // ✅ CORRECCIÓN: Agregar parámetros para mejor manejo de conexiones y detección de desconexiones
-        connectionString = $"Host={dbHost};Port={workingPort.Value};Username={dbUsername};Password={dbPassword};Database={dbName};" +
-                          $"Timeout=30;CommandTimeout=60;" +
-                          $"Connection Idle Lifetime=300;Connection Pruning Interval=10;" +
-                          $"Keepalive=30;Tcp Keepalive=true;" +
-                          $"Pooling=true;Minimum Pool Size=1;Maximum Pool Size=20;" +
-                          $"No Reset On Close=true;"; // ✅ MEJORA: No resetear conexión al cerrar para mejor manejo de errores
-    }
-    
-    configLogger.LogInformation($"✅ Connection string configurado: Host={dbHost}, Port={workingPort.Value}, Database={dbName}, Username={dbUsername}");
 }
 else
 {
-    // En producción: Leer desde Secret Manager
-    var dbHost = GetSecretValue("postgres-host", null) ?? "postgres-svc";
-    var dbPort = GetSecretValue("postgres-port", null) ?? "5432";
-    var dbUsername = GetSecretValue("postgres-username", null);
-    var dbPassword = GetSecretValue("postgres-password", null);
-    var dbName = GetSecretValue("postgres-database", null) ?? "newapi";
+    // Usar connection string desde configuración (appsettings.Development.json o appsettings.json)
+    connectionString = existingConnectionString;
     
-    // Logging para debugging: mostrar origen y longitud de la contraseña
-    if (!string.IsNullOrEmpty(dbPassword))
-    {
-        configLogger.LogInformation($"🔐 DB Password obtenida desde: Secret Manager - Valor COMPLETO: [{dbPassword}] (longitud: {dbPassword.Length})");
-    }
-    else
-    {
-        configLogger.LogWarning("⚠️ DB Password está vacía - la conexión fallará");
-    }
+    // Extraer información para logging (sin mostrar contraseña)
+    var hostMatch = Regex.Match(connectionString, @"Host=([^;]+)");
+    var portMatch = Regex.Match(connectionString, @"Port=([^;]+)");
+    var userMatch = Regex.Match(connectionString, @"Username=([^;]+)");
+    var dbMatch = Regex.Match(connectionString, @"Database=([^;]+)");
     
-    // Si no hay credenciales de DB, lanzar error claro
-    if (string.IsNullOrEmpty(dbUsername) || string.IsNullOrEmpty(dbPassword))
-    {
-        throw new InvalidOperationException(
-            "Database credentials are required in production. " +
-            "Configure via Secret Manager (postgres-username, postgres-password). " +
-            "Secret Manager status: " + (secretManagerAvailable ? "Available but failed to retrieve secrets" : "Not available"));
-    }
+    var dbHost = hostMatch.Success ? hostMatch.Groups[1].Value : "unknown";
+    var dbPort = portMatch.Success ? portMatch.Groups[1].Value : "unknown";
+    var dbUsername = userMatch.Success ? userMatch.Groups[1].Value : "unknown";
+    var dbName = dbMatch.Success ? dbMatch.Groups[1].Value : "unknown";
     
-    connectionString = $"Host={dbHost};Port={dbPort};Username={dbUsername};Password={dbPassword};Database={dbName};Timeout=30;CommandTimeout=30;ConnectionIdleLifetime=300;ConnectionPruningInterval=10;";
-    configLogger.LogInformation($"Built connection string for production: Host={dbHost}, Port={dbPort}, Database={dbName}, Username={dbUsername}");
+    configLogger.LogInformation($"✅ Connection string desde configuración: Host={dbHost}, Port={dbPort}, Database={dbName}, Username={dbUsername}");
+    configLogger.LogInformation($"   Entorno: {(isDevelopment ? "Development" : "Production")}");
 }
+
 
 builder.Configuration["ConnectionStrings:PostgresConnection"] = connectionString;
 
@@ -1157,28 +989,57 @@ builder.Services.AddAuthentication(options =>
 
 // Configure PostgreSQL
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("PostgresConnection"), npgsqlOptions =>
+{
+    var connectionString = builder.Configuration.GetConnectionString("PostgresConnection");
+    // Configurar Npgsql para Session Pooler de Supabase
+    var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(connectionString);
+    // Deshabilitar prepared statements para Session Pooler
+    dataSourceBuilder.EnableParameterLogging();
+    var dataSource = dataSourceBuilder.Build();
+    
+    options.UseNpgsql(dataSource, npgsqlOptions =>
     {
         npgsqlOptions.CommandTimeout(60); // Aumentado a 60 segundos para conexiones lentas
         npgsqlOptions.EnableRetryOnFailure(
             maxRetryCount: 5, // Aumentado de 3 a 5 reintentos
             maxRetryDelay: TimeSpan.FromSeconds(10), // Aumentado delay máximo
             errorCodesToAdd: null);
-        
-        // ✅ CORRECCIÓN: Los parámetros de conexión (Keepalive, Pooling, etc.) ya están en el connection string
-        // No es necesario configurarlos aquí, se aplican automáticamente desde el connection string
-    }));
+    });
+});
 
 // Configure Google Cloud Storage
 builder.Services.AddSingleton<StorageClient>(sp =>
 {
+    var isDev = sp.GetRequiredService<IWebHostEnvironment>().IsDevelopment();
+    
+    // En producción: intentar leer de GoogleCredentialJson (Azure App Services)
+    if (!isDev)
+    {
+        var credentialsJson = Environment.GetEnvironmentVariable("GoogleCredentialJson");
+        if (!string.IsNullOrEmpty(credentialsJson))
+        {
+            try
+            {
+                var credential = GoogleCredential.FromJson(credentialsJson);
+                return StorageClient.Create(credential);
+            }
+            catch (Exception ex)
+            {
+                var logger = sp.GetRequiredService<ILogger<Program>>();
+                logger.LogError(ex, "Error al crear StorageClient desde GoogleCredentialJson");
+            }
+        }
+    }
+    
+    // Fallback: usar GOOGLE_APPLICATION_CREDENTIALS (archivo o variable)
     var credentialsPath = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
     if (!string.IsNullOrEmpty(credentialsPath) && System.IO.File.Exists(credentialsPath))
     {
         var credential = GoogleCredential.FromFile(credentialsPath);
         return StorageClient.Create(credential);
     }
-    // Si no hay credenciales, intentar usar credenciales predeterminadas o retornar null
+    
+    // Último fallback: Application Default Credentials
     try
     {
         return StorageClient.Create();
@@ -1192,32 +1053,6 @@ builder.Services.AddSingleton<StorageClient>(sp =>
 
 builder.Services.AddSingleton<ISignedUrlService, GoogleSignedUrlService>();
 
-// Configure RabbitMQ
-builder.Services.AddSingleton<RabbitMQ.Client.IConnectionFactory>(sp =>
-{
-    var config = builder.Configuration;
-    var isDevelopment = builder.Environment.IsDevelopment();
-    
-    string password;
-    if (isDevelopment)
-    {
-        // En desarrollo: usar valor de desarrollo o desde configuración
-        password = config["RABBITMQ_PASSWORD"] ?? "guest";
-    }
-    else
-    {
-        // En producción: OBLIGATORIO desde configuración (sin fallback hardcodeado)
-        password = config["RABBITMQ_PASSWORD"] ?? throw new InvalidOperationException("RABBITMQ_PASSWORD is required in production");
-    }
-    
-    return new ConnectionFactory
-    {
-        HostName = isDevelopment ? "localhost" : config["RABBITMQ_HOSTNAME"] ?? "rabbitmq-svc",
-        Port = int.Parse(config["RABBITMQ_PORT"] ?? "5672"),
-        UserName = config["RABBITMQ_USERNAME"] ?? "admin",
-        Password = password
-    };
-});
 
 // Configure CORS
 
@@ -1267,7 +1102,6 @@ builder.Services.AddHangfireServer(options =>
 });
 
 // Register Services
-builder.Services.AddScoped<IRabbitMQService, RabbitMQService>();
 
 builder.Services.AddScoped<IStripeConfigService, StripeConfigService>();builder.Services.AddScoped<IWebMixerService, WebMixerService>();
 builder.Services.AddScoped<IScrapperService, ScrapperService>();

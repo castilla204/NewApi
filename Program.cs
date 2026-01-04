@@ -1458,6 +1458,91 @@ app.MapHealthChecks("/health");
 app.MapControllers();
 app.MapHub<ChatHub>("/chatHub");
 
-app.Urls.Add("http://0.0.0.0:7124");
+// ✅ CONFIGURACIÓN DE PUERTO: Azure App Service vs Desarrollo
+// Prioridad: ASPNETCORE_URLS > WEBSITES_PORT > PORT > Default (7124 dev / 80 prod)
+// IMPORTANTE: ASPNETCORE_URLS tiene la mayor prioridad y .NET la lee automáticamente durante la inicialización del host
+// Si ASPNETCORE_URLS está configurado, .NET ya lo ha aplicado antes de llegar aquí
+var portLogger = app.Services.GetRequiredService<ILogger<Program>>();
+
+// Verificar qué URLs ya están configuradas (pueden venir de ASPNETCORE_URLS)
+var configuredUrls = app.Urls.ToList();
+var hasConfiguredUrls = configuredUrls.Any();
+
+if (app.Environment.IsDevelopment())
+{
+    // Desarrollo: solo verificar ASPNETCORE_URLS (tiene prioridad absoluta), si no está, usar siempre 7124
+    var aspnetcoreUrls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+    
+    if (!string.IsNullOrEmpty(aspnetcoreUrls))
+    {
+        // ASPNETCORE_URLS está configurado - .NET ya lo ha aplicado automáticamente
+        portLogger.LogInformation($"✅ Desarrollo: Usando ASPNETCORE_URLS={aspnetcoreUrls}");
+        if (hasConfiguredUrls)
+        {
+            portLogger.LogInformation($"   URLs configuradas: {string.Join(", ", configuredUrls)}");
+        }
+    }
+    else if (!hasConfiguredUrls)
+    {
+        // En desarrollo, siempre usar puerto fijo 7124 (estándar para desarrollo)
+        app.Urls.Add("http://0.0.0.0:7124");
+        portLogger.LogInformation("✅ Desarrollo: Puerto configurado a 7124 (por defecto)");
+    }
+    else
+    {
+        portLogger.LogInformation($"✅ Desarrollo: URLs ya configuradas: {string.Join(", ", configuredUrls)}");
+    }
+}
+else
+{
+    // Producción (Azure App Service): verificar variables en orden de prioridad
+    var aspnetcoreUrls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+    
+    if (!string.IsNullOrEmpty(aspnetcoreUrls))
+    {
+        // ASPNETCORE_URLS tiene la mayor prioridad - .NET la usa automáticamente
+        // .NET ya ha leído y aplicado ASPNETCORE_URLS durante la inicialización del host
+        portLogger.LogInformation($"✅ Producción: Usando ASPNETCORE_URLS={aspnetcoreUrls}");
+        if (hasConfiguredUrls)
+        {
+            portLogger.LogInformation($"   URLs configuradas automáticamente: {string.Join(", ", configuredUrls)}");
+        }
+        else
+        {
+            portLogger.LogWarning($"⚠️ ASPNETCORE_URLS está configurado pero no se detectaron URLs. Verificar formato (debe ser: http://+:8080)");
+        }
+    }
+    else if (!hasConfiguredUrls)
+    {
+        // Fallback: usar WEBSITES_PORT (variable estándar de Azure App Service)
+        var websitesPort = Environment.GetEnvironmentVariable("WEBSITES_PORT");
+        if (!string.IsNullOrEmpty(websitesPort) && int.TryParse(websitesPort, out int websitesPortNumber))
+        {
+            app.Urls.Add($"http://0.0.0.0:{websitesPortNumber}");
+            portLogger.LogInformation($"✅ Producción: Puerto configurado desde WEBSITES_PORT={websitesPortNumber}");
+        }
+        else
+        {
+            // Último fallback: usar PORT (común en contenedores)
+            var port = Environment.GetEnvironmentVariable("PORT");
+            if (!string.IsNullOrEmpty(port) && int.TryParse(port, out int portNumber))
+            {
+                app.Urls.Add($"http://0.0.0.0:{portNumber}");
+                portLogger.LogInformation($"✅ Producción: Puerto configurado desde PORT={portNumber}");
+            }
+            else
+            {
+                // Si no hay ninguna variable configurada, Azure App Service usa el puerto 80 por defecto
+                // No especificar puerto permite que Azure lo maneje automáticamente
+                portLogger.LogInformation("✅ Producción: Puerto no especificado - Azure App Service usará puerto por defecto (80)");
+            }
+        }
+    }
+    else
+    {
+        // URLs ya configuradas (probablemente desde ASPNETCORE_URLS o configuración previa)
+        portLogger.LogInformation($"✅ Producción: URLs ya configuradas: {string.Join(", ", configuredUrls)}");
+    }
+}
 
 app.Run();

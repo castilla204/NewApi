@@ -1392,6 +1392,21 @@ namespace newApi.Services
                 return string.Empty;
             }
 
+            // ✅ Si la URL es externa (no de Google Cloud Storage), devolverla directamente
+            if (!string.IsNullOrWhiteSpace(image.ImageUrl))
+            {
+                var bucketName = _configuration["GoogleCloud:BucketName"];
+                var isExternalUrl = string.IsNullOrWhiteSpace(bucketName) || 
+                                   !image.ImageUrl.Contains($"storage.googleapis.com/{bucketName}", StringComparison.OrdinalIgnoreCase);
+                
+                if (isExternalUrl)
+                {
+                    // URL externa (Unsplash, Pexels, etc.) - devolver directamente sin signed URL
+                    return image.ImageUrl;
+                }
+            }
+
+            // ✅ Si es URL de Google Cloud Storage o hay ImageObjectName, generar signed URL
             var fallback = string.IsNullOrWhiteSpace(image.ImageUrl) ? string.Empty : image.ImageUrl;
             return _signedUrlService.GetSignedUrl(image.ImageObjectName ?? string.Empty) ?? fallback;
         }

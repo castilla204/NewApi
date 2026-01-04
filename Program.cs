@@ -39,6 +39,19 @@ builder.Logging.AddDebug();
 // Verificar el entorno PRIMERO (necesario para configurar logging)
 var isDevelopment = builder.Environment.IsDevelopment();
 
+// ✅ LOG DE VERSIÓN: Identificar la versión desplegada
+var versionLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+var buildDate = System.IO.File.GetLastWriteTime(System.Reflection.Assembly.GetExecutingAssembly().Location);
+var assemblyVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "Unknown";
+versionLogger.LogInformation("═══════════════════════════════════════════════════════════");
+versionLogger.LogInformation("🚀 INICIANDO APLICACIÓN - NUEVA VERSIÓN CON TRANSACTION POOLER");
+versionLogger.LogInformation("═══════════════════════════════════════════════════════════");
+versionLogger.LogInformation($"   Versión: {assemblyVersion}");
+versionLogger.LogInformation($"   Build Date: {buildDate:yyyy-MM-dd HH:mm:ss}");
+versionLogger.LogInformation($"   Entorno: {(isDevelopment ? "Development" : "Production")}");
+versionLogger.LogInformation($"   .NET Version: {Environment.Version}");
+versionLogger.LogInformation("═══════════════════════════════════════════════════════════");
+
 // ✅ CONFIGURAR LOGGING DE ENTITY FRAMEWORK CORE
 // En desarrollo: mostrar todas las consultas SQL (útil para debugging)
 // En producción: solo mostrar errores y warnings (reducir ruido en logs)
@@ -597,8 +610,32 @@ catch
 // Usar la misma conexión a Supabase configurada en appsettings.Development.json
 string connectionString;
 
-// Obtener connection string desde configuración (appsettings.Development.json o appsettings.json)
-var existingConnectionString = builder.Configuration.GetConnectionString("PostgresConnection");
+// ✅ DETECTAR ORIGEN DE CONNECTION STRING (Variable de entorno vs appsettings.json)
+// En Azure, las variables de entorno tienen prioridad sobre appsettings.json
+var connectionStringSource = "Unknown";
+var envConnectionString = Environment.GetEnvironmentVariable("ConnectionStrings__PostgresConnection");
+var configConnectionString = builder.Configuration.GetConnectionString("PostgresConnection");
+
+string existingConnectionString;
+if (!string.IsNullOrEmpty(envConnectionString))
+{
+    existingConnectionString = envConnectionString;
+    connectionStringSource = "Variable de Entorno (Azure)";
+    configLogger.LogWarning("⚠️ IMPORTANTE: Connection string viene de VARIABLE DE ENTORNO (Azure)");
+    configLogger.LogWarning("   Las variables de entorno tienen prioridad sobre appsettings.json");
+    configLogger.LogWarning("   Si el puerto es 5432, actualiza la variable en Azure Portal:");
+    configLogger.LogWarning("   ConnectionStrings__PostgresConnection -> Cambiar Port=5432 a Port=6543");
+}
+else if (!string.IsNullOrEmpty(configConnectionString))
+{
+    existingConnectionString = configConnectionString;
+    connectionStringSource = isDevelopment ? "appsettings.Development.json" : "appsettings.json";
+    configLogger.LogInformation($"✅ Connection string viene de: {connectionStringSource}");
+}
+else
+{
+    existingConnectionString = null;
+}
 
 if (string.IsNullOrEmpty(existingConnectionString))
 {
@@ -657,9 +694,24 @@ else
     var dbUsername = userMatch.Success ? userMatch.Groups[1].Value : "unknown";
     var dbName = dbMatch.Success ? dbMatch.Groups[1].Value : "unknown";
     
-    configLogger.LogInformation($"✅ Connection string desde configuración (Supabase): Host={dbHost}, Port={dbPort}, Database={dbName}, Username={dbUsername}");
+    configLogger.LogInformation($"✅ Connection string detectada:");
+    configLogger.LogInformation($"   Origen: {connectionStringSource}");
+    configLogger.LogInformation($"   Host: {dbHost}");
+    configLogger.LogInformation($"   Port: {dbPort} {(dbPort == "6543" ? "✅ (Transaction Pooler - CORRECTO)" : dbPort == "5432" ? "❌ (Session Pooler - CAMBIAR A 6543)" : "")}");
+    configLogger.LogInformation($"   Database: {dbName}");
+    configLogger.LogInformation($"   Username: {dbUsername}");
     configLogger.LogInformation($"   Entorno: {(isDevelopment ? "Development" : "Production")}");
-    configLogger.LogInformation($"   ⚠️  NOTA: Usando Supabase directamente desde appsettings.json (temporalmente, Secret Manager deshabilitado)");
+    
+    if (dbPort == "5432" && !isDevelopment)
+    {
+        configLogger.LogError("❌ ERROR CRÍTICO: Puerto 5432 detectado en PRODUCCIÓN");
+        configLogger.LogError("   Session Pooler (5432) NO es compatible con Hangfire");
+        configLogger.LogError("   SOLUCIÓN: Actualizar variable de entorno en Azure Portal:");
+        configLogger.LogError("   1. Ir a Azure Portal -> App Service -> Configuration");
+        configLogger.LogError("   2. Buscar: ConnectionStrings__PostgresConnection");
+        configLogger.LogError("   3. Cambiar: Port=5432 -> Port=6543");
+        configLogger.LogError("   4. Guardar y reiniciar la aplicación");
+    }
 }
 
 
@@ -1154,7 +1206,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
         dbLogger.LogWarning("   Si tienes problemas DNS, usa Transaction Pooler (puerto 6543)");
     }
     
-    // Configurar Npgsql para Session Pooler de Supabase
+    // ✅ Configurar Npgsql para Supabase (Transaction Pooler recomendado)
     var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(connectionString);
     // Deshabilitar prepared statements para Session Pooler
     dataSourceBuilder.EnableParameterLogging();

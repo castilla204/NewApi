@@ -1288,18 +1288,33 @@ builder.Services.AddSingleton<ISignedUrlService, GoogleSignedUrlService>();
 
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowSpecificOrigin", builder =>
+    if (isDevelopment)
     {
-        builder.WithOrigins(
-            "http://localhost:3000",
-            "http://localhost:5173",
-            "https://inspecciono.com",
-            "https://www.inspecciono.com") // <--- agregar dominio de frontend producci�n
-               .AllowAnyMethod()
-               .AllowAnyHeader()
-               .AllowCredentials()
-               .SetPreflightMaxAge(TimeSpan.FromSeconds(600));
-    });
+        // ✅ DESARROLLO: Permitir cualquier origen para no bloquear imágenes externas (Unsplash, etc.)
+        options.AddPolicy("AllowSpecificOrigin", builder =>
+        {
+            builder.AllowAnyOrigin()
+                   .AllowAnyMethod()
+                   .AllowAnyHeader()
+                   .SetPreflightMaxAge(TimeSpan.FromSeconds(600));
+        });
+    }
+    else
+    {
+        // ✅ PRODUCCIÓN: Solo orígenes específicos con credenciales
+        options.AddPolicy("AllowSpecificOrigin", builder =>
+        {
+            builder.WithOrigins(
+                "http://localhost:3000",
+                "http://localhost:5173",
+                "https://inspecciono.com",
+                "https://www.inspecciono.com") // <--- agregar dominio de frontend producci�n
+                   .AllowAnyMethod()
+                   .AllowAnyHeader()
+                   .AllowCredentials()
+                   .SetPreflightMaxAge(TimeSpan.FromSeconds(600));
+        });
+    }
 });
 
 

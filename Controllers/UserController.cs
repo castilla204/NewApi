@@ -301,7 +301,7 @@ public class UserController : ControllerBase
     */
 
     [HttpPost("google-auth")]
-    [EnableRateLimiting("auth")] // ✅ SEGURIDAD: 5 intentos cada 5 minutos por IP (sobrescribe "api")
+    [EnableRateLimiting("auth")] // ✅ SEGURIDAD: 30 intentos cada 5 minutos por IP
     public async Task<IActionResult> GoogleAuth([FromBody] GoogleAuthDto request)
     {
         var requestId = Guid.NewGuid().ToString();
@@ -312,14 +312,15 @@ public class UserController : ControllerBase
             // ✅ VALIDACIÓN: Verificar que el request no sea null
             if (request == null)
             {
-                await _loggingService.LogWarningAsync(
+                // ✅ OPTIMIZACIÓN: Logging en background para no bloquear respuesta
+                _ = Task.Run(async () => await _loggingService.LogWarningAsync(
                     message: "Google Auth request is null",
                     details: $"Google Auth request is null. RequestId: {requestId}, IP: {remoteIp}",
                     userId: null,
                     source: "UserController.GoogleAuth",
                     relatedEntityType: "Auth",
                     additionalData: new { RequestId = requestId, RemoteIp = remoteIp }
-                );
+                ));
                 return BadRequest(new { 
                     message = "Invalid request", 
                     error = "Request body is required",
@@ -330,14 +331,15 @@ public class UserController : ControllerBase
             // ✅ VALIDACIÓN: Verificar campos requeridos
             if (string.IsNullOrWhiteSpace(request.AccessToken))
             {
-                await _loggingService.LogWarningAsync(
+                // ✅ OPTIMIZACIÓN: Logging en background
+                _ = Task.Run(async () => await _loggingService.LogWarningAsync(
                     message: "Google Auth request missing AccessToken",
                     details: $"Google Auth request missing AccessToken. RequestId: {requestId}, IP: {remoteIp}, Email: {request.Email}",
                     userId: null,
                     source: "UserController.GoogleAuth",
                     relatedEntityType: "Auth",
                     additionalData: new { RequestId = requestId, RemoteIp = remoteIp, RequestEmail = request.Email }
-                );
+                ));
                 return BadRequest(new { 
                     message = "Invalid request", 
                     error = "AccessToken is required",
@@ -345,33 +347,20 @@ public class UserController : ControllerBase
                 });
             }
 
-            // ✅ LOG: Inicio de request
-            await _loggingService.LogInfoAsync(
-                message: "Google Auth request received",
-                details: $"Google Auth request received. RequestId: {requestId}, IP: {remoteIp}, Email: {request.Email}, GoogleId: {request.GoogleId}",
-                userId: null,
-                source: "UserController.GoogleAuth",
-                relatedEntityType: "Auth",
-                additionalData: new { 
-                    RequestId = requestId,
-                    RemoteIp = remoteIp,
-                    RequestEmail = request.Email,
-                    RequestGoogleId = request.GoogleId
-                }
-            );
-
+            // ✅ OPTIMIZACIÓN: Autenticación sin logging síncrono
             var (success, token, user) = await _userService.GoogleAuth(request);
             
             if (!success)
             {
-                await _loggingService.LogWarningAsync(
+                // ✅ OPTIMIZACIÓN: Logging en background
+                _ = Task.Run(async () => await _loggingService.LogWarningAsync(
                     message: "Google Auth failed",
                     details: $"Google Auth failed. RequestId: {requestId}, IP: {remoteIp}, Email: {request.Email}, GoogleId: {request.GoogleId}",
                     userId: null,
                     source: "UserController.GoogleAuth",
                     relatedEntityType: "Auth",
                     additionalData: new { RequestId = requestId, RemoteIp = remoteIp, RequestEmail = request.Email, RequestGoogleId = request.GoogleId }
-                );
+                ));
                 return BadRequest(new { 
                     message = "Authentication failed", 
                     error = "Invalid Google token or authentication error",
@@ -381,6 +370,7 @@ public class UserController : ControllerBase
 
             if (user == null)
             {
+                // ✅ LOG CRÍTICO: Solo errores críticos se loguean síncronamente
                 await _loggingService.LogErrorAsync(
                     message: "Google Auth returned success but user is null",
                     details: $"Google Auth returned success but user is null. RequestId: {requestId}, IP: {remoteIp}",
@@ -396,18 +386,8 @@ public class UserController : ControllerBase
                 });
             }
 
-            // ✅ LOG: Autenticación exitosa
-            await _loggingService.LogInfoAsync(
-                message: "Google Auth successful",
-                details: $"Google Auth successful. RequestId: {requestId}, UserId: {user.Id}, Email: {user.Email}, IP: {remoteIp}",
-                userId: user.Id,
-                source: "UserController.GoogleAuth",
-                relatedEntityType: "User",
-                relatedEntityId: user.Id,
-                additionalData: new { RequestId = requestId, UserId = user.Id, Email = user.Email, RemoteIp = remoteIp }
-            );
-
-            return Ok(new
+            // ✅ OPTIMIZACIÓN: Respuesta inmediata, logging en background
+            var response = Ok(new
             {
                 token,
                 user = new
@@ -420,11 +400,24 @@ public class UserController : ControllerBase
                 },
                 requestId = requestId
             });
+
+            // ✅ OPTIMIZACIÓN: Logging exitoso en background (no bloquea respuesta)
+            _ = Task.Run(async () => await _loggingService.LogInfoAsync(
+                message: "Google Auth successful",
+                details: $"Google Auth successful. RequestId: {requestId}, UserId: {user.Id}, Email: {user.Email}, IP: {remoteIp}",
+                userId: user.Id,
+                source: "UserController.GoogleAuth",
+                relatedEntityType: "User",
+                relatedEntityId: user.Id,
+                additionalData: new { RequestId = requestId, UserId = user.Id, Email = user.Email, RemoteIp = remoteIp }
+            ));
+
+            return response;
         }
         catch (InvalidJwtException jwtEx)
         {
-            // ✅ LOG: Error específico de JWT inválido
-            await _loggingService.LogErrorAsync(
+            // ✅ OPTIMIZACIÓN: Logging en background para errores de validación
+            _ = Task.Run(async () => await _loggingService.LogErrorAsync(
                 message: "Invalid JWT token in Google Auth",
                 details: $"Invalid JWT token in Google Auth. RequestId: {requestId}, IP: {remoteIp}, Email: {request?.Email}, Error: {jwtEx.Message}",
                 userId: null,
@@ -435,10 +428,9 @@ public class UserController : ControllerBase
                     RemoteIp = remoteIp,
                     RequestEmail = request?.Email,
                     Error = jwtEx.Message,
-                    ErrorType = jwtEx.GetType().Name,
-                    StackTrace = jwtEx.StackTrace
+                    ErrorType = jwtEx.GetType().Name
                 }
-            );
+            ));
             
             return BadRequest(new { 
                 message = "Invalid Google token", 
@@ -449,7 +441,7 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            // ✅ LOG CRÍTICO: Error inesperado con toda la información
+            // ✅ LOG CRÍTICO: Errores inesperados se loguean síncronamente
             await _loggingService.LogErrorAsync(
                 message: "Unexpected error during Google authentication",
                 details: $"Unexpected error during Google authentication. RequestId: {requestId}, IP: {remoteIp}, Email: {request?.Email}, GoogleId: {request?.GoogleId}, ErrorType: {ex.GetType().Name}, Error: {ex.Message}",
@@ -463,8 +455,7 @@ public class UserController : ControllerBase
                     RequestGoogleId = request?.GoogleId,
                     Error = ex.Message,
                     ErrorType = ex.GetType().Name,
-                    InnerException = ex.InnerException?.Message,
-                    StackTrace = ex.StackTrace
+                    InnerException = ex.InnerException?.Message
                 }
             );
             

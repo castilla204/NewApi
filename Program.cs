@@ -36,6 +36,25 @@ builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.AddDebug();
 
+// Verificar el entorno PRIMERO (necesario para configurar logging)
+var isDevelopment = builder.Environment.IsDevelopment();
+
+// ✅ CONFIGURAR LOGGING DE ENTITY FRAMEWORK CORE
+// En desarrollo: mostrar todas las consultas SQL (útil para debugging)
+// En producción: solo mostrar errores y warnings (reducir ruido en logs)
+if (isDevelopment)
+{
+    // Desarrollo: mostrar consultas SQL y información detallada
+    builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.Information);
+    builder.Logging.AddFilter("Microsoft.EntityFrameworkCore", LogLevel.Information);
+}
+else
+{
+    // Producción: solo errores y warnings (no mostrar consultas SQL normales)
+    builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.Warning);
+    builder.Logging.AddFilter("Microsoft.EntityFrameworkCore", LogLevel.Warning);
+}
+
 // Configurar zona horaria de España
 TimeZoneInfo spainTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Europe/Madrid");
 builder.Services.Configure<RequestLocalizationOptions>(options =>
@@ -44,9 +63,6 @@ builder.Services.Configure<RequestLocalizationOptions>(options =>
     options.SupportedCultures = new[] { new System.Globalization.CultureInfo("es-ES") };
     options.SupportedUICultures = new[] { new System.Globalization.CultureInfo("es-ES") };
 });
-
-// Verificar el entorno PRIMERO
-var isDevelopment = builder.Environment.IsDevelopment();
 
 // Crear logger para inicialización
 builder.Logging.AddConsole();
@@ -660,9 +676,14 @@ try
     var host = builderConn.Host ?? string.Empty;
     var username = builderConn.Username ?? string.Empty;
     
-    // Detectar tipo de conexión Supabase
+    // ✅ DETECTAR TIPO DE CONEXIÓN SUPABASE (según documentación oficial)
+    // Direct Connection: db.*.supabase.co (puerto 5432, solo IPv6)
+    // Session Pooler: pooler.supabase.com (puerto 5432, IPv4/IPv6, NO compatible con Hangfire)
+    // Transaction Pooler: pooler.supabase.com (puerto 6543, IPv4/IPv6, PERFECTO para Hangfire)
+    var port = builderConn.Port;
     var isDirectConnection = host.Contains("db.") && host.Contains(".supabase.co");
-    var isSessionPooler = host.Contains("pooler.supabase.com");
+    var isSessionPooler = host.Contains("pooler.supabase.com") && port == 5432;
+    var isTransactionPooler = host.Contains("pooler.supabase.com") && port == 6543;
     
     // Extraer project reference del username (formato: postgres.PROJECT_REF)
     var projectRef = username.Contains(".") ? username.Split('.').LastOrDefault() ?? string.Empty : string.Empty;
@@ -671,25 +692,48 @@ try
     var projectRefValid = !string.IsNullOrEmpty(projectRef) && projectRef.Length >= 10 && 
                           Regex.IsMatch(projectRef, @"^[a-zA-Z0-9_-]+$");
     
-    if (isDirectConnection)
+    if (isTransactionPooler)
     {
-        // ✅ Ya es Direct Connection: usarla directamente (IDEAL para Hangfire)
+        // PERFECTO: Transaction Pooler (puerto 6543) - Compatible con IPv4/IPv6 y Hangfire
         hangfireConnectionString = connectionString;
-        configLogger.LogInformation("✅ Usando Direct Connection para Hangfire (recomendado para estabilidad)");
-        configLogger.LogInformation($"   Host: {host}");
+        configLogger.LogInformation("[OK] USANDO TRANSACTION POOLER (Puerto 6543) - PERFECTO PARA HANGFIRE");
+        configLogger.LogInformation("   [OK] Compatible con IPv4/IPv6 (resuelve problemas DNS)");
+        configLogger.LogInformation("   [OK] Compatible con Hangfire (no causa ObjectDisposedException)");
+        configLogger.LogInformation("   [OK] Recomendado por documentacion oficial de Supabase para background jobs");
+        configLogger.LogInformation($"   Host: {host}, Port: {port}");
+    }
+    else if (isDirectConnection)
+    {
+        // Direct Connection: ideal pero requiere IPv6
+        hangfireConnectionString = connectionString;
+        configLogger.LogInformation("[OK] Usando Direct Connection para Hangfire (requiere IPv6 habilitado)");
+        configLogger.LogInformation($"   Host: {host}, Port: {port}");
+        configLogger.LogInformation("   [WARNING] NOTA: Direct Connection requiere IPv6. Si tienes problemas DNS, usa Transaction Pooler (puerto 6543)");
     }
     else if (isSessionPooler)
     {
-        // ⚠️ Session Pooler: usar pero advertir sobre posibles problemas
-        hangfireConnectionString = connectionString;
-        configLogger.LogWarning("⚠️ Usando Session Pooler para Hangfire. Puede causar ObjectDisposedException en locks.");
-        configLogger.LogWarning("   RECOMENDACIÓN: Cambia a Direct Connection en Supabase Dashboard > Settings > Database");
-        configLogger.LogWarning("   Direct Connection: db.PROJECT_REF.supabase.co (no pooler.supabase.com)");
-        
+        // Session Pooler (puerto 5432): NO recomendado para Hangfire
+        // Intentar cambiar automáticamente a Transaction Pooler (puerto 6543)
         if (projectRefValid)
         {
-            configLogger.LogInformation($"   Project Reference detectado: {projectRef}");
-            configLogger.LogInformation($"   Direct Connection sería: db.{projectRef}.supabase.co");
+            // Construir Transaction Pooler connection string automáticamente
+            var transactionPoolerConn = new NpgsqlConnectionStringBuilder(connectionString);
+            transactionPoolerConn.Port = 6543; // Cambiar a Transaction Pooler
+            hangfireConnectionString = transactionPoolerConn.ConnectionString;
+            
+            configLogger.LogWarning("[WARNING] Session Pooler (puerto 5432) detectado - NO recomendado para Hangfire");
+            configLogger.LogWarning("   [OK] SOLUCION AUTOMATICA: Cambiando a Transaction Pooler (puerto 6543)");
+            configLogger.LogInformation($"   Host: {host}, Port: 5432 -> 6543 (Transaction Pooler)");
+            configLogger.LogInformation("   [OK] Transaction Pooler es compatible con IPv4/IPv6 y Hangfire");
+        }
+        else
+        {
+            // No se puede construir automáticamente, usar Session Pooler con advertencia
+            hangfireConnectionString = connectionString;
+            configLogger.LogError("[ERROR] Session Pooler (puerto 5432) detectado - NO recomendado para Hangfire");
+            configLogger.LogError("   [ERROR] Puede causar ObjectDisposedException en locks distribuidos");
+            configLogger.LogError("   [OK] SOLUCION: Cambiar manualmente a Transaction Pooler (puerto 6543)");
+            configLogger.LogError("   En appsettings.json, cambia Port=5432 a Port=6543");
         }
     }
     else
@@ -698,12 +742,6 @@ try
         hangfireConnectionString = connectionString;
         configLogger.LogWarning("⚠️ Connection string no detectada como Supabase. Usando connection string principal.");
         configLogger.LogWarning("   Verifica que la connection string sea válida para Hangfire.");
-    }
-    
-    // Validación final: si project reference es inválido, advertir
-    if (isSessionPooler && !projectRefValid)
-    {
-        configLogger.LogWarning("⚠️ Project reference inválido o no detectado. Usando connection string principal sin modificaciones.");
     }
 }
 catch (Exception ex)
@@ -1067,6 +1105,55 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
     var connectionString = builder.Configuration.GetConnectionString("PostgresConnection");
+    
+    // ✅ DETECTAR TIPO DE CONEXIÓN Y ADVERTIR SOBRE PROBLEMAS DE DNS/IPv6
+    var builderConn = new NpgsqlConnectionStringBuilder(connectionString);
+    var host = builderConn.Host ?? string.Empty;
+    var port = builderConn.Port;
+    var isSessionPooler = host.Contains("pooler.supabase.com") && port == 5432;
+    var isTransactionPooler = host.Contains("pooler.supabase.com") && port == 6543;
+    var isDirectConnection = host.Contains("db.") && host.Contains(".supabase.co");
+    
+    var dbLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    
+    if (isTransactionPooler)
+    {
+        // PERFECTO: Transaction Pooler (puerto 6543) - Compatible con IPv4/IPv6
+        dbLogger.LogInformation("[OK] TRANSACTION POOLER DETECTADO (Puerto 6543)");
+        dbLogger.LogInformation("   [OK] Compatible con IPv4/IPv6 (resuelve problemas DNS)");
+        dbLogger.LogInformation("   [OK] Compatible con Hangfire (no causa ObjectDisposedException)");
+        dbLogger.LogInformation("   [OK] Recomendado por documentacion oficial de Supabase");
+        dbLogger.LogInformation($"   Host: {host}, Port: {port}");
+    }
+    else if (isSessionPooler)
+    {
+        // Session Pooler (puerto 5432): Puede tener problemas DNS y con Hangfire
+        dbLogger.LogWarning("[WARNING] SESSION POOLER DETECTADO (Puerto 5432)");
+        dbLogger.LogWarning($"   Host actual: {host}, Port: {port}");
+        dbLogger.LogError("   [ERROR] PROBLEMA 1: Puede tener errores DNS (IPv4/IPv6)");
+        dbLogger.LogError("   [ERROR] PROBLEMA 2: NO compatible con Hangfire (ObjectDisposedException)");
+        dbLogger.LogError("");
+        dbLogger.LogError("   [SOLUCION] RECOMENDADA: Cambiar a Transaction Pooler (Puerto 6543)");
+        dbLogger.LogError("   En appsettings.json o appsettings.Development.json:");
+        dbLogger.LogError("   Cambiar: Port=5432 -> Port=6543");
+        dbLogger.LogError("");
+        dbLogger.LogError("   Connection String CORRECTO:");
+        dbLogger.LogError($"   Host={host};Port=6543;Username=postgres.rveqsehzlvbttlpmsbmi;Password=***;Database=postgres;SslMode=Require;");
+        dbLogger.LogError("");
+        dbLogger.LogError("   [OK] Transaction Pooler (6543) resuelve:");
+        dbLogger.LogError("   - Problemas de DNS (compatible IPv4/IPv6)");
+        dbLogger.LogError("   - ObjectDisposedException en Hangfire");
+        dbLogger.LogError("   - Compatible con background jobs segun docs oficiales");
+    }
+    else if (isDirectConnection)
+    {
+        // Direct Connection: Requiere IPv6 habilitado
+        dbLogger.LogInformation("[OK] Direct Connection detectado (requiere IPv6)");
+        dbLogger.LogInformation($"   Host: {host}, Port: {port}");
+        dbLogger.LogWarning("   [WARNING] NOTA: Direct Connection requiere IPv6 habilitado en Windows");
+        dbLogger.LogWarning("   Si tienes problemas DNS, usa Transaction Pooler (puerto 6543)");
+    }
+    
     // Configurar Npgsql para Session Pooler de Supabase
     var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(connectionString);
     // Deshabilitar prepared statements para Session Pooler
@@ -1076,11 +1163,19 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(dataSource, npgsqlOptions =>
     {
         npgsqlOptions.CommandTimeout(60); // Aumentado a 60 segundos para conexiones lentas
+        
+        // ✅ MEJORADO: Reintentos optimizados para errores DNS y transitorios
+        // Aumentar reintentos y delays para manejar problemas de DNS/resolución de nombres
         npgsqlOptions.EnableRetryOnFailure(
-            maxRetryCount: 5, // Aumentado de 3 a 5 reintentos
-            maxRetryDelay: TimeSpan.FromSeconds(10), // Aumentado delay máximo
-            errorCodesToAdd: null);
+            maxRetryCount: 6, // Aumentado de 5 a 6 reintentos para errores DNS
+            maxRetryDelay: TimeSpan.FromSeconds(15), // Aumentado delay máximo a 15 segundos
+            errorCodesToAdd: null); // null = todos los códigos de error transitorios
     });
+    
+    // ✅ MEJORADO: Configurar Execution Strategy para manejar errores transitorios
+    // Esto ayuda con errores DNS y problemas de conectividad temporal
+    options.EnableSensitiveDataLogging(isDevelopment); // Solo en desarrollo
+    options.EnableDetailedErrors(isDevelopment); // Solo en desarrollo
 });
 
 // Configure Google Cloud Storage
@@ -1162,27 +1257,36 @@ builder.Services.AddCors(options =>
 // ✅ VERIFICADO: Esta versión resuelve el bug reportado en GitHub Issue #122
 // donde las conexiones se disponían prematuramente causando ObjectDisposedException.
 // 
-// ⚠️ IMPORTANTE SOBRE SUPABASE:
-// - Session Pooler (pooler.supabase.com): NO recomendado para Hangfire
-//   * Cierra conexiones inactivas prematuramente (optimización de recursos)
-//   * Causa ObjectDisposedException en locks distribuidos (aunque la versión 1.20.13 lo mitiga)
-//   * No soporta transacciones de larga duración
-//   * Similar a otros poolers de PostgreSQL (Supavisor, PgBouncer)
+// ✅ SOLUCIÓN OFICIAL SUPABASE (Según documentación oficial):
 // 
-// - Direct Connection (db.PROJECT_REF.supabase.co): RECOMENDADO para Hangfire
-//   * Soporta conexiones de larga duración (ideal para background jobs)
-//   * Compatible con locks distribuidos y transacciones largas
-//   * Evita ObjectDisposedException completamente
-//   * Usa puerto 5432 (IPv6 por defecto, IPv4 con Session Mode)
+// 1. TRANSACTION POOLER (Puerto 6543) - ⭐ RECOMENDADO PARA HANGFIRE ⭐
+//    * Compatible con IPv4/IPv6 (resuelve problemas DNS)
+//    * Compatible con Hangfire (no causa ObjectDisposedException)
+//    * Diseñado para "temporary clients" y background jobs según docs oficiales
+//    * Formato: pooler.supabase.com:6543
+//    * ✅ PERFECTO para Hangfire - El código detecta Session Pooler y cambia automáticamente
 // 
-// CONFIGURACIÓN:
-// 1. Obtén la Direct Connection desde Supabase Dashboard > Settings > Database
-// 2. Selecciona "Direct" (o "Session Mode" si necesitas IPv4)
-// 3. Formato: db.PROJECT_REF.supabase.co (NO pooler.supabase.com)
-// 4. Configura en appsettings.json o appsettings.Development.json
+// 2. SESSION POOLER (Puerto 5432) - ❌ NO RECOMENDADO PARA HANGFIRE
+//    * Compatible con IPv4/IPv6 pero causa problemas con Hangfire
+//    * Cierra conexiones inactivas prematuramente
+//    * Causa ObjectDisposedException en locks distribuidos
+//    * Formato: pooler.supabase.com:5432
+//    * ⚠️ El código detecta esto y cambia automáticamente a Transaction Pooler si es posible
 // 
-// EJEMPLO DE CONNECTION STRING (Direct Connection):
-// User Id=postgres.PROJECT_REF;Password=***;Server=db.PROJECT_REF.supabase.co;Port=5432;Database=postgres;SslMode=Require;Timeout=30;CommandTimeout=60;Pooling=true;Max Pool Size=100;
+// 3. DIRECT CONNECTION (Puerto 5432) - ✅ ALTERNATIVA (requiere IPv6)
+//    * Solo IPv6 (puede tener problemas DNS si IPv6 no está habilitado)
+//    * Soporta conexiones de larga duración
+//    * Compatible con locks distribuidos
+//    * Formato: db.PROJECT_REF.supabase.co:5432
+//    * ⚠️ Requiere IPv6 habilitado en Windows/red
+// 
+// CONFIGURACIÓN RECOMENDADA (Transaction Pooler):
+// 1. Usa Transaction Pooler (puerto 6543) para Hangfire
+// 2. Formato: Host=aws-1-eu-west-2.pooler.supabase.com;Port=6543;...
+// 3. Configura en appsettings.json o appsettings.Development.json
+// 
+// EJEMPLO DE CONNECTION STRING (Transaction Pooler - RECOMENDADO):
+// User Id=postgres.PROJECT_REF;Password=***;Server=aws-1-eu-west-2.pooler.supabase.com;Port=6543;Database=postgres;SslMode=Require;Timeout=30;CommandTimeout=60;Pooling=true;
 // 
 // REFERENCIAS:
 // - Tutoriales exitosos: Pradeep Radyumna (Dev.to), Georgi Marokov (Dev.to), Cosmin Vladutu (DevGenius)

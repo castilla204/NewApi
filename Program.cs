@@ -649,6 +649,67 @@ else
 
 builder.Configuration["ConnectionStrings:PostgresConnection"] = connectionString;
 
+// ✅ HANGFIRE: Crear cadena de conexión separada usando Direct Connection
+// El Session Pooler no es compatible con Hangfire (cierra conexiones prematuramente)
+// Direct Connection es necesario para transacciones de larga duración y locks distribuidos
+string hangfireConnectionString;
+try
+{
+    // Extraer información de la cadena de conexión actual
+    var userMatch = Regex.Match(connectionString, @"User Id=([^;]+)");
+    var passwordMatch = Regex.Match(connectionString, @"Password=([^;]+)");
+    var dbMatch = Regex.Match(connectionString, @"Database=([^;]+)");
+    
+    var username = userMatch.Success ? userMatch.Groups[1].Value : "";
+    var password = passwordMatch.Success ? passwordMatch.Groups[1].Value : "";
+    var database = dbMatch.Success ? dbMatch.Groups[1].Value : "postgres";
+    
+    // Extraer project reference del username (formato: postgres.PROJECT_REF)
+    var projectRef = "";
+    if (username.Contains("."))
+    {
+        projectRef = username.Split('.')[1];
+    }
+    else
+    {
+        // Si no tiene formato postgres.PROJECT_REF, intentar extraer del host
+        var hostMatch = Regex.Match(connectionString, @"Server=([^;]+)");
+        if (hostMatch.Success)
+        {
+            var host = hostMatch.Groups[1].Value;
+            // Intentar extraer de pooler.supabase.com -> db.PROJECT_REF.supabase.co
+            var poolerMatch = Regex.Match(host, @"pooler\.supabase\.com");
+            if (poolerMatch.Success)
+            {
+                // Usar el project reference del username si está disponible
+                projectRef = username.Contains(".") ? username.Split('.')[1] : "rveqsehzlvbttlpmsbmi";
+            }
+        }
+    }
+    
+    if (string.IsNullOrEmpty(projectRef))
+    {
+        // Fallback: usar el project reference conocido
+        projectRef = "rveqsehzlvbttlpmsbmi";
+        configLogger.LogWarning("⚠️ No se pudo extraer project reference, usando fallback");
+    }
+    
+    // Construir Direct Connection string (formato: db.PROJECT_REF.supabase.co)
+    // Direct Connection es necesario para Hangfire porque:
+    // 1. Soporta transacciones de larga duración
+    // 2. No cierra conexiones inactivas prematuramente
+    // 3. Es compatible con locks distribuidos
+    hangfireConnectionString = $"User Id=postgres.{projectRef};Password={password};Server=db.{projectRef}.supabase.co;Port=5432;Database={database};SslMode=Require;Timeout=30;CommandTimeout=60;Pooling=true;Keepalive=30;";
+    
+    configLogger.LogInformation($"✅ Hangfire Connection String configurada (Direct Connection): Server=db.{projectRef}.supabase.co");
+    configLogger.LogInformation($"   ⚠️  IMPORTANTE: Hangfire usa Direct Connection (no Session Pooler) para evitar ObjectDisposedException");
+}
+catch (Exception ex)
+{
+    configLogger.LogError(ex, "❌ Error al construir Hangfire connection string, usando connection string principal");
+    hangfireConnectionString = connectionString; // Fallback a connection string principal
+}
+
 // Log de diagnóstico (sin mostrar contraseña)
 var connectionStringForLog = connectionString;
 if (connectionStringForLog.Contains("Password="))
@@ -1085,17 +1146,24 @@ builder.Services.AddCors(options =>
 
 
 // ✅ HANGFIRE HABILITADO: Dashboard habilitado para visualización
-// ⚠️ NOTA: El servidor de Hangfire está deshabilitado para evitar problemas de recursos en K3s
-// Solo se habilita el Dashboard para visualización y monitoreo
+// ⚠️ IMPORTANTE: Hangfire requiere Direct Connection (no Session Pooler)
+// El Session Pooler cierra conexiones prematuramente causando ObjectDisposedException
+// Direct Connection es necesario para transacciones de larga duración y locks distribuidos
 builder.Services.AddHangfire(config => config
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
     .UseRecommendedSerializerSettings()
-    .UsePostgreSqlStorage(builder.Configuration.GetConnectionString("PostgresConnection"), new PostgreSqlStorageOptions
+    .UsePostgreSqlStorage(hangfireConnectionString, new PostgreSqlStorageOptions
     {
+        // ✅ OPTIMIZADO: Intervalos ajustados para evitar ObjectDisposedException
         QueuePollInterval = TimeSpan.FromSeconds(15),
         InvisibilityTimeout = TimeSpan.FromMinutes(30),
-        DistributedLockTimeout = TimeSpan.FromMinutes(10),
+        
+        // ✅ CRÍTICO: DistributedLockTimeout aumentado para evitar errores de locks
+        // Los locks distribuidos necesitan más tiempo cuando hay latencia de red
+        DistributedLockTimeout = TimeSpan.FromMinutes(15), // Aumentado de 10 a 15 minutos
+        
+        // ✅ IMPORTANTE: Schema preparation habilitado
         PrepareSchemaIfNecessary = true
     })
     .UseDefaultTypeResolver()

@@ -649,65 +649,69 @@ else
 
 builder.Configuration["ConnectionStrings:PostgresConnection"] = connectionString;
 
-// ✅ HANGFIRE: Crear cadena de conexión separada usando Direct Connection
-// El Session Pooler no es compatible con Hangfire (cierra conexiones prematuramente)
-// Direct Connection es necesario para transacciones de larga duración y locks distribuidos
+// ✅ HANGFIRE: Configurar connection string usando Direct Connection (recomendado)
+// SOLUCIÓN 2026: Usar NpgsqlConnectionStringBuilder para parsear correctamente
+// NO construir hostnames manualmente para evitar errores de DNS
 string hangfireConnectionString;
 try
 {
-    // Extraer información de la cadena de conexión actual
-    var userMatch = Regex.Match(connectionString, @"User Id=([^;]+)");
-    var passwordMatch = Regex.Match(connectionString, @"Password=([^;]+)");
-    var dbMatch = Regex.Match(connectionString, @"Database=([^;]+)");
+    // Usar NpgsqlConnectionStringBuilder para parsear la connection string correctamente
+    var builderConn = new NpgsqlConnectionStringBuilder(connectionString);
+    var host = builderConn.Host ?? string.Empty;
+    var username = builderConn.Username ?? string.Empty;
     
-    var username = userMatch.Success ? userMatch.Groups[1].Value : "";
-    var password = passwordMatch.Success ? passwordMatch.Groups[1].Value : "";
-    var database = dbMatch.Success ? dbMatch.Groups[1].Value : "postgres";
+    // Detectar tipo de conexión Supabase
+    var isDirectConnection = host.Contains("db.") && host.Contains(".supabase.co");
+    var isSessionPooler = host.Contains("pooler.supabase.com");
     
     // Extraer project reference del username (formato: postgres.PROJECT_REF)
-    var projectRef = "";
-    if (username.Contains("."))
+    var projectRef = username.Contains(".") ? username.Split('.').LastOrDefault() ?? string.Empty : string.Empty;
+    
+    // Validar project reference (debe tener al menos 10 caracteres para ser válido)
+    var projectRefValid = !string.IsNullOrEmpty(projectRef) && projectRef.Length >= 10 && 
+                          Regex.IsMatch(projectRef, @"^[a-zA-Z0-9_-]+$");
+    
+    if (isDirectConnection)
     {
-        projectRef = username.Split('.')[1];
+        // ✅ Ya es Direct Connection: usarla directamente (IDEAL para Hangfire)
+        hangfireConnectionString = connectionString;
+        configLogger.LogInformation("✅ Usando Direct Connection para Hangfire (recomendado para estabilidad)");
+        configLogger.LogInformation($"   Host: {host}");
+    }
+    else if (isSessionPooler)
+    {
+        // ⚠️ Session Pooler: usar pero advertir sobre posibles problemas
+        hangfireConnectionString = connectionString;
+        configLogger.LogWarning("⚠️ Usando Session Pooler para Hangfire. Puede causar ObjectDisposedException en locks.");
+        configLogger.LogWarning("   RECOMENDACIÓN: Cambia a Direct Connection en Supabase Dashboard > Settings > Database");
+        configLogger.LogWarning("   Direct Connection: db.PROJECT_REF.supabase.co (no pooler.supabase.com)");
+        
+        if (projectRefValid)
+        {
+            configLogger.LogInformation($"   Project Reference detectado: {projectRef}");
+            configLogger.LogInformation($"   Direct Connection sería: db.{projectRef}.supabase.co");
+        }
     }
     else
     {
-        // Si no tiene formato postgres.PROJECT_REF, intentar extraer del host
-        var hostMatch = Regex.Match(connectionString, @"Server=([^;]+)");
-        if (hostMatch.Success)
-        {
-            var host = hostMatch.Groups[1].Value;
-            // Intentar extraer de pooler.supabase.com -> db.PROJECT_REF.supabase.co
-            var poolerMatch = Regex.Match(host, @"pooler\.supabase\.com");
-            if (poolerMatch.Success)
-            {
-                // Usar el project reference del username si está disponible
-                projectRef = username.Contains(".") ? username.Split('.')[1] : "rveqsehzlvbttlpmsbmi";
-            }
-        }
+        // ⚠️ No es Supabase o formato desconocido: usar connection string principal
+        hangfireConnectionString = connectionString;
+        configLogger.LogWarning("⚠️ Connection string no detectada como Supabase. Usando connection string principal.");
+        configLogger.LogWarning("   Verifica que la connection string sea válida para Hangfire.");
     }
     
-    if (string.IsNullOrEmpty(projectRef))
+    // Validación final: si project reference es inválido, advertir
+    if (isSessionPooler && !projectRefValid)
     {
-        // Fallback: usar el project reference conocido
-        projectRef = "rveqsehzlvbttlpmsbmi";
-        configLogger.LogWarning("⚠️ No se pudo extraer project reference, usando fallback");
+        configLogger.LogWarning("⚠️ Project reference inválido o no detectado. Usando connection string principal sin modificaciones.");
     }
-    
-    // Construir Direct Connection string (formato: db.PROJECT_REF.supabase.co)
-    // Direct Connection es necesario para Hangfire porque:
-    // 1. Soporta transacciones de larga duración
-    // 2. No cierra conexiones inactivas prematuramente
-    // 3. Es compatible con locks distribuidos
-    hangfireConnectionString = $"User Id=postgres.{projectRef};Password={password};Server=db.{projectRef}.supabase.co;Port=5432;Database={database};SslMode=Require;Timeout=30;CommandTimeout=60;Pooling=true;Keepalive=30;";
-    
-    configLogger.LogInformation($"✅ Hangfire Connection String configurada (Direct Connection): Server=db.{projectRef}.supabase.co");
-    configLogger.LogInformation($"   ⚠️  IMPORTANTE: Hangfire usa Direct Connection (no Session Pooler) para evitar ObjectDisposedException");
 }
 catch (Exception ex)
 {
-    configLogger.LogError(ex, "❌ Error al construir Hangfire connection string, usando connection string principal");
-    hangfireConnectionString = connectionString; // Fallback a connection string principal
+    configLogger.LogError(ex, "❌ Error al parsear connection string para Hangfire, usando connection string principal");
+    configLogger.LogError($"   Error: {ex.Message}");
+    hangfireConnectionString = connectionString; // Fallback seguro
+    configLogger.LogWarning("⚠️ Hangfire usará la connection string principal. Verifica que sea válida.");
 }
 
 // Log de diagnóstico (sin mostrar contraseña)
@@ -1145,40 +1149,159 @@ builder.Services.AddCors(options =>
 });
 
 
-// ✅ HANGFIRE HABILITADO: Dashboard habilitado para visualización
-// ⚠️ IMPORTANTE: Hangfire requiere Direct Connection (no Session Pooler)
-// El Session Pooler cierra conexiones prematuramente causando ObjectDisposedException
-// Direct Connection es necesario para transacciones de larga duración y locks distribuidos
-builder.Services.AddHangfire(config => config
-    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
-    .UseSimpleAssemblyNameTypeSerializer()
-    .UseRecommendedSerializerSettings()
-    .UsePostgreSqlStorage(hangfireConnectionString, new PostgreSqlStorageOptions
-    {
-        // ✅ OPTIMIZADO: Intervalos ajustados para evitar ObjectDisposedException
-        QueuePollInterval = TimeSpan.FromSeconds(15),
-        InvisibilityTimeout = TimeSpan.FromMinutes(30),
-        
-        // ✅ CRÍTICO: DistributedLockTimeout aumentado para evitar errores de locks
-        // Los locks distribuidos necesitan más tiempo cuando hay latencia de red
-        DistributedLockTimeout = TimeSpan.FromMinutes(15), // Aumentado de 10 a 15 minutos
-        
-        // ✅ IMPORTANTE: Schema preparation habilitado
-        PrepareSchemaIfNecessary = true
-    })
-    .UseDefaultTypeResolver()
-    .UseDefaultTypeSerializer());
+// ✅ HANGFIRE CONFIGURACIÓN 2026: Integración con Supabase PostgreSQL
+// 
+// DOCUMENTACIÓN OFICIAL: https://docs.hangfire.io/en/latest/configuration/using-postgresql.html
+// VERSIÓN ACTUAL: Hangfire.PostgreSql 1.20.13 ✅ (corrige bug ObjectDisposedException de v1.6.1)
+// VERSIÓN HANGFIRE: Hangfire.AspNetCore 1.8.22 ✅
+// 
+// ✅ VERIFICADO: Versión 1.20.13 resuelve el bug reportado en GitHub Issue #122
+// donde las conexiones se disponían prematuramente causando ObjectDisposedException.
+// Esta versión es superior a la 1.6.2 que inicialmente resolvió el problema.
+// 
+// ✅ VERIFICADO: Esta versión resuelve el bug reportado en GitHub Issue #122
+// donde las conexiones se disponían prematuramente causando ObjectDisposedException.
+// 
+// ⚠️ IMPORTANTE SOBRE SUPABASE:
+// - Session Pooler (pooler.supabase.com): NO recomendado para Hangfire
+//   * Cierra conexiones inactivas prematuramente (optimización de recursos)
+//   * Causa ObjectDisposedException en locks distribuidos (aunque la versión 1.20.13 lo mitiga)
+//   * No soporta transacciones de larga duración
+//   * Similar a otros poolers de PostgreSQL (Supavisor, PgBouncer)
+// 
+// - Direct Connection (db.PROJECT_REF.supabase.co): RECOMENDADO para Hangfire
+//   * Soporta conexiones de larga duración (ideal para background jobs)
+//   * Compatible con locks distribuidos y transacciones largas
+//   * Evita ObjectDisposedException completamente
+//   * Usa puerto 5432 (IPv6 por defecto, IPv4 con Session Mode)
+// 
+// CONFIGURACIÓN:
+// 1. Obtén la Direct Connection desde Supabase Dashboard > Settings > Database
+// 2. Selecciona "Direct" (o "Session Mode" si necesitas IPv4)
+// 3. Formato: db.PROJECT_REF.supabase.co (NO pooler.supabase.com)
+// 4. Configura en appsettings.json o appsettings.Development.json
+// 
+// EJEMPLO DE CONNECTION STRING (Direct Connection):
+// User Id=postgres.PROJECT_REF;Password=***;Server=db.PROJECT_REF.supabase.co;Port=5432;Database=postgres;SslMode=Require;Timeout=30;CommandTimeout=60;Pooling=true;Max Pool Size=100;
+// 
+// REFERENCIAS:
+// - Tutoriales exitosos: Pradeep Radyumna (Dev.to), Georgi Marokov (Dev.to), Cosmin Vladutu (DevGenius)
+// - GitHub Issue #122: Bug ObjectDisposedException resuelto en v1.6.2+
+// - Hangfire Forum: Recomendaciones para poolers y timeouts
 
-// ✅ HABILITADO: Servidor de Hangfire para procesar jobs automáticamente
-// Los jobs de timers de appointments requieren que el servidor esté activo
-builder.Services.AddHangfireServer(options =>
+// Validar que la connection string de Hangfire sea válida antes de configurarla
+var hangfireLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+var hangfireConnectionValid = !string.IsNullOrEmpty(hangfireConnectionString);
+
+if (hangfireConnectionValid)
 {
-    options.WorkerCount = 2; // Número de workers que procesan jobs simultáneamente
-    options.ServerTimeout = TimeSpan.FromMinutes(5);
-    options.HeartbeatInterval = TimeSpan.FromSeconds(30);
-    options.ServerCheckInterval = TimeSpan.FromMinutes(1);
-    options.SchedulePollingInterval = TimeSpan.FromSeconds(30); // Verifica jobs programados cada 30 segundos
-});
+    // Validar que la connection string no tenga un hostname inválido
+    var serverMatch = Regex.Match(hangfireConnectionString, @"Server=([^;]+)", RegexOptions.IgnoreCase);
+    if (serverMatch.Success)
+    {
+        var serverHost = serverMatch.Groups[1].Value.Trim();
+        // Si el hostname parece inválido (muy corto o contiene caracteres raros), usar connection string principal
+        if (serverHost.Length < 5 || serverHost.Contains("..") || serverHost.StartsWith(".") || serverHost.EndsWith("."))
+        {
+            hangfireLogger.LogWarning($"⚠️ Hostname de Hangfire parece inválido: {serverHost}. Usando connection string principal");
+            hangfireConnectionString = connectionString;
+        }
+    }
+    
+    // ✅ HANGFIRE CONFIGURACIÓN 2026: Mejores prácticas para Supabase/PostgreSQL
+    // Basado en: https://docs.hangfire.io/en/latest/configuration/using-postgresql.html
+    // IMPORTANTE: Session Pooler de Supabase cierra conexiones prematuramente
+    // Direct Connection (db.PROJECT_REF.supabase.co) es recomendado para Hangfire
+    builder.Services.AddHangfire(config => config
+        .SetDataCompatibilityLevel(CompatibilityLevel.Version_180) // Compatibilidad con .NET 8+
+        .UseSimpleAssemblyNameTypeSerializer()
+        .UseRecommendedSerializerSettings()
+        .UsePostgreSqlStorage(hangfireConnectionString, new PostgreSqlStorageOptions
+        {
+            // ✅ SCHEMA: Esquema explícito para Hangfire (mejores prácticas 2026)
+            SchemaName = "hangfire", // Esquema por defecto, explícito para claridad
+            
+            // ✅ SCHEMA PREPARATION: Crea tablas automáticamente si no existen
+            PrepareSchemaIfNecessary = true,
+            
+            // ✅ POLLING: Intervalo optimizado para balance entre latencia y carga
+            // Intervalos más cortos = menor latencia pero mayor carga en DB
+            // Intervalos más largos = menor carga pero mayor latencia en procesamiento
+            QueuePollInterval = TimeSpan.FromSeconds(15), // Balance óptimo para Supabase
+            
+            // ✅ INVISIBILITY TIMEOUT: Tiempo antes de reintentar job fallido
+            // Aumentado para conexiones inestables (Session Pooler) o latencia de red
+            // Si un job no se completa en este tiempo, se marca como fallido y se reintenta
+            // RECOMENDACIÓN: 30-60 minutos para Supabase (según Hangfire Forum y casos reales)
+            InvisibilityTimeout = TimeSpan.FromMinutes(30), // Suficiente para jobs largos
+            
+            // ✅ SLIDING INVISIBILITY: HABILITADO para renovar timeouts automáticamente
+            // Reduce disposiciones al extender el timeout mientras el job está procesando
+            // IMPORTANTE: Esto ayuda a evitar ObjectDisposedException con Session Pooler
+            // Basado en recomendaciones de Hangfire Forum y casos exitosos (Pradeep, Georgi, etc.)
+            UseSlidingInvisibilityTimeout = true,
+            
+            // ✅ DISTRIBUTED LOCK TIMEOUT: Crítico para evitar deadlocks
+            // Los locks distribuidos necesitan más tiempo con latencia de red (Supabase)
+            // Session Pooler puede causar problemas aquí, Direct Connection es mejor
+            // Basado en casos reales: timeouts altos (15+ min) resuelven problemas de locks
+            DistributedLockTimeout = TimeSpan.FromMinutes(15) // Aumentado para Supabase
+        })
+        .UseDefaultTypeResolver()
+        .UseDefaultTypeSerializer());
+    
+    // ✅ HABILITADO: Servidor de Hangfire para procesar jobs automáticamente
+    // Los jobs de timers de appointments requieren que el servidor esté activo
+    // En desarrollo, deshabilitar si es Session Pooler (causa ObjectDisposedException)
+    var isSessionPooler = hangfireConnectionString.Contains("pooler.supabase.com");
+    var isDirectConnection = hangfireConnectionString.Contains("db.") && hangfireConnectionString.Contains(".supabase.co");
+    
+    // Habilitar servidor solo si:
+    // - No es desarrollo, O
+    // - Es desarrollo Y tiene Direct Connection (no Session Pooler)
+    var enableHangfireServer = !isDevelopment || isDirectConnection;
+    
+    if (enableHangfireServer)
+    {
+        builder.Services.AddHangfireServer(options =>
+        {
+            // Worker count: ajustar según CPU disponible
+            // En desarrollo: 1 worker para reducir carga
+            // En producción: más workers para mejor throughput
+            options.WorkerCount = isDevelopment ? 1 : Math.Max(2, Environment.ProcessorCount);
+            
+            options.ServerTimeout = TimeSpan.FromMinutes(5);
+            options.HeartbeatInterval = TimeSpan.FromSeconds(30);
+            options.ServerCheckInterval = TimeSpan.FromMinutes(1);
+            options.SchedulePollingInterval = TimeSpan.FromSeconds(30); // Verifica jobs programados cada 30 segundos
+            options.StopTimeout = TimeSpan.FromSeconds(15); // Timeout para detener servidor gracefully
+        });
+        
+        hangfireLogger.LogInformation($"✅ Hangfire Server habilitado (Workers: {(isDevelopment ? 1 : Math.Max(2, Environment.ProcessorCount))})");
+        if (isSessionPooler)
+        {
+            hangfireLogger.LogWarning("   ⚠️ Usando Session Pooler - pueden ocurrir ObjectDisposedException ocasionalmente");
+        }
+    }
+    else
+    {
+        if (isDevelopment && isSessionPooler)
+        {
+            hangfireLogger.LogWarning("⚠️ Hangfire Server deshabilitado en desarrollo (Session Pooler no compatible)");
+            hangfireLogger.LogWarning("   Session Pooler cierra conexiones prematuramente causando ObjectDisposedException");
+            hangfireLogger.LogWarning("   SOLUCIÓN: Configura Direct Connection en appsettings.Development.json");
+            hangfireLogger.LogWarning("   Dashboard disponible en /hangfire para monitoreo (sin procesar jobs)");
+        }
+        else
+        {
+            hangfireLogger.LogWarning("⚠️ Hangfire Server deshabilitado (connection string no válida)");
+        }
+    }
+}
+else
+{
+    hangfireLogger.LogError("❌ Hangfire no se configurará: connection string no válida");
+}
 
 // Register Services
 

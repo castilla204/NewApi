@@ -1207,7 +1207,14 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     }
     
     // ✅ Configurar Npgsql para Supabase (Transaction Pooler recomendado)
-    var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(connectionString);
+    // ✅ FIX: Deshabilitar multiplexing para Transaction Pooler
+    // El Transaction Pooler ya maneja la multiplexación a nivel de pool,
+    // no necesitamos multiplexing a nivel de Npgsql que requiere transacciones explícitas
+    var connectionStringBuilder = new NpgsqlConnectionStringBuilder(connectionString);
+    connectionStringBuilder.Multiplexing = false; // Deshabilitar multiplexing para evitar error "transactions must be started with BeginTransaction"
+    var finalConnectionString = connectionStringBuilder.ToString();
+    
+    var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(finalConnectionString);
     // Deshabilitar prepared statements para Session Pooler
     dataSourceBuilder.EnableParameterLogging();
     var dataSource = dataSourceBuilder.Build();
@@ -1363,6 +1370,12 @@ if (hangfireConnectionValid)
             hangfireConnectionString = connectionString;
         }
     }
+    
+    // ✅ FIX: Deshabilitar multiplexing para Hangfire también
+    // El Transaction Pooler ya maneja la multiplexación a nivel de pool
+    var hangfireConnBuilder = new NpgsqlConnectionStringBuilder(hangfireConnectionString);
+    hangfireConnBuilder.Multiplexing = false; // Deshabilitar multiplexing para evitar error "transactions must be started with BeginTransaction"
+    hangfireConnectionString = hangfireConnBuilder.ToString();
     
     // ✅ HANGFIRE CONFIGURACIÓN 2026: Mejores prácticas para Supabase/PostgreSQL
     // Basado en: https://docs.hangfire.io/en/latest/configuration/using-postgresql.html

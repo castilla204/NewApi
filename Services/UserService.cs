@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -15,6 +15,7 @@ using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using Twilio;
 using static UserController;
 using System.Globalization;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace newApi.Services
 {
@@ -264,10 +265,9 @@ namespace newApi.Services
             var settings = new GoogleJsonWebSignature.ValidationSettings { Audience = clientIds };
             var payload = await GoogleJsonWebSignature.ValidateAsync(request.AccessToken, settings);
 
-            // Query user
+            // Query user (sin AsNoTracking para poder actualizar si es necesario)
             var user = await _context.Users
                 .IgnoreQueryFilters()
-                .AsNoTracking()
                 .FirstOrDefaultAsync(u => u.GoogleId == payload.Subject);
 
             if (user != null && user.IsBlocked)
@@ -312,8 +312,6 @@ namespace newApi.Services
                     return (false, null, null);
                 }
 
-                // Re-attach user para actualizar
-                _context.Users.Attach(user);
                 user.IsDeleted = false;
                 user.DeletedAt = null;
                 user.Name = payload.Name?.Trim();
@@ -333,11 +331,6 @@ namespace newApi.Services
                     };
                     _context.UserSettings.Add(userSettings);
                 }
-            }
-            else
-            {
-                // Re-attach user si es necesario
-                _context.Users.Attach(user);
             }
 
             var refreshToken = GenerateSecureRefreshToken();
@@ -673,7 +666,7 @@ namespace newApi.Services
             return (true, combinedToken, user, expertProfile);
         }
 
-        public async Task<ExpertProfileDto> GetExpertProfile(int userId)
+        public async Task<ExpertProfileDto?> GetExpertProfile(int userId)
         {
             var expertProfile = await _context.ExpertProfiles
                 .Include(ep => ep.User)
@@ -729,7 +722,7 @@ namespace newApi.Services
         }
 
 
-        public async Task<(bool Success, ExpertProfileDto UpdatedProfile)> UpdateExpertProfile(int userId, UpdateExpertProfileRequestDto request)
+        public async Task<(bool Success, ExpertProfileDto? UpdatedProfile)> UpdateExpertProfile(int userId, UpdateExpertProfileRequestDto request)
         {
             try
             {
@@ -1114,3 +1107,4 @@ namespace newApi.Services
         }
     }
 }
+

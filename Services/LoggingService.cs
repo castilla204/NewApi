@@ -244,7 +244,6 @@ namespace newApi.Services
                 {
                     await ProcessAdminNotificationAsync(scopedContext, log, logType);
                 }
-
                 // Si se solicita notificar al usuario y hay userId, crear notificación (fuera de la transacción)
                 if (notifyUser && userId.HasValue)
                 {

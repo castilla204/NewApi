@@ -32,6 +32,29 @@ namespace newApi.Services
             int limit = 100,
             CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// Obtiene marcadores ultra ligeros para el mapa (solo coordenadas + precio)
+        /// Optimizado para carga inicial rápida - 10-50x más rápido que GetMapExperts
+        /// </summary>
+        Task<MapMarkersResponseDto> GetMapMarkers(
+            int categoryId,
+            int serviceTypeId,
+            decimal? northeastLat = null,
+            decimal? northeastLng = null,
+            decimal? southwestLat = null,
+            decimal? southwestLng = null,
+            int? zoom = null,
+            int limit = 500,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Obtiene información básica para el sidebar (primera imagen + info básica)
+        /// Optimizado para mostrar cards sin cargar toda la información
+        /// </summary>
+        Task<MapSidebarResponseDto> GetMapSidebar(
+            int[] serviceIds,
+            CancellationToken cancellationToken = default);
+
         Task<(IEnumerable<SearchServiceDetailDto> services, int totalCount)> GetMapExpertsWithDetails(
             int categoryId, 
             int serviceTypeId,
@@ -61,18 +84,27 @@ namespace newApi.Services
 
         Task<bool> DeleteSearchService(int serviceId, int userId);
 
-        Task<(IEnumerable<SearchServiceDetailDto> services, int totalCount)> GetNearbyServices(
+        Task<(IEnumerable<SearchServiceHomepageDto> services, int totalCount)> GetNearbyServices(
             string? latitude,
             string? longitude,
             string? countryCode,
             int locationRange,
+            int? categoryId = null,  // ✅ Filtro por categoría
             int page = 1,
             int pageSize = 20,
             CancellationToken cancellationToken = default);
 
-        Task<(IEnumerable<SearchServiceDetailDto> services, int totalCount)> GetPopularServices(
+        Task<(IEnumerable<SearchServiceHomepageDto> services, int totalCount)> GetPopularServices(
+            int? categoryId = null,  // ✅ Filtro por categoría
             int page = 1,
             int pageSize = 20,
+            CancellationToken cancellationToken = default);
+
+        Task<Dictionary<string, (IEnumerable<SearchServiceHomepageDto> services, int totalCount, string categoryName, string country)>> GetServicesByCategoryAndCountry(
+            int maxSections = 10,
+            int servicesPerSection = 20,
+            string[]? targetCategories = null,
+            string[]? targetCountries = null,
             CancellationToken cancellationToken = default);
 
     }

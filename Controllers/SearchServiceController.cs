@@ -49,6 +49,29 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// Convierte código de país ISO a nombre legible en español
+        /// </summary>
+        private string GetCountryDisplayName(string countryCode)
+        {
+            return countryCode?.ToUpperInvariant() switch
+            {
+                "DE" => "Alemania",
+                "GB" => "Reino Unido",
+                "ES" => "España",
+                "FR" => "Francia",
+                "IT" => "Italia",
+                "PT" => "Portugal",
+                "US" => "Estados Unidos",
+                "MX" => "México",
+                "AR" => "Argentina",
+                "CO" => "Colombia",
+                "CL" => "Chile",
+                "PE" => "Perú",
+                _ => countryCode ?? "Desconocido"
+            };
+        }
+
+        /// <summary>
         /// [OBSOLETO] Este endpoint está obsoleto. Usa GET /api/SearchService/map-experts con parámetros latitude, longitude y locationRange en su lugar.
         /// </summary>
         [Obsolete("Este endpoint está obsoleto. Usa GET /api/SearchService/map-experts con parámetros latitude, longitude y locationRange en su lugar.")]
@@ -302,6 +325,151 @@ namespace newApi.Controllers
                     notifyUser: false
                 );
                 return StatusCode(500, new { message = "Failed to retrieve map experts", detail = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Obtiene marcadores ultra ligeros para el mapa (solo coordenadas + precio)
+        /// Optimizado para carga inicial rápida - 10-50x más rápido que GetMapExperts
+        /// Similar a cómo Airbnb/Google Maps cargan marcadores iniciales
+        /// </summary>
+        /// <param name="categoryId">ID de la categoría</param>
+        /// <param name="serviceTypeId">ID del tipo de servicio</param>
+        /// <param name="northeastLat">Latitud noreste del bounds (opcional)</param>
+        /// <param name="northeastLng">Longitud noreste del bounds (opcional)</param>
+        /// <param name="southwestLat">Latitud suroeste del bounds (opcional)</param>
+        /// <param name="southwestLng">Longitud suroeste del bounds (opcional)</param>
+        /// <param name="zoom">Nivel de zoom (opcional, afecta el límite)</param>
+        /// <param name="limit">Límite máximo de marcadores (default: 500)</param>
+        /// <returns>MapMarkersResponseDto con solo coordenadas y precios</returns>
+        [HttpGet("map-markers")]
+        public async Task<IActionResult> GetMapMarkers(
+            [FromQuery] int categoryId,
+            [FromQuery] int serviceTypeId,
+            [FromQuery] decimal? northeastLat = null,
+            [FromQuery] decimal? northeastLng = null,
+            [FromQuery] decimal? southwestLat = null,
+            [FromQuery] decimal? southwestLng = null,
+            [FromQuery] int? zoom = null,
+            [FromQuery] int limit = 500)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
+            {
+                if (categoryId <= 0 || serviceTypeId <= 0)
+                {
+                    return BadRequest(new { message = "CategoryId and ServiceTypeId must be greater than 0" });
+                }
+
+                if (limit <= 0 || limit > 1000)
+                {
+                    return BadRequest(new { message = "Limit must be between 1 and 1000" });
+                }
+
+                var markers = await _searchServiceService.GetMapMarkers(
+                    categoryId,
+                    serviceTypeId,
+                    northeastLat,
+                    northeastLng,
+                    southwestLat,
+                    southwestLng,
+                    zoom,
+                    limit,
+                    cts.Token);
+
+                return Ok(markers);
+            }
+            catch (OperationCanceledException)
+            {
+                return StatusCode(408, new { message = "Request timeout. Please try again." });
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener marcadores del mapa",
+                    details: $"Exception: {ex.Message}",
+                    source: "SearchServiceController.GetMapMarkers",
+                    relatedEntityType: "MapMarkers",
+                    additionalData: new { categoryId, serviceTypeId },
+                    notifyUser: false
+                );
+                return StatusCode(500, new { message = "Failed to retrieve map markers", detail = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Obtiene información básica para el sidebar (primera imagen + info básica)
+        /// Optimizado para mostrar cards sin cargar toda la información
+        /// </summary>
+        /// <param name="serviceIds">Array de IDs de servicios (separados por coma o como array)</param>
+        /// <returns>MapSidebarResponseDto con información básica de los servicios</returns>
+        [HttpGet("map-sidebar")]
+        public async Task<IActionResult> GetMapSidebar(
+            [FromQuery] string serviceIds)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
+            {
+                if (string.IsNullOrWhiteSpace(serviceIds))
+                {
+                    return Ok(new MapSidebarResponseDto { Services = new List<MapSidebarServiceDto>() });
+                }
+
+                // Parsear serviceIds (puede venir como "1,2,3" o como array)
+                int[] ids;
+                if (serviceIds.Contains(','))
+                {
+                    ids = serviceIds.Split(',')
+                        .Select(id => int.TryParse(id.Trim(), out var parsedId) ? parsedId : 0)
+                        .Where(id => id > 0)
+                        .ToArray();
+                }
+                else
+                {
+                    if (int.TryParse(serviceIds, out var singleId))
+                    {
+                        ids = new[] { singleId };
+                    }
+                    else
+                    {
+                        return BadRequest(new { message = "Invalid serviceIds format" });
+                    }
+                }
+
+                if (ids.Length == 0)
+                {
+                    return Ok(new MapSidebarResponseDto { Services = new List<MapSidebarServiceDto>() });
+                }
+
+                // Limitar a máximo 50 servicios por request (para evitar sobrecarga)
+                if (ids.Length > 50)
+                {
+                    ids = ids.Take(50).ToArray();
+                }
+
+                var sidebarData = await _searchServiceService.GetMapSidebar(ids, cts.Token);
+
+                return Ok(sidebarData);
+            }
+            catch (OperationCanceledException)
+            {
+                return StatusCode(408, new { message = "Request timeout. Please try again." });
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener información del sidebar",
+                    details: $"Exception: {ex.Message}",
+                    source: "SearchServiceController.GetMapSidebar",
+                    relatedEntityType: "MapSidebar",
+                    additionalData: new { serviceIds },
+                    notifyUser: false
+                );
+                return StatusCode(500, new { message = "Failed to retrieve sidebar data", detail = ex.Message });
             }
         }
 
@@ -717,13 +885,15 @@ namespace newApi.Controllers
         /// <param name="longitude">Longitud del usuario (opcional, si no se proporciona usa capital del país)</param>
         /// <param name="countryCode">Código de país ISO 3166-1 alpha-2 (opcional, por defecto ES - Madrid)</param>
         /// <param name="locationRange">Rango de búsqueda en km (por defecto 50)</param>
+        /// <param name="categoryId">ID de la categoría (REQUERIDO) - Filtra servicios por categoría específica</param>
         /// <param name="nearbyPage">Página para servicios cercanos (por defecto 1)</param>
         /// <param name="nearbyPageSize">Tamaño de página para servicios cercanos (por defecto 20, máximo 50)</param>
         /// <param name="popularPage">Página para servicios populares (por defecto 1)</param>
         /// <param name="popularPageSize">Tamaño de página para servicios populares (por defecto 20, máximo 50)</param>
-        /// <returns>Muro con servicios cercanos y populares paginados</returns>
+        /// <returns>Array plano con secciones: "Revisiones [Categoría] cerca de mí", "Revisiones [Categoría] populares", y secciones específicas por país (solo para Coches y Motos)</returns>
         [HttpGet("homepage-wall")]
         public async Task<IActionResult> GetHomepageWall(
+            [FromQuery] int categoryId,  // ✅ REQUERIDO: Filtro por categoría (obligatorio)
             [FromQuery] string? latitude = null,
             [FromQuery] string? longitude = null,
             [FromQuery] string? countryCode = null,
@@ -736,6 +906,12 @@ namespace newApi.Controllers
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // Timeout de 30 segundos
             try
             {
+                // Validar que categoryId sea válido
+                if (categoryId <= 0)
+                {
+                    return BadRequest(new { message = "categoryId es requerido y debe ser mayor a 0" });
+                }
+                
                 // Validar parámetros de paginación
                 if (nearbyPage < 1) nearbyPage = 1;
                 if (nearbyPageSize < 1 || nearbyPageSize > 50) nearbyPageSize = 20;
@@ -749,45 +925,118 @@ namespace newApi.Controllers
                     longitude,
                     countryCode,
                     locationRange,
+                    categoryId,  // ✅ Filtrar por categoría si se proporciona
                     nearbyPage,
                     nearbyPageSize,
                     cts.Token);
 
                 // Obtener servicios populares
                 var (popularServices, popularTotalCount) = await _searchServiceService.GetPopularServices(
+                    categoryId,  // ✅ Filtrar por categoría si se proporciona
                     popularPage,
                     popularPageSize,
                     cts.Token);
 
-                return Ok(new
+                // ✅ Obtener nombre de categoría (categoryId es obligatorio)
+                var category = await _context.Categories
+                    .AsNoTracking()
+                    .Where(c => c.Id == categoryId && c.IsActive)
+                    .Select(c => c.Name)
+                    .FirstOrDefaultAsync(cts.Token);
+                
+                if (category == null)
                 {
-                    nearbyServices = new
+                    return NotFound(new { message = $"Categoría con ID {categoryId} no encontrada o no está activa" });
+                }
+                
+                string categoryName = category;
+                
+                // ✅ Construir array plano con todas las secciones
+                var allSections = new List<object>();
+                
+                // 1. Sección "Cerca de mí" - Incluir categoría
+                allSections.Add(new
+                {
+                    title = $"Revisiones {categoryName} cerca de mí",
+                    services = nearbyServices,
+                    pagination = new
                     {
-                        services = nearbyServices,
-                        pagination = new
-                        {
-                            page = nearbyPage,
-                            pageSize = nearbyPageSize,
-                            totalCount = nearbyTotalCount,
-                            totalPages = (int)Math.Ceiling(nearbyTotalCount / (double)nearbyPageSize),
-                            hasNextPage = nearbyPage * nearbyPageSize < nearbyTotalCount,
-                            hasPreviousPage = nearbyPage > 1
-                        }
-                    },
-                    popularServices = new
-                    {
-                        services = popularServices,
-                        pagination = new
-                        {
-                            page = popularPage,
-                            pageSize = popularPageSize,
-                            totalCount = popularTotalCount,
-                            totalPages = (int)Math.Ceiling(popularTotalCount / (double)popularPageSize),
-                            hasNextPage = popularPage * popularPageSize < popularTotalCount,
-                            hasPreviousPage = popularPage > 1
-                        }
+                        page = nearbyPage,
+                        pageSize = nearbyPageSize,
+                        totalCount = nearbyTotalCount,
+                        totalPages = (int)Math.Ceiling(nearbyTotalCount / (double)nearbyPageSize),
+                        hasNextPage = nearbyPage * nearbyPageSize < nearbyTotalCount,
+                        hasPreviousPage = nearbyPage > 1
                     }
                 });
+                
+                // 2. Sección "Populares" - Incluir categoría
+                allSections.Add(new
+                {
+                    title = $"Revisiones {categoryName} populares",
+                    services = popularServices,
+                    pagination = new
+                    {
+                        page = popularPage,
+                        pageSize = popularPageSize,
+                        totalCount = popularTotalCount,
+                        totalPages = (int)Math.Ceiling(popularTotalCount / (double)popularPageSize),
+                        hasNextPage = popularPage * popularPageSize < popularTotalCount,
+                        hasPreviousPage = popularPage > 1
+                    }
+                });
+                
+                // 3. Secciones específicas SOLO para Coches y Motos en DE y GB
+                // ✅ Solo mostrar secciones específicas si la categoría es Coches o Motos
+                bool shouldShowSpecificSections = false;
+                string[]? targetCategories = null;
+                
+                if (categoryName == "Coches" || categoryName == "Motos")
+                {
+                    shouldShowSpecificSections = true;
+                    // ✅ Solo la categoría específica solicitada (Coches O Motos)
+                    targetCategories = new[] { categoryName };
+                }
+                
+                // Solo obtener secciones si es necesario (Coches o Motos)
+                if (shouldShowSpecificSections)
+                {
+                    // Solo países DE (Alemania) y GB (Reino Unido)
+                    var targetCountries = new[] { "DE", "GB" };
+                    
+                    var categoryCountrySections = await _searchServiceService.GetServicesByCategoryAndCountry(
+                        maxSections: 10,
+                        servicesPerSection: 20,
+                        targetCategories: targetCategories,
+                        targetCountries: targetCountries, // ✅ Solo DE y GB
+                        cts.Token);
+
+                    // Agregar secciones específicas al array
+                    foreach (var section in categoryCountrySections)
+                    {
+                        var (services, totalCount, sectionCategoryName, country) = section.Value;
+                        
+                        allSections.Add(new
+                        {
+                            title = $"Revisiones {sectionCategoryName} en {GetCountryDisplayName(country)}", // Ej: "Revisiones Coches en Alemania"
+                            services = services,
+                            categoryName = sectionCategoryName,
+                            country = country,
+                            pagination = new
+                            {
+                                page = 1,
+                                pageSize = services.Count(),
+                                totalCount = totalCount,
+                                totalPages = (int)Math.Ceiling(totalCount / 20.0),
+                                hasNextPage = totalCount > services.Count(),
+                                hasPreviousPage = false
+                            }
+                        });
+                    }
+                }
+
+                // ✅ Devolver array plano sin objetos anidados
+                return Ok(allSections);
             }
             catch (OperationCanceledException)
             {

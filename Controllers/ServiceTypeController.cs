@@ -32,8 +32,9 @@ namespace newApi.Controllers
         {
             try
             {
+                // ✅ Corregido: Usar AsNoTracking() y proyección directa sin Include() para evitar problemas con multiplexing
                 var serviceTypes = await _context.ServiceTypes
-                    .Include(st => st.ServiceTypeCategory)
+                    .AsNoTracking() // ✅ Evitar tracking innecesario y problemas con multiplexing
                     .Where(st => st.IsActive)
                     .OrderBy(st => st.Position) // Ordenar por posición personalizada
                     .ThenBy(st => st.Name) // Luego alfabéticamente como fallback
@@ -80,8 +81,9 @@ namespace newApi.Controllers
         {
             try
             {
+                // ✅ Corregido: Usar AsNoTracking() y proyección directa sin Include() para evitar problemas con multiplexing
                 var serviceTypes = await _context.ServiceTypes
-                    .Include(st => st.ServiceTypeCategory)
+                    .AsNoTracking() // ✅ Evitar tracking innecesario y problemas con multiplexing
                     .Where(st => st.IsActive)
                     .OrderBy(st => st.Position) // Ordenar por posición personalizada
                     .ThenBy(st => st.Name) // Luego alfabéticamente como fallback

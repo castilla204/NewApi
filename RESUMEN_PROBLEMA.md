@@ -33,3 +33,4 @@ El script SQL de migraciones ya está generado en `migrations.sql` (152,859 cara
 - ❌ `dotnet ef database update` no funciona por problemas de IPv6/IPv4
 - ✅ Connection string correcta configurada en `appsettings.Development.json` (Session Pooler para runtime, pero no para migraciones)
 
+

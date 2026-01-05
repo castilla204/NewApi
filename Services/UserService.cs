@@ -311,81 +311,69 @@ namespace newApi.Services
             var strategy = _context.Database.CreateExecutionStrategy();
             return await strategy.ExecuteAsync(async () =>
             {
-                bool isNewUser = false;
-                bool isRestoredUser = false;
-                DateTime? previouslyDeletedAt = null;
-
-                if (user == null)
+                // ✅ FIX: En modo multiplexing, se requiere transacción explícita para SaveChanges
+                await using var transaction = await _context.Database.BeginTransactionAsync();
+                try
                 {
-                    // ✅ Usuario completamente nuevo - crear desde cero
-                    var emailToCheck = payload.Email?.Trim().ToLowerInvariant();
-                    var isAdminEmail = emailToCheck == "dcastillaa@gmail.com";
-                    var userRole = isAdminEmail ? UserRole.Admin : UserRole.Client;
-                    
-                    user = new User
-                    {
-                        Name = payload.Name?.Trim(),
-                        Email = payload.Email?.Trim(),
-                        GoogleId = payload.Subject,
-                        CreatedAt = DateTime.UtcNow,
-                        Role = userRole
-                    };
+                    bool isNewUser = false;
+                    bool isRestoredUser = false;
+                    DateTime? previouslyDeletedAt = null;
 
-                    _context.Users.Add(user);
-                    isNewUser = true;
-                }
-                else if (user.IsDeleted)
-                {
-                    // ✅ RESTAURAR usuario eliminado
-                    if (user.IsBlocked)
+                    if (user == null)
                     {
-                        // ✅ LOG ASÍNCRONO: No bloquear respuesta
-                        _ = Task.Run(async () => await _loggingService.LogWarningAsync(
-                           message: "Blocked (deleted) user attempted login",
-                           details: $"Blocked and deleted user {user.Id} ({user.Email}) attempted to login via Google Auth",
-                           userId: user.Id,
-                           source: "UserService.GoogleAuth",
-                           relatedEntityType: "User",
-                           relatedEntityId: user.Id,
-                            additionalData: new
-                           {
-                               Action = "BlockedDeletedUserLoginAttempt",
-                               Email = user.Email,
-                               GoogleId = user.GoogleId
-                           }
-                       ));
-                        return (false, null, null);
+                        // ✅ Usuario completamente nuevo - crear desde cero
+                        var emailToCheck = payload.Email?.Trim().ToLowerInvariant();
+                        var isAdminEmail = emailToCheck == "dcastillaa@gmail.com";
+                        var userRole = isAdminEmail ? UserRole.Admin : UserRole.Client;
+                        
+                        user = new User
+                        {
+                            Name = payload.Name?.Trim(),
+                            Email = payload.Email?.Trim(),
+                            GoogleId = payload.Subject,
+                            CreatedAt = DateTime.UtcNow,
+                            Role = userRole
+                        };
+
+                        _context.Users.Add(user);
+                        isNewUser = true;
+                    }
+                    else if (user.IsDeleted)
+                    {
+                        // ✅ RESTAURAR usuario eliminado
+                        if (user.IsBlocked)
+                        {
+                            // ✅ LOG ASÍNCRONO: No bloquear respuesta
+                            _ = Task.Run(async () => await _loggingService.LogWarningAsync(
+                               message: "Blocked (deleted) user attempted login",
+                               details: $"Blocked and deleted user {user.Id} ({user.Email}) attempted to login via Google Auth",
+                               userId: user.Id,
+                               source: "UserService.GoogleAuth",
+                               relatedEntityType: "User",
+                               relatedEntityId: user.Id,
+                                additionalData: new
+                               {
+                                   Action = "BlockedDeletedUserLoginAttempt",
+                                   Email = user.Email,
+                                   GoogleId = user.GoogleId
+                               }
+                           ));
+                            await transaction.RollbackAsync();
+                            return (false, null, null);
+                        }
+
+                        previouslyDeletedAt = user.DeletedAt;
+                        user.IsDeleted = false;
+                        user.DeletedAt = null;
+                        user.Name = payload.Name?.Trim();
+                        user.Email = payload.Email?.Trim();
+                        isRestoredUser = true;
                     }
 
-                    previouslyDeletedAt = user.DeletedAt;
-                    user.IsDeleted = false;
-                    user.DeletedAt = null;
-                    user.Name = payload.Name?.Trim();
-                    user.Email = payload.Email?.Trim();
-                    isRestoredUser = true;
-                }
-
-                // ✅ OPTIMIZACIÓN: Crear UserSettings si no existen (solo para usuarios nuevos o restaurados)
-                if (isNewUser)
-                {
-                    // Para usuarios nuevos, siempre crear UserSettings
-                    var userSettings = new UserSetting
+                    // ✅ OPTIMIZACIÓN: Crear UserSettings si no existen (solo para usuarios nuevos o restaurados)
+                    if (isNewUser)
                     {
-                        UserId = user.Id,
-                        IsWhatsAppEnabled = true,
-                        IsEmailEnabled = true,
-                        Theme = "light",
-                        CreatedAt = DateTime.UtcNow,
-                        UpdatedAt = DateTime.UtcNow
-                    };
-                    _context.UserSettings.Add(userSettings);
-                }
-                else if (isRestoredUser)
-                {
-                    // Para usuarios restaurados, verificar si existen UserSettings
-                    var existingSettings = await _context.UserSettings.FirstOrDefaultAsync(us => us.UserId == user.Id);
-                    if (existingSettings == null)
-                    {
+                        // Para usuarios nuevos, siempre crear UserSettings
                         var userSettings = new UserSetting
                         {
                             UserId = user.Id,
@@ -397,101 +385,125 @@ namespace newApi.Services
                         };
                         _context.UserSettings.Add(userSettings);
                     }
-                }
-
-                // ✅ OPTIMIZACIÓN: Generar refresh token
-                var refreshToken = GenerateSecureRefreshToken();
-                var refreshTokenEntity = new RefreshToken
-                {
-                    Token = refreshToken,
-                    UserId = user.Id,
-                    ExpiresAt = DateTime.UtcNow.AddDays(30),
-                    CreatedByIp = "GoogleAuth",
-                    DeviceInfo = null
-                };
-                _context.RefreshTokens.Add(refreshTokenEntity);
-
-                // ✅ OPTIMIZACIÓN: Una sola llamada a SaveChanges para todas las operaciones
-                // El execution strategy maneja automáticamente las transacciones y reintentos
-                await _context.SaveChangesAsync();
-
-                // ✅ OPTIMIZACIÓN: Generar access token DESPUÉS de SaveChanges (más rápido)
-                var accessToken = GenerateJwtToken(user);
-                var combinedToken = $"{accessToken}|{refreshToken}";
-
-                // ✅ OPTIMIZACIÓN: Logging y email en background (fire-and-forget)
-                _ = Task.Run(async () =>
-                {
-                    try
+                    else if (isRestoredUser)
                     {
-                        if (isNewUser)
+                        // Para usuarios restaurados, verificar si existen UserSettings
+                        var existingSettings = await _context.UserSettings.FirstOrDefaultAsync(us => us.UserId == user.Id);
+                        if (existingSettings == null)
                         {
-                            await _loggingService.LogInfoAsync(
-                                message: "User created successfully",
-                                details: $"New user created via Google Auth. Email: {user.Email}, Role: {user.Role}, UserId: {user.Id}",
-                                userId: user.Id,
-                                source: "UserService.GoogleAuth",
-                                relatedEntityType: "User",
-                                relatedEntityId: user.Id,
-                                additionalData: new { 
-                                    Action = "UserCreation",
-                                    Email = user.Email,
-                                    Name = user.Name,
-                                    Role = user.Role.ToString(),
-                                    GoogleId = user.GoogleId
-                                }
-                            );
-
-                            // ✅ EMAIL: Enviar correo de bienvenida en background
-                            if (!string.IsNullOrEmpty(user.Email))
+                            var userSettings = new UserSetting
                             {
-                                await _notificationService.SendWelcomeEmailAsync(user.Email, user.Name);
+                                UserId = user.Id,
+                                IsWhatsAppEnabled = true,
+                                IsEmailEnabled = true,
+                                Theme = "light",
+                                CreatedAt = DateTime.UtcNow,
+                                UpdatedAt = DateTime.UtcNow
+                            };
+                            _context.UserSettings.Add(userSettings);
+                        }
+                    }
+
+                    // ✅ OPTIMIZACIÓN: Generar refresh token
+                    var refreshToken = GenerateSecureRefreshToken();
+                    var refreshTokenEntity = new RefreshToken
+                    {
+                        Token = refreshToken,
+                        UserId = user.Id,
+                        ExpiresAt = DateTime.UtcNow.AddDays(30),
+                        CreatedByIp = "GoogleAuth",
+                        DeviceInfo = null
+                    };
+                    _context.RefreshTokens.Add(refreshTokenEntity);
+
+                    // ✅ OPTIMIZACIÓN: Una sola llamada a SaveChanges para todas las operaciones
+                    // Con transacción explícita para modo multiplexing
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    // ✅ OPTIMIZACIÓN: Generar access token DESPUÉS de SaveChanges (más rápido)
+                    var accessToken = GenerateJwtToken(user);
+                    var combinedToken = $"{accessToken}|{refreshToken}";
+
+                    // ✅ OPTIMIZACIÓN: Logging y email en background (fire-and-forget)
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            if (isNewUser)
+                            {
+                                await _loggingService.LogInfoAsync(
+                                    message: "User created successfully",
+                                    details: $"New user created via Google Auth. Email: {user.Email}, Role: {user.Role}, UserId: {user.Id}",
+                                    userId: user.Id,
+                                    source: "UserService.GoogleAuth",
+                                    relatedEntityType: "User",
+                                    relatedEntityId: user.Id,
+                                    additionalData: new { 
+                                        Action = "UserCreation",
+                                        Email = user.Email,
+                                        Name = user.Name,
+                                        Role = user.Role.ToString(),
+                                        GoogleId = user.GoogleId
+                                    }
+                                );
+
+                                // ✅ EMAIL: Enviar correo de bienvenida en background
+                                if (!string.IsNullOrEmpty(user.Email))
+                                {
+                                    await _notificationService.SendWelcomeEmailAsync(user.Email, user.Name);
+                                }
+                            }
+                            else if (isRestoredUser)
+                            {
+                                await _loggingService.LogInfoAsync(
+                                    message: "User account restored after deletion",
+                                    details: $"User account was restored after being deleted. Email: {user.Email}, UserId: {user.Id}, Previously deleted at: {previouslyDeletedAt:O}",
+                                    userId: user.Id,
+                                    source: "UserService.GoogleAuth",
+                                    relatedEntityType: "User",
+                                    relatedEntityId: user.Id,
+                                    additionalData: new { 
+                                        Action = "UserRestoration",
+                                        Email = user.Email,
+                                        Name = user.Name,
+                                        Role = user.Role.ToString(),
+                                        GoogleId = user.GoogleId,
+                                        PreviouslyDeletedAt = previouslyDeletedAt
+                                    }
+                                );
+                            }
+                            else
+                            {
+                                await _loggingService.LogInfoAsync(
+                                    message: "User login successful",
+                                    details: $"User logged in via Google Auth. Email: {user.Email}, Role: {user.Role}, UserId: {user.Id}",
+                                    userId: user.Id,
+                                    source: "UserService.GoogleAuth",
+                                    relatedEntityType: "User",
+                                    relatedEntityId: user.Id,
+                                    additionalData: new { 
+                                        Action = "UserLogin",
+                                        Email = user.Email,
+                                        Role = user.Role.ToString(),
+                                        GoogleId = user.GoogleId
+                                    }
+                                );
                             }
                         }
-                        else if (isRestoredUser)
+                        catch
                         {
-                            await _loggingService.LogInfoAsync(
-                                message: "User account restored after deletion",
-                                details: $"User account was restored after being deleted. Email: {user.Email}, UserId: {user.Id}, Previously deleted at: {previouslyDeletedAt:O}",
-                                userId: user.Id,
-                                source: "UserService.GoogleAuth",
-                                relatedEntityType: "User",
-                                relatedEntityId: user.Id,
-                                additionalData: new { 
-                                    Action = "UserRestoration",
-                                    Email = user.Email,
-                                    Name = user.Name,
-                                    Role = user.Role.ToString(),
-                                    GoogleId = user.GoogleId,
-                                    PreviouslyDeletedAt = previouslyDeletedAt
-                                }
-                            );
+                            // Ignorar errores de logging/email - no deben afectar la autenticación
                         }
-                        else
-                        {
-                            await _loggingService.LogInfoAsync(
-                                message: "User login successful",
-                                details: $"User logged in via Google Auth. Email: {user.Email}, Role: {user.Role}, UserId: {user.Id}",
-                                userId: user.Id,
-                                source: "UserService.GoogleAuth",
-                                relatedEntityType: "User",
-                                relatedEntityId: user.Id,
-                                additionalData: new { 
-                                    Action = "UserLogin",
-                                    Email = user.Email,
-                                    Role = user.Role.ToString(),
-                                    GoogleId = user.GoogleId
-                                }
-                            );
-                        }
-                    }
-                    catch
-                    {
-                        // Ignorar errores de logging/email - no deben afectar la autenticación
-                    }
-                });
+                    });
 
-                return (true, combinedToken, user);
+                    return (true, combinedToken, user);
+                }
+                catch
+                {
+                    await transaction.RollbackAsync();
+                    throw; // Re-lanzar para que el execution strategy maneje el retry
+                }
             });
         }
 

@@ -1396,9 +1396,19 @@ namespace newApi.Controllers
         }
     }
 
+    /// <summary>
+    /// DTO para crear una búsqueda con contratación.
+    /// </summary>
     public class CreateSearchWithHireDto
     {
+        /// <summary>
+        /// DTO de la búsqueda a crear.
+        /// </summary>
         public CreateSearchDto SearchDto { get; set; }
+        
+        /// <summary>
+        /// DTO con los parámetros de la búsqueda.
+        /// </summary>
         public CreateSearchParameterDto ParameterDto { get; set; }
     }
 }

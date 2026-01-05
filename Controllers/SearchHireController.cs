@@ -15,6 +15,9 @@ using newApi.Common;
 
 namespace newApi.Controllers
 {
+    /// <summary>
+    /// Controlador para gestionar búsquedas y contrataciones de servicios.
+    /// </summary>
     [Route("api/[controller]")]
     [ApiController]
     [Authorize]

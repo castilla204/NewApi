@@ -148,6 +148,34 @@ namespace newApi.DataLayer.Models.DTOs
         public double AverageRating { get; set; }
     }
 
+    /// <summary>
+    /// DTO ligero optimizado para homepage - solo datos esenciales para mostrar cards
+    /// </summary>
+    public class SearchServiceHomepageDto
+    {
+        public int Id { get; set; }
+        public int CategoryId { get; set; }
+        public string CategoryName { get; set; }
+        public int ServiceTypeId { get; set; }
+        public string ServiceTypeName { get; set; }
+        public decimal Price { get; set; }
+        public List<string> ImageUrls { get; set; } = new List<string>(); // Solo primeras 2-3 imágenes
+        public HomepageExpertDto Expert { get; set; }
+        public int CompletedSearches { get; set; }
+        public double AverageRating { get; set; }
+    }
+
+    /// <summary>
+    /// DTO ligero del experto para homepage
+    /// </summary>
+    public class HomepageExpertDto
+    {
+        public int Id { get; set; }
+        public string Name { get; set; }
+        public string ProfilePictureUrl { get; set; }
+        public string? Country { get; set; }
+    }
+
     public class ExpertProfileDto
     {
         public int Id { get; set; }

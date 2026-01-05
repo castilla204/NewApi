@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Security.Claims;
 using System.Globalization;
+using Microsoft.Extensions.DependencyInjection;
 using newApi.Services;
 using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.DTOs;
@@ -21,19 +22,22 @@ public class UserController : ControllerBase
         private readonly ILoggingService _loggingService;
         private readonly AppDbContext _context;
         private readonly ISignedUrlService _signedUrlService;
+        private readonly IServiceScopeFactory _serviceScopeFactory;
 
     public UserController(
         UserService userService,
         IAuthorizationServices authService,
         ILoggingService loggingService,
         AppDbContext context,
-        ISignedUrlService signedUrlService)
+        ISignedUrlService signedUrlService,
+        IServiceScopeFactory serviceScopeFactory)
     {
-        _userService = userService;
-        _authService = authService;
-        _loggingService = loggingService;
-        _context = context;
-        _signedUrlService = signedUrlService;
+            _userService = userService;
+            _authService = authService;
+            _loggingService = loggingService;
+            _context = context;
+            _signedUrlService = signedUrlService;
+            _serviceScopeFactory = serviceScopeFactory;
     }
 
     [Authorize]
@@ -312,15 +316,20 @@ public class UserController : ControllerBase
             // ✅ VALIDACIÓN: Verificar que el request no sea null
             if (request == null)
             {
-                // ✅ OPTIMIZACIÓN: Logging en background para no bloquear respuesta
-                _ = Task.Run(async () => await _loggingService.LogWarningAsync(
-                    message: "Google Auth request is null",
-                    details: $"Google Auth request is null. RequestId: {requestId}, IP: {remoteIp}",
-                    userId: null,
-                    source: "UserController.GoogleAuth",
-                    relatedEntityType: "Auth",
-                    additionalData: new { RequestId = requestId, RemoteIp = remoteIp }
-                ));
+                // ✅ OPTIMIZACIÓN: Logging en background con scope propio para evitar disposed objects
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceScopeFactory.CreateScope();
+                    var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+                    await loggingService.LogWarningAsync(
+                        message: "Google Auth request is null",
+                        details: $"Google Auth request is null. RequestId: {requestId}, IP: {remoteIp}",
+                        userId: null,
+                        source: "UserController.GoogleAuth",
+                        relatedEntityType: "Auth",
+                        additionalData: new { RequestId = requestId, RemoteIp = remoteIp }
+                    );
+                });
                 return BadRequest(new { 
                     message = "Invalid request", 
                     error = "Request body is required",
@@ -331,15 +340,21 @@ public class UserController : ControllerBase
             // ✅ VALIDACIÓN: Verificar campos requeridos
             if (string.IsNullOrWhiteSpace(request.AccessToken))
             {
-                // ✅ OPTIMIZACIÓN: Logging en background
-                _ = Task.Run(async () => await _loggingService.LogWarningAsync(
-                    message: "Google Auth request missing AccessToken",
-                    details: $"Google Auth request missing AccessToken. RequestId: {requestId}, IP: {remoteIp}, Email: {request.Email}",
-                    userId: null,
-                    source: "UserController.GoogleAuth",
-                    relatedEntityType: "Auth",
-                    additionalData: new { RequestId = requestId, RemoteIp = remoteIp, RequestEmail = request.Email }
-                ));
+                // ✅ OPTIMIZACIÓN: Logging en background con scope propio
+                var email = request.Email; // Capturar antes de Task.Run
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceScopeFactory.CreateScope();
+                    var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+                    await loggingService.LogWarningAsync(
+                        message: "Google Auth request missing AccessToken",
+                        details: $"Google Auth request missing AccessToken. RequestId: {requestId}, IP: {remoteIp}, Email: {email}",
+                        userId: null,
+                        source: "UserController.GoogleAuth",
+                        relatedEntityType: "Auth",
+                        additionalData: new { RequestId = requestId, RemoteIp = remoteIp, RequestEmail = email }
+                    );
+                });
                 return BadRequest(new { 
                     message = "Invalid request", 
                     error = "AccessToken is required",
@@ -352,15 +367,22 @@ public class UserController : ControllerBase
             
             if (!success)
             {
-                // ✅ OPTIMIZACIÓN: Logging en background
-                _ = Task.Run(async () => await _loggingService.LogWarningAsync(
-                    message: "Google Auth failed",
-                    details: $"Google Auth failed. RequestId: {requestId}, IP: {remoteIp}, Email: {request.Email}, GoogleId: {request.GoogleId}",
-                    userId: null,
-                    source: "UserController.GoogleAuth",
-                    relatedEntityType: "Auth",
-                    additionalData: new { RequestId = requestId, RemoteIp = remoteIp, RequestEmail = request.Email, RequestGoogleId = request.GoogleId }
-                ));
+                // ✅ OPTIMIZACIÓN: Logging en background con scope propio
+                var email = request.Email; // Capturar antes de Task.Run
+                var googleId = request.GoogleId; // Capturar antes de Task.Run
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceScopeFactory.CreateScope();
+                    var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+                    await loggingService.LogWarningAsync(
+                        message: "Google Auth failed",
+                        details: $"Google Auth failed. RequestId: {requestId}, IP: {remoteIp}, Email: {email}, GoogleId: {googleId}",
+                        userId: null,
+                        source: "UserController.GoogleAuth",
+                        relatedEntityType: "Auth",
+                        additionalData: new { RequestId = requestId, RemoteIp = remoteIp, RequestEmail = email, RequestGoogleId = googleId }
+                    );
+                });
                 return BadRequest(new { 
                     message = "Authentication failed", 
                     error = "Invalid Google token or authentication error",
@@ -401,36 +423,51 @@ public class UserController : ControllerBase
                 requestId = requestId
             });
 
-            // ✅ OPTIMIZACIÓN: Logging exitoso en background (no bloquea respuesta)
-            _ = Task.Run(async () => await _loggingService.LogInfoAsync(
-                message: "Google Auth successful",
-                details: $"Google Auth successful. RequestId: {requestId}, UserId: {user.Id}, Email: {user.Email}, IP: {remoteIp}",
-                userId: user.Id,
-                source: "UserController.GoogleAuth",
-                relatedEntityType: "User",
-                relatedEntityId: user.Id,
-                additionalData: new { RequestId = requestId, UserId = user.Id, Email = user.Email, RemoteIp = remoteIp }
-            ));
+            // ✅ OPTIMIZACIÓN: Logging exitoso en background con scope propio
+            var userId = user.Id; // Capturar antes de Task.Run
+            var userEmail = user.Email; // Capturar antes de Task.Run
+            _ = Task.Run(async () =>
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+                await loggingService.LogInfoAsync(
+                    message: "Google Auth successful",
+                    details: $"Google Auth successful. RequestId: {requestId}, UserId: {userId}, Email: {userEmail}, IP: {remoteIp}",
+                    userId: userId,
+                    source: "UserController.GoogleAuth",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new { RequestId = requestId, UserId = userId, Email = userEmail, RemoteIp = remoteIp }
+                );
+            });
 
             return response;
         }
         catch (InvalidJwtException jwtEx)
         {
-            // ✅ OPTIMIZACIÓN: Logging en background para errores de validación
-            _ = Task.Run(async () => await _loggingService.LogErrorAsync(
-                message: "Invalid JWT token in Google Auth",
-                details: $"Invalid JWT token in Google Auth. RequestId: {requestId}, IP: {remoteIp}, Email: {request?.Email}, Error: {jwtEx.Message}",
-                userId: null,
-                source: "UserController.GoogleAuth",
-                relatedEntityType: "Auth",
-                additionalData: new { 
-                    RequestId = requestId,
-                    RemoteIp = remoteIp,
-                    RequestEmail = request?.Email,
-                    Error = jwtEx.Message,
-                    ErrorType = jwtEx.GetType().Name
-                }
-            ));
+            // ✅ OPTIMIZACIÓN: Logging en background con scope propio
+            var requestEmail = request?.Email; // Capturar antes de Task.Run
+            var errorMessage = jwtEx.Message; // Capturar antes de Task.Run
+            var errorType = jwtEx.GetType().Name; // Capturar antes de Task.Run
+            _ = Task.Run(async () =>
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+                await loggingService.LogErrorAsync(
+                    message: "Invalid JWT token in Google Auth",
+                    details: $"Invalid JWT token in Google Auth. RequestId: {requestId}, IP: {remoteIp}, Email: {requestEmail}, Error: {errorMessage}",
+                    userId: null,
+                    source: "UserController.GoogleAuth",
+                    relatedEntityType: "Auth",
+                    additionalData: new { 
+                        RequestId = requestId,
+                        RemoteIp = remoteIp,
+                        RequestEmail = requestEmail,
+                        Error = errorMessage,
+                        ErrorType = errorType
+                    }
+                );
+            });
             
             return BadRequest(new { 
                 message = "Invalid Google token", 

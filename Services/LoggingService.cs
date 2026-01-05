@@ -84,10 +84,14 @@ namespace newApi.Services
             // Si se solicita notificar al usuario, crear notificación (aunque sea debug)
             if (notifyUser && userId.HasValue)
             {
-                await ProcessUserNotificationAsync(userId.Value, message, details, "Debug", relatedEntityType, relatedEntityId);
+                // ✅ SCOPE INDEPENDIENTE: Debug no guarda en BD, pero la notificación SÍ requiere BD
+                // Creamos un scope para asegurar que el contexto no esté dispuesto
+                using var scope = _serviceScopeFactory.CreateScope();
+                var scopedContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                await ProcessUserNotificationAsync(scopedContext, userId.Value, message, details, "Debug", relatedEntityType, relatedEntityId);
             }
             
-            await Task.CompletedTask; // Método async pero no hace operaciones de BD
+            await Task.CompletedTask;
         }
 
         private async Task LogAsync(string logLevel, string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false)
@@ -141,89 +145,110 @@ namespace newApi.Services
             
             try
             {
-                // Obtener o crear el tipo de log usando el contexto scoped
-                var logType = await GetLogTypeAsyncInternal(scopedContext, logLevel);
-                if (logType == null)
-                {
-                    // Crear tipo de log por defecto si no existe
-                    logType = await CreateDefaultLogTypeAsyncInternal(scopedContext, logLevel);
-                }
-
-                // ✅ TIMING: Agregar información de timing automáticamente al additionalData
-                // Serializar additionalData original si existe
-                string? originalAdditionalDataJson = null;
-                if (additionalData != null)
-                {
-                    originalAdditionalDataJson = JsonSerializer.Serialize(additionalData);
-                }
-
-                // Combinar additionalData original con timing info en un diccionario
-                var enhancedAdditionalData = new Dictionary<string, object>();
+                // ✅ FIX CRÍTICO: Usar Execution Strategy para transacciones manuales con EnableRetryOnFailure
+                // Cuando EnableRetryOnFailure está habilitado, las transacciones manuales DEBEN estar dentro de CreateExecutionStrategy
+                var strategy = scopedContext.Database.CreateExecutionStrategy();
                 
-                // Si hay additionalData original, deserializarlo y agregarlo al diccionario
-                if (!string.IsNullOrEmpty(originalAdditionalDataJson))
+                LogType? logType = null;
+                Log? log = null;
+                
+                await strategy.ExecuteAsync(async () =>
                 {
-                    var originalDict = JsonSerializer.Deserialize<Dictionary<string, object>>(originalAdditionalDataJson);
-                    if (originalDict != null)
+                    await using var transaction = await scopedContext.Database.BeginTransactionAsync();
+                    try
                     {
-                        foreach (var kvp in originalDict)
+                        // Obtener o crear el tipo de log usando el contexto scoped
+                        logType = await GetLogTypeAsyncInternal(scopedContext, logLevel);
+                        if (logType == null)
                         {
-                            enhancedAdditionalData[kvp.Key] = kvp.Value;
+                            // Crear tipo de log por defecto si no existe
+                            logType = await CreateDefaultLogTypeAsyncInternal(scopedContext, logLevel);
                         }
+
+                        // ✅ TIMING: Agregar información de timing automáticamente al additionalData
+                        // Serializar additionalData original si existe
+                        string? originalAdditionalDataJson = null;
+                        if (additionalData != null)
+                        {
+                            originalAdditionalDataJson = JsonSerializer.Serialize(additionalData);
+                        }
+
+                        // Combinar additionalData original con timing info en un diccionario
+                        var enhancedAdditionalData = new Dictionary<string, object>();
+                        
+                        // Si hay additionalData original, deserializarlo y agregarlo al diccionario
+                        if (!string.IsNullOrEmpty(originalAdditionalDataJson))
+                        {
+                            var originalDict = JsonSerializer.Deserialize<Dictionary<string, object>>(originalAdditionalDataJson);
+                            if (originalDict != null)
+                            {
+                                foreach (var kvp in originalDict)
+                                {
+                                    enhancedAdditionalData[kvp.Key] = kvp.Value;
+                                }
+                            }
+                        }
+
+                        // ✅ TIMING: Agregar información de timing (siempre presente en todos los logs)
+                        enhancedAdditionalData["LogStartTime"] = logStartTime.ToString("O"); // ISO 8601
+                        enhancedAdditionalData["LogStartTimeUnix"] = logStartTimeUnix;
+                        
+                        // Serializar el diccionario completo con timing incluido
+                        var additionalDataJson = JsonSerializer.Serialize(enhancedAdditionalData);
+
+                        // Crear el log con timestamp preciso
+                        log = new Log
+                        {
+                            Message = message,
+                            Details = details,
+                            UserId = userId,
+                            Source = source,
+                            LogTypeId = logType.Id,
+                            RelatedEntityType = relatedEntityType,
+                            RelatedEntityId = relatedEntityId,
+                            AdditionalData = additionalDataJson,
+                            CreatedAt = logStartTime // ✅ TIMING: Usar timestamp capturado al inicio
+                        };
+
+                        scopedContext.Logs.Add(log);
+                        
+                        // ✅ TIMING: Medir tiempo de ejecución de SaveChangesAsync
+                        var saveStartTime = DateTime.UtcNow;
+                        await scopedContext.SaveChangesAsync(); // ✅ Guardar en contexto separado
+                        var saveElapsedMs = (DateTime.UtcNow - saveStartTime).TotalMilliseconds;
+                        var logEndTime = DateTime.UtcNow;
+                        var totalLogElapsedMs = (logEndTime - logStartTime).TotalMilliseconds;
+                        
+                        // ✅ TIMING: Actualizar log con información de timing completa (SaveElapsedMs, LogEndTime, TotalLogElapsedMs)
+                        var finalAdditionalDataDict = JsonSerializer.Deserialize<Dictionary<string, object>>(additionalDataJson);
+                        if (finalAdditionalDataDict != null)
+                        {
+                            finalAdditionalDataDict["SaveElapsedMs"] = saveElapsedMs;
+                            finalAdditionalDataDict["LogEndTime"] = logEndTime.ToString("O");
+                            finalAdditionalDataDict["TotalLogElapsedMs"] = totalLogElapsedMs;
+                            log.AdditionalData = JsonSerializer.Serialize(finalAdditionalDataDict);
+                            await scopedContext.SaveChangesAsync(); // ✅ Actualizar en contexto separado
+                        }
+
+                        await transaction.CommitAsync();
                     }
+                    catch
+                    {
+                        await transaction.RollbackAsync();
+                        throw;
+                    }
+                });
+
+                // Si requiere notificación de administrador, procesar (fuera de la transacción)
+                if (logType != null && log != null && logType.RequiresAdminNotification)
+                {
+                    await ProcessAdminNotificationAsync(scopedContext, log, logType);
                 }
 
-                // ✅ TIMING: Agregar información de timing (siempre presente en todos los logs)
-                enhancedAdditionalData["LogStartTime"] = logStartTime.ToString("O"); // ISO 8601
-                enhancedAdditionalData["LogStartTimeUnix"] = logStartTimeUnix;
-                
-                // Serializar el diccionario completo con timing incluido
-                var additionalDataJson = JsonSerializer.Serialize(enhancedAdditionalData);
-
-                // Crear el log con timestamp preciso
-                var log = new Log
-                {
-                    Message = message,
-                    Details = details,
-                    UserId = userId,
-                    Source = source,
-                    LogTypeId = logType.Id,
-                    RelatedEntityType = relatedEntityType,
-                    RelatedEntityId = relatedEntityId,
-                    AdditionalData = additionalDataJson,
-                    CreatedAt = logStartTime // ✅ TIMING: Usar timestamp capturado al inicio
-                };
-
-                scopedContext.Logs.Add(log);
-                
-                // ✅ TIMING: Medir tiempo de ejecución de SaveChangesAsync
-                var saveStartTime = DateTime.UtcNow;
-                await scopedContext.SaveChangesAsync(); // ✅ Guardar en contexto separado
-                var saveElapsedMs = (DateTime.UtcNow - saveStartTime).TotalMilliseconds;
-                var logEndTime = DateTime.UtcNow;
-                var totalLogElapsedMs = (logEndTime - logStartTime).TotalMilliseconds;
-                
-                // ✅ TIMING: Actualizar log con información de timing completa (SaveElapsedMs, LogEndTime, TotalLogElapsedMs)
-                var finalAdditionalDataDict = JsonSerializer.Deserialize<Dictionary<string, object>>(additionalDataJson);
-                if (finalAdditionalDataDict != null)
-                {
-                    finalAdditionalDataDict["SaveElapsedMs"] = saveElapsedMs;
-                    finalAdditionalDataDict["LogEndTime"] = logEndTime.ToString("O");
-                    finalAdditionalDataDict["TotalLogElapsedMs"] = totalLogElapsedMs;
-                    log.AdditionalData = JsonSerializer.Serialize(finalAdditionalDataDict);
-                    await scopedContext.SaveChangesAsync(); // ✅ Actualizar en contexto separado
-                }
-
-                // Si requiere notificación de administrador, procesar
-                if (logType.RequiresAdminNotification)
-                {
-                    await ProcessAdminNotificationAsync(log, logType);
-                }
-
-                // Si se solicita notificar al usuario y hay userId, crear notificación
+                // Si se solicita notificar al usuario y hay userId, crear notificación (fuera de la transacción)
                 if (notifyUser && userId.HasValue)
                 {
-                    await ProcessUserNotificationAsync(userId.Value, message, details, logLevel, relatedEntityType, relatedEntityId);
+                    await ProcessUserNotificationAsync(scopedContext, userId.Value, message, details, logLevel, relatedEntityType, relatedEntityId);
                 }
             }
             catch (Exception ex)
@@ -232,7 +257,7 @@ namespace newApi.Services
                 // pero sin lanzar excepción para no interrumpir el flujo principal
                 try
                 {
-                    // Intentar guardar el error de logging en el contexto original (si está disponible)
+                    // Intentar guardar el error de logging en el contexto scoped (que es más seguro)
                     var errorLog = new Log
                     {
                         Message = $"CRITICAL: Failed to save log - {ex.Message}",
@@ -241,8 +266,8 @@ namespace newApi.Services
                         Source = "LoggingService.LogAsync",
                         CreatedAt = DateTime.UtcNow
                     };
-                    _context.Logs.Add(errorLog);
-                    await _context.SaveChangesAsync();
+                    scopedContext.Logs.Add(errorLog);
+                    await scopedContext.SaveChangesAsync();
                 }
                 catch
                 {
@@ -447,7 +472,7 @@ namespace newApi.Services
             );
         }
 
-        private async Task ProcessAdminNotificationAsync(Log log, LogType logType)
+        private async Task ProcessAdminNotificationAsync(AppDbContext context, Log log, LogType logType)
         {
             try
             {
@@ -463,8 +488,8 @@ namespace newApi.Services
                     CreatedAt = DateTime.UtcNow
                 };
 
-                _context.Notifications.Add(notification);
-                await _context.SaveChangesAsync();
+                context.Notifications.Add(notification);
+                await context.SaveChangesAsync();
             }
             catch (Exception ex)
             {
@@ -474,12 +499,12 @@ namespace newApi.Services
         /// <summary>
         /// Crea una notificación para el usuario cuando se solicita explícitamente
         /// </summary>
-        private async Task ProcessUserNotificationAsync(int userId, string message, string? details, string logLevel, string? relatedEntityType = null, int? relatedEntityId = null)
+        private async Task ProcessUserNotificationAsync(AppDbContext context, int userId, string message, string? details, string logLevel, string? relatedEntityType = null, int? relatedEntityId = null)
         {
             try
             {
                 // Verificar que el usuario existe
-                var user = await _context.Users.FindAsync(userId);
+                var user = await context.Users.FindAsync(userId);
                 if (user == null)
                 {
                     return; // Usuario no encontrado, no crear notificación
@@ -507,8 +532,8 @@ namespace newApi.Services
                     CreatedAt = DateTime.UtcNow
                 };
 
-                _context.Notifications.Add(notification);
-                await _context.SaveChangesAsync();
+                context.Notifications.Add(notification);
+                await context.SaveChangesAsync();
 
                 // ✅ Enviar email al usuario si tiene email configurado (FIRE-AND-FORGET: no bloquea la API)
                 if (!string.IsNullOrEmpty(user.Email))
@@ -562,7 +587,7 @@ namespace newApi.Services
                     else if (relatedEntityType == "Appointment" && relatedEntityId.HasValue)
                     {
                         // Obtener el SearchHireId de la cita para redirigir correctamente
-                        var appointment = await _context.Appointments
+                        var appointment = await context.Appointments
                             .AsNoTracking()
                             .Select(a => new { a.Id, a.SearchHireId })
                             .FirstOrDefaultAsync(a => a.Id == relatedEntityId.Value);

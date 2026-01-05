@@ -1206,35 +1206,57 @@ builder.Services.AddDbContext<AppDbContext>(options =>
         dbLogger.LogWarning("   Si tienes problemas DNS, usa Transaction Pooler (puerto 6543)");
     }
     
-    // ✅ Configurar Npgsql para Supabase (Transaction Pooler recomendado)
-    // ✅ FIX: Deshabilitar multiplexing para Transaction Pooler
+    // ✅ FIX CRÍTICO: Deshabilitar multiplexing explícitamente y configurar Enlist
     // El Transaction Pooler ya maneja la multiplexación a nivel de pool,
     // no necesitamos multiplexing a nivel de Npgsql que requiere transacciones explícitas
     var connectionStringBuilder = new NpgsqlConnectionStringBuilder(connectionString);
-    connectionStringBuilder.Multiplexing = false; // Deshabilitar multiplexing para evitar error "transactions must be started with BeginTransaction"
+    connectionStringBuilder.Multiplexing = false; // ✅ CRÍTICO: Deshabilitar multiplexing para evitar error "transactions must be started with BeginTransaction"
+    connectionStringBuilder.Enlist = false; // ✅ CRÍTICO: Evitar que Npgsql se una automáticamente a transacciones ambientales
+    
+    // ✅ CRÍTICO PARA TRANSACTION POOLER (PgBouncer): Deshabilitar Prepared Statements
+    // PgBouncer en Transaction Mode no admite Prepared Statements (CAUSA ObjectDisposedException/Connection Reset)
+    connectionStringBuilder.MaxAutoPrepare = 0; 
+    
     var finalConnectionString = connectionStringBuilder.ToString();
     
-    var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(finalConnectionString);
-    // Deshabilitar prepared statements para Session Pooler
-    dataSourceBuilder.EnableParameterLogging();
-    var dataSource = dataSourceBuilder.Build();
-    
-    options.UseNpgsql(dataSource, npgsqlOptions =>
+    // ✅ VERIFICACIÓN: Asegurar que Multiplexing=false y Max Auto Prepare=0 estén en la cadena final
+    if (!finalConnectionString.Contains("Multiplexing=false", StringComparison.OrdinalIgnoreCase))
     {
-        npgsqlOptions.CommandTimeout(60); // Aumentado a 60 segundos para conexiones lentas
+        finalConnectionString += (finalConnectionString.Contains(';') ? ";" : "") + "Multiplexing=false;";
+    }
+    if (!finalConnectionString.Contains("Enlist=false", StringComparison.OrdinalIgnoreCase))
+    {
+        finalConnectionString += "Enlist=false;";
+    }
+     if (!finalConnectionString.Contains("Max Auto Prepare=0", StringComparison.OrdinalIgnoreCase))
+    {
+        finalConnectionString += "Max Auto Prepare=0;";
+    }
+    
+    dbLogger.LogWarning("🔧 CRITICAL FIX: Using connection string DIRECTLY (no NpgsqlDataSourceBuilder)");
+    dbLogger.LogWarning($"   Multiplexing=false is EXPLICITLY set in connection string");
+    dbLogger.LogWarning($"   This prevents 'transactions must be started with BeginTransaction' error");
+    dbLogger.LogWarning("🔧 CRITICAL FIX: EnableRetryOnFailure DISABLED");
+    dbLogger.LogWarning($"   Retry logic conflicts with manual BeginTransaction causing ObjectDisposedException");
+    dbLogger.LogWarning($"   Manual transactions handle their own retry logic");
+    
+    // ✅ CRITICAL: Use connection string DIRECTLY, do NOT use NpgsqlDataSourceBuilder
+    // NpgsqlDataSourceBuilder ignores Multiplexing=false from connection string
+    options.UseNpgsql(finalConnectionString, npgsqlOptions =>
+    {
+        npgsqlOptions.CommandTimeout(60);
         
-        // ✅ MEJORADO: Reintentos optimizados para errores DNS y transitorios
-        // Aumentar reintentos y delays para manejar problemas de DNS/resolución de nombres
-        npgsqlOptions.EnableRetryOnFailure(
-            maxRetryCount: 6, // Aumentado de 5 a 6 reintentos para errores DNS
-            maxRetryDelay: TimeSpan.FromSeconds(15), // Aumentado delay máximo a 15 segundos
-            errorCodesToAdd: null); // null = todos los códigos de error transitorios
+        // ❌ DISABLED: EnableRetryOnFailure causes ObjectDisposedException with manual transactions
+        // When combined with BeginTransaction, the retry strategy disposes connections
+        // that are still in use by the transaction, causing ManualResetEventSlim disposed errors
+        // Manual transactions in UserService.GoogleAuth handle their own retry logic
     });
     
-    // ✅ MEJORADO: Configurar Execution Strategy para manejar errores transitorios
-    // Esto ayuda con errores DNS y problemas de conectividad temporal
-    options.EnableSensitiveDataLogging(isDevelopment); // Solo en desarrollo
-    options.EnableDetailedErrors(isDevelopment); // Solo en desarrollo
+    // ✅ CRITICAL: Disable Execution Strategy completely to prevent multiplexing issues
+    // Execution Strategy can cause "transactions must be started with BeginTransaction" error
+    // even when Multiplexing=false is set, because it tries to use multiplexing internally
+    options.EnableSensitiveDataLogging(isDevelopment);
+    options.EnableDetailedErrors(isDevelopment);
 });
 
 // Configure Google Cloud Storage
@@ -1386,11 +1408,27 @@ if (hangfireConnectionValid)
         }
     }
     
-    // ✅ FIX: Deshabilitar multiplexing para Hangfire también
+    // ✅ FIX CRÍTICO: Deshabilitar multiplexing explícitamente y configurar Enlist para Hangfire
     // El Transaction Pooler ya maneja la multiplexación a nivel de pool
     var hangfireConnBuilder = new NpgsqlConnectionStringBuilder(hangfireConnectionString);
-    hangfireConnBuilder.Multiplexing = false; // Deshabilitar multiplexing para evitar error "transactions must be started with BeginTransaction"
+    hangfireConnBuilder.Multiplexing = false; // ✅ CRÍTICO: Deshabilitar multiplexing para evitar error "transactions must be started with BeginTransaction"
+    hangfireConnBuilder.Enlist = false; // ✅ CRÍTICO: Evitar que Npgsql se una automáticamente a transacciones ambientales
+    hangfireConnBuilder.MaxAutoPrepare = 0; // ✅ CRÍTICO PARA TRANSACTION POOLER: Deshabilitar Prepared Statements
     hangfireConnectionString = hangfireConnBuilder.ToString();
+    
+    // ✅ VERIFICACIÓN: Asegurar que Multiplexing=false, Enlist=false y Max Auto Prepare=0 estén en la cadena final
+    if (!hangfireConnectionString.Contains("Multiplexing=false", StringComparison.OrdinalIgnoreCase))
+    {
+        hangfireConnectionString += (hangfireConnectionString.Contains(';') ? ";" : "") + "Multiplexing=false;";
+    }
+    if (!hangfireConnectionString.Contains("Enlist=false", StringComparison.OrdinalIgnoreCase))
+    {
+        hangfireConnectionString += "Enlist=false;";
+    }
+    if (!hangfireConnectionString.Contains("Max Auto Prepare=0", StringComparison.OrdinalIgnoreCase))
+    {
+        hangfireConnectionString += "Max Auto Prepare=0;";
+    }
     
     // ✅ HANGFIRE CONFIGURACIÓN 2026: Mejores prácticas para Supabase/PostgreSQL
     // Basado en: https://docs.hangfire.io/en/latest/configuration/using-postgresql.html

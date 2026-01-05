@@ -105,9 +105,25 @@ namespace newApi.DataLayer.Models
                     "las variables de entorno: POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USERNAME, POSTGRES_PASSWORD, POSTGRES_DATABASE");
             }
 
+            // ✅ FIX CRÍTICO: Deshabilitar multiplexing explícitamente y configurar Enlist
             // Configurar para Session Pooler de Supabase
             // Usar un DataSource con configuración específica para evitar problemas con el pooler
-            var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(connectionString);
+            var connectionStringBuilder = new NpgsqlConnectionStringBuilder(connectionString);
+            connectionStringBuilder.Multiplexing = false; // ✅ CRÍTICO: Deshabilitar multiplexing para evitar error "transactions must be started with BeginTransaction"
+            connectionStringBuilder.Enlist = false; // ✅ CRÍTICO: Evitar que Npgsql se una automáticamente a transacciones ambientales
+            var finalConnectionString = connectionStringBuilder.ToString();
+            
+            // ✅ VERIFICACIÓN: Asegurar que Multiplexing=false esté en la cadena final
+            if (!finalConnectionString.Contains("Multiplexing=false", StringComparison.OrdinalIgnoreCase))
+            {
+                finalConnectionString += (finalConnectionString.Contains(';') ? ";" : "") + "Multiplexing=false;";
+            }
+            if (!finalConnectionString.Contains("Enlist=false", StringComparison.OrdinalIgnoreCase))
+            {
+                finalConnectionString += "Enlist=false;";
+            }
+            
+            var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(finalConnectionString);
             // Deshabilitar prepared statements completamente para Session Pooler
             dataSourceBuilder.EnableParameterLogging();
             var dataSource = dataSourceBuilder.Build();

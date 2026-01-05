@@ -395,3 +395,4 @@ GET /api/SearchService/123
 **Última actualización**: Enero 2025
 **Versión**: v1 (optimizado)
 
+

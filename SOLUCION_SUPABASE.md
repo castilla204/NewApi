@@ -51,3 +51,4 @@ Si `dotnet ef database update` sigue fallando, puedes aplicar las migraciones di
 - ❌ `dotnet ef database update` falla por problemas de conectividad IPv6/IPv4
 
 
+

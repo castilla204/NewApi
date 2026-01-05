@@ -1206,13 +1206,23 @@ builder.Services.AddDbContext<AppDbContext>(options =>
         dbLogger.LogWarning("   Si tienes problemas DNS, usa Transaction Pooler (puerto 6543)");
     }
     
-    // ✅ Configurar Npgsql para Supabase (Transaction Pooler recomendado)
-    // ✅ FIX: Deshabilitar multiplexing para Transaction Pooler
+    // ✅ FIX CRÍTICO: Deshabilitar multiplexing explícitamente y configurar Enlist
     // El Transaction Pooler ya maneja la multiplexación a nivel de pool,
     // no necesitamos multiplexing a nivel de Npgsql que requiere transacciones explícitas
     var connectionStringBuilder = new NpgsqlConnectionStringBuilder(connectionString);
-    connectionStringBuilder.Multiplexing = false; // Deshabilitar multiplexing para evitar error "transactions must be started with BeginTransaction"
+    connectionStringBuilder.Multiplexing = false; // ✅ CRÍTICO: Deshabilitar multiplexing para evitar error "transactions must be started with BeginTransaction"
+    connectionStringBuilder.Enlist = false; // ✅ CRÍTICO: Evitar que Npgsql se una automáticamente a transacciones ambientales
     var finalConnectionString = connectionStringBuilder.ToString();
+    
+    // ✅ VERIFICACIÓN: Asegurar que Multiplexing=false esté en la cadena final
+    if (!finalConnectionString.Contains("Multiplexing=false", StringComparison.OrdinalIgnoreCase))
+    {
+        finalConnectionString += (finalConnectionString.Contains(';') ? ";" : "") + "Multiplexing=false;";
+    }
+    if (!finalConnectionString.Contains("Enlist=false", StringComparison.OrdinalIgnoreCase))
+    {
+        finalConnectionString += "Enlist=false;";
+    }
     
     var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(finalConnectionString);
     // Deshabilitar prepared statements para Session Pooler
@@ -1386,11 +1396,22 @@ if (hangfireConnectionValid)
         }
     }
     
-    // ✅ FIX: Deshabilitar multiplexing para Hangfire también
+    // ✅ FIX CRÍTICO: Deshabilitar multiplexing explícitamente y configurar Enlist para Hangfire
     // El Transaction Pooler ya maneja la multiplexación a nivel de pool
     var hangfireConnBuilder = new NpgsqlConnectionStringBuilder(hangfireConnectionString);
-    hangfireConnBuilder.Multiplexing = false; // Deshabilitar multiplexing para evitar error "transactions must be started with BeginTransaction"
+    hangfireConnBuilder.Multiplexing = false; // ✅ CRÍTICO: Deshabilitar multiplexing para evitar error "transactions must be started with BeginTransaction"
+    hangfireConnBuilder.Enlist = false; // ✅ CRÍTICO: Evitar que Npgsql se una automáticamente a transacciones ambientales
     hangfireConnectionString = hangfireConnBuilder.ToString();
+    
+    // ✅ VERIFICACIÓN: Asegurar que Multiplexing=false esté en la cadena final
+    if (!hangfireConnectionString.Contains("Multiplexing=false", StringComparison.OrdinalIgnoreCase))
+    {
+        hangfireConnectionString += (hangfireConnectionString.Contains(';') ? ";" : "") + "Multiplexing=false;";
+    }
+    if (!hangfireConnectionString.Contains("Enlist=false", StringComparison.OrdinalIgnoreCase))
+    {
+        hangfireConnectionString += "Enlist=false;";
+    }
     
     // ✅ HANGFIRE CONFIGURACIÓN 2026: Mejores prácticas para Supabase/PostgreSQL
     // Basado en: https://docs.hangfire.io/en/latest/configuration/using-postgresql.html

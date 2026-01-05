@@ -200,3 +200,4 @@ Zoom 8 (Desampliado):
 
 **Resumen**: SÍ, muestra todas las etiquetas de precio del área visible, y SÍ, al desampliar puedes ver etiquetas de varios países simultáneamente. 🎉
 
+

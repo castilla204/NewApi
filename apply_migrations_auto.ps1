@@ -49,3 +49,4 @@ for ($i = 0; $i -lt $chunks.Count; $i++) {
 Write-Host "`n✅ Archivos de migración preparados. Aplica cada parte usando el MCP de Supabase." -ForegroundColor Green
 
 
+

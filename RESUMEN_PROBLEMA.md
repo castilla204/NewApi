@@ -34,3 +34,4 @@ El script SQL de migraciones ya está generado en `migrations.sql` (152,859 cara
 - ✅ Connection string correcta configurada en `appsettings.Development.json` (Session Pooler para runtime, pero no para migraciones)
 
 
+

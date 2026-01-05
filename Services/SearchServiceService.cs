@@ -1880,40 +1880,68 @@ namespace newApi.Services
                     .OrderBy(s => paginatedServiceIds.IndexOf(s.ServiceId))
                     .ToList();
 
+                // ✅ OPTIMIZACIÓN: Cargar disponibilidades de todos los expertos de una vez
+                var expertIds = orderedServices.Select(s => s.ExpertId).Distinct().ToList();
+                var availabilities = await _context.ExpertAvailabilities
+                    .AsNoTracking()
+                    .Where(ea => expertIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                    .ToListAsync(cancellationToken);
+                
+                var availabilityByExpert = availabilities
+                    .GroupBy(ea => ea.ExpertId)
+                    .ToDictionary(g => g.Key, g => g.First());
+
                 // Mapear a DTO ligero - Aplicar lógica de URLs firmadas en memoria (después de cargar datos)
-                var mappedServices = orderedServices.Select(s => new SearchServiceHomepageDto
+                var mappedServices = orderedServices.Select(s => 
                 {
-                    Id = s.ServiceId,
-                    CategoryId = s.CategoryId,
-                    CategoryName = s.CategoryName,
-                    ServiceTypeId = s.ServiceTypeId,
-                    ServiceTypeName = s.ServiceTypeName,
-                    Price = s.Price,
-                    // Procesar URLs de imágenes en memoria (no en SQL)
-                    ImageUrls = s.Images
-                        .Select(img =>
-                        {
-                            if (!string.IsNullOrWhiteSpace(img.ImageUrl) &&
-                                (!img.ImageUrl.Contains("storage.googleapis.com") || string.IsNullOrWhiteSpace(_configuration["GoogleCloud:BucketName"])))
-                            {
-                                return img.ImageUrl;
-                            }
-                            return _signedUrlService.GetSignedUrl(img.ImageObjectName ?? string.Empty) ?? img.ImageUrl;
-                        })
-                        .Where(url => !string.IsNullOrEmpty(url))
-                        .ToList(),
-                    Expert = new HomepageExpertDto
+                    // Obtener disponibilidad del experto si existe
+                    HomepageExpertAvailabilityDto? availabilityDto = null;
+                    if (availabilityByExpert.TryGetValue(s.ExpertId, out var availability))
                     {
-                        Id = s.ExpertId,
-                        Name = s.ExpertName,
-                        // Procesar URL de foto de perfil en memoria (no en SQL)
-                        ProfilePictureUrl = !string.IsNullOrWhiteSpace(s.ExpertProfilePictureObjectName)
-                            ? _signedUrlService.GetSignedUrl(s.ExpertProfilePictureObjectName) ?? s.ExpertProfilePictureUrl ?? string.Empty
-                            : s.ExpertProfilePictureUrl ?? string.Empty,
-                        Country = s.ExpertCountry
-                    },
-                    AverageRating = s.AverageRating,
-                    CompletedSearches = s.CompletedSearches
+                        var daysOfWeek = System.Text.Json.JsonSerializer.Deserialize<List<string>>(availability.DaysOfWeek) ?? new List<string>();
+                        availabilityDto = new HomepageExpertAvailabilityDto
+                        {
+                            DaysOfWeek = daysOfWeek,
+                            StartTime = availability.StartTime,
+                            EndTime = availability.EndTime
+                        };
+                    }
+
+                    return new SearchServiceHomepageDto
+                    {
+                        Id = s.ServiceId,
+                        CategoryId = s.CategoryId,
+                        CategoryName = s.CategoryName,
+                        ServiceTypeId = s.ServiceTypeId,
+                        ServiceTypeName = s.ServiceTypeName,
+                        Price = s.Price,
+                        // Procesar URLs de imágenes en memoria (no en SQL)
+                        ImageUrls = s.Images
+                            .Select(img =>
+                            {
+                                if (!string.IsNullOrWhiteSpace(img.ImageUrl) &&
+                                    (!img.ImageUrl.Contains("storage.googleapis.com") || string.IsNullOrWhiteSpace(_configuration["GoogleCloud:BucketName"])))
+                                {
+                                    return img.ImageUrl;
+                                }
+                                return _signedUrlService.GetSignedUrl(img.ImageObjectName ?? string.Empty) ?? img.ImageUrl;
+                            })
+                            .Where(url => !string.IsNullOrEmpty(url))
+                            .ToList(),
+                        Expert = new HomepageExpertDto
+                        {
+                            Id = s.ExpertId,
+                            Name = s.ExpertName,
+                            // Procesar URL de foto de perfil en memoria (no en SQL)
+                            ProfilePictureUrl = !string.IsNullOrWhiteSpace(s.ExpertProfilePictureObjectName)
+                                ? _signedUrlService.GetSignedUrl(s.ExpertProfilePictureObjectName) ?? s.ExpertProfilePictureUrl ?? string.Empty
+                                : s.ExpertProfilePictureUrl ?? string.Empty,
+                            Country = s.ExpertCountry,
+                            Availability = availabilityDto
+                        },
+                        AverageRating = s.AverageRating,
+                        CompletedSearches = s.CompletedSearches
+                    };
                 }).ToList();
 
                 return (mappedServices, totalCount);
@@ -2030,40 +2058,68 @@ namespace newApi.Services
                     .OrderBy(s => paginatedServiceIds.IndexOf(s.ServiceId))
                     .ToList();
 
+                // ✅ OPTIMIZACIÓN: Cargar disponibilidades de todos los expertos de una vez
+                var expertIds = orderedServices.Select(s => s.ExpertId).Distinct().ToList();
+                var availabilities = await _context.ExpertAvailabilities
+                    .AsNoTracking()
+                    .Where(ea => expertIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                    .ToListAsync(cancellationToken);
+                
+                var availabilityByExpert = availabilities
+                    .GroupBy(ea => ea.ExpertId)
+                    .ToDictionary(g => g.Key, g => g.First());
+
                 // Mapear a DTO ligero - Aplicar lógica de URLs firmadas en memoria (después de cargar datos)
-                var mappedServices = orderedServices.Select(s => new SearchServiceHomepageDto
+                var mappedServices = orderedServices.Select(s => 
                 {
-                    Id = s.ServiceId,
-                    CategoryId = s.CategoryId,
-                    CategoryName = s.CategoryName,
-                    ServiceTypeId = s.ServiceTypeId,
-                    ServiceTypeName = s.ServiceTypeName,
-                    Price = s.Price,
-                    // Procesar URLs de imágenes en memoria (no en SQL)
-                    ImageUrls = s.Images
-                        .Select(img =>
-                        {
-                            if (!string.IsNullOrWhiteSpace(img.ImageUrl) &&
-                                (!img.ImageUrl.Contains("storage.googleapis.com") || string.IsNullOrWhiteSpace(_configuration["GoogleCloud:BucketName"])))
-                            {
-                                return img.ImageUrl;
-                            }
-                            return _signedUrlService.GetSignedUrl(img.ImageObjectName ?? string.Empty) ?? img.ImageUrl;
-                        })
-                        .Where(url => !string.IsNullOrEmpty(url))
-                        .ToList(),
-                    Expert = new HomepageExpertDto
+                    // Obtener disponibilidad del experto si existe
+                    HomepageExpertAvailabilityDto? availabilityDto = null;
+                    if (availabilityByExpert.TryGetValue(s.ExpertId, out var availability))
                     {
-                        Id = s.ExpertId,
-                        Name = s.ExpertName,
-                        // Procesar URL de foto de perfil en memoria (no en SQL)
-                        ProfilePictureUrl = !string.IsNullOrWhiteSpace(s.ExpertProfilePictureObjectName)
-                            ? _signedUrlService.GetSignedUrl(s.ExpertProfilePictureObjectName) ?? s.ExpertProfilePictureUrl ?? string.Empty
-                            : s.ExpertProfilePictureUrl ?? string.Empty,
-                        Country = s.ExpertCountry
-                    },
-                    AverageRating = s.AverageRating,
-                    CompletedSearches = s.CompletedSearches
+                        var daysOfWeek = System.Text.Json.JsonSerializer.Deserialize<List<string>>(availability.DaysOfWeek) ?? new List<string>();
+                        availabilityDto = new HomepageExpertAvailabilityDto
+                        {
+                            DaysOfWeek = daysOfWeek,
+                            StartTime = availability.StartTime,
+                            EndTime = availability.EndTime
+                        };
+                    }
+
+                    return new SearchServiceHomepageDto
+                    {
+                        Id = s.ServiceId,
+                        CategoryId = s.CategoryId,
+                        CategoryName = s.CategoryName,
+                        ServiceTypeId = s.ServiceTypeId,
+                        ServiceTypeName = s.ServiceTypeName,
+                        Price = s.Price,
+                        // Procesar URLs de imágenes en memoria (no en SQL)
+                        ImageUrls = s.Images
+                            .Select(img =>
+                            {
+                                if (!string.IsNullOrWhiteSpace(img.ImageUrl) &&
+                                    (!img.ImageUrl.Contains("storage.googleapis.com") || string.IsNullOrWhiteSpace(_configuration["GoogleCloud:BucketName"])))
+                                {
+                                    return img.ImageUrl;
+                                }
+                                return _signedUrlService.GetSignedUrl(img.ImageObjectName ?? string.Empty) ?? img.ImageUrl;
+                            })
+                            .Where(url => !string.IsNullOrEmpty(url))
+                            .ToList(),
+                        Expert = new HomepageExpertDto
+                        {
+                            Id = s.ExpertId,
+                            Name = s.ExpertName,
+                            // Procesar URL de foto de perfil en memoria (no en SQL)
+                            ProfilePictureUrl = !string.IsNullOrWhiteSpace(s.ExpertProfilePictureObjectName)
+                                ? _signedUrlService.GetSignedUrl(s.ExpertProfilePictureObjectName) ?? s.ExpertProfilePictureUrl ?? string.Empty
+                                : s.ExpertProfilePictureUrl ?? string.Empty,
+                            Country = s.ExpertCountry,
+                            Availability = availabilityDto
+                        },
+                        AverageRating = s.AverageRating,
+                        CompletedSearches = s.CompletedSearches
+                    };
                 }).ToList();
 
                 return (mappedServices, totalCount);
@@ -2203,40 +2259,68 @@ namespace newApi.Services
                         .OrderBy(s => serviceIds.IndexOf(s.ServiceId))
                         .ToList();
 
+                    // ✅ OPTIMIZACIÓN: Cargar disponibilidades de todos los expertos de una vez
+                    var expertIds = orderedServices.Select(s => s.ExpertId).Distinct().ToList();
+                    var availabilities = await _context.ExpertAvailabilities
+                        .AsNoTracking()
+                        .Where(ea => expertIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                        .ToListAsync(cancellationToken);
+                    
+                    var availabilityByExpert = availabilities
+                        .GroupBy(ea => ea.ExpertId)
+                        .ToDictionary(g => g.Key, g => g.First());
+
                     // Mapear a DTO ligero - Aplicar lógica de URLs firmadas en memoria (después de cargar datos)
-                    var mappedServices = orderedServices.Select(s => new SearchServiceHomepageDto
+                    var mappedServices = orderedServices.Select(s => 
                     {
-                        Id = s.ServiceId,
-                        CategoryId = s.CategoryId,
-                        CategoryName = s.CategoryName,
-                        ServiceTypeId = s.ServiceTypeId,
-                        ServiceTypeName = s.ServiceTypeName,
-                        Price = s.Price,
-                        // Procesar URLs de imágenes en memoria (no en SQL)
-                        ImageUrls = s.Images
-                            .Select(img =>
-                            {
-                                if (!string.IsNullOrWhiteSpace(img.ImageUrl) &&
-                                    (!img.ImageUrl.Contains("storage.googleapis.com") || string.IsNullOrWhiteSpace(_configuration["GoogleCloud:BucketName"])))
-                                {
-                                    return img.ImageUrl;
-                                }
-                                return _signedUrlService.GetSignedUrl(img.ImageObjectName ?? string.Empty) ?? img.ImageUrl;
-                            })
-                            .Where(url => !string.IsNullOrEmpty(url))
-                            .ToList(),
-                        Expert = new HomepageExpertDto
+                        // Obtener disponibilidad del experto si existe
+                        HomepageExpertAvailabilityDto? availabilityDto = null;
+                        if (availabilityByExpert.TryGetValue(s.ExpertId, out var availability))
                         {
-                            Id = s.ExpertId,
-                            Name = s.ExpertName,
-                            // Procesar URL de foto de perfil en memoria (no en SQL)
-                            ProfilePictureUrl = !string.IsNullOrWhiteSpace(s.ExpertProfilePictureObjectName)
-                                ? _signedUrlService.GetSignedUrl(s.ExpertProfilePictureObjectName) ?? s.ExpertProfilePictureUrl ?? string.Empty
-                                : s.ExpertProfilePictureUrl ?? string.Empty,
-                            Country = s.ExpertCountry
-                        },
-                        AverageRating = s.AverageRating,
-                        CompletedSearches = s.CompletedSearches
+                            var daysOfWeek = System.Text.Json.JsonSerializer.Deserialize<List<string>>(availability.DaysOfWeek) ?? new List<string>();
+                            availabilityDto = new HomepageExpertAvailabilityDto
+                            {
+                                DaysOfWeek = daysOfWeek,
+                                StartTime = availability.StartTime,
+                                EndTime = availability.EndTime
+                            };
+                        }
+
+                        return new SearchServiceHomepageDto
+                        {
+                            Id = s.ServiceId,
+                            CategoryId = s.CategoryId,
+                            CategoryName = s.CategoryName,
+                            ServiceTypeId = s.ServiceTypeId,
+                            ServiceTypeName = s.ServiceTypeName,
+                            Price = s.Price,
+                            // Procesar URLs de imágenes en memoria (no en SQL)
+                            ImageUrls = s.Images
+                                .Select(img =>
+                                {
+                                    if (!string.IsNullOrWhiteSpace(img.ImageUrl) &&
+                                        (!img.ImageUrl.Contains("storage.googleapis.com") || string.IsNullOrWhiteSpace(_configuration["GoogleCloud:BucketName"])))
+                                    {
+                                        return img.ImageUrl;
+                                    }
+                                    return _signedUrlService.GetSignedUrl(img.ImageObjectName ?? string.Empty) ?? img.ImageUrl;
+                                })
+                                .Where(url => !string.IsNullOrEmpty(url))
+                                .ToList(),
+                            Expert = new HomepageExpertDto
+                            {
+                                Id = s.ExpertId,
+                                Name = s.ExpertName,
+                                // Procesar URL de foto de perfil en memoria (no en SQL)
+                                ProfilePictureUrl = !string.IsNullOrWhiteSpace(s.ExpertProfilePictureObjectName)
+                                    ? _signedUrlService.GetSignedUrl(s.ExpertProfilePictureObjectName) ?? s.ExpertProfilePictureUrl ?? string.Empty
+                                    : s.ExpertProfilePictureUrl ?? string.Empty,
+                                Country = s.ExpertCountry,
+                                Availability = availabilityDto
+                            },
+                            AverageRating = s.AverageRating,
+                            CompletedSearches = s.CompletedSearches
+                        };
                     }).ToList();
 
                     var totalCount = group.Count(); // Total de servicios disponibles para esta combinación

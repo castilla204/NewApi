@@ -1228,7 +1228,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     {
         finalConnectionString += "Enlist=false;";
     }
-     if (!finalConnectionString.Contains("Max Auto Prepare=0", StringComparison.OrdinalIgnoreCase))
+    if (!finalConnectionString.Contains("Max Auto Prepare=0", StringComparison.OrdinalIgnoreCase))
     {
         finalConnectionString += "Max Auto Prepare=0;";
     }

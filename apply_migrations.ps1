@@ -21,3 +21,6 @@ for ($i = 1; $i -lt $transactions.Count; $i++) {
 Write-Output "✅ Script preparado para aplicar $($transactions.Count-1) transacciones de migración"
 
 
+
+
+

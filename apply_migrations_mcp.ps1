@@ -39,3 +39,6 @@ Write-Host "`n📝 Para aplicar las migraciones, usa el MCP de Supabase con cada
 Write-Host "   O copia y pega el contenido de migrations.sql en el SQL Editor de Supabase." -ForegroundColor Cyan
 
 
+
+
+

@@ -174,6 +174,20 @@ namespace newApi.DataLayer.Models.DTOs
         public string Name { get; set; }
         public string ProfilePictureUrl { get; set; }
         public string? Country { get; set; }
+        /// <summary>
+        /// Horario de disponibilidad del experto (opcional - solo si tiene disponibilidad configurada)
+        /// </summary>
+        public HomepageExpertAvailabilityDto? Availability { get; set; }
+    }
+
+    /// <summary>
+    /// DTO ligero de disponibilidad del experto para homepage
+    /// </summary>
+    public class HomepageExpertAvailabilityDto
+    {
+        public List<string> DaysOfWeek { get; set; } = new List<string>();
+        public TimeSpan StartTime { get; set; }
+        public TimeSpan EndTime { get; set; }
     }
 
     public class ExpertProfileDto

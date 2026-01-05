@@ -392,15 +392,20 @@ public class UserController : ControllerBase
 
             if (user == null)
             {
-                // ✅ LOG CRÍTICO: Solo errores críticos se loguean síncronamente
-                await _loggingService.LogErrorAsync(
-                    message: "Google Auth returned success but user is null",
-                    details: $"Google Auth returned success but user is null. RequestId: {requestId}, IP: {remoteIp}",
-                    userId: null,
-                    source: "UserController.GoogleAuth",
-                    relatedEntityType: "Auth",
-                    additionalData: new { RequestId = requestId, RemoteIp = remoteIp }
-                );
+                // ✅ OPTIMIZACIÓN: Logging en background con scope propio
+                _ = Task.Run(async () =>
+                {
+                    using var scope = _serviceScopeFactory.CreateScope();
+                    var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+                    await loggingService.LogErrorAsync(
+                        message: "Google Auth returned success but user is null",
+                        details: $"Google Auth returned success but user is null. RequestId: {requestId}, IP: {remoteIp}",
+                        userId: null,
+                        source: "UserController.GoogleAuth",
+                        relatedEntityType: "Auth",
+                        additionalData: new { RequestId = requestId, RemoteIp = remoteIp }
+                    );
+                });
                 return StatusCode(500, new { 
                     message = "Internal server error", 
                     error = "User object is null after successful authentication",
@@ -478,23 +483,33 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            // ✅ LOG CRÍTICO: Errores inesperados se loguean síncronamente
-            await _loggingService.LogErrorAsync(
-                message: "Unexpected error during Google authentication",
-                details: $"Unexpected error during Google authentication. RequestId: {requestId}, IP: {remoteIp}, Email: {request?.Email}, GoogleId: {request?.GoogleId}, ErrorType: {ex.GetType().Name}, Error: {ex.Message}",
-                userId: null,
-                source: "UserController.GoogleAuth",
-                relatedEntityType: "Auth",
-                additionalData: new { 
-                    RequestId = requestId,
-                    RemoteIp = remoteIp,
-                    RequestEmail = request?.Email,
-                    RequestGoogleId = request?.GoogleId,
-                    Error = ex.Message,
-                    ErrorType = ex.GetType().Name,
-                    InnerException = ex.InnerException?.Message
-                }
-            );
+            // ✅ OPTIMIZACIÓN: Logging en background con scope propio
+            var requestEmail = request?.Email; // Capturar antes de Task.Run
+            var requestGoogleId = request?.GoogleId; // Capturar antes de Task.Run
+            var errorMessage = ex.Message; // Capturar antes de Task.Run
+            var errorType = ex.GetType().Name; // Capturar antes de Task.Run
+            var innerExceptionMessage = ex.InnerException?.Message; // Capturar antes de Task.Run
+            _ = Task.Run(async () =>
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+                await loggingService.LogErrorAsync(
+                    message: "Unexpected error during Google authentication",
+                    details: $"Unexpected error during Google authentication. RequestId: {requestId}, IP: {remoteIp}, Email: {requestEmail}, GoogleId: {requestGoogleId}, ErrorType: {errorType}, Error: {errorMessage}",
+                    userId: null,
+                    source: "UserController.GoogleAuth",
+                    relatedEntityType: "Auth",
+                    additionalData: new { 
+                        RequestId = requestId,
+                        RemoteIp = remoteIp,
+                        RequestEmail = requestEmail,
+                        RequestGoogleId = requestGoogleId,
+                        Error = errorMessage,
+                        ErrorType = errorType,
+                        InnerException = innerExceptionMessage
+                    }
+                );
+            });
             
             return StatusCode(500, new { 
                 message = "An error occurred during authentication", 

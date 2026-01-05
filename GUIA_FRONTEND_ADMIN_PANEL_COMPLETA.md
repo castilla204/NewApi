@@ -2222,3 +2222,6 @@ const categoryName = config.category?.name ?? "Todas las categorías";
 **Con esta guía, el frontend puede implementar correctamente TODOS los endpoints del admin panel sin errores.** 🎉
 
 
+
+
+

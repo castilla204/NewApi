@@ -1687,6 +1687,35 @@ builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
+// ✅ RENDER.COM: CRÍTICO - Iniciar servidor INMEDIATAMENTE después de Build()
+// Render.com escanea el puerto muy temprano, así que necesitamos que el servidor esté escuchando
+// ANTES de cualquier inicialización pesada (Stripe, BD, Hangfire, etc.)
+if (!isDevelopment)
+{
+    Console.WriteLine($"[RENDER] 🚀 INICIANDO SERVIDOR INMEDIATAMENTE después de Build()...");
+    Console.WriteLine($"[RENDER] ✅ Puerto configurado: {portToUse}");
+    Console.WriteLine($"[RENDER] ✅ ASPNETCORE_URLS: {aspnetcoreUrls}");
+    
+    // Iniciar servidor en background para que Render.com detecte el puerto
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            await app.StartAsync();
+            var urls = app.Urls.ToList();
+            Console.WriteLine($"[RENDER] ✅ Servidor iniciado y escuchando en: {string.Join(", ", urls)}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RENDER] ❌ Error al iniciar servidor: {ex.Message}");
+        }
+    });
+    
+    // Dar tiempo para que el servidor inicie antes de continuar
+    await Task.Delay(2000);
+    Console.WriteLine($"[RENDER] ✅ Servidor debería estar escuchando ahora - Render.com puede detectar el puerto");
+}
+
 // ✅ Cargar claves Stripe según el modo configurado en SystemSetting
 try
 {

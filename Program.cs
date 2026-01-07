@@ -29,37 +29,47 @@ using Microsoft.AspNetCore.Authorization;
 using newApi.Middleware;
 using Npgsql;
 
-// ✅ RENDER.COM: Configurar puerto ANTES de crear el builder
-// Render.com usa la variable PORT (generalmente 10000)
+// ✅ RENDER.COM: Configurar puerto SOLO en producción (Render.com)
+// En desarrollo: usar puerto por defecto de .NET (localhost:5000)
 // CRÍTICO: Render.com necesita ASPNETCORE_URLS configurado ANTES del builder
 // Según documentación oficial: https://render.com/docs/web-services#port-binding
-var renderPort = Environment.GetEnvironmentVariable("PORT");
-var portToUse = "10000"; // Puerto por defecto de Render.com
 
-if (!string.IsNullOrEmpty(renderPort) && int.TryParse(renderPort, out int portNumber))
+// Crear builder PRIMERO para detectar el entorno
+var builder = WebApplication.CreateBuilder(args);
+var isDevelopment = builder.Environment.IsDevelopment();
+
+string? aspnetcoreUrls = null;
+string portToUse = "10000"; // Puerto por defecto de Render.com
+
+// ✅ SOLO configurar puerto en PRODUCCIÓN (Render.com)
+if (!isDevelopment)
 {
-    portToUse = renderPort;
-    Console.WriteLine($"[RENDER] ✅ Variable PORT detectada: {renderPort}");
+    var renderPort = Environment.GetEnvironmentVariable("PORT");
+    
+    if (!string.IsNullOrEmpty(renderPort) && int.TryParse(renderPort, out int portNumber))
+    {
+        portToUse = renderPort;
+        Console.WriteLine($"[RENDER] ✅ Variable PORT detectada: {renderPort}");
+    }
+    else
+    {
+        Console.WriteLine($"[RENDER] ⚠️ Variable PORT no encontrada, usando puerto por defecto: {portToUse}");
+    }
+    
+    // ✅ RENDER.COM: Configurar ASPNETCORE_URLS ANTES de continuar
+    // Esto es CRÍTICO: .NET lee ASPNETCORE_URLS durante la inicialización del host
+    aspnetcoreUrls = $"http://0.0.0.0:{portToUse}";
+    Environment.SetEnvironmentVariable("ASPNETCORE_URLS", aspnetcoreUrls);
+    Console.WriteLine($"[RENDER] ✅ ASPNETCORE_URLS configurado: {aspnetcoreUrls}");
+    
+    // ✅ RENDER.COM: Forzar binding del puerto INMEDIATAMENTE después del builder
+    builder.WebHost.UseUrls(aspnetcoreUrls);
+    Console.WriteLine($"[RENDER] ✅ UseUrls() configurado: {aspnetcoreUrls}");
 }
 else
 {
-    Console.WriteLine($"[RENDER] ⚠️ Variable PORT no encontrada, usando puerto por defecto: {portToUse}");
+    Console.WriteLine($"[DEV] ✅ Desarrollo: usando puerto por defecto de .NET (localhost:5000)");
 }
-
-// ✅ RENDER.COM: Configurar ASPNETCORE_URLS ANTES del builder
-// Esto es CRÍTICO: .NET lee ASPNETCORE_URLS durante la inicialización del host
-// Si no está configurado aquí, Render.com no detectará el puerto
-var aspnetcoreUrls = $"http://0.0.0.0:{portToUse}";
-Environment.SetEnvironmentVariable("ASPNETCORE_URLS", aspnetcoreUrls);
-Console.WriteLine($"[RENDER] ✅ ASPNETCORE_URLS configurado ANTES del builder: {aspnetcoreUrls}");
-
-// Crear builder - .NET leerá ASPNETCORE_URLS automáticamente
-var builder = WebApplication.CreateBuilder(args);
-
-// ✅ RENDER.COM: Forzar binding del puerto INMEDIATAMENTE después del builder
-// Esto asegura que el puerto esté configurado antes de cualquier inicialización pesada
-builder.WebHost.UseUrls(aspnetcoreUrls);
-Console.WriteLine($"[RENDER] ✅ UseUrls() configurado: {aspnetcoreUrls}");
 
 // Configurar logging básico
 builder.Logging.ClearProviders();
@@ -67,7 +77,7 @@ builder.Logging.AddConsole();
 builder.Logging.AddDebug();
 
 // Verificar el entorno PRIMERO (necesario para configurar logging)
-var isDevelopment = builder.Environment.IsDevelopment();
+// NOTA: isDevelopment ya se detectó arriba (línea 39)
 
 // ✅ LOG DE VERSIÓN: Identificar la versión desplegada
 var versionLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
@@ -2018,30 +2028,51 @@ app.MapControllers();
 app.MapHub<ChatHub>("/chatHub");
 
 // ✅ RENDER.COM: Configuración final antes de iniciar
-// El puerto ya está configurado con ASPNETCORE_URLS antes del builder
 var startupLogger = app.Services.GetRequiredService<ILogger<Program>>();
-var finalPort = Environment.GetEnvironmentVariable("PORT") ?? portToUse;
-var aspnetcoreUrlsFinal = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
 
-startupLogger.LogInformation($"🚀 Iniciando aplicación en puerto: {finalPort}");
-startupLogger.LogInformation($"   ASPNETCORE_URLS: {aspnetcoreUrlsFinal ?? "NO CONFIGURADO"}");
-
-// ✅ RENDER.COM: CRÍTICO - Iniciar servidor INMEDIATAMENTE para que Render.com detecte el puerto
-// Render.com escanea el puerto muy temprano, así que necesitamos iniciar el servidor lo antes posible
-Console.WriteLine($"[RENDER] 🚀 Iniciando servidor INMEDIATAMENTE para detección de puerto...");
-await app.StartAsync();
-
-// Obtener URLs después de iniciar
-var finalUrls = app.Urls.ToList();
-startupLogger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
-
-if (!finalUrls.Any())
+if (!isDevelopment)
 {
-    startupLogger.LogWarning($"⚠️ No se detectaron URLs configuradas. Verificar ASPNETCORE_URLS.");
+    // ✅ PRODUCCIÓN (Render.com): Configuración específica
+    var finalPort = Environment.GetEnvironmentVariable("PORT") ?? portToUse;
+    var aspnetcoreUrlsFinal = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+
+    startupLogger.LogInformation($"🚀 Iniciando aplicación en puerto: {finalPort}");
+    startupLogger.LogInformation($"   ASPNETCORE_URLS: {aspnetcoreUrlsFinal ?? "NO CONFIGURADO"}");
+
+    // ✅ RENDER.COM: CRÍTICO - Iniciar servidor INMEDIATAMENTE para que Render.com detecte el puerto
+    // Render.com escanea el puerto muy temprano, así que necesitamos iniciar el servidor lo antes posible
+    Console.WriteLine($"[RENDER] 🚀 Iniciando servidor INMEDIATAMENTE para detección de puerto...");
+    await app.StartAsync();
+
+    // Obtener URLs después de iniciar
+    var finalUrls = app.Urls.ToList();
+    startupLogger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
+
+    if (!finalUrls.Any())
+    {
+        startupLogger.LogWarning($"⚠️ No se detectaron URLs configuradas. Verificar ASPNETCORE_URLS.");
+    }
+
+    Console.WriteLine($"[RENDER] ✅ Servidor iniciado y escuchando - ASPNETCORE_URLS: {aspnetcoreUrlsFinal}, URLs: {string.Join(", ", finalUrls)}");
+    Console.WriteLine($"[RENDER] ✅ Render.com debería detectar el puerto ahora");
+
+    // Esperar hasta que se cierre la aplicación
+    await app.WaitForShutdownAsync();
 }
-
-Console.WriteLine($"[RENDER] ✅ Servidor iniciado y escuchando - ASPNETCORE_URLS: {aspnetcoreUrlsFinal}, URLs: {string.Join(", ", finalUrls)}");
-Console.WriteLine($"[RENDER] ✅ Render.com debería detectar el puerto ahora");
-
-// Esperar hasta que se cierre la aplicación
-await app.WaitForShutdownAsync();
+else
+{
+    // ✅ DESARROLLO: Usar app.Run() normal (localhost:5000 por defecto)
+    var finalUrls = app.Urls.ToList();
+    startupLogger.LogInformation($"🚀 Iniciando aplicación en desarrollo");
+    if (finalUrls.Any())
+    {
+        startupLogger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
+    }
+    else
+    {
+        startupLogger.LogInformation($"   Usando puerto por defecto de .NET (localhost:5000)");
+    }
+    
+    Console.WriteLine($"[DEV] ✅ Aplicación lista - URLs: {string.Join(", ", finalUrls)}");
+    app.Run();
+}

@@ -29,8 +29,9 @@ using Microsoft.AspNetCore.Authorization;
 using newApi.Middleware;
 using Npgsql;
 
-// ✅ RENDER.COM: Configurar puerto SOLO en producción (Render.com)
-// En desarrollo: usar puerto por defecto de .NET (localhost:5000)
+// ✅ RENDER.COM: Configurar puerto según el entorno
+// En desarrollo: usar puerto 7124 (localhost:7124)
+// En producción (Render.com): usar puerto 10000
 // CRÍTICO: Render.com necesita ASPNETCORE_URLS configurado ANTES del builder
 // Según documentación oficial: https://render.com/docs/web-services#port-binding
 
@@ -39,11 +40,12 @@ var builder = WebApplication.CreateBuilder(args);
 var isDevelopment = builder.Environment.IsDevelopment();
 
 string? aspnetcoreUrls = null;
-string portToUse = "10000"; // Puerto por defecto de Render.com
+string portToUse;
 
-// ✅ SOLO configurar puerto en PRODUCCIÓN (Render.com)
+// ✅ Configurar puerto según el entorno
 if (!isDevelopment)
 {
+    // ✅ PRODUCCIÓN (Render.com): Puerto 10000
     var renderPort = Environment.GetEnvironmentVariable("PORT");
     
     if (!string.IsNullOrEmpty(renderPort) && int.TryParse(renderPort, out int portNumber))
@@ -53,6 +55,7 @@ if (!isDevelopment)
     }
     else
     {
+        portToUse = "10000"; // Puerto por defecto de Render.com
         Console.WriteLine($"[RENDER] ⚠️ Variable PORT no encontrada, usando puerto por defecto: {portToUse}");
     }
     
@@ -68,7 +71,11 @@ if (!isDevelopment)
 }
 else
 {
-    Console.WriteLine($"[DEV] ✅ Desarrollo: usando puerto por defecto de .NET (localhost:5000)");
+    // ✅ DESARROLLO: Puerto 7124 (localhost:7124)
+    portToUse = "7124";
+    aspnetcoreUrls = $"http://localhost:{portToUse}";
+    builder.WebHost.UseUrls(aspnetcoreUrls);
+    Console.WriteLine($"[DEV] ✅ Desarrollo: usando puerto {portToUse} (localhost:{portToUse})");
 }
 
 // Configurar logging básico
@@ -2061,7 +2068,7 @@ if (!isDevelopment)
 }
 else
 {
-    // ✅ DESARROLLO: Usar app.Run() normal (localhost:5000 por defecto)
+    // ✅ DESARROLLO: Usar app.Run() normal (localhost:7124)
     var finalUrls = app.Urls.ToList();
     startupLogger.LogInformation($"🚀 Iniciando aplicación en desarrollo");
     if (finalUrls.Any())
@@ -2070,7 +2077,7 @@ else
     }
     else
     {
-        startupLogger.LogInformation($"   Usando puerto por defecto de .NET (localhost:5000)");
+        startupLogger.LogInformation($"   Usando puerto {portToUse} (localhost:{portToUse})");
     }
     
     Console.WriteLine($"[DEV] ✅ Aplicación lista - URLs: {string.Join(", ", finalUrls)}");

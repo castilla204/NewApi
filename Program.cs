@@ -1889,153 +1889,24 @@ app.MapHealthChecks("/health");
 app.MapControllers();
 app.MapHub<ChatHub>("/chatHub");
 
-// ✅ RENDER.COM: Iniciar servidor DESPUÉS de configurar endpoints
-// CRÍTICO: Render.com necesita detectar el puerto rápidamente
-// Iniciamos el servidor DESPUÉS de configurar endpoints para que /health funcione
-Console.WriteLine("[RENDER] 🚀 Iniciando servidor DESPUÉS de configurar endpoints...");
-await app.StartAsync();
+// ✅ RENDER.COM: Configuración final antes de iniciar
+// El puerto ya está configurado en el builder con UseUrls(), así que solo verificamos y loggeamos
 var startupLogger = app.Services.GetRequiredService<ILogger<Program>>();
-startupLogger.LogInformation($"✅ Servidor iniciado y escuchando en: {string.Join(", ", app.Urls)}");
-Console.WriteLine($"[RENDER] ✅ Servidor iniciado - Puertos: {string.Join(", ", app.Urls)}");
-
-// ✅ CONFIGURACIÓN DE PUERTO: Azure App Service vs Desarrollo
-// Prioridad: ASPNETCORE_URLS > WEBSITES_PORT > PORT > Default (7124 dev / 80 prod)
-// IMPORTANTE: ASPNETCORE_URLS tiene la mayor prioridad y .NET la lee automáticamente durante la inicialización del host
-// Si ASPNETCORE_URLS está configurado, .NET ya lo ha aplicado antes de llegar aquí
-var portLogger = app.Services.GetRequiredService<ILogger<Program>>();
-
-// Verificar qué URLs ya están configuradas (pueden venir de ASPNETCORE_URLS)
-var configuredUrls = app.Urls.ToList();
-var hasConfiguredUrls = configuredUrls.Any();
-
-if (app.Environment.IsDevelopment())
-{
-    // Desarrollo: solo verificar ASPNETCORE_URLS (tiene prioridad absoluta), si no está, usar siempre 7124
-    var aspnetcoreUrls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
-    
-    if (!string.IsNullOrEmpty(aspnetcoreUrls))
-    {
-        // ASPNETCORE_URLS está configurado - .NET ya lo ha aplicado automáticamente
-        portLogger.LogInformation($"✅ Desarrollo: Usando ASPNETCORE_URLS={aspnetcoreUrls}");
-        if (hasConfiguredUrls)
-        {
-            portLogger.LogInformation($"   URLs configuradas: {string.Join(", ", configuredUrls)}");
-        }
-    }
-    else if (!hasConfiguredUrls)
-    {
-        // En desarrollo, siempre usar puerto fijo 7124 (estándar para desarrollo)
-        app.Urls.Add("http://0.0.0.0:7124");
-        portLogger.LogInformation("✅ Desarrollo: Puerto configurado a 7124 (por defecto)");
-    }
-    else
-    {
-        portLogger.LogInformation($"✅ Desarrollo: URLs ya configuradas: {string.Join(", ", configuredUrls)}");
-    }
-}
-else
-{
-    // Producción: verificar variables en orden de prioridad (Azure App Service, Render.com, etc.)
-    var aspnetcoreUrls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
-    var renderPortEnv = Environment.GetEnvironmentVariable("PORT");
-    var isRender = !string.IsNullOrEmpty(renderPortEnv);
-    
-    if (!string.IsNullOrEmpty(aspnetcoreUrls))
-    {
-        // ASPNETCORE_URLS tiene la mayor prioridad - .NET la usa automáticamente
-        // .NET ya ha leído y aplicado ASPNETCORE_URLS durante la inicialización del host
-        var platform = isRender ? "Render.com" : "Azure App Service";
-        portLogger.LogInformation($"✅ Producción ({platform}): Usando ASPNETCORE_URLS={aspnetcoreUrls}");
-        if (hasConfiguredUrls)
-        {
-            portLogger.LogInformation($"   URLs configuradas automáticamente: {string.Join(", ", configuredUrls)}");
-        }
-        else
-        {
-            portLogger.LogWarning($"⚠️ ASPNETCORE_URLS está configurado pero no se detectaron URLs. Verificar formato (debe ser: http://0.0.0.0:PORT)");
-        }
-    }
-    else if (!hasConfiguredUrls)
-    {
-        // Fallback: usar WEBSITES_PORT (variable estándar de Azure App Service)
-        var websitesPort = Environment.GetEnvironmentVariable("WEBSITES_PORT");
-        if (!string.IsNullOrEmpty(websitesPort) && int.TryParse(websitesPort, out int websitesPortNumber))
-        {
-            app.Urls.Add($"http://0.0.0.0:{websitesPortNumber}");
-            portLogger.LogInformation($"✅ Producción (Azure App Service): Puerto configurado desde WEBSITES_PORT={websitesPortNumber}");
-        }
-        else if (isRender && int.TryParse(renderPortEnv, out int renderPortNum))
-        {
-            // Render.com: usar PORT (ya configurado en ASPNETCORE_URLS arriba, pero por si acaso)
-            app.Urls.Add($"http://0.0.0.0:{renderPortNum}");
-            portLogger.LogInformation($"✅ Producción (Render.com): Puerto configurado desde PORT={renderPortNum}");
-        }
-        else
-        {
-            // Último fallback: usar PORT (común en contenedores y Render.com)
-            var portEnv = Environment.GetEnvironmentVariable("PORT");
-            if (!string.IsNullOrEmpty(portEnv) && int.TryParse(portEnv, out int portNum))
-            {
-                app.Urls.Add($"http://0.0.0.0:{portNum}");
-                portLogger.LogInformation($"✅ Producción: Puerto configurado desde PORT={portNum}");
-            }
-            else
-            {
-                // Si no hay ninguna variable configurada:
-                // - Azure App Service: No necesita puerto explícito, Azure lo maneja automáticamente
-                // - Render.com: Siempre tiene PORT configurado, así que este caso no debería ocurrir
-                // - Otros entornos: Usar puerto 80 por defecto (estándar HTTP)
-                app.Urls.Add("http://0.0.0.0:80");
-                portLogger.LogInformation("✅ Producción: Puerto configurado a 80 (por defecto) - Azure App Service lo manejará automáticamente si es necesario");
-            }
-        }
-    }
-    else
-    {
-        // URLs ya configuradas (probablemente desde ASPNETCORE_URLS o configuración previa)
-        var platform = isRender ? "Render.com" : "Azure App Service";
-        portLogger.LogInformation($"✅ Producción ({platform}): URLs ya configuradas: {string.Join(", ", configuredUrls)}");
-        
-        // ✅ RENDER.COM: Asegurar que el puerto esté configurado explícitamente
-        if (isRender && !hasConfiguredUrls)
-        {
-            // Si estamos en Render.com pero no hay URLs configuradas, configurar PORT explícitamente
-            if (int.TryParse(renderPortEnv, out int renderPortNum))
-            {
-                app.Urls.Add($"http://0.0.0.0:{renderPortNum}");
-                portLogger.LogInformation($"✅ Producción (Render.com): Puerto configurado explícitamente desde PORT={renderPortNum}");
-            }
-        }
-    }
-}
-
-// ✅ RENDER.COM: Verificación final del puerto antes de iniciar
-// El puerto ya debería estar configurado desde el builder, pero verificamos por si acaso
+var finalPort = Environment.GetEnvironmentVariable("PORT") ?? portToUse;
 var finalUrls = app.Urls.ToList();
-var finalLogger = app.Services.GetRequiredService<ILogger<Program>>();
 
+startupLogger.LogInformation($"🚀 Iniciando aplicación en puerto: {finalPort}");
 if (finalUrls.Any())
 {
-    finalLogger.LogInformation($"🚀 APLICACIÓN INICIANDO - Puertos configurados: {string.Join(", ", finalUrls)}");
-    Console.WriteLine($"[RENDER] ✅ Puertos finales antes de app.Run(): {string.Join(", ", finalUrls)}");
+    startupLogger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
 }
 else
 {
-    // Fallback de emergencia: el puerto debería estar configurado desde el builder, pero por si acaso
-    finalLogger.LogWarning("⚠️ ADVERTENCIA: No hay puertos configurados antes de app.Run() - usando fallback");
-    Console.WriteLine("[RENDER] ⚠️ ADVERTENCIA: No hay puertos configurados - usando fallback");
-    
-    var emergencyPort = Environment.GetEnvironmentVariable("PORT") ?? "10000";
-    if (int.TryParse(emergencyPort, out int emergencyPortNum))
-    {
-        app.Urls.Add($"http://0.0.0.0:{emergencyPortNum}");
-        Console.WriteLine($"[RENDER] Puerto de emergencia configurado: {emergencyPortNum}");
-        finalLogger.LogInformation($"✅ Puerto de emergencia configurado: {emergencyPortNum}");
-    }
+    startupLogger.LogWarning($"⚠️ No se detectaron URLs configuradas. El puerto debería estar configurado desde UseUrls() en el builder.");
 }
 
-// ✅ RENDER.COM: El servidor ya está iniciado (se inició después de Build() en línea 1634)
-// Solo necesitamos esperar indefinidamente (equivalente a app.Run() pero con más control)
-finalLogger.LogInformation($"✅ Aplicación lista - Servidor ya está escuchando en: {string.Join(", ", app.Urls)}");
-Console.WriteLine($"[RENDER] ✅ Aplicación lista - Servidor escuchando en: {string.Join(", ", app.Urls)}");
-await app.WaitForShutdownAsync();
+// ✅ RENDER.COM: Iniciar aplicación
+// CRÍTICO: Usar app.Run() en lugar de StartAsync() + WaitForShutdownAsync()
+// app.Run() maneja el startup correctamente y Render.com puede detectar el puerto
+Console.WriteLine($"[RENDER] ✅ Aplicación lista - URLs: {string.Join(", ", finalUrls)}");
+app.Run();

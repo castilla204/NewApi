@@ -1773,6 +1773,40 @@ app.UseResponseCompression();
 // Esto asegura que los headers CORS se envíen incluso si hay errores
 app.UseCors("AllowSpecificOrigin");
 
+// ✅ DEBUG: Logging detallado de CORS y autenticación para diagnosticar problemas
+app.Use(async (context, next) =>
+{
+    var corsLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+    
+    // Solo loggear en producción para diagnosticar problemas
+    if (!app.Environment.IsDevelopment())
+    {
+        var path = context.Request.Path.Value ?? "";
+        var method = context.Request.Method;
+        var origin = context.Request.Headers["Origin"].ToString();
+        var hasAuth = context.Request.Headers.ContainsKey("Authorization");
+        var authHeader = hasAuth ? (context.Request.Headers["Authorization"].ToString().Length > 20 
+            ? context.Request.Headers["Authorization"].ToString().Substring(0, 20) + "..." 
+            : context.Request.Headers["Authorization"].ToString()) : "NO AUTH HEADER";
+        
+        // Loggear todas las solicitudes a endpoints protegidos
+        if (path.StartsWith("/api") && !path.Contains("/ServiceType/public"))
+        {
+            corsLogger.LogInformation($"🔍 [CORS/AUTH DEBUG] {method} {path} | Origin: {origin} | HasAuth: {hasAuth} | AuthHeader: {authHeader}");
+            
+            // Si es OPTIONS (preflight), loggear headers importantes
+            if (method == "OPTIONS")
+            {
+                var accessControlRequestMethod = context.Request.Headers["Access-Control-Request-Method"].ToString();
+                var accessControlRequestHeaders = context.Request.Headers["Access-Control-Request-Headers"].ToString();
+                corsLogger.LogInformation($"   [PREFLIGHT] Access-Control-Request-Method: {accessControlRequestMethod} | Access-Control-Request-Headers: {accessControlRequestHeaders}");
+            }
+        }
+    }
+    
+    await next();
+});
+
 // ✅ HANGFIRE IFRAME SUPPORT: Configurar headers para permitir iframes en Hangfire Dashboard
 app.Use(async (context, next) =>
 {

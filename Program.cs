@@ -1773,6 +1773,35 @@ app.UseResponseCompression();
 // ✅ RENDER.COM: Los timeouts de Kestrel ya están configurados arriba
 // KeepAliveTimeout y RequestHeadersTimeout están en 5 y 2 minutos respectivamente
 
+// ✅ CRÍTICO: Manejo de errores global - DEBE ir ANTES de CORS
+// Esto asegura que TODAS las excepciones devuelvan JSON, no HTML
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        var exceptionHandlerPathFeature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerPathFeature>();
+        var exception = exceptionHandlerPathFeature?.Error;
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        
+        // Log del error
+        logger.LogError(exception, "❌ Excepción no manejada: {Path}", context.Request.Path);
+        
+        // Siempre devolver JSON, nunca HTML
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/json";
+        
+        var response = new
+        {
+            message = "An error occurred while processing your request",
+            error = exception?.Message ?? "Unknown error",
+            path = context.Request.Path,
+            timestamp = DateTime.UtcNow
+        };
+        
+        await context.Response.WriteAsJsonAsync(response);
+    });
+});
+
 // ✅ CORS DEBE SER EL PRIMERO: Aplicar CORS ANTES de cualquier otro middleware
 // Esto asegura que los headers CORS se envíen incluso si hay errores
 app.UseCors("AllowSpecificOrigin");

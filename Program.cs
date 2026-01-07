@@ -121,7 +121,42 @@ if (isDevelopment)
 else
 {
     // En producción (Azure App Services): leer de variable GoogleCredentialJson
+    // ✅ DEBUG: Verificar todas las variables de entorno relacionadas con Google
+    var allEnvVars = Environment.GetEnvironmentVariables();
+    var googleRelatedVars = new List<string>();
+    foreach (System.Collections.DictionaryEntry entry in allEnvVars)
+    {
+        var key = entry.Key?.ToString() ?? "";
+        if (key.Contains("Google", StringComparison.OrdinalIgnoreCase) || 
+            key.Contains("GOOGLE", StringComparison.OrdinalIgnoreCase))
+        {
+            var value = entry.Value?.ToString() ?? "";
+            var valuePreview = value.Length > 50 ? value.Substring(0, 50) + "..." : value;
+            googleRelatedVars.Add($"{key} = {valuePreview} (length: {value.Length})");
+        }
+    }
+    initLogger.LogInformation($"🔍 DEBUG: Variables de entorno relacionadas con Google encontradas: {googleRelatedVars.Count}");
+    foreach (var varInfo in googleRelatedVars)
+    {
+        initLogger.LogInformation($"   {varInfo}");
+    }
+    
     credentialsJson = Environment.GetEnvironmentVariable("GoogleCredentialJson");
+    
+    // ✅ DEBUG: Log detallado de lo que se encontró
+    if (credentialsJson == null)
+    {
+        initLogger.LogWarning("🔍 DEBUG: Environment.GetEnvironmentVariable('GoogleCredentialJson') devolvió NULL");
+    }
+    else if (string.IsNullOrEmpty(credentialsJson))
+    {
+        initLogger.LogWarning("🔍 DEBUG: Environment.GetEnvironmentVariable('GoogleCredentialJson') devolvió cadena VACÍA");
+    }
+    else
+    {
+        initLogger.LogInformation($"🔍 DEBUG: GoogleCredentialJson encontrado - Longitud: {credentialsJson.Length} caracteres");
+        initLogger.LogInformation($"🔍 DEBUG: Primeros 100 caracteres: {credentialsJson.Substring(0, Math.Min(100, credentialsJson.Length))}");
+    }
     
     if (!string.IsNullOrEmpty(credentialsJson))
     {
@@ -141,6 +176,7 @@ else
         catch (Exception ex)
         {
             initLogger.LogError($"❌ Error al crear archivo temporal de credenciales: {ex.Message}");
+            initLogger.LogError($"   Stack trace: {ex.StackTrace}");
             // Continuar sin archivo temporal, intentará usar Application Default Credentials
         }
     }
@@ -610,89 +646,59 @@ catch
 // Usar la misma conexión a Supabase configurada en appsettings.Development.json
 string connectionString;
 
-// ✅ DETECTAR ORIGEN DE CONNECTION STRING (Variable de entorno vs appsettings.json)
-// En Azure, las variables de entorno tienen prioridad sobre appsettings.json
+// ✅ HARDCODEADO: Connection string hardcodeada para producción (Render.com)
+// En desarrollo: usar appsettings.Development.json o variable de entorno
 var connectionStringSource = "Unknown";
-var envConnectionString = Environment.GetEnvironmentVariable("ConnectionStrings__PostgresConnection");
-var configConnectionString = builder.Configuration.GetConnectionString("PostgresConnection");
 
-string existingConnectionString;
-if (!string.IsNullOrEmpty(envConnectionString))
+if (isDevelopment)
 {
-    existingConnectionString = envConnectionString;
-    connectionStringSource = "Variable de Entorno (Azure)";
-    configLogger.LogWarning("⚠️ IMPORTANTE: Connection string viene de VARIABLE DE ENTORNO (Azure)");
-    configLogger.LogWarning("   Las variables de entorno tienen prioridad sobre appsettings.json");
-    configLogger.LogWarning("   Si el puerto es 5432, actualiza la variable en Azure Portal:");
-    configLogger.LogWarning("   ConnectionStrings__PostgresConnection -> Cambiar Port=5432 a Port=6543");
-}
-else if (!string.IsNullOrEmpty(configConnectionString))
-{
-    existingConnectionString = configConnectionString;
-    connectionStringSource = isDevelopment ? "appsettings.Development.json" : "appsettings.json";
-    configLogger.LogInformation($"✅ Connection string viene de: {connectionStringSource}");
-}
-else
-{
-    existingConnectionString = null;
-}
-
-if (string.IsNullOrEmpty(existingConnectionString))
-{
-    // ⚠️ TEMPORALMENTE DESHABILITADO: Construcción desde Secret Manager
-    // TODO: Habilitar cuando se configuren los secrets en Google Cloud Secret Manager
-    // Por ahora, usar siempre Supabase desde appsettings.json tanto en desarrollo como producción
-    throw new InvalidOperationException(
-        "Database connection string not configured. " +
-        $"Set 'PostgresConnection' in appsettings.{(isDevelopment ? "Development" : "")}.json with your Supabase connection string. " +
-        "NOTA: Temporalmente usando Supabase directamente, no Secret Manager.");
+    // ✅ DESARROLLO: Leer de appsettings.Development.json o variable de entorno
+    var envConnectionString = Environment.GetEnvironmentVariable("ConnectionStrings__PostgresConnection");
+    var configConnectionString = builder.Configuration.GetConnectionString("PostgresConnection");
     
-    /*
-    // Si no hay connection string en configuración, intentar construir desde Secret Manager (solo producción)
-    if (!isDevelopment)
+    if (!string.IsNullOrEmpty(envConnectionString))
     {
-        var dbHost = GetSecretValue("postgres-host", null);
-        var dbPort = GetSecretValue("postgres-port", null) ?? "5432";
-        var dbUsername = GetSecretValue("postgres-username", null);
-        var dbPassword = GetSecretValue("postgres-password", null);
-        var dbName = GetSecretValue("postgres-database", null) ?? "postgres";
-        
-        if (string.IsNullOrEmpty(dbHost) || string.IsNullOrEmpty(dbUsername) || string.IsNullOrEmpty(dbPassword))
-        {
-            throw new InvalidOperationException(
-                "Database connection string not configured. " +
-                "Set 'PostgresConnection' in appsettings.json or configure via Secret Manager " +
-                "(postgres-host, postgres-username, postgres-password, postgres-database).");
-        }
-        
-        connectionString = $"Host={dbHost};Port={dbPort};Username={dbUsername};Password={dbPassword};Database={dbName};" +
-                          $"SslMode=Require;Timeout=30;CommandTimeout=60;Pooling=true;";
-        
-        configLogger.LogInformation($"✅ Connection string construido desde Secret Manager: Host={dbHost}, Port={dbPort}, Database={dbName}, Username={dbUsername}");
+        connectionString = envConnectionString;
+        connectionStringSource = "Variable de Entorno (Desarrollo)";
+        configLogger.LogInformation($"✅ Desarrollo: Connection string desde variable de entorno");
+    }
+    else if (!string.IsNullOrEmpty(configConnectionString))
+    {
+        connectionString = configConnectionString;
+        connectionStringSource = "appsettings.Development.json";
+        configLogger.LogInformation($"✅ Desarrollo: Connection string desde appsettings.Development.json");
     }
     else
     {
         throw new InvalidOperationException(
-            "Database connection string not configured. " +
-            "Set 'PostgresConnection' in appsettings.Development.json with your Supabase connection string.");
+            "Database connection string not configured for development. " +
+            "Set 'PostgresConnection' in appsettings.Development.json or environment variable ConnectionStrings__PostgresConnection.");
     }
-    */
 }
 else
 {
-    // Usar connection string desde configuración (appsettings.Development.json o appsettings.json)
-    connectionString = existingConnectionString;
+    // ✅ PRODUCCIÓN (Render.com): Connection string HARDCODEADA
+    // Transaction Pooler (puerto 6543) - Compatible con Hangfire y IPv4/IPv6
+    // Timeouts aumentados para Render.com: Timeout=60, CommandTimeout=120
+    connectionString = "User Id=postgres.rveqsehzlvbttlpmsbmi;Password=__REDACTED_CREDENTIAL__;Server=aws-1-eu-west-2.pooler.supabase.com;Port=6543;Database=postgres;SslMode=Require;Timeout=60;CommandTimeout=120;Pooling=true;Multiplexing=false;Enlist=false;Max Auto Prepare=0;KeepAlive=30;";
+    connectionStringSource = "Hardcoded (Producción - Render.com)";
+    configLogger.LogInformation("✅ Producción: Connection string HARDCODEADA (Render.com)");
+    configLogger.LogInformation("   Transaction Pooler (puerto 6543) - Compatible con Hangfire");
+    configLogger.LogInformation("   Timeouts aumentados: Timeout=60, CommandTimeout=120");
+    configLogger.LogInformation("   KeepAlive=30 para mantener conexiones vivas");
+}
+
+if (!string.IsNullOrEmpty(connectionString))
+{
+    // Usar connection string configurada
     
     // Extraer información para logging (sin mostrar contraseña)
-    var hostMatch = Regex.Match(connectionString, @"Host=([^;]+)");
-    var portMatch = Regex.Match(connectionString, @"Port=([^;]+)");
-    var userMatch = Regex.Match(connectionString, @"Username=([^;]+)");
-    var dbMatch = Regex.Match(connectionString, @"Database=([^;]+)");
-    
-    var dbHost = hostMatch.Success ? hostMatch.Groups[1].Value : "unknown";
-    var dbPort = portMatch.Success ? portMatch.Groups[1].Value : "unknown";
-    var dbUsername = userMatch.Success ? userMatch.Groups[1].Value : "unknown";
-    var dbName = dbMatch.Success ? dbMatch.Groups[1].Value : "unknown";
+    // Usar NpgsqlConnectionStringBuilder para parsear correctamente (soporta Host= y Server=)
+    var connBuilder = new NpgsqlConnectionStringBuilder(connectionString);
+    var dbHost = connBuilder.Host ?? "unknown";
+    var dbPort = connBuilder.Port.ToString();
+    var dbUsername = connBuilder.Username ?? "unknown";
+    var dbName = connBuilder.Database ?? "unknown";
     
     configLogger.LogInformation($"✅ Connection string detectada:");
     configLogger.LogInformation($"   Origen: {connectionStringSource}");
@@ -1215,7 +1221,23 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     
     // ✅ CRÍTICO PARA TRANSACTION POOLER (PgBouncer): Deshabilitar Prepared Statements
     // PgBouncer en Transaction Mode no admite Prepared Statements (CAUSA ObjectDisposedException/Connection Reset)
-    connectionStringBuilder.MaxAutoPrepare = 0; 
+    connectionStringBuilder.MaxAutoPrepare = 0;
+    
+    // ✅ FIX CONEXIONES: Agregar timeouts y configuración de pooling para evitar "Exception while reading from stream"
+    // CRÍTICO para Render.com: aumentar timeouts debido a latencia de red
+    if (connectionStringBuilder.Timeout < 60)
+    {
+        connectionStringBuilder.Timeout = 60; // Timeout de conexión aumentado para Render.com
+    }
+    if (connectionStringBuilder.CommandTimeout < 120)
+    {
+        connectionStringBuilder.CommandTimeout = 120; // Timeout de comandos aumentado para Render.com
+    }
+    connectionStringBuilder.Pooling = true; // Habilitar pooling de conexiones
+    connectionStringBuilder.MinPoolSize = 2; // Mínimo aumentado para mantener conexiones activas
+    connectionStringBuilder.MaxPoolSize = 30; // Máximo aumentado para Render.com
+    connectionStringBuilder.ConnectionLifetime = 600; // Reciclar conexiones después de 10 minutos (aumentado)
+    connectionStringBuilder.KeepAlive = 30; // Enviar keepalive cada 30 segundos para mantener conexiones vivas 
     
     var finalConnectionString = connectionStringBuilder.ToString();
     
@@ -1236,20 +1258,24 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     dbLogger.LogWarning("🔧 CRITICAL FIX: Using connection string DIRECTLY (no NpgsqlDataSourceBuilder)");
     dbLogger.LogWarning($"   Multiplexing=false is EXPLICITLY set in connection string");
     dbLogger.LogWarning($"   This prevents 'transactions must be started with BeginTransaction' error");
-    dbLogger.LogWarning("🔧 CRITICAL FIX: EnableRetryOnFailure DISABLED");
-    dbLogger.LogWarning($"   Retry logic conflicts with manual BeginTransaction causing ObjectDisposedException");
-    dbLogger.LogWarning($"   Manual transactions handle their own retry logic");
+    dbLogger.LogInformation("🔧 EnableRetryOnFailure HABILITADO para manejar errores transitorios");
+    dbLogger.LogInformation($"   Retry logic ayuda con timeouts y conexiones inestables en Render.com");
     
     // ✅ CRITICAL: Use connection string DIRECTLY, do NOT use NpgsqlDataSourceBuilder
     // NpgsqlDataSourceBuilder ignores Multiplexing=false from connection string
     options.UseNpgsql(finalConnectionString, npgsqlOptions =>
     {
-        npgsqlOptions.CommandTimeout(60);
+        npgsqlOptions.CommandTimeout(120); // Aumentado a 120 segundos para Render.com (más latencia)
         
-        // ❌ DISABLED: EnableRetryOnFailure causes ObjectDisposedException with manual transactions
-        // When combined with BeginTransaction, the retry strategy disposes connections
-        // that are still in use by the transaction, causing ManualResetEventSlim disposed errors
-        // Manual transactions in UserService.GoogleAuth handle their own retry logic
+        // ✅ HABILITADO: EnableRetryOnFailure para manejar errores transitorios de conexión
+        // CRÍTICO para Render.com donde hay más latencia y conexiones pueden ser inestables
+        // IMPORTANTE: Solo reintenta en operaciones que NO usan transacciones manuales
+        // Las transacciones manuales (UserService.GoogleAuth) manejan sus propios reintentos
+        npgsqlOptions.EnableRetryOnFailure(
+            maxRetryCount: 5, // Aumentado a 5 reintentos para Render.com
+            maxRetryDelay: TimeSpan.FromSeconds(10), // Delay máximo aumentado
+            errorCodesToAdd: null // Usar códigos de error por defecto de Npgsql
+        );
     });
     
     // ✅ CRITICAL: Disable Execution Strategy completely to prevent multiplexing issues
@@ -1464,10 +1490,15 @@ if (hangfireConnectionValid)
             UseSlidingInvisibilityTimeout = true,
             
             // ✅ DISTRIBUTED LOCK TIMEOUT: Crítico para evitar deadlocks
-            // Los locks distribuidos necesitan más tiempo con latencia de red (Supabase)
+            // Los locks distribuidos necesitan más tiempo con latencia de red (Supabase + Render.com)
             // Session Pooler puede causar problemas aquí, Direct Connection es mejor
             // Basado en casos reales: timeouts altos (15+ min) resuelven problemas de locks
-            DistributedLockTimeout = TimeSpan.FromMinutes(15) // Aumentado para Supabase
+            DistributedLockTimeout = TimeSpan.FromMinutes(20) // Aumentado para Render.com + Supabase
+            
+            // ✅ NOTA: El error "DISCARD ALL cannot run inside a transaction block" ocurre porque
+            // Hangfire intenta hacer DISCARD ALL pero el Transaction Pooler no lo permite.
+            // Esto es un problema conocido de Hangfire con Transaction Pooler.
+            // Solución temporal: Los timeouts aumentados y reintentos ayudan a mitigar el problema.
         })
         .UseDefaultTypeResolver()
         .UseDefaultTypeSerializer());
@@ -1492,11 +1523,14 @@ if (hangfireConnectionValid)
             // En producción: más workers para mejor throughput
             options.WorkerCount = isDevelopment ? 1 : Math.Max(2, Environment.ProcessorCount);
             
-            options.ServerTimeout = TimeSpan.FromMinutes(5);
-            options.HeartbeatInterval = TimeSpan.FromSeconds(30);
-            options.ServerCheckInterval = TimeSpan.FromMinutes(1);
-            options.SchedulePollingInterval = TimeSpan.FromSeconds(30); // Verifica jobs programados cada 30 segundos
-            options.StopTimeout = TimeSpan.FromSeconds(15); // Timeout para detener servidor gracefully
+            // ✅ FIX RENDER.COM: Aumentar timeouts para Render.com (más latencia)
+            options.ServerTimeout = TimeSpan.FromMinutes(10); // Aumentado de 5 a 10 minutos
+            options.HeartbeatInterval = TimeSpan.FromSeconds(60); // Aumentado de 30 a 60 segundos
+            options.ServerCheckInterval = TimeSpan.FromMinutes(2); // Aumentado de 1 a 2 minutos
+            options.SchedulePollingInterval = TimeSpan.FromSeconds(60); // Aumentado de 30 a 60 segundos
+            options.StopTimeout = TimeSpan.FromSeconds(30); // Aumentado de 15 a 30 segundos
+            options.Queues = new[] { "default" }; // Solo procesar cola default para reducir carga
+            options.ShutdownTimeout = TimeSpan.FromSeconds(30); // Timeout para shutdown graceful
         });
         
         hangfireLogger.LogInformation($"✅ Hangfire Server habilitado (Workers: {(isDevelopment ? 1 : Math.Max(2, Environment.ProcessorCount))})");

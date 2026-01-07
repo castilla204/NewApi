@@ -31,26 +31,29 @@ using Npgsql;
 
 // ✅ RENDER.COM: Configurar puerto ANTES de crear el builder
 // Render.com usa la variable PORT (generalmente 10000)
-// Usar UseUrls() directamente en el builder para garantizar que se configure inmediatamente
+// CRÍTICO: Render.com escanea puertos MUY rápido, antes de que la app termine de iniciar
+// Por eso debemos configurar el puerto INMEDIATAMENTE con un valor por defecto
 var renderPort = Environment.GetEnvironmentVariable("PORT");
-var builder = WebApplication.CreateBuilder(args);
+var portToUse = "10000"; // Puerto por defecto de Render.com
 
-// Configurar puerto inmediatamente después de crear el builder
 if (!string.IsNullOrEmpty(renderPort) && int.TryParse(renderPort, out int portNumber))
 {
-    // Render.com: configurar puerto directamente usando UseUrls()
-    builder.WebHost.UseUrls($"http://0.0.0.0:{portNumber}");
-    Console.WriteLine($"[RENDER] ✅ Puerto configurado en builder: PORT={renderPort} -> UseUrls(http://0.0.0.0:{portNumber})");
+    portToUse = renderPort;
+    Console.WriteLine($"[RENDER] ✅ Variable PORT detectada: {renderPort}");
 }
 else
 {
-    Console.WriteLine($"[RENDER] ⚠️ Variable PORT no encontrada o inválida: {renderPort ?? "null"}");
-    // También configurar ASPNETCORE_URLS como fallback
-    if (!string.IsNullOrEmpty(renderPort))
-    {
-        Environment.SetEnvironmentVariable("ASPNETCORE_URLS", $"http://0.0.0.0:{renderPort}");
-    }
+    Console.WriteLine($"[RENDER] ⚠️ Variable PORT no encontrada, usando puerto por defecto: {portToUse}");
 }
+
+// Configurar puerto INMEDIATAMENTE antes de crear el builder
+// Esto garantiza que Render.com pueda detectar el puerto durante el escaneo rápido
+var builder = WebApplication.CreateBuilder(args);
+builder.WebHost.UseUrls($"http://0.0.0.0:{portToUse}");
+Console.WriteLine($"[RENDER] ✅ Puerto configurado INMEDIATAMENTE en builder: UseUrls(http://0.0.0.0:{portToUse})");
+
+// También configurar ASPNETCORE_URLS como respaldo
+Environment.SetEnvironmentVariable("ASPNETCORE_URLS", $"http://0.0.0.0:{portToUse}");
 
 // Configurar logging básico
 builder.Logging.ClearProviders();
@@ -1969,32 +1972,33 @@ else
     }
 }
 
-// ✅ RENDER.COM: Logging final del puerto antes de iniciar
+// ✅ RENDER.COM: Verificación final del puerto antes de iniciar
+// El puerto ya debería estar configurado desde el builder, pero verificamos por si acaso
 var finalUrls = app.Urls.ToList();
+var finalLogger = app.Services.GetRequiredService<ILogger<Program>>();
+
 if (finalUrls.Any())
 {
-    var finalLogger = app.Services.GetRequiredService<ILogger<Program>>();
     finalLogger.LogInformation($"🚀 APLICACIÓN INICIANDO - Puertos configurados: {string.Join(", ", finalUrls)}");
-    Console.WriteLine($"[RENDER] Puertos finales antes de app.Run(): {string.Join(", ", finalUrls)}");
+    Console.WriteLine($"[RENDER] ✅ Puertos finales antes de app.Run(): {string.Join(", ", finalUrls)}");
 }
 else
 {
-    var finalLogger = app.Services.GetRequiredService<ILogger<Program>>();
-    finalLogger.LogWarning("⚠️ ADVERTENCIA: No hay puertos configurados antes de app.Run()");
-    Console.WriteLine("[RENDER] ⚠️ ADVERTENCIA: No hay puertos configurados antes de app.Run()");
+    // Fallback de emergencia: el puerto debería estar configurado desde el builder, pero por si acaso
+    finalLogger.LogWarning("⚠️ ADVERTENCIA: No hay puertos configurados antes de app.Run() - usando fallback");
+    Console.WriteLine("[RENDER] ⚠️ ADVERTENCIA: No hay puertos configurados - usando fallback");
     
-    // Fallback de emergencia: usar PORT o 10000 (puerto por defecto de Render.com)
-    var emergencyPort = Environment.GetEnvironmentVariable("PORT");
-    if (!string.IsNullOrEmpty(emergencyPort) && int.TryParse(emergencyPort, out int emergencyPortNum))
+    var emergencyPort = Environment.GetEnvironmentVariable("PORT") ?? "10000";
+    if (int.TryParse(emergencyPort, out int emergencyPortNum))
     {
         app.Urls.Add($"http://0.0.0.0:{emergencyPortNum}");
         Console.WriteLine($"[RENDER] Puerto de emergencia configurado: {emergencyPortNum}");
-    }
-    else
-    {
-        app.Urls.Add("http://0.0.0.0:10000");
-        Console.WriteLine("[RENDER] Puerto de emergencia configurado: 10000 (por defecto Render.com)");
+        finalLogger.LogInformation($"✅ Puerto de emergencia configurado: {emergencyPortNum}");
     }
 }
 
+// ✅ RENDER.COM: Iniciar aplicación
+// IMPORTANTE: Render.com escanea puertos MUY rápido, por eso configuramos el puerto
+// ANTES de cualquier inicialización pesada (Secret Manager, DB, etc.)
+Console.WriteLine("[RENDER] 🚀 Iniciando aplicación...");
 app.Run();

@@ -1627,6 +1627,15 @@ builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
+// ✅ RENDER.COM: Iniciar servidor INMEDIATAMENTE después de Build()
+// CRÍTICO: Render.com necesita detectar el puerto rápidamente
+// Iniciamos el servidor ANTES de configurar middlewares para que el puerto esté disponible
+Console.WriteLine("[RENDER] 🚀 Iniciando servidor INMEDIATAMENTE después de Build()...");
+await app.StartAsync();
+var startupLogger = app.Services.GetRequiredService<ILogger<Program>>();
+startupLogger.LogInformation($"✅ Servidor iniciado y escuchando en: {string.Join(", ", app.Urls)}");
+Console.WriteLine($"[RENDER] ✅ Servidor iniciado - Puertos: {string.Join(", ", app.Urls)}");
+
 // ✅ Cargar claves Stripe según el modo configurado en SystemSetting
 try
 {
@@ -2001,15 +2010,8 @@ else
     }
 }
 
-// ✅ RENDER.COM: Iniciar servidor INMEDIATAMENTE para que Render.com detecte el puerto
-// CRÍTICO: Render.com hace timeout si el puerto no está disponible rápidamente
-// Usar StartAsync() para iniciar el servidor ANTES de completar toda la inicialización
-Console.WriteLine("[RENDER] 🚀 Iniciando servidor INMEDIATAMENTE...");
-await app.StartAsync();
-
-// Log que el servidor está escuchando
-finalLogger.LogInformation($"✅ Servidor iniciado y escuchando en: {string.Join(", ", app.Urls)}");
-Console.WriteLine($"[RENDER] ✅ Servidor iniciado - Puertos: {string.Join(", ", app.Urls)}");
-
-// Esperar indefinidamente (equivalente a app.Run() pero con más control)
+// ✅ RENDER.COM: El servidor ya está iniciado (se inició después de Build() en línea 1634)
+// Solo necesitamos esperar indefinidamente (equivalente a app.Run() pero con más control)
+finalLogger.LogInformation($"✅ Aplicación lista - Servidor ya está escuchando en: {string.Join(", ", app.Urls)}");
+Console.WriteLine($"[RENDER] ✅ Aplicación lista - Servidor escuchando en: {string.Join(", ", app.Urls)}");
 await app.WaitForShutdownAsync();

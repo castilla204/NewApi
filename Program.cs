@@ -31,21 +31,26 @@ using Npgsql;
 
 // ✅ RENDER.COM: Configurar puerto ANTES de crear el builder
 // Render.com usa la variable PORT (generalmente 10000)
-// Si está configurada, establecer ASPNETCORE_URLS para que .NET la use automáticamente
+// Usar UseUrls() directamente en el builder para garantizar que se configure inmediatamente
 var renderPort = Environment.GetEnvironmentVariable("PORT");
+var builder = WebApplication.CreateBuilder(args);
+
+// Configurar puerto inmediatamente después de crear el builder
 if (!string.IsNullOrEmpty(renderPort) && int.TryParse(renderPort, out int portNumber))
 {
-    // Render.com detecta el puerto automáticamente si configuramos ASPNETCORE_URLS
-    var urls = $"http://0.0.0.0:{portNumber}";
-    Environment.SetEnvironmentVariable("ASPNETCORE_URLS", urls);
-    Console.WriteLine($"[RENDER] Configurando puerto ANTES del builder: PORT={renderPort} -> ASPNETCORE_URLS={urls}");
+    // Render.com: configurar puerto directamente usando UseUrls()
+    builder.WebHost.UseUrls($"http://0.0.0.0:{portNumber}");
+    Console.WriteLine($"[RENDER] ✅ Puerto configurado en builder: PORT={renderPort} -> UseUrls(http://0.0.0.0:{portNumber})");
 }
 else
 {
-    Console.WriteLine($"[RENDER] Variable PORT no encontrada o inválida: {renderPort ?? "null"}");
+    Console.WriteLine($"[RENDER] ⚠️ Variable PORT no encontrada o inválida: {renderPort ?? "null"}");
+    // También configurar ASPNETCORE_URLS como fallback
+    if (!string.IsNullOrEmpty(renderPort))
+    {
+        Environment.SetEnvironmentVariable("ASPNETCORE_URLS", $"http://0.0.0.0:{renderPort}");
+    }
 }
-
-var builder = WebApplication.CreateBuilder(args);
 
 // Configurar logging básico
 builder.Logging.ClearProviders();

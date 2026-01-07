@@ -100,6 +100,7 @@ namespace newApi.Controllers
         }
 
         [HttpGet]
+        [AllowAnonymous] // ✅ PÚBLICO: Permitir acceso sin autenticación para explorar categorías
         public async Task<IActionResult> GetCategories()
         {
             try

@@ -36,7 +36,13 @@ var renderPort = Environment.GetEnvironmentVariable("PORT");
 if (!string.IsNullOrEmpty(renderPort) && int.TryParse(renderPort, out int portNumber))
 {
     // Render.com detecta el puerto automáticamente si configuramos ASPNETCORE_URLS
-    Environment.SetEnvironmentVariable("ASPNETCORE_URLS", $"http://0.0.0.0:{portNumber}");
+    var urls = $"http://0.0.0.0:{portNumber}";
+    Environment.SetEnvironmentVariable("ASPNETCORE_URLS", urls);
+    Console.WriteLine($"[RENDER] Configurando puerto ANTES del builder: PORT={renderPort} -> ASPNETCORE_URLS={urls}");
+}
+else
+{
+    Console.WriteLine($"[RENDER] Variable PORT no encontrada o inválida: {renderPort ?? "null"}");
 }
 
 var builder = WebApplication.CreateBuilder(args);
@@ -1944,6 +1950,45 @@ else
         // URLs ya configuradas (probablemente desde ASPNETCORE_URLS o configuración previa)
         var platform = isRender ? "Render.com" : "Azure App Service";
         portLogger.LogInformation($"✅ Producción ({platform}): URLs ya configuradas: {string.Join(", ", configuredUrls)}");
+        
+        // ✅ RENDER.COM: Asegurar que el puerto esté configurado explícitamente
+        if (isRender && !hasConfiguredUrls)
+        {
+            // Si estamos en Render.com pero no hay URLs configuradas, configurar PORT explícitamente
+            if (int.TryParse(renderPortEnv, out int renderPortNum))
+            {
+                app.Urls.Add($"http://0.0.0.0:{renderPortNum}");
+                portLogger.LogInformation($"✅ Producción (Render.com): Puerto configurado explícitamente desde PORT={renderPortNum}");
+            }
+        }
+    }
+}
+
+// ✅ RENDER.COM: Logging final del puerto antes de iniciar
+var finalUrls = app.Urls.ToList();
+if (finalUrls.Any())
+{
+    var finalLogger = app.Services.GetRequiredService<ILogger<Program>>();
+    finalLogger.LogInformation($"🚀 APLICACIÓN INICIANDO - Puertos configurados: {string.Join(", ", finalUrls)}");
+    Console.WriteLine($"[RENDER] Puertos finales antes de app.Run(): {string.Join(", ", finalUrls)}");
+}
+else
+{
+    var finalLogger = app.Services.GetRequiredService<ILogger<Program>>();
+    finalLogger.LogWarning("⚠️ ADVERTENCIA: No hay puertos configurados antes de app.Run()");
+    Console.WriteLine("[RENDER] ⚠️ ADVERTENCIA: No hay puertos configurados antes de app.Run()");
+    
+    // Fallback de emergencia: usar PORT o 10000 (puerto por defecto de Render.com)
+    var emergencyPort = Environment.GetEnvironmentVariable("PORT");
+    if (!string.IsNullOrEmpty(emergencyPort) && int.TryParse(emergencyPort, out int emergencyPortNum))
+    {
+        app.Urls.Add($"http://0.0.0.0:{emergencyPortNum}");
+        Console.WriteLine($"[RENDER] Puerto de emergencia configurado: {emergencyPortNum}");
+    }
+    else
+    {
+        app.Urls.Add("http://0.0.0.0:10000");
+        Console.WriteLine("[RENDER] Puerto de emergencia configurado: 10000 (por defecto Render.com)");
     }
 }
 

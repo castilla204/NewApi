@@ -1853,6 +1853,30 @@ context.Request.Headers.ContainsKey("X-Bypass-Auth"))
 app.UseAuthentication();
 app.UseAuthorization();
 
+// ✅ DEBUG: Logging de autenticación para diagnosticar problemas en Render.com
+app.Use(async (context, next) =>
+{
+    var authLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+    
+    // Solo loggear en producción para diagnosticar problemas
+    if (!app.Environment.IsDevelopment())
+    {
+        var path = context.Request.Path.Value ?? "";
+        var hasAuth = context.Request.Headers.ContainsKey("Authorization");
+        var authHeader = hasAuth ? context.Request.Headers["Authorization"].ToString().Substring(0, Math.Min(20, context.Request.Headers["Authorization"].ToString().Length)) + "..." : "NO AUTH HEADER";
+        var isAuthenticated = context.User?.Identity?.IsAuthenticated ?? false;
+        var origin = context.Request.Headers["Origin"].ToString();
+        
+        // Solo loggear si es un endpoint protegido (no /health, no /api/ServiceType/public)
+        if (!path.Contains("/health") && !path.Contains("/ServiceType/public") && path.StartsWith("/api"))
+        {
+            authLogger.LogInformation($"🔍 [AUTH DEBUG] Path: {path}, Origin: {origin}, HasAuthHeader: {hasAuth}, IsAuthenticated: {isAuthenticated}, AuthHeader: {authHeader}");
+        }
+    }
+    
+    await next();
+});
+
 // ✅ SEGURIDAD 2025: FORZAR MFA para Admin y Expertos
 // OWASP/NIST/PCI DSS: MFA obligatorio para cuentas privilegiadas
 // IMPORTANTE: El middleware verifica rutas públicas internamente

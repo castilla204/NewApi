@@ -49,10 +49,14 @@ else
 // Configurar puerto INMEDIATAMENTE antes de crear el builder
 // Esto garantiza que Render.com pueda detectar el puerto durante el escaneo rápido
 var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.UseUrls($"http://0.0.0.0:{portToUse}");
+
+// ✅ RENDER.COM: Configurar puerto EXACTAMENTE como recomienda el análisis
+// Usar formato exacto: http://0.0.0.0:{PORT} para binding correcto
+// El análisis sugiere usar UseUrls() directamente en el builder
+builder.WebHost.UseUrls($"http://0.0.0.0:{Environment.GetEnvironmentVariable("PORT") ?? portToUse}");
 Console.WriteLine($"[RENDER] ✅ Puerto configurado INMEDIATAMENTE en builder: UseUrls(http://0.0.0.0:{portToUse})");
 
-// También configurar ASPNETCORE_URLS como respaldo
+// También configurar ASPNETCORE_URLS como respaldo (según análisis)
 Environment.SetEnvironmentVariable("ASPNETCORE_URLS", $"http://0.0.0.0:{portToUse}");
 
 // Configurar logging básico

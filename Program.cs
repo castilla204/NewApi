@@ -1924,6 +1924,32 @@ app.UseRequireMfa();
 // Add health check endpoint
 app.MapHealthChecks("/health");
 
+// ✅ RENDER.COM: Endpoint de warmup para evitar cold starts
+// Este endpoint hace una query simple a la BD para "calentar" las conexiones
+// Útil para mantener la app activa y evitar el delay de 50+ segundos en el primer request
+app.MapGet("/warmup", async (AppDbContext db) =>
+{
+    try
+    {
+        // Query simple para "calentar" la conexión a la base de datos
+        var count = await db.Users.CountAsync();
+        return Results.Ok(new { 
+            status = "warmed up", 
+            timestamp = DateTime.UtcNow,
+            userCount = count,
+            message = "Application and database connections are ready" 
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(
+            detail: ex.Message,
+            statusCode: 500,
+            title: "Warmup failed"
+        );
+    }
+}).WithName("Warmup").WithTags("System");
+
 app.MapControllers();
 app.MapHub<ChatHub>("/chatHub");
 

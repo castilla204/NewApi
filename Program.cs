@@ -1802,6 +1802,34 @@ app.UseExceptionHandler(errorApp =>
     });
 });
 
+// ✅ CRÍTICO: Manejar códigos de estado HTTP (404, 500, etc.) para devolver JSON
+// Esto asegura que errores como 404 también devuelvan JSON, no HTML
+app.UseStatusCodePages(async context =>
+{
+    // Solo manejar si es una request a la API
+    if (context.HttpContext.Request.Path.StartsWithSegments("/api"))
+    {
+        context.HttpContext.Response.ContentType = "application/json";
+        
+        var response = new
+        {
+            message = context.HttpContext.Response.StatusCode switch
+            {
+                404 => "Endpoint not found",
+                401 => "Unauthorized",
+                403 => "Forbidden",
+                500 => "Internal server error",
+                _ => "An error occurred"
+            },
+            statusCode = context.HttpContext.Response.StatusCode,
+            path = context.HttpContext.Request.Path,
+            timestamp = DateTime.UtcNow
+        };
+        
+        await context.HttpContext.Response.WriteAsJsonAsync(response);
+    }
+});
+
 // ✅ CORS DEBE SER EL PRIMERO: Aplicar CORS ANTES de cualquier otro middleware
 // Esto asegura que los headers CORS se envíen incluso si hay errores
 app.UseCors("AllowSpecificOrigin");

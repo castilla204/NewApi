@@ -896,6 +896,7 @@ namespace newApi.Controllers
         /// <param name="popularPageSize">Tamaño de página para servicios populares (por defecto 20, máximo 50)</param>
         /// <returns>Array plano con secciones: "Revisiones [Categoría] cerca de mí", "Revisiones [Categoría] populares", y secciones específicas por país (solo para Coches y Motos)</returns>
         [HttpGet("homepage-wall")]
+        [AllowAnonymous] // ✅ PÚBLICO: Permitir acceso sin autenticación para homepage
         public async Task<IActionResult> GetHomepageWall(
             [FromQuery] int categoryId,  // ✅ REQUERIDO: Filtro por categoría (obligatorio)
             [FromQuery] string? latitude = null,

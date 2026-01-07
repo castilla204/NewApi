@@ -11,8 +11,10 @@ EXPOSE 10000
 
 # ✅ RENDER.COM: Configurar variables de entorno para puerto
 # Render.com pasará PORT como variable de entorno, pero configuramos un valor por defecto
-ENV ASPNETCORE_URLS=http://0.0.0.0:10000
+# Usar http://+ según recomendaciones del análisis (equivalente a 0.0.0.0 pero más específico de Kestrel)
+ENV ASPNETCORE_URLS=http://+:10000
 ENV PORT=10000
+ENV ASPNETCORE_ENVIRONMENT=Production
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:c7445f141c04f1a6b454181bd098dcfa606c61ba0bd213d0a702489e5bd4cd71 AS build
 WORKDIR /src

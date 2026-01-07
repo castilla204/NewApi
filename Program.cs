@@ -2001,8 +2001,15 @@ else
     }
 }
 
-// ✅ RENDER.COM: Iniciar aplicación
-// IMPORTANTE: Render.com escanea puertos MUY rápido, por eso configuramos el puerto
-// ANTES de cualquier inicialización pesada (Secret Manager, DB, etc.)
-Console.WriteLine("[RENDER] 🚀 Iniciando aplicación...");
-app.Run();
+// ✅ RENDER.COM: Iniciar servidor INMEDIATAMENTE para que Render.com detecte el puerto
+// CRÍTICO: Render.com hace timeout si el puerto no está disponible rápidamente
+// Usar StartAsync() para iniciar el servidor ANTES de completar toda la inicialización
+Console.WriteLine("[RENDER] 🚀 Iniciando servidor INMEDIATAMENTE...");
+await app.StartAsync();
+
+// Log que el servidor está escuchando
+finalLogger.LogInformation($"✅ Servidor iniciado y escuchando en: {string.Join(", ", app.Urls)}");
+Console.WriteLine($"[RENDER] ✅ Servidor iniciado - Puertos: {string.Join(", ", app.Urls)}");
+
+// Esperar indefinidamente (equivalente a app.Run() pero con más control)
+await app.WaitForShutdownAsync();

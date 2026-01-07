@@ -56,6 +56,11 @@ Console.WriteLine($"[RENDER] ✅ ASPNETCORE_URLS configurado ANTES del builder: 
 // Crear builder - .NET leerá ASPNETCORE_URLS automáticamente
 var builder = WebApplication.CreateBuilder(args);
 
+// ✅ RENDER.COM: Forzar binding del puerto INMEDIATAMENTE después del builder
+// Esto asegura que el puerto esté configurado antes de cualquier inicialización pesada
+builder.WebHost.UseUrls(aspnetcoreUrls);
+Console.WriteLine($"[RENDER] ✅ UseUrls() configurado: {aspnetcoreUrls}");
+
 // Configurar logging básico
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
@@ -2016,22 +2021,27 @@ app.MapHub<ChatHub>("/chatHub");
 // El puerto ya está configurado con ASPNETCORE_URLS antes del builder
 var startupLogger = app.Services.GetRequiredService<ILogger<Program>>();
 var finalPort = Environment.GetEnvironmentVariable("PORT") ?? portToUse;
-var finalUrls = app.Urls.ToList();
 var aspnetcoreUrlsFinal = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
 
 startupLogger.LogInformation($"🚀 Iniciando aplicación en puerto: {finalPort}");
 startupLogger.LogInformation($"   ASPNETCORE_URLS: {aspnetcoreUrlsFinal ?? "NO CONFIGURADO"}");
-if (finalUrls.Any())
-{
-    startupLogger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
-}
-else
+
+// ✅ RENDER.COM: CRÍTICO - Iniciar servidor INMEDIATAMENTE para que Render.com detecte el puerto
+// Render.com escanea el puerto muy temprano, así que necesitamos iniciar el servidor lo antes posible
+Console.WriteLine($"[RENDER] 🚀 Iniciando servidor INMEDIATAMENTE para detección de puerto...");
+await app.StartAsync();
+
+// Obtener URLs después de iniciar
+var finalUrls = app.Urls.ToList();
+startupLogger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
+
+if (!finalUrls.Any())
 {
     startupLogger.LogWarning($"⚠️ No se detectaron URLs configuradas. Verificar ASPNETCORE_URLS.");
 }
 
-// ✅ RENDER.COM: Iniciar aplicación
-// CRÍTICO: Usar app.Run() en lugar de StartAsync() + WaitForShutdownAsync()
-// app.Run() maneja el startup correctamente y Render.com puede detectar el puerto
-Console.WriteLine($"[RENDER] ✅ Aplicación lista - ASPNETCORE_URLS: {aspnetcoreUrlsFinal}, URLs: {string.Join(", ", finalUrls)}");
-app.Run();
+Console.WriteLine($"[RENDER] ✅ Servidor iniciado y escuchando - ASPNETCORE_URLS: {aspnetcoreUrlsFinal}, URLs: {string.Join(", ", finalUrls)}");
+Console.WriteLine($"[RENDER] ✅ Render.com debería detectar el puerto ahora");
+
+// Esperar hasta que se cierre la aplicación
+await app.WaitForShutdownAsync();

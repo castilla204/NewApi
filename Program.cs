@@ -1811,16 +1811,18 @@ app.UseStatusCodePages(async context =>
     {
         context.HttpContext.Response.ContentType = "application/json";
         
+        var message = context.HttpContext.Response.StatusCode switch
+        {
+            404 => "Endpoint not found",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            500 => "Internal server error",
+            _ => "An error occurred"
+        };
+        
         var response = new
         {
-            message = context.HttpContext.Response.StatusCode switch
-            {
-                404 => "Endpoint not found",
-                401 => "Unauthorized",
-                403 => "Forbidden",
-                500 => "Internal server error",
-                _ => "An error occurred"
-            },
+            message = message,
             statusCode = context.HttpContext.Response.StatusCode,
             path = context.HttpContext.Request.Path,
             timestamp = DateTime.UtcNow

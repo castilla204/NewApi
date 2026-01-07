@@ -159,7 +159,9 @@ namespace newApi.Controllers
             [FromQuery] int? zoom = null,
             [FromQuery] int limit = 100)
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // Timeout de 30 segundos
+            // ✅ RENDER.COM: Timeout aumentado a 90 segundos para consultas complejas
+            // La connection string tiene CommandTimeout=120, así que 90s es razonable
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
             try
             {
                 if (categoryId <= 0)
@@ -293,7 +295,7 @@ namespace newApi.Controllers
             {
                 await _loggingService.LogErrorAsync(
                     message: "Timeout al obtener expertos del mapa",
-                    details: "La operación excedió el tiempo máximo de espera (30 segundos)",
+                    details: "La operación excedió el tiempo máximo de espera (90 segundos)",
                     source: "SearchServiceController.GetMapExperts",
                     relatedEntityType: "MapExperts",
                     additionalData: new { categoryId, serviceTypeId },
@@ -353,7 +355,8 @@ namespace newApi.Controllers
             [FromQuery] int? zoom = null,
             [FromQuery] int limit = 500)
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            // ✅ RENDER.COM: Timeout aumentado a 90 segundos para consultas complejas
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
             try
             {
                 if (categoryId <= 0 || serviceTypeId <= 0)
@@ -411,7 +414,8 @@ namespace newApi.Controllers
         public async Task<IActionResult> GetMapSidebar(
             [FromQuery] string serviceIds)
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            // ✅ RENDER.COM: Timeout aumentado a 90 segundos para consultas complejas
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
             try
             {
                 if (string.IsNullOrWhiteSpace(serviceIds))
@@ -903,7 +907,9 @@ namespace newApi.Controllers
             [FromQuery] int popularPage = 1,
             [FromQuery] int popularPageSize = 20)
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // Timeout de 30 segundos
+            // ✅ RENDER.COM: Timeout aumentado a 90 segundos para consultas complejas
+            // La connection string tiene CommandTimeout=120, así que 90s es razonable
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
             try
             {
                 // Validar que categoryId sea válido
@@ -1042,7 +1048,7 @@ namespace newApi.Controllers
             {
                 await _loggingService.LogErrorAsync(
                     message: "Timeout al obtener el muro de homepage",
-                    details: "La operación excedió el tiempo máximo de espera (30 segundos)",
+                    details: "La operación excedió el tiempo máximo de espera (90 segundos)",
                     source: "SearchServiceController.GetHomepageWall",
                     relatedEntityType: "HomepageWall",
                     additionalData: new { latitude, longitude, countryCode },

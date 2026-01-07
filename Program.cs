@@ -43,9 +43,12 @@ string? aspnetcoreUrls = null;
 string portToUse;
 
 // ✅ Configurar puerto según el entorno
+// ✅ RENDER.COM: Según documentación oficial https://render.com/docs/web-services#port-binding
+// "Your web service must bind to a port on host 0.0.0.0 to serve HTTP requests"
+// "The default value of PORT is 10000 for all Render web services"
 if (!isDevelopment)
 {
-    // ✅ PRODUCCIÓN (Render.com): Puerto 10000
+    // ✅ PRODUCCIÓN (Render.com): Puerto desde variable PORT (default 10000)
     var renderPort = Environment.GetEnvironmentVariable("PORT");
     
     if (!string.IsNullOrEmpty(renderPort) && int.TryParse(renderPort, out int portNumber))
@@ -55,17 +58,17 @@ if (!isDevelopment)
     }
     else
     {
-        portToUse = "10000"; // Puerto por defecto de Render.com
+        portToUse = "10000"; // Puerto por defecto según documentación de Render.com
         Console.WriteLine($"[RENDER] ⚠️ Variable PORT no encontrada, usando puerto por defecto: {portToUse}");
     }
     
-    // ✅ RENDER.COM: Configurar ASPNETCORE_URLS ANTES de continuar
-    // Esto es CRÍTICO: .NET lee ASPNETCORE_URLS durante la inicialización del host
+    // ✅ CRÍTICO: Bindear a 0.0.0.0 (no localhost) según documentación oficial
+    // "Every Render web service must bind to a port on host 0.0.0.0"
     aspnetcoreUrls = $"http://0.0.0.0:{portToUse}";
     Environment.SetEnvironmentVariable("ASPNETCORE_URLS", aspnetcoreUrls);
     Console.WriteLine($"[RENDER] ✅ ASPNETCORE_URLS configurado: {aspnetcoreUrls}");
     
-    // ✅ RENDER.COM: Forzar binding del puerto INMEDIATAMENTE después del builder
+    // ✅ CRÍTICO: Forzar binding del puerto ANTES de cualquier inicialización
     builder.WebHost.UseUrls(aspnetcoreUrls);
     Console.WriteLine($"[RENDER] ✅ UseUrls() configurado: {aspnetcoreUrls}");
 }

@@ -1206,6 +1206,40 @@ builder.Services.AddAuthentication(options =>
                 context.Token = accessToken;
             }
             return Task.CompletedTask;
+        },
+        // ✅ FIX PRODUCCIÓN: Falla rápido si el token es inválido en lugar de causar timeout
+        OnAuthenticationFailed = context =>
+        {
+            var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+            var path = context.HttpContext.Request.Path;
+            
+            // Si es un endpoint público, no loggear el error (es normal que no haya token)
+            var publicEndpoints = new[] { "/api/Categories", "/api/ServiceType/public", "/api/SearchService/homepage-wall" };
+            var isPublicEndpoint = publicEndpoints.Any(ep => path.StartsWithSegments(ep));
+            
+            if (!isPublicEndpoint)
+            {
+                logger.LogWarning($"❌ [JWT] Error de autenticación en {path}: {context.Exception.Message}");
+            }
+            
+            // Falla rápido en lugar de esperar timeout
+            context.Fail("Invalid token");
+            return Task.CompletedTask;
+        },
+        // ✅ FIX PRODUCCIÓN: No intentar validar token si no está presente en endpoints públicos
+        OnChallenge = context =>
+        {
+            var path = context.HttpContext.Request.Path;
+            var publicEndpoints = new[] { "/api/Categories", "/api/ServiceType/public", "/api/SearchService/homepage-wall" };
+            var isPublicEndpoint = publicEndpoints.Any(ep => path.StartsWithSegments(ep));
+            
+            // Si es endpoint público y no hay token, no hacer challenge (dejar pasar)
+            if (isPublicEndpoint && !context.HttpContext.Request.Headers.ContainsKey("Authorization"))
+            {
+                context.HandleResponse(); // No enviar 401, dejar que el endpoint público maneje la request
+            }
+            
+            return Task.CompletedTask;
         }
     };
 });

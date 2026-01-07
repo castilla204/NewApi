@@ -2083,29 +2083,24 @@ if (!isDevelopment)
     startupLogger.LogInformation($"🚀 Iniciando aplicación en puerto: {finalPort}");
     startupLogger.LogInformation($"   ASPNETCORE_URLS: {aspnetcoreUrlsFinal ?? "NO CONFIGURADO"}");
 
-    // ✅ RENDER.COM: CRÍTICO - Iniciar servidor INMEDIATAMENTE para que Render.com detecte el puerto
-    // Render.com escanea el puerto muy temprano, así que necesitamos iniciar el servidor lo antes posible
-    Console.WriteLine($"[RENDER] 🚀 Iniciando servidor INMEDIATAMENTE para detección de puerto...");
-    await app.StartAsync();
-
-    // Obtener URLs después de iniciar
+    // Obtener URLs antes de iniciar
     var finalUrls = app.Urls.ToList();
-    startupLogger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
-
-    if (!finalUrls.Any())
+    if (finalUrls.Any())
+    {
+        startupLogger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
+        Console.WriteLine($"[RENDER] ✅ Servidor configurado para escuchar en: {string.Join(", ", finalUrls)}");
+    }
+    else
     {
         startupLogger.LogWarning($"⚠️ No se detectaron URLs configuradas. Verificar ASPNETCORE_URLS.");
+        Console.WriteLine($"[RENDER] ⚠️ ADVERTENCIA: No se detectaron URLs. Render.com puede no detectar el puerto.");
     }
-
-    Console.WriteLine($"[RENDER] ✅ Servidor iniciado y escuchando - ASPNETCORE_URLS: {aspnetcoreUrlsFinal}, URLs: {string.Join(", ", finalUrls)}");
-    Console.WriteLine($"[RENDER] ✅ Render.com debería detectar el puerto ahora");
-
-    // Esperar hasta que se cierre la aplicación
-    await app.WaitForShutdownAsync();
+    
+    Console.WriteLine($"[RENDER] ✅ Iniciando servidor - Render.com debería detectar el puerto {finalPort} ahora");
 }
 else
 {
-    // ✅ DESARROLLO: Usar app.Run() normal (localhost:7124)
+    // ✅ DESARROLLO: Logging de configuración
     var finalUrls = app.Urls.ToList();
     startupLogger.LogInformation($"🚀 Iniciando aplicación en desarrollo");
     if (finalUrls.Any())
@@ -2118,5 +2113,13 @@ else
     }
     
     Console.WriteLine($"[DEV] ✅ Aplicación lista - URLs: {string.Join(", ", finalUrls)}");
-    app.Run();
 }
+
+// ✅ CRÍTICO según documentación oficial de Render.com troubleshooting:
+// "502 Bad Gateway: A web service has misconfigured its host and port.
+//  Bind your host to 0.0.0.0 and optionally set the PORT environment variable to use a custom port (the default port is 10000)."
+// app.Run() inicia el servidor y lo deja escuchando en 0.0.0.0:PORT
+// Render.com detecta el puerto cuando el servidor está escuchando
+// app.Run() bloquea el proceso hasta que se cierre (correcto para Render.com)
+// Esto evita el error "No open ports detected"
+app.Run();

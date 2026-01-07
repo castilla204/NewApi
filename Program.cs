@@ -29,6 +29,16 @@ using Microsoft.AspNetCore.Authorization;
 using newApi.Middleware;
 using Npgsql;
 
+// ✅ RENDER.COM: Configurar puerto ANTES de crear el builder
+// Render.com usa la variable PORT (generalmente 10000)
+// Si está configurada, establecer ASPNETCORE_URLS para que .NET la use automáticamente
+var renderPort = Environment.GetEnvironmentVariable("PORT");
+if (!string.IsNullOrEmpty(renderPort) && int.TryParse(renderPort, out int portNumber))
+{
+    // Render.com detecta el puerto automáticamente si configuramos ASPNETCORE_URLS
+    Environment.SetEnvironmentVariable("ASPNETCORE_URLS", $"http://0.0.0.0:{portNumber}");
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Configurar logging básico
@@ -1874,21 +1884,24 @@ if (app.Environment.IsDevelopment())
 }
 else
 {
-    // Producción (Azure App Service): verificar variables en orden de prioridad
+    // Producción: verificar variables en orden de prioridad (Azure App Service, Render.com, etc.)
     var aspnetcoreUrls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+    var renderPortEnv = Environment.GetEnvironmentVariable("PORT");
+    var isRender = !string.IsNullOrEmpty(renderPortEnv);
     
     if (!string.IsNullOrEmpty(aspnetcoreUrls))
     {
         // ASPNETCORE_URLS tiene la mayor prioridad - .NET la usa automáticamente
         // .NET ya ha leído y aplicado ASPNETCORE_URLS durante la inicialización del host
-        portLogger.LogInformation($"✅ Producción: Usando ASPNETCORE_URLS={aspnetcoreUrls}");
+        var platform = isRender ? "Render.com" : "Azure App Service";
+        portLogger.LogInformation($"✅ Producción ({platform}): Usando ASPNETCORE_URLS={aspnetcoreUrls}");
         if (hasConfiguredUrls)
         {
             portLogger.LogInformation($"   URLs configuradas automáticamente: {string.Join(", ", configuredUrls)}");
         }
         else
         {
-            portLogger.LogWarning($"⚠️ ASPNETCORE_URLS está configurado pero no se detectaron URLs. Verificar formato (debe ser: http://+:8080)");
+            portLogger.LogWarning($"⚠️ ASPNETCORE_URLS está configurado pero no se detectaron URLs. Verificar formato (debe ser: http://0.0.0.0:PORT)");
         }
     }
     else if (!hasConfiguredUrls)
@@ -1898,29 +1911,35 @@ else
         if (!string.IsNullOrEmpty(websitesPort) && int.TryParse(websitesPort, out int websitesPortNumber))
         {
             app.Urls.Add($"http://0.0.0.0:{websitesPortNumber}");
-            portLogger.LogInformation($"✅ Producción: Puerto configurado desde WEBSITES_PORT={websitesPortNumber}");
+            portLogger.LogInformation($"✅ Producción (Azure App Service): Puerto configurado desde WEBSITES_PORT={websitesPortNumber}");
+        }
+        else if (isRender && int.TryParse(renderPortEnv, out int renderPortNum))
+        {
+            // Render.com: usar PORT (ya configurado en ASPNETCORE_URLS arriba, pero por si acaso)
+            app.Urls.Add($"http://0.0.0.0:{renderPortNum}");
+            portLogger.LogInformation($"✅ Producción (Render.com): Puerto configurado desde PORT={renderPortNum}");
         }
         else
         {
-            // Último fallback: usar PORT (común en contenedores)
-            var port = Environment.GetEnvironmentVariable("PORT");
-            if (!string.IsNullOrEmpty(port) && int.TryParse(port, out int portNumber))
+            // Último fallback: usar PORT (común en contenedores y Render.com)
+            var portEnv = Environment.GetEnvironmentVariable("PORT");
+            if (!string.IsNullOrEmpty(portEnv) && int.TryParse(portEnv, out int portNum))
             {
-                app.Urls.Add($"http://0.0.0.0:{portNumber}");
-                portLogger.LogInformation($"✅ Producción: Puerto configurado desde PORT={portNumber}");
+                app.Urls.Add($"http://0.0.0.0:{portNum}");
+                portLogger.LogInformation($"✅ Producción: Puerto configurado desde PORT={portNum}");
             }
             else
             {
-                // Si no hay ninguna variable configurada, Azure App Service usa el puerto 80 por defecto
-                // No especificar puerto permite que Azure lo maneje automáticamente
-                portLogger.LogInformation("✅ Producción: Puerto no especificado - Azure App Service usará puerto por defecto (80)");
+                // Si no hay ninguna variable configurada, usar puerto por defecto
+                portLogger.LogWarning("⚠️ Producción: Puerto no especificado - usando puerto por defecto (80). Configurar PORT o ASPNETCORE_URLS.");
             }
         }
     }
     else
     {
         // URLs ya configuradas (probablemente desde ASPNETCORE_URLS o configuración previa)
-        portLogger.LogInformation($"✅ Producción: URLs ya configuradas: {string.Join(", ", configuredUrls)}");
+        var platform = isRender ? "Render.com" : "Azure App Service";
+        portLogger.LogInformation($"✅ Producción ({platform}): URLs ya configuradas: {string.Join(", ", configuredUrls)}");
     }
 }
 

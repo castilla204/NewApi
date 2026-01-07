@@ -868,6 +868,10 @@ builder.Services.Configure<IISServerOptions>(options =>
 builder.Services.Configure<KestrelServerOptions>(options =>
 {
     options.Limits.MaxRequestBodySize = 50 * 1024 * 1024; // 50MB
+    // ✅ RENDER.COM: Aumentar timeout de requests para consultas largas a la base de datos
+    // El timeout por defecto es 2 minutos, pero las queries complejas pueden tardar más
+    options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(5); // Mantener conexiones vivas más tiempo
+    options.Limits.RequestHeadersTimeout = TimeSpan.FromMinutes(2); // Timeout para headers
 });
 
 // Configure form options for multipart form data
@@ -1766,8 +1770,7 @@ if (app.Environment.IsDevelopment())
 // ✅ OPTIMIZACIÓN: Habilitar compresión de respuestas (debe ir antes de otros middlewares)
 app.UseResponseCompression();
 
-// ✅ OPTIMIZACIÓN: Habilitar compresión de respuestas (debe ir antes de otros middlewares)
-app.UseResponseCompression();
+// ✅ RENDER.COM: RequestTimeout se configura en el middleware pipeline, no aquí
 
 // ✅ CORS DEBE SER EL PRIMERO: Aplicar CORS ANTES de cualquier otro middleware
 // Esto asegura que los headers CORS se envíen incluso si hay errores
@@ -1839,6 +1842,10 @@ app.Use(async (context, next) =>
 
 // ✅ SEGURIDAD 2025: Aplicar Rate Limiting
 app.UseRateLimiter();
+
+// ✅ RENDER.COM: Aplicar RequestTimeout para permitir queries largas (3 minutos = 180 segundos)
+// Sin esto, las requests se cancelan después de 2 minutos por defecto
+app.UseRequestTimeout(TimeSpan.FromMinutes(3));
 
 // Development mode middleware - bypass authentication for testing
 // DISABLED: Using real JWT authentication instead

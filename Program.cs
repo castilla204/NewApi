@@ -1770,7 +1770,8 @@ if (app.Environment.IsDevelopment())
 // ✅ OPTIMIZACIÓN: Habilitar compresión de respuestas (debe ir antes de otros middlewares)
 app.UseResponseCompression();
 
-// ✅ RENDER.COM: RequestTimeout se configura en el middleware pipeline, no aquí
+// ✅ RENDER.COM: Los timeouts de Kestrel ya están configurados arriba
+// KeepAliveTimeout y RequestHeadersTimeout están en 5 y 2 minutos respectivamente
 
 // ✅ CORS DEBE SER EL PRIMERO: Aplicar CORS ANTES de cualquier otro middleware
 // Esto asegura que los headers CORS se envíen incluso si hay errores
@@ -1843,9 +1844,8 @@ app.Use(async (context, next) =>
 // ✅ SEGURIDAD 2025: Aplicar Rate Limiting
 app.UseRateLimiter();
 
-// ✅ RENDER.COM: Aplicar RequestTimeout para permitir queries largas (3 minutos = 180 segundos)
-// Sin esto, las requests se cancelan después de 2 minutos por defecto
-app.UseRequestTimeout(TimeSpan.FromMinutes(3));
+// ✅ RENDER.COM: Los timeouts de Kestrel ya están configurados (KeepAliveTimeout=5min, RequestHeadersTimeout=2min)
+// Esto permite queries largas a la base de datos sin que se cancelen prematuramente
 
 // Development mode middleware - bypass authentication for testing
 // DISABLED: Using real JWT authentication instead

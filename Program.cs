@@ -1688,33 +1688,9 @@ builder.Services.AddHealthChecks();
 var app = builder.Build();
 
 // ✅ RENDER.COM: CRÍTICO - Iniciar servidor INMEDIATAMENTE después de Build()
-// Render.com escanea el puerto muy temprano, así que necesitamos que el servidor esté escuchando
-// ANTES de cualquier inicialización pesada (Stripe, BD, Hangfire, etc.)
-if (!isDevelopment)
-{
-    Console.WriteLine($"[RENDER] 🚀 INICIANDO SERVIDOR INMEDIATAMENTE después de Build()...");
-    Console.WriteLine($"[RENDER] ✅ Puerto configurado: {portToUse}");
-    Console.WriteLine($"[RENDER] ✅ ASPNETCORE_URLS: {aspnetcoreUrls}");
-    
-    // Iniciar servidor en background para que Render.com detecte el puerto
-    _ = Task.Run(async () =>
-    {
-        try
-        {
-            await app.StartAsync();
-            var urls = app.Urls.ToList();
-            Console.WriteLine($"[RENDER] ✅ Servidor iniciado y escuchando en: {string.Join(", ", urls)}");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[RENDER] ❌ Error al iniciar servidor: {ex.Message}");
-        }
-    });
-    
-    // Dar tiempo para que el servidor inicie antes de continuar
-    await Task.Delay(2000);
-    Console.WriteLine($"[RENDER] ✅ Servidor debería estar escuchando ahora - Render.com puede detectar el puerto");
-}
+// Render.com escanea el puerto muy temprano (timeout ~30 segundos)
+// Necesitamos que el servidor esté escuchando ANTES de cualquier inicialización pesada
+// SOLO configurar el flag aquí, iniciaremos el servidor al final después de mapear endpoints
 
 // ✅ Cargar claves Stripe según el modo configurado en SystemSetting
 try
@@ -2147,8 +2123,24 @@ else
 // ✅ CRÍTICO según documentación oficial de Render.com troubleshooting:
 // "502 Bad Gateway: A web service has misconfigured its host and port.
 //  Bind your host to 0.0.0.0 and optionally set the PORT environment variable to use a custom port (the default port is 10000)."
-// app.Run() inicia el servidor y lo deja escuchando en 0.0.0.0:PORT
-// Render.com detecta el puerto cuando el servidor está escuchando
-// app.Run() bloquea el proceso hasta que se cierre (correcto para Render.com)
-// Esto evita el error "No open ports detected"
-app.Run();
+if (!isDevelopment)
+{
+    // ✅ PRODUCCIÓN: Iniciar servidor INMEDIATAMENTE para que Render.com detecte el puerto
+    // Render.com escanea el puerto muy temprano, así que necesitamos iniciar ANTES del timeout
+    Console.WriteLine($"[RENDER] 🚀 INICIANDO SERVIDOR INMEDIATAMENTE para detección de puerto...");
+    Console.WriteLine($"[RENDER] ✅ Puerto: {portToUse}, ASPNETCORE_URLS: {aspnetcoreUrls}");
+    
+    await app.StartAsync();
+    
+    var urls = app.Urls.ToList();
+    Console.WriteLine($"[RENDER] ✅ Servidor INICIADO y escuchando en: {string.Join(", ", urls)}");
+    Console.WriteLine($"[RENDER] ✅ Render.com debería detectar el puerto AHORA");
+    
+    // Esperar hasta que se cierre la aplicación
+    await app.WaitForShutdownAsync();
+}
+else
+{
+    // ✅ DESARROLLO: app.Run() normal
+    app.Run();
+}

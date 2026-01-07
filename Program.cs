@@ -1627,15 +1627,6 @@ builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
-// ✅ RENDER.COM: Iniciar servidor INMEDIATAMENTE después de Build()
-// CRÍTICO: Render.com necesita detectar el puerto rápidamente
-// Iniciamos el servidor ANTES de configurar middlewares para que el puerto esté disponible
-Console.WriteLine("[RENDER] 🚀 Iniciando servidor INMEDIATAMENTE después de Build()...");
-await app.StartAsync();
-var startupLogger = app.Services.GetRequiredService<ILogger<Program>>();
-startupLogger.LogInformation($"✅ Servidor iniciado y escuchando en: {string.Join(", ", app.Urls)}");
-Console.WriteLine($"[RENDER] ✅ Servidor iniciado - Puertos: {string.Join(", ", app.Urls)}");
-
 // ✅ Cargar claves Stripe según el modo configurado en SystemSetting
 try
 {
@@ -1873,6 +1864,15 @@ app.MapHealthChecks("/health");
 
 app.MapControllers();
 app.MapHub<ChatHub>("/chatHub");
+
+// ✅ RENDER.COM: Iniciar servidor DESPUÉS de configurar endpoints
+// CRÍTICO: Render.com necesita detectar el puerto rápidamente
+// Iniciamos el servidor DESPUÉS de configurar endpoints para que /health funcione
+Console.WriteLine("[RENDER] 🚀 Iniciando servidor DESPUÉS de configurar endpoints...");
+await app.StartAsync();
+var startupLogger = app.Services.GetRequiredService<ILogger<Program>>();
+startupLogger.LogInformation($"✅ Servidor iniciado y escuchando en: {string.Join(", ", app.Urls)}");
+Console.WriteLine($"[RENDER] ✅ Servidor iniciado - Puertos: {string.Join(", ", app.Urls)}");
 
 // ✅ CONFIGURACIÓN DE PUERTO: Azure App Service vs Desarrollo
 // Prioridad: ASPNETCORE_URLS > WEBSITES_PORT > PORT > Default (7124 dev / 80 prod)

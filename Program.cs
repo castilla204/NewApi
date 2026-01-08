@@ -2163,6 +2163,36 @@ app.Use(async (context, next) =>
     }
 });
 
+// ✅ DEBUG: Logging antes del middleware MFA
+app.Use(async (context, next) =>
+{
+    var mfaLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+    var path = context.Request.Path.Value ?? "";
+    var method = context.Request.Method;
+    
+    if (!app.Environment.IsDevelopment())
+    {
+        var isAuthenticated = context.User?.Identity?.IsAuthenticated ?? false;
+        var userId = context.User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "N/A";
+        
+        mfaLogger.LogInformation($"[MFA] 🔍 ANTES de RequireMfaMiddleware: {method} {path}");
+        mfaLogger.LogInformation($"[MFA]    IsAuthenticated: {isAuthenticated}, UserId: {userId}");
+    }
+    
+    await next();
+    
+    if (!app.Environment.IsDevelopment())
+    {
+        var statusCode = context.Response.StatusCode;
+        mfaLogger.LogInformation($"[MFA] 📤 DESPUÉS de RequireMfaMiddleware: {method} {path}, StatusCode: {statusCode}");
+        
+        if (statusCode == 403)
+        {
+            mfaLogger.LogWarning($"[MFA] ⚠️ 403 Forbidden - Posible bloqueo por MFA");
+        }
+    }
+});
+
 // ✅ SEGURIDAD 2025: FORZAR MFA para Admin y Expertos
 // OWASP/NIST/PCI DSS: MFA obligatorio para cuentas privilegiadas
 // IMPORTANTE: El middleware verifica rutas públicas internamente

@@ -24,6 +24,9 @@ namespace newApi.Middleware
 
         public async Task InvokeAsync(HttpContext context, AppDbContext dbContext)
         {
+            var path = context.Request.Path.Value ?? "";
+            var method = context.Request.Method;
+            
             // ✅ CORRECCIÓN: Rutas públicas que NO requieren autenticación ni MFA
             var publicPaths = new[]
             {
@@ -38,19 +41,27 @@ namespace newApi.Middleware
             var isPublicPath = publicPaths.Any(p => 
                 context.Request.Path.StartsWithSegments(p, StringComparison.OrdinalIgnoreCase));
 
+            _logger.LogInformation($"[MFA Middleware] 🔍 Procesando: {method} {path}");
+            _logger.LogInformation($"[MFA Middleware]    IsPublicPath: {isPublicPath}");
+
             // Si es ruta pública, permitir acceso sin verificar MFA
             if (isPublicPath)
             {
+                _logger.LogInformation($"[MFA Middleware] ✅ Ruta pública - permitiendo acceso sin verificar MFA");
                 await _next(context);
                 return;
             }
 
             // Obtener usuario autenticado
             var userIdClaim = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var isAuthenticated = context.User?.Identity?.IsAuthenticated ?? false;
+
+            _logger.LogInformation($"[MFA Middleware]    IsAuthenticated: {isAuthenticated}, UserIdClaim: {userIdClaim ?? "N/A"}");
 
             // Si no está autenticado, continuar (otros middlewares lo manejan)
             if (string.IsNullOrEmpty(userIdClaim))
             {
+                _logger.LogInformation($"[MFA Middleware] ✅ No autenticado - permitiendo continuar (otros middlewares manejarán la autorización)");
                 await _next(context);
                 return;
             }
@@ -58,23 +69,33 @@ namespace newApi.Middleware
             // ✅ CORRECCIÓN: Manejar errores de parsing de userId
             if (!int.TryParse(userIdClaim, out var userId))
             {
-                _logger.LogWarning("Invalid userId claim: {UserIdClaim}", userIdClaim);
+                _logger.LogWarning($"[MFA Middleware] ⚠️ Invalid userId claim: {userIdClaim}");
                 await _next(context);
                 return;
             }
 
+            _logger.LogInformation($"[MFA Middleware] 🔍 Verificando MFA para UserId: {userId}");
+
             try
             {
                 // Verificar si tiene MFA habilitado
+                _logger.LogInformation($"[MFA Middleware] 📦 Consultando UserMfaSettings para UserId: {userId}");
                 var mfaSettings = await dbContext.UserMfaSettings
                     .AsNoTracking() // ✅ MEJORA: No tracking para mejor rendimiento
                     .FirstOrDefaultAsync(m => m.UserId == userId);
 
                 var hasMfaEnabled = mfaSettings != null && mfaSettings.IsEnabled;
+                
+                _logger.LogInformation($"[MFA Middleware]    MfaSettings encontrado: {mfaSettings != null}, HasMfaEnabled: {hasMfaEnabled}");
+                if (mfaSettings != null)
+                {
+                    _logger.LogInformation($"[MFA Middleware]    LastVerifiedAt: {mfaSettings.LastVerifiedAt}");
+                }
 
                 // ✅ Si NO tiene MFA habilitado → PERMITIR acceso (MFA es opcional)
                 if (!hasMfaEnabled)
                 {
+                    _logger.LogInformation($"[MFA Middleware] ✅ MFA no habilitado para UserId {userId} - permitiendo acceso");
                     await _next(context);
                     return;
                 }
@@ -108,12 +129,13 @@ namespace newApi.Middleware
                 var isMfaVerified = mfaSettings.LastVerifiedAt.HasValue && 
                                    (DateTime.UtcNow - mfaSettings.LastVerifiedAt.Value) < mfaVerificationValidDuration;
 
+                _logger.LogInformation($"[MFA Middleware]    Verificando MFA: LastVerifiedAt={mfaSettings.LastVerifiedAt}, IsMfaVerified={isMfaVerified}");
+
                 // ❌ Si MFA está habilitado pero NO está verificado → BLOQUEAR
                 if (!isMfaVerified)
                 {
                     _logger.LogWarning(
-                        "MFA verification required: User {UserId} attempted to access {Path} without verifying MFA code. LastVerifiedAt: {LastVerifiedAt}",
-                        userId, context.Request.Path, mfaSettings.LastVerifiedAt);
+                        $"[MFA Middleware] ❌ MFA verification required: User {userId} attempted to access {path} without verifying MFA code. LastVerifiedAt: {mfaSettings.LastVerifiedAt}");
 
                     context.Response.StatusCode = 403;
                     context.Response.ContentType = "application/json";
@@ -130,8 +152,7 @@ namespace newApi.Middleware
 
                 // ✅ Si MFA está habilitado y verificado, permitir acceso
                 _logger.LogInformation(
-                    "MFA verified access: User {UserId} accessing {Path}. LastVerifiedAt: {LastVerifiedAt}",
-                    userId, context.Request.Path, mfaSettings?.LastVerifiedAt);
+                    $"[MFA Middleware] ✅ MFA verified access: User {userId} accessing {path}. LastVerifiedAt: {mfaSettings?.LastVerifiedAt}");
 
                 await _next(context);
             }
@@ -139,7 +160,9 @@ namespace newApi.Middleware
             {
                 // ✅ CORRECCIÓN: Si hay error en la consulta, loguear pero permitir acceso
                 // No bloquear todas las peticiones por un error en MFA
-                _logger.LogError(ex, "Error checking MFA for user {UserId} on path {Path}. Allowing access to prevent blocking all requests.", userId, context.Request.Path);
+                _logger.LogError(ex, $"[MFA Middleware] ❌ ERROR checking MFA for user {userId} on path {path}. Allowing access to prevent blocking all requests.");
+                _logger.LogError($"[MFA Middleware]    Exception: {ex.Message}");
+                _logger.LogError($"[MFA Middleware]    StackTrace: {ex.StackTrace}");
                 await _next(context);
             }
         }

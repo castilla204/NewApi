@@ -1922,19 +1922,40 @@ namespace newApi.Services
                 // ✅ OPTIMIZACIÓN: Cargar disponibilidades de todos los expertos de una vez
                 var expertIds = orderedServices.Select(s => s.ExpertId).Distinct().ToList();
                 _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Obteniendo disponibilidades para {expertIds.Count} expertos...");
+                _logger.LogInformation($"[SERVICE]    Expert IDs: [{string.Join(", ", expertIds)}]");
                 var availabilityQueryStartTime = DateTime.UtcNow;
-                var availabilities = await _context.ExpertAvailabilities
-                    .AsNoTracking()
-                    .Where(ea => expertIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
-                    .ToListAsync(cancellationToken);
-                var availabilityQueryDuration = (DateTime.UtcNow - availabilityQueryStartTime).TotalMilliseconds;
-                _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Disponibilidades obtenidas: {availabilities.Count}, Duración: {availabilityQueryDuration:F2}ms");
                 
+                List<ExpertAvailability> availabilities;
+                try
+                {
+                    availabilities = await _context.ExpertAvailabilities
+                        .AsNoTracking()
+                        .Where(ea => expertIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                        .ToListAsync(cancellationToken);
+                    var availabilityQueryDuration = (DateTime.UtcNow - availabilityQueryStartTime).TotalMilliseconds;
+                    _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Disponibilidades obtenidas: {availabilities.Count}, Duración: {availabilityQueryDuration:F2}ms");
+                }
+                catch (Exception ex)
+                {
+                    var availabilityQueryDuration = (DateTime.UtcNow - availabilityQueryStartTime).TotalMilliseconds;
+                    _logger.LogError($"[SERVICE] ❌ GetNearbyServices - ERROR obteniendo disponibilidades después de {availabilityQueryDuration:F2}ms");
+                    _logger.LogError($"[SERVICE]    Exception: {ex.GetType().Name} - {ex.Message}");
+                    _logger.LogError($"[SERVICE]    StackTrace: {ex.StackTrace}");
+                    // Continuar sin disponibilidades en caso de error
+                    availabilities = new List<ExpertAvailability>();
+                }
+                
+                _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Agrupando disponibilidades por experto...");
+                var groupingStartTime = DateTime.UtcNow;
                 var availabilityByExpert = availabilities
                     .GroupBy(ea => ea.ExpertId)
                     .ToDictionary(g => g.Key, g => g.First());
+                var groupingDuration = (DateTime.UtcNow - groupingStartTime).TotalMilliseconds;
+                _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Disponibilidades agrupadas, Duración: {groupingDuration:F2}ms");
 
                 // Mapear a DTO ligero - Aplicar lógica de URLs firmadas en memoria (después de cargar datos)
+                _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Mapeando servicios a DTOs...");
+                var mappingStartTime = DateTime.UtcNow;
                 var mappedServices = orderedServices.Select(s => 
                 {
                     // Obtener disponibilidad del experto si existe
@@ -1986,6 +2007,8 @@ namespace newApi.Services
                         CompletedSearches = s.CompletedSearches
                     };
                 }).ToList();
+                var mappingDuration = (DateTime.UtcNow - mappingStartTime).TotalMilliseconds;
+                _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Mapeo completado: {mappedServices.Count} servicios mapeados, Duración: {mappingDuration:F2}ms");
 
                 _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices COMPLETADO");
                 _logger.LogInformation($"[SERVICE]    Total servicios retornados: {mappedServices.Count}");

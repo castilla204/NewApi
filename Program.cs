@@ -1911,8 +1911,12 @@ app.UseResponseCompression();
 // ✅ RENDER.COM: Los timeouts de Kestrel ya están configurados arriba
 // KeepAliveTimeout y RequestHeadersTimeout están en 5 y 2 minutos respectivamente
 
-// ✅ CRÍTICO: Manejo de errores global - DEBE ir ANTES de CORS
-// Esto asegura que TODAS las excepciones devuelvan JSON, no HTML
+// ✅ CRÍTICO: CORS DEBE SER EL PRIMERO - Para que TODAS las respuestas tengan headers CORS
+// Esto incluye errores, timeouts, y respuestas normales
+app.UseCors("AllowSpecificOrigin");
+
+// ✅ CRÍTICO: Manejo de errores global - DEBE ir DESPUÉS de CORS
+// Esto asegura que TODAS las excepciones devuelvan JSON con headers CORS
 app.UseExceptionHandler(errorApp =>
 {
     errorApp.Run(async context =>
@@ -1923,6 +1927,24 @@ app.UseExceptionHandler(errorApp =>
         
         // Log del error
         logger.LogError(exception, "❌ Excepción no manejada: {Path}", context.Request.Path);
+        
+        // ✅ CRÍTICO: Asegurar headers CORS incluso en errores
+        var origin = context.Request.Headers["Origin"].ToString();
+        if (!string.IsNullOrEmpty(origin))
+        {
+            // Verificar si el origen está permitido
+            var allowedOrigins = new[] { 
+                "http://localhost:3000", 
+                "http://localhost:5173", 
+                "https://inspecciono.com", 
+                "https://www.inspecciono.com" 
+            };
+            if (allowedOrigins.Any(o => origin.StartsWith(o, StringComparison.OrdinalIgnoreCase)))
+            {
+                context.Response.Headers["Access-Control-Allow-Origin"] = origin;
+                context.Response.Headers["Access-Control-Allow-Credentials"] = "true";
+            }
+        }
         
         // Siempre devolver JSON, nunca HTML
         context.Response.StatusCode = 500;
@@ -1940,10 +1962,27 @@ app.UseExceptionHandler(errorApp =>
     });
 });
 
-// ✅ CRÍTICO: Manejar códigos de estado HTTP (404, 500, etc.) para devolver JSON
-// Esto asegura que errores como 404 también devuelvan JSON, no HTML
+// ✅ CRÍTICO: Manejar códigos de estado HTTP (404, 408, 500, etc.) para devolver JSON
+// Esto asegura que errores como 404 y 408 también devuelvan JSON con headers CORS
 app.UseStatusCodePages(async context =>
 {
+    // ✅ CRÍTICO: Asegurar headers CORS incluso en códigos de estado
+    var origin = context.HttpContext.Request.Headers["Origin"].ToString();
+    if (!string.IsNullOrEmpty(origin))
+    {
+        var allowedOrigins = new[] { 
+            "http://localhost:3000", 
+            "http://localhost:5173", 
+            "https://inspecciono.com", 
+            "https://www.inspecciono.com" 
+        };
+        if (allowedOrigins.Any(o => origin.StartsWith(o, StringComparison.OrdinalIgnoreCase)))
+        {
+            context.HttpContext.Response.Headers["Access-Control-Allow-Origin"] = origin;
+            context.HttpContext.Response.Headers["Access-Control-Allow-Credentials"] = "true";
+        }
+    }
+    
     // Solo manejar si es una request a la API
     if (context.HttpContext.Request.Path.StartsWithSegments("/api"))
     {
@@ -1954,6 +1993,7 @@ app.UseStatusCodePages(async context =>
             404 => "Endpoint not found",
             401 => "Unauthorized",
             403 => "Forbidden",
+            408 => "Request timeout", // ✅ CRÍTICO: Agregar 408 para timeouts
             500 => "Internal server error",
             _ => "An error occurred"
         };
@@ -1969,10 +2009,6 @@ app.UseStatusCodePages(async context =>
         await context.HttpContext.Response.WriteAsJsonAsync(response);
     }
 });
-
-// ✅ CORS DEBE SER EL PRIMERO: Aplicar CORS ANTES de cualquier otro middleware
-// Esto asegura que los headers CORS se envíen incluso si hay errores
-app.UseCors("AllowSpecificOrigin");
 
 // ✅ CRÍTICO: Middleware de logging completo del pipeline (PRIMERO después de CORS)
 // Este middleware captura TODO el flujo de la request para diagnosticar problemas

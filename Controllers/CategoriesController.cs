@@ -169,6 +169,26 @@ namespace newApi.Controllers
                 _logger.LogInformation($"[ENDPOINT] ✅ GetCategories COMPLETADO - RequestId: {requestId}");
                 _logger.LogInformation($"[ENDPOINT]    Total categorías: {categoryDtos.Count}");
                 _logger.LogInformation($"[ENDPOINT]    Duración total: {totalDuration:F2}ms (Query: {queryDuration:F2}ms, Mapping: {mappingDuration:F2}ms)");
+                
+                // ✅ LOG JSON: Serializar y loguear el JSON que se está devolviendo
+                try
+                {
+                    var jsonResponse = System.Text.Json.JsonSerializer.Serialize(categoryDtos, new System.Text.Json.JsonSerializerOptions 
+                    { 
+                        WriteIndented = false,
+                        MaxDepth = 3 // Limitar profundidad para evitar logs muy largos
+                    });
+                    var jsonLength = jsonResponse.Length;
+                    var jsonPreview = jsonLength > 1000 ? jsonResponse.Substring(0, 1000) + "..." : jsonResponse;
+                    _logger.LogInformation($"[ENDPOINT] 📤 JSON RESPONSE - RequestId: {requestId}");
+                    _logger.LogInformation($"[ENDPOINT]    JSON Length: {jsonLength} caracteres");
+                    _logger.LogInformation($"[ENDPOINT]    JSON Preview (primeros 1000 chars): {jsonPreview}");
+                }
+                catch (Exception jsonEx)
+                {
+                    _logger.LogWarning($"[ENDPOINT] ⚠️ Error serializando JSON para log: {jsonEx.Message}");
+                }
+                
                 _logger.LogInformation($"[ENDPOINT] ========================================");
 
                 return Ok(categoryDtos);

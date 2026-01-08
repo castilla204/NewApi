@@ -28,6 +28,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Authorization;
 using newApi.Middleware;
 using Npgsql;
+using Microsoft.Extensions.Hosting;
 
 // ✅ RENDER.COM: Configurar puerto según el entorno
 // En desarrollo: usar puerto 7124 (localhost:7124)
@@ -1695,19 +1696,34 @@ var app = builder.Build();
 // ✅ Background task para inicialización pesada (se ejecuta después de que el servidor esté escuchando)
 _ = Task.Run(async () =>
 {
+    var bgLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("BackgroundInit");
     try
     {
+        bgLogger.LogInformation("[BACKGROUND] 🚀 Iniciando background task para carga de Stripe...");
+        bgLogger.LogInformation("[BACKGROUND] ⏳ Esperando 2 segundos para que el servidor esté completamente iniciado...");
+        
         // Esperar un poco para que el servidor esté completamente iniciado
         await Task.Delay(2000);
+        
+        bgLogger.LogInformation("[BACKGROUND] ✅ Espera completada, iniciando carga de claves Stripe...");
         
         // ✅ Cargar claves Stripe según el modo configurado en SystemSetting
         using (var scope = app.Services.CreateScope())
         {
+            bgLogger.LogInformation("[BACKGROUND] 📦 Creando scope de servicios...");
+            
             var stripeConfigService = scope.ServiceProvider.GetRequiredService<IStripeConfigService>();
+            bgLogger.LogInformation("[BACKGROUND] 🔍 Obteniendo modo de Stripe desde SystemSetting...");
+            
             var mode = await stripeConfigService.GetStripeModeAsync();
+            bgLogger.LogInformation($"[BACKGROUND] ✅ Modo Stripe detectado: {mode}");
+            
+            bgLogger.LogInformation("[BACKGROUND] 🔑 Obteniendo claves Stripe desde Secret Manager...");
             var (secretKey, webhookSecret, generalWebhookSecret) = await stripeConfigService.GetStripeKeysForModeAsync(
                 mode, 
                 GetSecretValue);
+            
+            bgLogger.LogInformation($"[BACKGROUND] ✅ Claves obtenidas - SecretKey: {!string.IsNullOrEmpty(secretKey)}, WebhookSecret: {!string.IsNullOrEmpty(webhookSecret)}");
             
             builder.Configuration["Stripe:SecretKey"] = secretKey;
             builder.Configuration["Stripe:WebhookSecret"] = webhookSecret;
@@ -1719,6 +1735,8 @@ _ = Task.Run(async () =>
             stripeLogger.LogInformation($"✅ Claves Stripe cargadas en modo: {mode}");
             stripeLogger.LogInformation($"   SecretKey presente: {!string.IsNullOrEmpty(secretKey)}");
             stripeLogger.LogInformation($"   WebhookSecret presente: {!string.IsNullOrEmpty(webhookSecret)}");
+            
+            bgLogger.LogInformation("[BACKGROUND] 📝 Guardando log en base de datos...");
             
             // ✅ Log informativo del sistema
             var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
@@ -1737,16 +1755,20 @@ _ = Task.Run(async () =>
                 },
                 notifyUser: false
             );
+            
+            bgLogger.LogInformation("[BACKGROUND] ✅ Background task completada exitosamente");
         }
     }
     catch (Exception ex)
     {
+        bgLogger.LogError(ex, "[BACKGROUND] ❌ ERROR en background task de Stripe");
         var stripeLogger = app.Services.GetRequiredService<ILogger<Program>>();
         stripeLogger.LogError(ex, "Error cargando claves Stripe según modo, usando configuración por defecto");
         
         // Si falla, intentar usar configuración por defecto
         if (string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]))
         {
+            bgLogger.LogWarning("[BACKGROUND] ⚠️ Stripe SecretKey no encontrado, registrando error crítico...");
             using (var scope = app.Services.CreateScope())
             {
                 var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
@@ -2028,8 +2050,27 @@ app.Use(async (context, next) =>
 // por lo que puede estar antes de mapear endpoints
 app.UseRequireMfa();
 
-// Add health check endpoint
-app.MapHealthChecks("/health");
+// Add health check endpoint con logging detallado
+app.MapHealthChecks("/health").WithName("HealthCheck").WithTags("System");
+
+// ✅ RENDER.COM: Endpoint de health check mejorado con más información
+app.MapGet("/health-detailed", () =>
+{
+    var port = Environment.GetEnvironmentVariable("PORT") ?? "10000";
+    var aspnetcoreUrls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+    var urls = app.Urls.ToList();
+    
+    return Results.Ok(new
+    {
+        status = "healthy",
+        timestamp = DateTime.UtcNow,
+        environment = app.Environment.EnvironmentName,
+        port = port,
+        aspnetcoreUrls = aspnetcoreUrls,
+        listeningUrls = urls,
+        message = "Server is running and ready to accept requests"
+    });
+}).WithName("HealthCheckDetailed").WithTags("System");
 
 // ✅ RENDER.COM: Endpoint de warmup para evitar cold starts
 // Este endpoint hace una query simple a la BD para "calentar" las conexiones
@@ -2069,11 +2110,22 @@ if (!isDevelopment)
     var finalPort = Environment.GetEnvironmentVariable("PORT") ?? portToUse;
     var aspnetcoreUrlsFinal = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
 
+    Console.WriteLine($"[RENDER] ========================================");
+    Console.WriteLine($"[RENDER] 🚀 CONFIGURACIÓN FINAL ANTES DE INICIAR");
+    Console.WriteLine($"[RENDER] ========================================");
+    Console.WriteLine($"[RENDER] 📍 Puerto final: {finalPort}");
+    Console.WriteLine($"[RENDER] 📍 ASPNETCORE_URLS: {aspnetcoreUrlsFinal ?? "NO CONFIGURADO"}");
+    Console.WriteLine($"[RENDER] 📍 aspnetcoreUrls (variable local): {aspnetcoreUrls}");
+    Console.WriteLine($"[RENDER] 📍 portToUse: {portToUse}");
+    
     startupLogger.LogInformation($"🚀 Iniciando aplicación en puerto: {finalPort}");
     startupLogger.LogInformation($"   ASPNETCORE_URLS: {aspnetcoreUrlsFinal ?? "NO CONFIGURADO"}");
+    startupLogger.LogInformation($"   aspnetcoreUrls (variable local): {aspnetcoreUrls}");
+    startupLogger.LogInformation($"   portToUse: {portToUse}");
 
-    // Obtener URLs antes de iniciar
+    // Obtener URLs antes de iniciar (puede estar vacío, es normal antes de app.Run())
     var finalUrls = app.Urls.ToList();
+    Console.WriteLine($"[RENDER] 📍 URLs detectadas ANTES de app.Run(): {finalUrls.Count}");
     if (finalUrls.Any())
     {
         startupLogger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
@@ -2081,11 +2133,14 @@ if (!isDevelopment)
     }
     else
     {
-        startupLogger.LogWarning($"⚠️ No se detectaron URLs configuradas. Verificar ASPNETCORE_URLS.");
-        Console.WriteLine($"[RENDER] ⚠️ ADVERTENCIA: No se detectaron URLs. Render.com puede no detectar el puerto.");
+        startupLogger.LogWarning($"⚠️ No se detectaron URLs configuradas ANTES de app.Run(). Esto es NORMAL - las URLs se configuran cuando el servidor inicia.");
+        Console.WriteLine($"[RENDER] ⚠️ INFO: No se detectaron URLs ANTES de app.Run() - esto es NORMAL");
+        Console.WriteLine($"[RENDER] ⚠️ Las URLs se configurarán cuando app.Run() inicie el servidor");
     }
     
+    Console.WriteLine($"[RENDER] ========================================");
     Console.WriteLine($"[RENDER] ✅ Iniciando servidor - Render.com debería detectar el puerto {finalPort} ahora");
+    Console.WriteLine($"[RENDER] ========================================");
 }
 else
 {
@@ -2112,11 +2167,60 @@ else
 // app.Run() es el método estándar y más confiable para iniciar el servidor
 // Inicia el servidor, lo deja escuchando, y bloquea hasta que se cierre
 // Esto es lo que Render.com espera para detectar el puerto correctamente
+
+// ✅ Registrar evento de lifetime para verificar cuando el servidor realmente inicia
+var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+lifetime.ApplicationStarted.Register(() =>
+{
+    Console.WriteLine($"[RENDER] ========================================");
+    Console.WriteLine($"[RENDER] ✅ SERVIDOR INICIADO - ApplicationStarted event");
+    Console.WriteLine($"[RENDER] ========================================");
+    
+    // Verificar URLs después de que el servidor inicia
+    var urlsAfterStart = app.Urls.ToList();
+    Console.WriteLine($"[RENDER] 📍 URLs detectadas DESPUÉS de iniciar: {urlsAfterStart.Count}");
+    if (urlsAfterStart.Any())
+    {
+        Console.WriteLine($"[RENDER] ✅ Servidor escuchando en: {string.Join(", ", urlsAfterStart)}");
+        foreach (var url in urlsAfterStart)
+        {
+            Console.WriteLine($"[RENDER]    - {url}");
+        }
+    }
+    else
+    {
+        Console.WriteLine($"[RENDER] ⚠️ ADVERTENCIA: No se detectaron URLs después de iniciar");
+    }
+    
+    // Verificar variables de entorno
+    var portEnv = Environment.GetEnvironmentVariable("PORT");
+    var urlsEnv = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+    Console.WriteLine($"[RENDER] 📍 Variables de entorno:");
+    Console.WriteLine($"[RENDER]    - PORT: {portEnv ?? "NO CONFIGURADO"}");
+    Console.WriteLine($"[RENDER]    - ASPNETCORE_URLS: {urlsEnv ?? "NO CONFIGURADO"}");
+    
+    Console.WriteLine($"[RENDER] ========================================");
+    Console.WriteLine($"[RENDER] ✅ Render.com debería detectar el puerto AHORA");
+    Console.WriteLine($"[RENDER] ========================================");
+    
+    var logger = app.Services.GetRequiredService<ILogger<Program>>();
+    logger.LogInformation("✅ Servidor iniciado y escuchando - Render.com puede detectar el puerto");
+    if (urlsAfterStart.Any())
+    {
+        logger.LogInformation($"   URLs: {string.Join(", ", urlsAfterStart)}");
+    }
+});
+
 if (!isDevelopment)
 {
-    Console.WriteLine($"[RENDER] 🚀 INICIANDO SERVIDOR en puerto {portToUse}...");
-    Console.WriteLine($"[RENDER] ✅ ASPNETCORE_URLS: {aspnetcoreUrls}");
-    Console.WriteLine($"[RENDER] ✅ Render.com detectará el puerto cuando el servidor esté escuchando");
+    Console.WriteLine($"[RENDER] ========================================");
+    Console.WriteLine($"[RENDER] 🚀 LLAMANDO app.Run() - INICIANDO SERVIDOR");
+    Console.WriteLine($"[RENDER] ========================================");
+    Console.WriteLine($"[RENDER] 📍 Puerto esperado: {portToUse}");
+    Console.WriteLine($"[RENDER] 📍 ASPNETCORE_URLS configurado: {aspnetcoreUrls}");
+    Console.WriteLine($"[RENDER] 📍 Host: 0.0.0.0 (todas las interfaces)");
+    Console.WriteLine($"[RENDER] ⏳ app.Run() bloqueará hasta que el servidor esté listo...");
+    Console.WriteLine($"[RENDER] ========================================");
 }
 
 // ✅ app.Run() inicia el servidor y lo deja escuchando en 0.0.0.0:PORT

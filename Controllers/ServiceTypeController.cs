@@ -150,22 +150,35 @@ namespace newApi.Controllers
                     _logger.LogInformation($"[ENDPOINT]    Timestamp inicio: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
                     _logger.LogInformation($"[ENDPOINT]    Token antes de ToListAsync: IsCancellationRequested={queryCts.Token.IsCancellationRequested}");
                     
-                    serviceTypes = (await _context.ServiceTypes
-                        .AsNoTracking() // ✅ Evitar tracking innecesario y problemas con multiplexing
-                        .Where(st => st.IsActive)
-                        .OrderBy(st => st.Position) // Ordenar por posición personalizada
-                        .ThenBy(st => st.Name) // Luego alfabéticamente como fallback
-                        .Select(st => new 
-                        {
-                            Id = st.Id,
-                            Name = st.Name,
-                            Description = st.Description,
-                            ServiceTypeCategoryId = st.ServiceTypeCategoryId,
-                            ServiceTypeCategoryName = st.ServiceTypeCategory != null ? st.ServiceTypeCategory.Name : null,
-                            Position = st.Position,
-                            RequiresAppointment = st.RequiresAppointment
-                        })
-                        .ToListAsync(queryCts.Token)).Cast<dynamic>().ToList();
+                    // ✅ CRÍTICO PRODUCCIÓN: El CommandTimeout de la connection string (120s) tiene prioridad sobre CancellationToken
+                    // ✅ SOLUCIÓN: Establecer timeout temporalmente en el DbContext antes de la query
+                    var originalTimeout = _context.Database.GetCommandTimeout();
+                    _context.Database.SetCommandTimeout(10); // ✅ Forzar timeout de 10 segundos para esta query
+                    
+                    try
+                    {
+                        serviceTypes = (await _context.ServiceTypes
+                            .AsNoTracking() // ✅ Evitar tracking innecesario y problemas con multiplexing
+                            .Where(st => st.IsActive)
+                            .OrderBy(st => st.Position) // Ordenar por posición personalizada
+                            .ThenBy(st => st.Name) // Luego alfabéticamente como fallback
+                            .Select(st => new 
+                            {
+                                Id = st.Id,
+                                Name = st.Name,
+                                Description = st.Description,
+                                ServiceTypeCategoryId = st.ServiceTypeCategoryId,
+                                ServiceTypeCategoryName = st.ServiceTypeCategory != null ? st.ServiceTypeCategory.Name : null,
+                                Position = st.Position,
+                                RequiresAppointment = st.RequiresAppointment
+                            })
+                            .ToListAsync(queryCts.Token)).Cast<dynamic>().ToList();
+                    }
+                    finally
+                    {
+                        // Restaurar timeout original
+                        _context.Database.SetCommandTimeout(originalTimeout);
+                    }
                     
                     queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
                     

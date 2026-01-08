@@ -1912,13 +1912,12 @@ app.UseResponseCompression();
 // ✅ RENDER.COM: Los timeouts de Kestrel ya están configurados arriba
 // KeepAliveTimeout y RequestHeadersTimeout están en 5 y 2 minutos respectivamente
 
-// ✅ RENDER.COM BEST PRACTICES: Orden correcto del middleware
-// 1. CORS primero - para todas las respuestas
-app.UseCors("AllowSpecificOrigin");
+// ✅ RENDER.COM BEST PRACTICES: Orden correcto del middleware según ASP.NET Core
+// 1. Routing PRIMERO (necesario para que funcionen los endpoints)
+app.UseRouting();
 
-// 2. Health checks ANTES de autenticación (Render.com los usa para health checks)
-// Esto asegura que /health funcione sin autenticación
-app.MapHealthChecks("/health").WithName("HealthCheck").WithTags("System");
+// 2. CORS después de routing
+app.UseCors("AllowSpecificOrigin");
 
 // 3. Middleware simple de logging para diagnóstico
 app.Use(async (context, next) =>

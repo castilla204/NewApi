@@ -1920,29 +1920,51 @@ namespace newApi.Services
                     .ToList();
 
                 // ✅ OPTIMIZACIÓN: Cargar disponibilidades de todos los expertos de una vez
+                // ✅ CRÍTICO: Usar timeout corto para evitar bloqueos - si falla, continuar sin disponibilidades
                 var expertIds = orderedServices.Select(s => s.ExpertId).Distinct().ToList();
                 _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Obteniendo disponibilidades para {expertIds.Count} expertos...");
                 _logger.LogInformation($"[SERVICE]    Expert IDs: [{string.Join(", ", expertIds)}]");
                 var availabilityQueryStartTime = DateTime.UtcNow;
                 
-                List<ExpertAvailability> availabilities;
-                try
+                List<ExpertAvailability> availabilities = new List<ExpertAvailability>();
+                
+                // ✅ TIMEOUT: Si no hay expertos, saltar la consulta
+                if (expertIds.Count > 0)
                 {
-                    availabilities = await _context.ExpertAvailabilities
-                        .AsNoTracking()
-                        .Where(ea => expertIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
-                        .ToListAsync(cancellationToken);
-                    var availabilityQueryDuration = (DateTime.UtcNow - availabilityQueryStartTime).TotalMilliseconds;
-                    _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Disponibilidades obtenidas: {availabilities.Count}, Duración: {availabilityQueryDuration:F2}ms");
+                    try
+                    {
+                        // ✅ TIMEOUT: Usar un CancellationTokenSource con timeout de 5 segundos para esta consulta específica
+                        using var availabilityCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                        availabilityCts.CancelAfter(TimeSpan.FromSeconds(5)); // Timeout de 5 segundos
+                        
+                        _logger.LogInformation($"[SERVICE]    Ejecutando consulta de disponibilidades con timeout de 5 segundos...");
+                        availabilities = await _context.ExpertAvailabilities
+                            .AsNoTracking()
+                            .Where(ea => expertIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                            .ToListAsync(availabilityCts.Token);
+                        var availabilityQueryDuration = (DateTime.UtcNow - availabilityQueryStartTime).TotalMilliseconds;
+                        _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Disponibilidades obtenidas: {availabilities.Count}, Duración: {availabilityQueryDuration:F2}ms");
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        var availabilityQueryDuration = (DateTime.UtcNow - availabilityQueryStartTime).TotalMilliseconds;
+                        _logger.LogWarning($"[SERVICE] ⚠️ GetNearbyServices - Timeout obteniendo disponibilidades después de {availabilityQueryDuration:F2}ms - Continuando sin disponibilidades");
+                        availabilities = new List<ExpertAvailability>();
+                    }
+                    catch (Exception ex)
+                    {
+                        var availabilityQueryDuration = (DateTime.UtcNow - availabilityQueryStartTime).TotalMilliseconds;
+                        _logger.LogError($"[SERVICE] ❌ GetNearbyServices - ERROR obteniendo disponibilidades después de {availabilityQueryDuration:F2}ms");
+                        _logger.LogError($"[SERVICE]    Exception: {ex.GetType().Name} - {ex.Message}");
+                        _logger.LogError($"[SERVICE]    Inner Exception: {ex.InnerException?.Message ?? "None"}");
+                        _logger.LogError($"[SERVICE]    StackTrace: {ex.StackTrace}");
+                        // Continuar sin disponibilidades en caso de error
+                        availabilities = new List<ExpertAvailability>();
+                    }
                 }
-                catch (Exception ex)
+                else
                 {
-                    var availabilityQueryDuration = (DateTime.UtcNow - availabilityQueryStartTime).TotalMilliseconds;
-                    _logger.LogError($"[SERVICE] ❌ GetNearbyServices - ERROR obteniendo disponibilidades después de {availabilityQueryDuration:F2}ms");
-                    _logger.LogError($"[SERVICE]    Exception: {ex.GetType().Name} - {ex.Message}");
-                    _logger.LogError($"[SERVICE]    StackTrace: {ex.StackTrace}");
-                    // Continuar sin disponibilidades en caso de error
-                    availabilities = new List<ExpertAvailability>();
+                    _logger.LogInformation($"[SERVICE] ⚠️ GetNearbyServices - No hay expert IDs, saltando consulta de disponibilidades");
                 }
                 
                 _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Agrupando disponibilidades por experto...");

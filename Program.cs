@@ -1409,6 +1409,37 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     // even when Multiplexing=false is set, because it tries to use multiplexing internally
     options.EnableSensitiveDataLogging(isDevelopment);
     options.EnableDetailedErrors(isDevelopment);
+    
+    // ✅ LOGGING DETALLADO: Habilitar logging de todas las operaciones de base de datos
+    // Esto incluye: queries SQL, conexiones, transacciones, timeouts, errores
+    if (isDevelopment)
+    {
+        // En desarrollo: logging completo
+        options.LogTo(
+            message => {
+                var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("EFCore");
+                logger.LogInformation($"[EF CORE] {message}");
+            },
+            Microsoft.Extensions.Logging.LogLevel.Information
+        );
+    }
+    else
+    {
+        // En producción: solo warnings y errores para evitar logs excesivos
+        options.LogTo(
+            message => {
+                var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("EFCore");
+                if (message.Contains("error", StringComparison.OrdinalIgnoreCase) || 
+                    message.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
+                    message.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+                    message.Contains("exception", StringComparison.OrdinalIgnoreCase))
+                {
+                    logger.LogWarning($"[EF CORE] {message}");
+                }
+            },
+            Microsoft.Extensions.Logging.LogLevel.Warning
+        );
+    }
 });
 
 // Configure Google Cloud Storage

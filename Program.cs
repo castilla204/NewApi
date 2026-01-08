@@ -1205,25 +1205,49 @@ builder.Services.AddAuthentication(options =>
         {
             var accessToken = context.Request.Query["access_token"];
             var path = context.HttpContext.Request.Path;
+            var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+            
+            logger.LogInformation($"[JWT] OnMessageReceived - Path: {path}, HasQueryToken: {!string.IsNullOrEmpty(accessToken)}");
+            
             if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/chatHub"))
             {
                 context.Token = accessToken;
+                logger.LogInformation($"[JWT] ✅ Token extraído de query string para {path}");
             }
+            return Task.CompletedTask;
+        },
+        OnTokenValidated = context =>
+        {
+            var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+            var path = context.HttpContext.Request.Path;
+            var userId = context.Principal?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "Unknown";
+            
+            logger.LogInformation($"[JWT] ✅ OnTokenValidated - Path: {path}, UserId: {userId}, IsAuthenticated: {context.Principal?.Identity?.IsAuthenticated}");
             return Task.CompletedTask;
         },
         // ✅ FIX PRODUCCIÓN: Falla rápido si el token es inválido en lugar de causar timeout
         OnAuthenticationFailed = context =>
         {
             var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
-            var path = context.HttpContext.Request.Path;
+            var path = context.HttpContext.Request.Path.Value ?? "";
+            var method = context.HttpContext.Request.Method;
+            var hasAuthHeader = context.HttpContext.Request.Headers.ContainsKey("Authorization");
+            var authHeader = hasAuthHeader ? context.HttpContext.Request.Headers["Authorization"].ToString().Substring(0, Math.Min(30, context.HttpContext.Request.Headers["Authorization"].ToString().Length)) + "..." : "NO AUTH HEADER";
             
             // Si es un endpoint público, no loggear el error (es normal que no haya token)
-            var publicEndpoints = new[] { "/api/Categories", "/api/ServiceType/public", "/api/SearchService/homepage-wall" };
-            var isPublicEndpoint = publicEndpoints.Any(ep => path.StartsWithSegments(ep));
+            var publicEndpoints = new[] { "/api/Categories", "/api/ServiceType/public", "/api/SearchService/homepage-wall", "/health", "/warmup" };
+            var pathString = new Microsoft.AspNetCore.Http.PathString(path);
+            var isPublicEndpoint = publicEndpoints.Any(ep => pathString.StartsWithSegments(ep));
             
-            if (!isPublicEndpoint)
+            logger.LogWarning($"[JWT] ❌ OnAuthenticationFailed - {method} {path}");
+            logger.LogWarning($"[JWT]    HasAuthHeader: {hasAuthHeader}, AuthHeader: {authHeader}");
+            logger.LogWarning($"[JWT]    IsPublicEndpoint: {isPublicEndpoint}");
+            logger.LogWarning($"[JWT]    Error: {context.Exception?.Message ?? "Unknown error"}");
+            logger.LogWarning($"[JWT]    Exception Type: {context.Exception?.GetType().Name ?? "None"}");
+            
+            if (context.Exception != null)
             {
-                logger.LogWarning($"❌ [JWT] Error de autenticación en {path}: {context.Exception.Message}");
+                logger.LogWarning($"[JWT]    StackTrace: {context.Exception.StackTrace}");
             }
             
             // Falla rápido en lugar de esperar timeout
@@ -1233,14 +1257,27 @@ builder.Services.AddAuthentication(options =>
         // ✅ FIX PRODUCCIÓN: No intentar validar token si no está presente en endpoints públicos
         OnChallenge = context =>
         {
-            var path = context.HttpContext.Request.Path;
-            var publicEndpoints = new[] { "/api/Categories", "/api/ServiceType/public", "/api/SearchService/homepage-wall" };
-            var isPublicEndpoint = publicEndpoints.Any(ep => path.StartsWithSegments(ep));
+            var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+            var path = context.HttpContext.Request.Path.Value ?? "";
+            var method = context.HttpContext.Request.Method;
+            var hasAuthHeader = context.HttpContext.Request.Headers.ContainsKey("Authorization");
+            var publicEndpoints = new[] { "/api/Categories", "/api/ServiceType/public", "/api/SearchService/homepage-wall", "/health", "/warmup", "/health-detailed" };
+            var pathString = context.HttpContext.Request.Path;
+            var isPublicEndpoint = publicEndpoints.Any(ep => pathString.StartsWithSegments(ep));
+            
+            logger.LogInformation($"[JWT] 🔔 OnChallenge - {method} {path}");
+            logger.LogInformation($"[JWT]    HasAuthHeader: {hasAuthHeader}, IsPublicEndpoint: {isPublicEndpoint}");
+            logger.LogInformation($"[JWT]    Error: {context.Error}, ErrorDescription: {context.ErrorDescription}");
             
             // Si es endpoint público y no hay token, no hacer challenge (dejar pasar)
-            if (isPublicEndpoint && !context.HttpContext.Request.Headers.ContainsKey("Authorization"))
+            if (isPublicEndpoint && !hasAuthHeader)
             {
+                logger.LogInformation($"[JWT] ✅ Endpoint público sin token - HandleResponse() para permitir acceso");
                 context.HandleResponse(); // No enviar 401, dejar que el endpoint público maneje la request
+            }
+            else if (!hasAuthHeader)
+            {
+                logger.LogWarning($"[JWT] ⚠️ Endpoint protegido sin token - Se enviará 401");
             }
             
             return Task.CompletedTask;
@@ -1906,7 +1943,7 @@ app.UseStatusCodePages(async context =>
 // Esto asegura que los headers CORS se envíen incluso si hay errores
 app.UseCors("AllowSpecificOrigin");
 
-// ✅ DEBUG: Logging detallado de CORS y autenticación para diagnosticar problemas
+// ✅ DEBUG: Logging detallado de CORS para diagnosticar problemas
 app.Use(async (context, next) =>
 {
     var corsLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
@@ -1917,27 +1954,42 @@ app.Use(async (context, next) =>
         var path = context.Request.Path.Value ?? "";
         var method = context.Request.Method;
         var origin = context.Request.Headers["Origin"].ToString();
-        var hasAuth = context.Request.Headers.ContainsKey("Authorization");
-        var authHeader = hasAuth ? (context.Request.Headers["Authorization"].ToString().Length > 20 
-            ? context.Request.Headers["Authorization"].ToString().Substring(0, 20) + "..." 
-            : context.Request.Headers["Authorization"].ToString()) : "NO AUTH HEADER";
         
-        // Loggear todas las solicitudes a endpoints protegidos
-        if (path.StartsWith("/api") && !path.Contains("/ServiceType/public"))
+        // Loggear todas las requests, especialmente OPTIONS (preflight)
+        if (method == "OPTIONS")
         {
-            corsLogger.LogInformation($"🔍 [CORS/AUTH DEBUG] {method} {path} | Origin: {origin} | HasAuth: {hasAuth} | AuthHeader: {authHeader}");
+            var accessControlRequestMethod = context.Request.Headers["Access-Control-Request-Method"].ToString();
+            var accessControlRequestHeaders = context.Request.Headers["Access-Control-Request-Headers"].ToString();
             
-            // Si es OPTIONS (preflight), loggear headers importantes
-            if (method == "OPTIONS")
-            {
-                var accessControlRequestMethod = context.Request.Headers["Access-Control-Request-Method"].ToString();
-                var accessControlRequestHeaders = context.Request.Headers["Access-Control-Request-Headers"].ToString();
-                corsLogger.LogInformation($"   [PREFLIGHT] Access-Control-Request-Method: {accessControlRequestMethod} | Access-Control-Request-Headers: {accessControlRequestHeaders}");
-            }
+            corsLogger.LogInformation($"[CORS] 🔄 PREFLIGHT REQUEST: {method} {path}");
+            corsLogger.LogInformation($"[CORS]    Origin: {origin}");
+            corsLogger.LogInformation($"[CORS]    Access-Control-Request-Method: {accessControlRequestMethod}");
+            corsLogger.LogInformation($"[CORS]    Access-Control-Request-Headers: {accessControlRequestHeaders}");
         }
     }
     
     await next();
+    
+    // Loggear headers CORS en la respuesta
+    if (!app.Environment.IsDevelopment())
+    {
+        var path = context.Request.Path.Value ?? "";
+        var method = context.Request.Method;
+        
+        if (method == "OPTIONS" || context.Request.Headers.ContainsKey("Origin"))
+        {
+            var allowOrigin = context.Response.Headers["Access-Control-Allow-Origin"].ToString();
+            var allowMethods = context.Response.Headers["Access-Control-Allow-Methods"].ToString();
+            var allowHeaders = context.Response.Headers["Access-Control-Allow-Headers"].ToString();
+            var allowCredentials = context.Response.Headers["Access-Control-Allow-Credentials"].ToString();
+            
+            corsLogger.LogInformation($"[CORS] 📤 CORS RESPONSE HEADERS para {method} {path}:");
+            corsLogger.LogInformation($"[CORS]    Access-Control-Allow-Origin: {allowOrigin}");
+            corsLogger.LogInformation($"[CORS]    Access-Control-Allow-Methods: {allowMethods}");
+            corsLogger.LogInformation($"[CORS]    Access-Control-Allow-Headers: {allowHeaders}");
+            corsLogger.LogInformation($"[CORS]    Access-Control-Allow-Credentials: {allowCredentials}");
+        }
+    }
 });
 
 // ✅ HANGFIRE IFRAME SUPPORT: Configurar headers para permitir iframes en Hangfire Dashboard
@@ -2017,31 +2069,98 @@ context.Request.Headers.ContainsKey("X-Bypass-Auth"))
 });
 */
 
-app.UseAuthentication();
-app.UseAuthorization();
-
-// ✅ DEBUG: Logging de autenticación para diagnosticar problemas en Render.com
+// ✅ DEBUG: Logging ANTES de autenticación (para capturar estado inicial)
 app.Use(async (context, next) =>
 {
-    var authLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+    var requestLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+    var path = context.Request.Path.Value ?? "";
+    var method = context.Request.Method;
     
-    // Solo loggear en producción para diagnosticar problemas
+    // Loggear TODAS las requests en producción para diagnóstico
     if (!app.Environment.IsDevelopment())
     {
-        var path = context.Request.Path.Value ?? "";
         var hasAuth = context.Request.Headers.ContainsKey("Authorization");
-        var authHeader = hasAuth ? context.Request.Headers["Authorization"].ToString().Substring(0, Math.Min(20, context.Request.Headers["Authorization"].ToString().Length)) + "..." : "NO AUTH HEADER";
+        var authHeader = hasAuth ? context.Request.Headers["Authorization"].ToString().Substring(0, Math.Min(30, context.Request.Headers["Authorization"].ToString().Length)) + "..." : "NO AUTH HEADER";
         var isAuthenticated = context.User?.Identity?.IsAuthenticated ?? false;
         var origin = context.Request.Headers["Origin"].ToString();
         
-        // Solo loggear si es un endpoint protegido (no /health, no /api/ServiceType/public)
-        if (!path.Contains("/health") && !path.Contains("/ServiceType/public") && path.StartsWith("/api"))
-        {
-            authLogger.LogInformation($"🔍 [AUTH DEBUG] Path: {path}, Origin: {origin}, HasAuthHeader: {hasAuth}, IsAuthenticated: {isAuthenticated}, AuthHeader: {authHeader}");
-        }
+        // Identificar tipo de endpoint
+        var isHealth = path.Contains("/health");
+        var isPublic = path.Contains("/ServiceType/public") || path.Contains("/Categories") || path.Contains("/homepage-wall");
+        var isApi = path.StartsWith("/api");
+        
+        requestLogger.LogInformation($"[REQUEST] ========================================");
+        requestLogger.LogInformation($"[REQUEST] 📥 INCOMING (ANTES de auth): {method} {path}");
+        requestLogger.LogInformation($"[REQUEST]    Origin: {origin}");
+        requestLogger.LogInformation($"[REQUEST]    HasAuthHeader: {hasAuth}");
+        requestLogger.LogInformation($"[REQUEST]    AuthHeader: {authHeader}");
+        requestLogger.LogInformation($"[REQUEST]    IsAuthenticated (ANTES): {isAuthenticated}");
+        requestLogger.LogInformation($"[REQUEST]    Endpoint Type: Health={isHealth}, Public={isPublic}, API={isApi}");
     }
     
     await next();
+});
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+// ✅ DEBUG: Logging DESPUÉS de autenticación (para capturar estado final)
+app.Use(async (context, next) =>
+{
+    var requestLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+    var path = context.Request.Path.Value ?? "";
+    var method = context.Request.Method;
+    var startTime = DateTime.UtcNow;
+    
+    // Loggear estado después de autenticación
+    if (!app.Environment.IsDevelopment())
+    {
+        var isAuthenticatedAfter = context.User?.Identity?.IsAuthenticated ?? false;
+        var userId = context.User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "N/A";
+        var roles = string.Join(", ", context.User?.FindAll(System.Security.Claims.ClaimTypes.Role).Select(c => c.Value) ?? Array.Empty<string>());
+        
+        requestLogger.LogInformation($"[REQUEST] 🔐 DESPUÉS de auth: {method} {path}");
+        requestLogger.LogInformation($"[REQUEST]    IsAuthenticated: {isAuthenticatedAfter}");
+        requestLogger.LogInformation($"[REQUEST]    UserId: {userId}");
+        requestLogger.LogInformation($"[REQUEST]    Roles: {roles}");
+        
+        // Verificar si el endpoint tiene [AllowAnonymous]
+        var endpoint = context.GetEndpoint();
+        var hasAllowAnonymous = endpoint?.Metadata?.GetMetadata<Microsoft.AspNetCore.Authorization.AllowAnonymousAttribute>() != null;
+        var hasAuthorize = endpoint?.Metadata?.GetMetadata<Microsoft.AspNetCore.Authorization.AuthorizeAttribute>() != null;
+        requestLogger.LogInformation($"[REQUEST]    Endpoint Metadata: AllowAnonymous={hasAllowAnonymous}, Authorize={hasAuthorize}");
+    }
+    
+    // Ejecutar el siguiente middleware
+    await next();
+    
+    // Loggear después de que se procese la request
+    if (!app.Environment.IsDevelopment())
+    {
+        var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+        var statusCode = context.Response.StatusCode;
+        var responseContentType = context.Response.ContentType ?? "N/A";
+        
+        requestLogger.LogInformation($"[REQUEST] 📤 RESPONSE: {method} {path}");
+        requestLogger.LogInformation($"[REQUEST]    StatusCode: {statusCode}");
+        requestLogger.LogInformation($"[REQUEST]    Response Content-Type: {responseContentType}");
+        requestLogger.LogInformation($"[REQUEST]    Duration: {duration:F2}ms");
+        requestLogger.LogInformation($"[REQUEST] ========================================");
+        
+        // Si es un error, loggear más detalles
+        if (statusCode >= 400)
+        {
+            requestLogger.LogWarning($"[REQUEST] ⚠️ ERROR RESPONSE: {statusCode} para {method} {path}");
+            if (statusCode == 401)
+            {
+                requestLogger.LogWarning($"[REQUEST]    ⚠️ 401 Unauthorized - Token inválido o faltante");
+            }
+            else if (statusCode == 403)
+            {
+                requestLogger.LogWarning($"[REQUEST]    ⚠️ 403 Forbidden - Usuario autenticado pero sin permisos");
+            }
+        }
+    }
 });
 
 // ✅ SEGURIDAD 2025: FORZAR MFA para Admin y Expertos

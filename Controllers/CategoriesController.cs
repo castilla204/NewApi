@@ -6,6 +6,7 @@ using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models;
 using Npgsql;
+using Microsoft.Extensions.Logging;
 
 namespace newApi.Controllers
 {
@@ -15,11 +16,13 @@ namespace newApi.Controllers
     {
         private readonly AppDbContext _context;
         private readonly IMapper _mapper;
+        private readonly ILogger<CategoriesController> _logger;
 
-        public CategoriesController(AppDbContext context, IMapper mapper)
+        public CategoriesController(AppDbContext context, IMapper mapper, ILogger<CategoriesController> logger)
         {
             _context = context;
             _mapper = mapper;
+            _logger = logger;
         }
 
         /// <summary>
@@ -103,11 +106,24 @@ namespace newApi.Controllers
         [AllowAnonymous] // ✅ PÚBLICO: Permitir acceso sin autenticación para explorar categorías
         public async Task<IActionResult> GetCategories()
         {
+            var startTime = DateTime.UtcNow;
+            var requestId = Guid.NewGuid().ToString("N")[..8];
+            
+            _logger.LogInformation($"[ENDPOINT] ========================================");
+            _logger.LogInformation($"[ENDPOINT] 📥 GetCategories INICIADO - RequestId: {requestId}");
+            
             try
             {
                 // ✅ CORRECCIÓN: Verificar conexión antes de consultar
-                if (!await _context.Database.CanConnectAsync())
+                _logger.LogInformation($"[ENDPOINT] 🔍 GetCategories - Verificando conexión a base de datos...");
+                var canConnectStartTime = DateTime.UtcNow;
+                var canConnect = await _context.Database.CanConnectAsync();
+                var canConnectDuration = (DateTime.UtcNow - canConnectStartTime).TotalMilliseconds;
+                _logger.LogInformation($"[ENDPOINT] ✅ GetCategories - CanConnect: {canConnect}, Duración: {canConnectDuration:F2}ms");
+                
+                if (!canConnect)
                 {
+                    _logger.LogError($"[ENDPOINT] ❌ GetCategories - Database connection unavailable");
                     return StatusCode(503, new { 
                         message = "Database connection unavailable. Please check your SSH tunnel.",
                         error = "DATABASE_CONNECTION_LOST"
@@ -116,6 +132,8 @@ namespace newApi.Controllers
 
                 // ✅ CORRECCIÓN: Consulta más robusta - usar Select para evitar problemas de referencia circular
                 // y cargar solo las subcategorías activas directamente en la consulta
+                _logger.LogInformation($"[ENDPOINT] 🔍 GetCategories - Ejecutando consulta a base de datos...");
+                var queryStartTime = DateTime.UtcNow;
                 var categoryData = await _context.Categories
                     .AsNoTracking() // ✅ MEJORA: No tracking para mejor rendimiento y evitar problemas de conexión
                     .Where(c => c.IsActive)
@@ -127,8 +145,12 @@ namespace newApi.Controllers
                             : new List<Category>()
                     })
                     .ToListAsync();
+                var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                _logger.LogInformation($"[ENDPOINT] ✅ GetCategories - Consulta completada: {categoryData.Count} categorías, Duración: {queryDuration:F2}ms");
 
                 // Construir el resultado final mapeando a DTO
+                _logger.LogInformation($"[ENDPOINT] 🔍 GetCategories - Mapeando a DTOs...");
+                var mappingStartTime = DateTime.UtcNow;
                 var categoryDtos = categoryData.Select(x => new CategoryWithDetailsDto
                 {
                     Id = x.Category.Id,
@@ -141,14 +163,28 @@ namespace newApi.Controllers
                     HasSubcategories = x.ActiveSubcategories.Any(),
                     SubcategoriesCount = x.ActiveSubcategories.Count
                 }).ToList();
+                var mappingDuration = (DateTime.UtcNow - mappingStartTime).TotalMilliseconds;
+                
+                var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                _logger.LogInformation($"[ENDPOINT] ✅ GetCategories COMPLETADO - RequestId: {requestId}");
+                _logger.LogInformation($"[ENDPOINT]    Total categorías: {categoryDtos.Count}");
+                _logger.LogInformation($"[ENDPOINT]    Duración total: {totalDuration:F2}ms (Query: {queryDuration:F2}ms, Mapping: {mappingDuration:F2}ms)");
+                _logger.LogInformation($"[ENDPOINT] ========================================");
 
                 return Ok(categoryDtos);
             }
             catch (Npgsql.NpgsqlException npgsqlEx)
             {
+                var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                var sqlState = (npgsqlEx.InnerException as Npgsql.PostgresException)?.SqlState ?? "UNKNOWN";
+                
+                _logger.LogError(npgsqlEx, $"[ENDPOINT] ❌ GetCategories NpgsqlException - RequestId: {requestId}");
+                _logger.LogError($"[ENDPOINT]    SqlState: {sqlState}");
+                _logger.LogError($"[ENDPOINT]    Message: {npgsqlEx.Message}");
+                _logger.LogError($"[ENDPOINT]    Duración antes del error: {totalDuration:F2}ms");
+                
                 // ✅ CORRECCIÓN: Manejo específico de errores de PostgreSQL
                 // SqlState puede no estar disponible en NpgsqlException, intentar obtenerlo del PostgresException interno
-                var sqlState = (npgsqlEx.InnerException as Npgsql.PostgresException)?.SqlState ?? "UNKNOWN";
                 return StatusCode(503, new { 
                     message = "Database connection error. Please check your SSH tunnel.",
                     error = "DATABASE_CONNECTION_ERROR",

@@ -7,6 +7,7 @@ using newApi.DataLayer.Models.PostGresModels;
 using System.Security.Claims;
 using newApi.DataLayer.Models;
 using System.Threading;
+using Microsoft.Extensions.Logging;
 
 namespace newApi.Controllers
 {
@@ -17,15 +18,18 @@ namespace newApi.Controllers
         private readonly SearchServiceService _searchServiceService;
         private readonly AppDbContext _context;
         private readonly ILoggingService _loggingService;
+        private readonly ILogger<SearchServiceController> _logger;
 
         public SearchServiceController(
             SearchServiceService searchServiceService,
             AppDbContext context,
-            ILoggingService loggingService)
+            ILoggingService loggingService,
+            ILogger<SearchServiceController> logger)
         {
             _searchServiceService = searchServiceService;
             _context = context;
             _loggingService = loggingService;
+            _logger = logger;
         }
 
         private string GetStripeStatusMessage(StripeStatus status)
@@ -908,6 +912,19 @@ namespace newApi.Controllers
             [FromQuery] int popularPage = 1,
             [FromQuery] int popularPageSize = 20)
         {
+            var startTime = DateTime.UtcNow;
+            var requestId = Guid.NewGuid().ToString("N")[..8];
+            
+            _logger.LogInformation($"[ENDPOINT] ========================================");
+            _logger.LogInformation($"[ENDPOINT] 📥 GetHomepageWall INICIADO - RequestId: {requestId}");
+            _logger.LogInformation($"[ENDPOINT]    categoryId: {categoryId}");
+            _logger.LogInformation($"[ENDPOINT]    latitude: {latitude ?? "null"}");
+            _logger.LogInformation($"[ENDPOINT]    longitude: {longitude ?? "null"}");
+            _logger.LogInformation($"[ENDPOINT]    countryCode: {countryCode ?? "null"}");
+            _logger.LogInformation($"[ENDPOINT]    locationRange: {locationRange}");
+            _logger.LogInformation($"[ENDPOINT]    nearbyPage: {nearbyPage}, nearbyPageSize: {nearbyPageSize}");
+            _logger.LogInformation($"[ENDPOINT]    popularPage: {popularPage}, popularPageSize: {popularPageSize}");
+            
             // ✅ RENDER.COM: Timeout aumentado a 90 segundos para consultas complejas
             // La connection string tiene CommandTimeout=120, así que 90s es razonable
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
@@ -916,6 +933,7 @@ namespace newApi.Controllers
                 // Validar que categoryId sea válido
                 if (categoryId <= 0)
                 {
+                    _logger.LogWarning($"[ENDPOINT] ❌ GetHomepageWall - categoryId inválido: {categoryId}");
                     return BadRequest(new { message = "categoryId es requerido y debe ser mayor a 0" });
                 }
                 
@@ -927,6 +945,8 @@ namespace newApi.Controllers
                 if (locationRange <= 0) locationRange = 50;
 
                 // Obtener servicios cercanos
+                _logger.LogInformation($"[ENDPOINT] 🔍 GetHomepageWall - Obteniendo servicios cercanos...");
+                var nearbyStartTime = DateTime.UtcNow;
                 var (nearbyServices, nearbyTotalCount) = await _searchServiceService.GetNearbyServices(
                     latitude,
                     longitude,
@@ -936,23 +956,34 @@ namespace newApi.Controllers
                     nearbyPage,
                     nearbyPageSize,
                     cts.Token);
+                var nearbyDuration = (DateTime.UtcNow - nearbyStartTime).TotalMilliseconds;
+                _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - Servicios cercanos obtenidos: {nearbyServices.Count} servicios, Total: {nearbyTotalCount}, Duración: {nearbyDuration:F2}ms");
 
                 // Obtener servicios populares
+                _logger.LogInformation($"[ENDPOINT] 🔍 GetHomepageWall - Obteniendo servicios populares...");
+                var popularStartTime = DateTime.UtcNow;
                 var (popularServices, popularTotalCount) = await _searchServiceService.GetPopularServices(
                     categoryId,  // ✅ Filtrar por categoría si se proporciona
                     popularPage,
                     popularPageSize,
                     cts.Token);
+                var popularDuration = (DateTime.UtcNow - popularStartTime).TotalMilliseconds;
+                _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - Servicios populares obtenidos: {popularServices.Count} servicios, Total: {popularTotalCount}, Duración: {popularDuration:F2}ms");
 
                 // ✅ Obtener nombre de categoría (categoryId es obligatorio)
+                _logger.LogInformation($"[ENDPOINT] 🔍 GetHomepageWall - Obteniendo nombre de categoría para categoryId: {categoryId}");
+                var categoryStartTime = DateTime.UtcNow;
                 var category = await _context.Categories
                     .AsNoTracking()
                     .Where(c => c.Id == categoryId && c.IsActive)
                     .Select(c => c.Name)
                     .FirstOrDefaultAsync(cts.Token);
+                var categoryDuration = (DateTime.UtcNow - categoryStartTime).TotalMilliseconds;
+                _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - Categoría obtenida: {category ?? "null"}, Duración: {categoryDuration:F2}ms");
                 
                 if (category == null)
                 {
+                    _logger.LogWarning($"[ENDPOINT] ❌ GetHomepageWall - Categoría con ID {categoryId} no encontrada o no está activa");
                     return NotFound(new { message = $"Categoría con ID {categoryId} no encontrada o no está activa" });
                 }
                 
@@ -1043,22 +1074,40 @@ namespace newApi.Controllers
                 }
 
                 // ✅ Devolver array plano sin objetos anidados
+                var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall COMPLETADO - RequestId: {requestId}");
+                _logger.LogInformation($"[ENDPOINT]    Total secciones: {allSections.Count}");
+                _logger.LogInformation($"[ENDPOINT]    Duración total: {totalDuration:F2}ms");
+                _logger.LogInformation($"[ENDPOINT] ========================================");
                 return Ok(allSections);
             }
             catch (OperationCanceledException)
             {
+                var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                _logger.LogError($"[ENDPOINT] ❌ GetHomepageWall TIMEOUT - RequestId: {requestId}");
+                _logger.LogError($"[ENDPOINT]    Duración antes del timeout: {totalDuration:F2}ms");
+                _logger.LogError($"[ENDPOINT]    categoryId: {categoryId}, countryCode: {countryCode}");
+                
                 await _loggingService.LogErrorAsync(
                     message: "Timeout al obtener el muro de homepage",
                     details: "La operación excedió el tiempo máximo de espera (90 segundos)",
                     source: "SearchServiceController.GetHomepageWall",
                     relatedEntityType: "HomepageWall",
-                    additionalData: new { latitude, longitude, countryCode },
+                    additionalData: new { latitude, longitude, countryCode, requestId, duration = totalDuration },
                     notifyUser: false
                 );
                 return StatusCode(408, new { message = "Request timeout. Please try again.", detail = "The request took too long to complete" });
             }
             catch (Exception ex)
             {
+                var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                _logger.LogError(ex, $"[ENDPOINT] ❌ GetHomepageWall ERROR - RequestId: {requestId}");
+                _logger.LogError($"[ENDPOINT]    Exception Type: {ex.GetType().Name}");
+                _logger.LogError($"[ENDPOINT]    Exception Message: {ex.Message}");
+                _logger.LogError($"[ENDPOINT]    Inner Exception: {ex.InnerException?.Message ?? "None"}");
+                _logger.LogError($"[ENDPOINT]    StackTrace: {ex.StackTrace}");
+                _logger.LogError($"[ENDPOINT]    Duración antes del error: {totalDuration:F2}ms");
+                
                 // Log del error con información detallada
                 var requestParams = new
                 {
@@ -1081,7 +1130,9 @@ namespace newApi.Controllers
                     {
                         requestParameters = requestParams,
                         innerException = ex.InnerException?.Message,
-                        exceptionType = ex.GetType().Name
+                        exceptionType = ex.GetType().Name,
+                        requestId,
+                        duration = totalDuration
                     },
                     notifyUser: false
                 );

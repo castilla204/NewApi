@@ -1943,6 +1943,11 @@ app.UseStatusCodePages(async context =>
 // Esto asegura que los headers CORS se envíen incluso si hay errores
 app.UseCors("AllowSpecificOrigin");
 
+// ✅ CRÍTICO: Middleware de logging completo del pipeline (PRIMERO después de CORS)
+// Este middleware captura TODO el flujo de la request para diagnosticar problemas
+// Basado en mejores prácticas para identificar por qué algunos endpoints funcionan y otros no
+app.UseMiddleware<newApi.Middleware.RequestPipelineLoggingMiddleware>();
+
 // ✅ DEBUG: Logging detallado de CORS para diagnosticar problemas
 app.Use(async (context, next) =>
 {

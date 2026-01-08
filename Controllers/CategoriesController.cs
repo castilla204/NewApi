@@ -187,20 +187,47 @@ namespace newApi.Controllers
                     _logger.LogInformation($"[ENDPOINT]    Timestamp inicio: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
                     _logger.LogInformation($"[ENDPOINT]    Token antes de ToListAsync: IsCancellationRequested={queryCts.Token.IsCancellationRequested}");
                     
-                    // ✅ CRÍTICO: Usar AsSplitQuery() para evitar "cartesian explosion" cuando se cargan múltiples colecciones
-                    // Esto divide la consulta en múltiples queries separadas en lugar de una sola query con JOINs complejos
-                    categoryData = (await _context.Categories
-                        .AsNoTracking() // ✅ MEJORA: No tracking para mejor rendimiento y evitar problemas de conexión
-                        .Where(c => c.IsActive)
-                        .Select(c => new
+                    // ✅ CRÍTICO PRODUCCIÓN: El CommandTimeout de la connection string (120s) tiene prioridad sobre CancellationToken
+                    // ✅ SOLUCIÓN: Establecer timeout temporalmente en el DbContext antes de la query
+                    var originalTimeout = _context.Database.GetCommandTimeout();
+                    _context.Database.SetCommandTimeout(10); // ✅ Forzar timeout de 10 segundos para esta query
+                    
+                    try
+                    {
+                        // ✅ CRÍTICO: Simplificar query - cargar categorías y subcategorías por separado para evitar problemas con PgBouncer
+                        // En lugar de usar AsSplitQuery() que puede causar problemas con Transaction Pooler,
+                        // cargamos las categorías primero y luego las subcategorías en memoria
+                        var categories = await _context.Categories
+                            .AsNoTracking()
+                            .Where(c => c.IsActive)
+                            .ToListAsync(queryCts.Token);
+                        
+                        // Cargar subcategorías activas para cada categoría
+                        var categoryIds = categories.Select(c => c.Id).ToList();
+                        var subcategories = await _context.Categories
+                            .AsNoTracking()
+                            .Where(c => c.ParentId.HasValue && categoryIds.Contains(c.ParentId.Value) && c.IsActive)
+                            .ToListAsync(queryCts.Token);
+                        
+                        // Agrupar subcategorías por categoría padre
+                        var subcategoriesByParent = subcategories
+                            .GroupBy(sc => sc.ParentId!.Value)
+                            .ToDictionary(g => g.Key, g => g.ToList());
+                        
+                        // Construir resultado
+                        categoryData = categories.Select(c => new
                         {
                             Category = c,
-                            ActiveSubcategories = c.Subcategories != null 
-                                ? c.Subcategories.Where(sc => sc.IsActive && sc != null).ToList()
+                            ActiveSubcategories = subcategoriesByParent.ContainsKey(c.Id) 
+                                ? subcategoriesByParent[c.Id] 
                                 : new List<Category>()
-                        })
-                        .AsSplitQuery() // ✅ CRÍTICO: Dividir query para evitar "cartesian explosion" con múltiples colecciones
-                        .ToListAsync(queryCts.Token)).Cast<dynamic>().ToList();
+                        }).Cast<dynamic>().ToList();
+                    }
+                    finally
+                    {
+                        // Restaurar timeout original
+                        _context.Database.SetCommandTimeout(originalTimeout);
+                    }
                     
                     queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
                     _logger.LogInformation($"[ENDPOINT]    Timestamp fin: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");

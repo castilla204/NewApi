@@ -9,6 +9,7 @@ using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.enums;
 using System.Globalization;
 using System.Threading;
+using Microsoft.Extensions.Logging;
 
 namespace newApi.Services
 {
@@ -18,17 +19,20 @@ namespace newApi.Services
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
         private readonly ISignedUrlService _signedUrlService;
+        private readonly ILogger<SearchServiceService> _logger;
 
         public SearchServiceService(
             AppDbContext context,
             IConfiguration configuration,
             StorageClient storageClient,
-            ISignedUrlService signedUrlService)
+            ISignedUrlService signedUrlService,
+            ILogger<SearchServiceService> logger)
         {
             _context = context;
             _configuration = configuration;
             _storageClient = storageClient;
             _signedUrlService = signedUrlService;
+            _logger = logger;
         }
 
         public async Task<(IEnumerable<SearchServiceDetailDto> services, int totalCount)> GetAllServices(
@@ -1748,6 +1752,13 @@ namespace newApi.Services
             int pageSize = 20,
             CancellationToken cancellationToken = default)
         {
+            var methodStartTime = DateTime.UtcNow;
+            _logger.LogInformation($"[SERVICE] ========================================");
+            _logger.LogInformation($"[SERVICE] 📥 GetNearbyServices INICIADO");
+            _logger.LogInformation($"[SERVICE]    latitude: {latitude}, longitude: {longitude}");
+            _logger.LogInformation($"[SERVICE]    countryCode: {countryCode}, locationRange: {locationRange}");
+            _logger.LogInformation($"[SERVICE]    categoryId: {categoryId}, page: {page}, pageSize: {pageSize}");
+            
             try
             {
                 // Validar parámetros de paginación
@@ -1761,9 +1772,11 @@ namespace newApi.Services
                 // Si no se proporciona ubicación, usar la capital del país (o Madrid por defecto)
                 if (string.IsNullOrWhiteSpace(latitude) || string.IsNullOrWhiteSpace(longitude))
                 {
+                    _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - No hay coordenadas, usando capital del país");
                     var capitalCoords = GetCapitalCoordinates(countryCode);
                     searchLatitude = capitalCoords.Latitude;
                     searchLongitude = capitalCoords.Longitude;
+                    _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Coordenadas capital: {searchLatitude}, {searchLongitude}");
                 }
                 else
                 {
@@ -1771,15 +1784,22 @@ namespace newApi.Services
                     if (!decimal.TryParse(latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out searchLatitude) ||
                         !decimal.TryParse(longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out searchLongitude))
                     {
+                        _logger.LogInformation($"[SERVICE] ⚠️ GetNearbyServices - Coordenadas inválidas, usando capital");
                         // Si las coordenadas no son válidas, usar capital
                         var capitalCoords = GetCapitalCoordinates(countryCode);
                         searchLatitude = capitalCoords.Latitude;
                         searchLongitude = capitalCoords.Longitude;
                     }
+                    else
+                    {
+                        _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Coordenadas válidas: {searchLatitude}, {searchLongitude}");
+                    }
                 }
 
                 // ✅ OPTIMIZACIÓN CRÍTICA: Primero obtener IDs y distancias (sin cargar todas las relaciones)
                 // Esto es 100x más rápido porque solo carga IDs y coordenadas
+                _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Construyendo query para obtener IDs y coordenadas...");
+                var queryStartTime = DateTime.UtcNow;
                 var servicesWithDistanceQuery = _context.SearchServices
                     .AsNoTracking()
                     .Where(ss => ss.IsActive 
@@ -1796,9 +1816,15 @@ namespace newApi.Services
                         Longitude = ss.ExpertProfile.Longitude
                     });
 
+                _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Query construida, ejecutando ToListAsync... (Duración construcción: {(DateTime.UtcNow - queryStartTime).TotalMilliseconds:F2}ms)");
+                var dbQueryStartTime = DateTime.UtcNow;
                 var servicesWithDistanceData = await servicesWithDistanceQuery.ToListAsync(cancellationToken);
+                var dbQueryDuration = (DateTime.UtcNow - dbQueryStartTime).TotalMilliseconds;
+                _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Query completada: {servicesWithDistanceData.Count} servicios obtenidos, Duración: {dbQueryDuration:F2}ms");
 
                 // Calcular distancia en memoria (solo IDs y coordenadas, muy rápido)
+                _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Calculando distancias en memoria...");
+                var distanceCalcStartTime = DateTime.UtcNow;
                 var servicesWithDistance = servicesWithDistanceData
                     .Select(ss =>
                     {
@@ -1815,15 +1841,19 @@ namespace newApi.Services
                     .Where(x => x != null)
                     .OrderBy(x => x!.Distance)
                     .ToList();
+                var distanceCalcDuration = (DateTime.UtcNow - distanceCalcStartTime).TotalMilliseconds;
+                _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Distancias calculadas: {servicesWithDistance.Count} servicios, Duración: {distanceCalcDuration:F2}ms");
 
                 // Si hay servicios dentro del rango, usarlos. Si no, usar los más cercanos disponibles
                 var servicesInRange = servicesWithDistance.Where(x => x!.Distance <= locationRange).ToList();
+                _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Servicios en rango ({locationRange}km): {servicesInRange.Count}");
                 
                 var servicesToUse = servicesInRange.Count > 0 
                     ? servicesInRange 
                     : servicesWithDistance; // Si no hay en rango, usar todos ordenados por distancia
 
                 var totalCount = servicesToUse.Count;
+                _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Total servicios a usar: {totalCount}");
 
                 // ✅ OPTIMIZACIÓN: Aplicar paginación ANTES de cargar los datos completos
                 var paginatedServiceIds = servicesToUse
@@ -1832,13 +1862,20 @@ namespace newApi.Services
                     .Select(x => x!.ServiceId)
                     .ToList();
 
+                _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - IDs paginados: {paginatedServiceIds.Count} servicios (página {page}, tamaño {pageSize})");
+
                 if (paginatedServiceIds.Count == 0)
                 {
+                    _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices COMPLETADO - Sin servicios, retornando lista vacía");
+                    _logger.LogInformation($"[SERVICE]    Duración total: {(DateTime.UtcNow - methodStartTime).TotalMilliseconds:F2}ms");
+                    _logger.LogInformation($"[SERVICE] ========================================");
                     return (new List<SearchServiceHomepageDto>(), 0);
                 }
 
                 // ✅ OPTIMIZACIÓN HOMEPAGE: Usar proyección Select en lugar de Include - MUCHO más rápido
                 // Solo carga los campos necesarios para mostrar cards en homepage, no todas las relaciones
+                _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Ejecutando query para obtener datos completos de servicios...");
+                var homepageQueryStartTime = DateTime.UtcNow;
                 var homepageServices = await _context.SearchServices
                     .AsNoTracking()
                     .Where(ss => paginatedServiceIds.Contains(ss.Id))
@@ -1874,6 +1911,8 @@ namespace newApi.Services
                             .Count(sh => sh.Status != null && sh.Status.StatusValue == "completed")
                     })
                     .ToListAsync(cancellationToken);
+                var homepageQueryDuration = (DateTime.UtcNow - homepageQueryStartTime).TotalMilliseconds;
+                _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Query de datos completos completada: {homepageServices.Count} servicios, Duración: {homepageQueryDuration:F2}ms");
 
                 // Mantener el orden original
                 var orderedServices = homepageServices
@@ -1882,10 +1921,14 @@ namespace newApi.Services
 
                 // ✅ OPTIMIZACIÓN: Cargar disponibilidades de todos los expertos de una vez
                 var expertIds = orderedServices.Select(s => s.ExpertId).Distinct().ToList();
+                _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Obteniendo disponibilidades para {expertIds.Count} expertos...");
+                var availabilityQueryStartTime = DateTime.UtcNow;
                 var availabilities = await _context.ExpertAvailabilities
                     .AsNoTracking()
                     .Where(ea => expertIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
                     .ToListAsync(cancellationToken);
+                var availabilityQueryDuration = (DateTime.UtcNow - availabilityQueryStartTime).TotalMilliseconds;
+                _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Disponibilidades obtenidas: {availabilities.Count}, Duración: {availabilityQueryDuration:F2}ms");
                 
                 var availabilityByExpert = availabilities
                     .GroupBy(ea => ea.ExpertId)
@@ -1944,10 +1987,22 @@ namespace newApi.Services
                     };
                 }).ToList();
 
+                _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices COMPLETADO");
+                _logger.LogInformation($"[SERVICE]    Total servicios retornados: {mappedServices.Count}");
+                _logger.LogInformation($"[SERVICE]    Total count: {totalCount}");
+                _logger.LogInformation($"[SERVICE]    Duración total: {(DateTime.UtcNow - methodStartTime).TotalMilliseconds:F2}ms");
+                _logger.LogInformation($"[SERVICE] ========================================");
                 return (mappedServices, totalCount);
             }
             catch (Exception ex)
             {
+                _logger.LogError($"[SERVICE] ❌ GetNearbyServices ERROR");
+                _logger.LogError($"[SERVICE]    Exception Type: {ex.GetType().Name}");
+                _logger.LogError($"[SERVICE]    Exception Message: {ex.Message}");
+                _logger.LogError($"[SERVICE]    Inner Exception: {ex.InnerException?.Message ?? "None"}");
+                _logger.LogError($"[SERVICE]    StackTrace: {ex.StackTrace}");
+                _logger.LogError($"[SERVICE]    Duración antes del error: {(DateTime.UtcNow - methodStartTime).TotalMilliseconds:F2}ms");
+                _logger.LogError($"[SERVICE] ========================================");
                 throw;
             }
         }

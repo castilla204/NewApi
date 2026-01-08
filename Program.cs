@@ -1912,113 +1912,31 @@ app.UseResponseCompression();
 // ✅ RENDER.COM: Los timeouts de Kestrel ya están configurados arriba
 // KeepAliveTimeout y RequestHeadersTimeout están en 5 y 2 minutos respectivamente
 
-// ✅ SIMPLIFICADO: Solo CORS básico - TODO LO DEMÁS COMENTADO PARA DIAGNÓSTICO
+// ✅ RENDER.COM BEST PRACTICES: Orden correcto del middleware
+// 1. CORS primero - para todas las respuestas
 app.UseCors("AllowSpecificOrigin");
 
-// ❌ COMENTADO TODO EL MIDDLEWARE COMPLEJO PARA DIAGNÓSTICO
-/*
-// ✅ CRÍTICO: Middleware para FORZAR headers CORS en TODAS las respuestas
-app.Use(async (context, next) => { ... });
+// 2. Health checks ANTES de autenticación (Render.com los usa para health checks)
+// Esto asegura que /health funcione sin autenticación
+app.MapHealthChecks("/health").WithName("HealthCheck").WithTags("System");
 
-// ✅ CRÍTICO: Manejo de errores global
-app.UseExceptionHandler(errorApp => { ... });
-*/
-
-// ❌ COMENTADO TODO EL MIDDLEWARE COMPLEJO PARA DIAGNÓSTICO
-/*
-// app.UseMiddleware<newApi.Middleware.RequestPipelineLoggingMiddleware>();
-// app.Use(async (context, next) => { ... }); // CORS logging
-// app.Use(async (context, next) => { ... }); // Hangfire iframe support
-*/
-
-// ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
-// ✅ SEGURIDAD 2025: Aplicar Rate Limiting
-// app.UseRateLimiter();
-
-// ✅ RENDER.COM: Los timeouts de Kestrel ya están configurados (KeepAliveTimeout=5min, RequestHeadersTimeout=2min)
-// Esto permite queries largas a la base de datos sin que se cancelen prematuramente
-
-// Development mode middleware - bypass authentication for testing
-// DISABLED: Using real JWT authentication instead
-/*
+// 3. Middleware simple de logging para diagnóstico
 app.Use(async (context, next) =>
 {
-    // Log all headers for debugging
-    var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
-    logger.LogInformation("🔍 Request to {Path} with headers: {Headers}", 
-        context.Request.Path, 
-        string.Join(", ", context.Request.Headers.Select(h => $"{h.Key}={h.Value}")));
-    
-    // Check for development headers
-    if (context.Request.Headers.ContainsKey("X-Development-Mode") && 
-context.Request.Headers.ContainsKey("X-Bypass-Auth"))
-    {
-        logger.LogInformation("🔧 Development mode detected! Bypassing authentication for {Path}", context.Request.Path);
-        
-        // Create a fake authenticated user for development
-        var claims = new List<System.Security.Claims.Claim>
-        {
-            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, "38"), // ID del usuario
-            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Name, "dev-user"),
-            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Email, "dev@example.com"),
-            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, "Admin"),
-            new System.Security.Claims.Claim("dev-token", context.Request.Headers["X-Dev-Token"].FirstOrDefault() ?? "dev-token-123")
-        };
-        
-        var identity = new System.Security.Claims.ClaimsIdentity(claims, "Development");
-        context.User = new System.Security.Claims.ClaimsPrincipal(identity);
-        
-        logger.LogInformation("✅ Development user created: {User}", context.User.Identity?.Name);
-    }
-    else
-    {
-        logger.LogInformation("❌ Development headers not found for {Path}", context.Request.Path);
-    }
-    
-    await next();
-});
-*/
-
-// ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
-// ✅ DEBUG: Logging ANTES de autenticación (para capturar estado inicial)
-/*
-app.Use(async (context, next) =>
-{
-    var requestLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
     var path = context.Request.Path.Value ?? "";
     var method = context.Request.Method;
+    var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
     
-    // Loggear TODAS las requests en producción para diagnóstico
-    if (!app.Environment.IsDevelopment())
-    {
-        var hasAuth = context.Request.Headers.ContainsKey("Authorization");
-        var authHeader = hasAuth ? context.Request.Headers["Authorization"].ToString().Substring(0, Math.Min(30, context.Request.Headers["Authorization"].ToString().Length)) + "..." : "NO AUTH HEADER";
-        var isAuthenticated = context.User?.Identity?.IsAuthenticated ?? false;
-        var origin = context.Request.Headers["Origin"].ToString();
-        
-        // Identificar tipo de endpoint
-        var isHealth = path.Contains("/health");
-        var isPublic = path.Contains("/ServiceType/public") || path.Contains("/Categories") || path.Contains("/homepage-wall");
-        var isApi = path.StartsWith("/api");
-        
-        requestLogger.LogInformation($"[REQUEST] ========================================");
-        requestLogger.LogInformation($"[REQUEST] 📥 INCOMING (ANTES de auth): {method} {path}");
-        requestLogger.LogInformation($"[REQUEST]    Origin: {origin}");
-        requestLogger.LogInformation($"[REQUEST]    HasAuthHeader: {hasAuth}");
-        requestLogger.LogInformation($"[REQUEST]    AuthHeader: {authHeader}");
-        requestLogger.LogInformation($"[REQUEST]    IsAuthenticated (ANTES): {isAuthenticated}");
-        requestLogger.LogInformation($"[REQUEST]    Endpoint Type: Health={isHealth}, Public={isPublic}, API={isApi}");
-    }
+    logger.LogInformation($"[REQUEST] {method} {path}");
     
     await next();
+    
+    logger.LogInformation($"[RESPONSE] {method} {path} -> {context.Response.StatusCode}");
 });
-*/
 
+// 4. Autenticación y autorización
 app.UseAuthentication();
 app.UseAuthorization();
-
-// ❌ COMENTADO PARA DIAGNÓSTICO
-// app.UseStatusCodePages(async context => { ... });
 
 // ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
 // ✅ DEBUG: Logging DESPUÉS de autenticación (para capturar estado final)

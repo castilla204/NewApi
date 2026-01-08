@@ -116,15 +116,36 @@ namespace newApi.Controllers
                 _logger.LogInformation($"[ENDPOINT] ✅ GetServiceTypesPublic COMPLETADO - RequestId: {requestId}");
                 _logger.LogInformation($"[ENDPOINT]    Total service types: {serviceTypes.Count}");
                 _logger.LogInformation($"[ENDPOINT]    Duración total: {totalDuration:F2}ms");
-                _logger.LogInformation($"[ENDPOINT] ========================================");
                 
-                return Ok(new 
+                var response = new 
                 { 
                     success = true,
                     data = serviceTypes,
                     count = serviceTypes.Count,
                     message = "Service types retrieved successfully"
-                });
+                };
+                
+                // ✅ LOG JSON: Serializar y loguear el JSON que se está devolviendo
+                try
+                {
+                    var jsonResponse = System.Text.Json.JsonSerializer.Serialize(response, new System.Text.Json.JsonSerializerOptions 
+                    { 
+                        WriteIndented = false,
+                        MaxDepth = 3 // Limitar profundidad para evitar logs muy largos
+                    });
+                    var jsonLength = jsonResponse.Length;
+                    var jsonPreview = jsonLength > 1000 ? jsonResponse.Substring(0, 1000) + "..." : jsonResponse;
+                    _logger.LogInformation($"[ENDPOINT] 📤 JSON RESPONSE - RequestId: {requestId}");
+                    _logger.LogInformation($"[ENDPOINT]    JSON Length: {jsonLength} caracteres");
+                    _logger.LogInformation($"[ENDPOINT]    JSON Preview (primeros 1000 chars): {jsonPreview}");
+                }
+                catch (Exception jsonEx)
+                {
+                    _logger.LogWarning($"[ENDPOINT] ⚠️ Error serializando JSON para log: {jsonEx.Message}");
+                }
+                
+                _logger.LogInformation($"[ENDPOINT] ========================================");
+                return Ok(response);
             }
             catch (Exception ex)
             {

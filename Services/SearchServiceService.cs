@@ -2159,11 +2159,36 @@ namespace newApi.Services
                     .ToList();
 
                 // ✅ OPTIMIZACIÓN: Cargar disponibilidades de todos los expertos de una vez
+                // ✅ CRÍTICO: Usar timeout corto para evitar bloqueos - si falla, continuar sin disponibilidades
                 var expertIds = orderedServices.Select(s => s.ExpertId).Distinct().ToList();
-                var availabilities = await _context.ExpertAvailabilities
-                    .AsNoTracking()
-                    .Where(ea => expertIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
-                    .ToListAsync(cancellationToken);
+                
+                List<ExpertAvailability> availabilities = new List<ExpertAvailability>();
+                
+                // ✅ TIMEOUT: Si no hay expertos, saltar la consulta
+                if (expertIds.Count > 0)
+                {
+                    try
+                    {
+                        // ✅ TIMEOUT: Usar un CancellationTokenSource con timeout de 5 segundos para esta consulta específica
+                        using var availabilityCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                        availabilityCts.CancelAfter(TimeSpan.FromSeconds(5)); // Timeout de 5 segundos
+                        
+                        availabilities = await _context.ExpertAvailabilities
+                            .AsNoTracking()
+                            .Where(ea => expertIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                            .ToListAsync(availabilityCts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Continuar sin disponibilidades en caso de timeout
+                        availabilities = new List<ExpertAvailability>();
+                    }
+                    catch (Exception)
+                    {
+                        // Continuar sin disponibilidades en caso de error
+                        availabilities = new List<ExpertAvailability>();
+                    }
+                }
                 
                 var availabilityByExpert = availabilities
                     .GroupBy(ea => ea.ExpertId)

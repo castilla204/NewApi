@@ -1262,7 +1262,14 @@ builder.Services.AddAuthentication(options =>
             var path = context.HttpContext.Request.Path.Value ?? "";
             var method = context.HttpContext.Request.Method;
             var hasAuthHeader = context.HttpContext.Request.Headers.ContainsKey("Authorization");
-            var publicEndpoints = new[] { "/api/Categories", "/api/ServiceType/public", "/api/SearchService/homepage-wall", "/health", "/warmup", "/health-detailed" };
+            var publicEndpoints = new[] { 
+                "/api/Categories", 
+                "/api/ServiceType/public", 
+                "/api/SearchService/homepage-wall", 
+                "/health", 
+                "/warmup", 
+                "/health-detailed" 
+            };
             var pathString = context.HttpContext.Request.Path;
             var isPublicEndpoint = publicEndpoints.Any(ep => pathString.StartsWithSegments(ep));
             

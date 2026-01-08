@@ -5,6 +5,7 @@ using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models;
 using newApi.Services;
+using Microsoft.Extensions.Logging;
 
 namespace newApi.Controllers
 {
@@ -15,11 +16,13 @@ namespace newApi.Controllers
     {
         private readonly AppDbContext _context;
         private readonly IAuthorizationServices _authService;
+        private readonly ILogger<ServiceTypeController> _logger;
 
-        public ServiceTypeController(AppDbContext context, IAuthorizationServices authService)
+        public ServiceTypeController(AppDbContext context, IAuthorizationServices authService, ILogger<ServiceTypeController> logger)
         {
             _context = context;
             _authService = authService;
+            _logger = logger;
         }
 
         /// <summary>
@@ -79,9 +82,17 @@ namespace newApi.Controllers
         [AllowAnonymous]
         public async Task<IActionResult> GetServiceTypesPublic()
         {
+            var startTime = DateTime.UtcNow;
+            var requestId = Guid.NewGuid().ToString("N")[..8];
+            
+            _logger.LogInformation($"[ENDPOINT] ========================================");
+            _logger.LogInformation($"[ENDPOINT] 📥 GetServiceTypesPublic INICIADO - RequestId: {requestId}");
+            
             try
             {
                 // ✅ Corregido: Usar AsNoTracking() y proyección directa sin Include() para evitar problemas con multiplexing
+                _logger.LogInformation($"[ENDPOINT] 🔍 GetServiceTypesPublic - Ejecutando consulta a base de datos...");
+                var queryStartTime = DateTime.UtcNow;
                 var serviceTypes = await _context.ServiceTypes
                     .AsNoTracking() // ✅ Evitar tracking innecesario y problemas con multiplexing
                     .Where(st => st.IsActive)
@@ -98,7 +109,14 @@ namespace newApi.Controllers
                         RequiresAppointment = st.RequiresAppointment
                     })
                     .ToListAsync();
+                var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                _logger.LogInformation($"[ENDPOINT] ✅ GetServiceTypesPublic - Consulta completada: {serviceTypes.Count} service types, Duración: {queryDuration:F2}ms");
 
+                var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                _logger.LogInformation($"[ENDPOINT] ✅ GetServiceTypesPublic COMPLETADO - RequestId: {requestId}");
+                _logger.LogInformation($"[ENDPOINT]    Total service types: {serviceTypes.Count}");
+                _logger.LogInformation($"[ENDPOINT]    Duración total: {totalDuration:F2}ms");
+                _logger.LogInformation($"[ENDPOINT] ========================================");
                 
                 return Ok(new 
                 { 
@@ -110,6 +128,14 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
+                var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                _logger.LogError(ex, $"[ENDPOINT] ❌ GetServiceTypesPublic ERROR - RequestId: {requestId}");
+                _logger.LogError($"[ENDPOINT]    Exception Type: {ex.GetType().Name}");
+                _logger.LogError($"[ENDPOINT]    Exception Message: {ex.Message}");
+                _logger.LogError($"[ENDPOINT]    Inner Exception: {ex.InnerException?.Message ?? "None"}");
+                _logger.LogError($"[ENDPOINT]    StackTrace: {ex.StackTrace}");
+                _logger.LogError($"[ENDPOINT]    Duración antes del error: {totalDuration:F2}ms");
+                
                 return StatusCode(500, new 
                 { 
                     success = false,

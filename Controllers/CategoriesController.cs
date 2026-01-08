@@ -7,6 +7,7 @@ using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models;
 using Npgsql;
 using Microsoft.Extensions.Logging;
+using System.Threading;
 
 namespace newApi.Controllers
 {
@@ -133,20 +134,49 @@ namespace newApi.Controllers
                 // ✅ CORRECCIÓN: Consulta más robusta - usar Select para evitar problemas de referencia circular
                 // y cargar solo las subcategorías activas directamente en la consulta
                 _logger.LogInformation($"[ENDPOINT] 🔍 GetCategories - Ejecutando consulta a base de datos...");
+                _logger.LogInformation($"[ENDPOINT]    Query: Categories.Where(IsActive).Select(Category + ActiveSubcategories)");
                 var queryStartTime = DateTime.UtcNow;
-                var categoryData = await _context.Categories
-                    .AsNoTracking() // ✅ MEJORA: No tracking para mejor rendimiento y evitar problemas de conexión
-                    .Where(c => c.IsActive)
-                    .Select(c => new
-                    {
-                        Category = c,
-                        ActiveSubcategories = c.Subcategories != null 
-                            ? c.Subcategories.Where(sc => sc.IsActive && sc != null).ToList()
-                            : new List<Category>()
-                    })
-                    .ToListAsync();
-                var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
-                _logger.LogInformation($"[ENDPOINT] ✅ GetCategories - Consulta completada: {categoryData.Count} categorías, Duración: {queryDuration:F2}ms");
+                
+                // ✅ TIMEOUT: Agregar timeout de 10 segundos para evitar bloqueos
+                using var queryCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                
+                List<dynamic> categoryData;
+                try
+                {
+                    _logger.LogInformation($"[ENDPOINT]    Iniciando ToListAsync con timeout de 10 segundos...");
+                    categoryData = await _context.Categories
+                        .AsNoTracking() // ✅ MEJORA: No tracking para mejor rendimiento y evitar problemas de conexión
+                        .Where(c => c.IsActive)
+                        .Select(c => new
+                        {
+                            Category = c,
+                            ActiveSubcategories = c.Subcategories != null 
+                                ? c.Subcategories.Where(sc => sc.IsActive && sc != null).ToList()
+                                : new List<Category>()
+                        })
+                        .ToListAsync(queryCts.Token);
+                    var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    _logger.LogInformation($"[ENDPOINT] ✅ GetCategories - Consulta completada: {categoryData.Count} categorías, Duración: {queryDuration:F2}ms");
+                }
+                catch (OperationCanceledException)
+                {
+                    var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    _logger.LogError($"[ENDPOINT] ❌ GetCategories - TIMEOUT en consulta después de {queryDuration:F2}ms");
+                    _logger.LogError($"[ENDPOINT]    La consulta excedió el timeout de 10 segundos");
+                    return StatusCode(408, new { 
+                        message = "Database query timeout. Please try again.",
+                        error = "QUERY_TIMEOUT",
+                        details = "The database query took longer than 10 seconds to complete"
+                    });
+                }
+                catch (Exception queryEx)
+                {
+                    var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    _logger.LogError($"[ENDPOINT] ❌ GetCategories - ERROR en consulta después de {queryDuration:F2}ms");
+                    _logger.LogError($"[ENDPOINT]    Exception: {queryEx.GetType().Name} - {queryEx.Message}");
+                    _logger.LogError($"[ENDPOINT]    StackTrace: {queryEx.StackTrace}");
+                    throw; // Re-lanzar para que se maneje en el catch general
+                }
 
                 // Construir el resultado final mapeando a DTO
                 _logger.LogInformation($"[ENDPOINT] 🔍 GetCategories - Mapeando a DTOs...");

@@ -176,6 +176,7 @@ namespace newApi.Controllers
                 using var queryCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 
                 var categoryData = new List<dynamic>();
+                double queryDuration = 0; // ✅ Declarar fuera del try para que esté disponible después
                 try
                 {
                     _logger.LogInformation($"[ENDPOINT]    ⏱️ Iniciando ToListAsync con timeout de 10 segundos...");
@@ -193,7 +194,7 @@ namespace newApi.Controllers
                         })
                         .ToListAsync(queryCts.Token)).Cast<dynamic>().ToList();
                     
-                    var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
                     _logger.LogInformation($"[ENDPOINT]    Timestamp fin: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
                     _logger.LogInformation($"[ENDPOINT] ✅ GetCategories - Consulta completada: {categoryData.Count} categorías, Duración: {queryDuration:F2}ms");
                     
@@ -210,7 +211,7 @@ namespace newApi.Controllers
                 }
                 catch (OperationCanceledException)
                 {
-                    var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
                     _logger.LogError($"[ENDPOINT] ❌ GetCategories - TIMEOUT en consulta después de {queryDuration:F2}ms");
                     _logger.LogError($"[ENDPOINT]    La consulta excedió el timeout de 10 segundos");
                     _logger.LogError($"[ENDPOINT]    Timestamp timeout: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
@@ -234,7 +235,7 @@ namespace newApi.Controllers
                 }
                 catch (Exception queryEx)
                 {
-                    var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
                     _logger.LogError($"[ENDPOINT] ❌ GetCategories - ERROR en consulta después de {queryDuration:F2}ms");
                     _logger.LogError($"[ENDPOINT]    Exception Type: {queryEx.GetType().Name}");
                     _logger.LogError($"[ENDPOINT]    Exception Message: {queryEx.Message}");

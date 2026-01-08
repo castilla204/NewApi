@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using System.Text;
+using System.Linq;
 
 namespace newApi.Middleware
 {
@@ -101,7 +102,13 @@ namespace newApi.Middleware
                 {
                     _logger.LogInformation($"[PIPELINE] ✅ Endpoint mapeado correctamente:");
                     _logger.LogInformation($"[PIPELINE]      - DisplayName: {endpointAfter.DisplayName}");
-                    _logger.LogInformation($"[PIPELINE]      - RoutePattern: {endpointAfter.RoutePattern?.RawText ?? "N/A"}");
+                    
+                    // Obtener información de la ruta desde RouteData si está disponible
+                    if (routeData != null && routeData.Values.Any())
+                    {
+                        var routeInfo = string.Join(", ", routeData.Values.Select(kvp => $"{kvp.Key}={kvp.Value}"));
+                        _logger.LogInformation($"[PIPELINE]      - RouteValues: {routeInfo}");
+                    }
                     
                     // Verificar metadata del endpoint
                     var allowAnonymous = endpointAfter.Metadata?.GetMetadata<Microsoft.AspNetCore.Authorization.AllowAnonymousAttribute>() != null;

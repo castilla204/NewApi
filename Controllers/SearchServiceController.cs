@@ -8,6 +8,7 @@ using System.Security.Claims;
 using newApi.DataLayer.Models;
 using System.Threading;
 using Microsoft.Extensions.Logging;
+using System.Linq;
 
 namespace newApi.Controllers
 {
@@ -957,7 +958,8 @@ namespace newApi.Controllers
                     nearbyPageSize,
                     cts.Token);
                 var nearbyDuration = (DateTime.UtcNow - nearbyStartTime).TotalMilliseconds;
-                _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - Servicios cercanos obtenidos: {nearbyServices.Count} servicios, Total: {nearbyTotalCount}, Duración: {nearbyDuration:F2}ms");
+                var nearbyServicesList = nearbyServices.ToList();
+                _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - Servicios cercanos obtenidos: {nearbyServicesList.Count} servicios, Total: {nearbyTotalCount}, Duración: {nearbyDuration:F2}ms");
 
                 // Obtener servicios populares
                 _logger.LogInformation($"[ENDPOINT] 🔍 GetHomepageWall - Obteniendo servicios populares...");
@@ -968,7 +970,8 @@ namespace newApi.Controllers
                     popularPageSize,
                     cts.Token);
                 var popularDuration = (DateTime.UtcNow - popularStartTime).TotalMilliseconds;
-                _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - Servicios populares obtenidos: {popularServices.Count} servicios, Total: {popularTotalCount}, Duración: {popularDuration:F2}ms");
+                var popularServicesList = popularServices.ToList();
+                _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - Servicios populares obtenidos: {popularServicesList.Count} servicios, Total: {popularTotalCount}, Duración: {popularDuration:F2}ms");
 
                 // ✅ Obtener nombre de categoría (categoryId es obligatorio)
                 _logger.LogInformation($"[ENDPOINT] 🔍 GetHomepageWall - Obteniendo nombre de categoría para categoryId: {categoryId}");

@@ -135,16 +135,53 @@ namespace newApi.Controllers
                 // y cargar solo las subcategorías activas directamente en la consulta
                 _logger.LogInformation($"[ENDPOINT] 🔍 GetCategories - Ejecutando consulta a base de datos...");
                 _logger.LogInformation($"[ENDPOINT]    Query: Categories.Where(IsActive).Select(Category + ActiveSubcategories)");
+                
+                // ✅ LOG ESTADO CONEXIÓN: Verificar estado de la conexión antes de la consulta
+                var connectionStateStartTime = DateTime.UtcNow;
+                try
+                {
+                    var canConnectBefore = await _context.Database.CanConnectAsync();
+                    var connectionStateDuration = (DateTime.UtcNow - connectionStateStartTime).TotalMilliseconds;
+                    _logger.LogInformation($"[ENDPOINT]    Estado conexión ANTES de query: CanConnect={canConnectBefore}, Duración verificación: {connectionStateDuration:F2}ms");
+                }
+                catch (Exception connEx)
+                {
+                    _logger.LogWarning($"[ENDPOINT]    ⚠️ Error verificando conexión antes de query: {connEx.Message}");
+                }
+                
+                // ✅ LOG SQL QUERY: Obtener la query SQL generada para diagnóstico
+                try
+                {
+                    var query = _context.Categories
+                        .AsNoTracking()
+                        .Where(c => c.IsActive)
+                        .Select(c => new
+                        {
+                            Category = c,
+                            ActiveSubcategories = c.Subcategories != null 
+                                ? c.Subcategories.Where(sc => sc.IsActive && sc != null).ToList()
+                                : new List<Category>()
+                        });
+                    var sqlQuery = query.ToQueryString();
+                    _logger.LogInformation($"[ENDPOINT]    SQL Query generada (primeros 500 chars): {sqlQuery.Substring(0, Math.Min(500, sqlQuery.Length))}...");
+                }
+                catch (Exception sqlEx)
+                {
+                    _logger.LogWarning($"[ENDPOINT]    ⚠️ No se pudo obtener SQL query: {sqlEx.Message}");
+                }
+                
                 var queryStartTime = DateTime.UtcNow;
                 
                 // ✅ TIMEOUT: Agregar timeout de 10 segundos para evitar bloqueos
                 using var queryCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 
-                List<dynamic> categoryData;
+                var categoryData = new List<dynamic>();
                 try
                 {
-                    _logger.LogInformation($"[ENDPOINT]    Iniciando ToListAsync con timeout de 10 segundos...");
-                    categoryData = await _context.Categories
+                    _logger.LogInformation($"[ENDPOINT]    ⏱️ Iniciando ToListAsync con timeout de 10 segundos...");
+                    _logger.LogInformation($"[ENDPOINT]    Timestamp inicio: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    
+                    categoryData = (await _context.Categories
                         .AsNoTracking() // ✅ MEJORA: No tracking para mejor rendimiento y evitar problemas de conexión
                         .Where(c => c.IsActive)
                         .Select(c => new
@@ -154,15 +191,41 @@ namespace newApi.Controllers
                                 ? c.Subcategories.Where(sc => sc.IsActive && sc != null).ToList()
                                 : new List<Category>()
                         })
-                        .ToListAsync(queryCts.Token);
+                        .ToListAsync(queryCts.Token)).Cast<dynamic>().ToList();
+                    
                     var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    _logger.LogInformation($"[ENDPOINT]    Timestamp fin: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
                     _logger.LogInformation($"[ENDPOINT] ✅ GetCategories - Consulta completada: {categoryData.Count} categorías, Duración: {queryDuration:F2}ms");
+                    
+                    // ✅ LOG ESTADO CONEXIÓN: Verificar estado de la conexión después de la consulta
+                    try
+                    {
+                        var canConnectAfter = await _context.Database.CanConnectAsync();
+                        _logger.LogInformation($"[ENDPOINT]    Estado conexión DESPUÉS de query: CanConnect={canConnectAfter}");
+                    }
+                    catch (Exception connEx)
+                    {
+                        _logger.LogWarning($"[ENDPOINT]    ⚠️ Error verificando conexión después de query: {connEx.Message}");
+                    }
                 }
                 catch (OperationCanceledException)
                 {
                     var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
                     _logger.LogError($"[ENDPOINT] ❌ GetCategories - TIMEOUT en consulta después de {queryDuration:F2}ms");
                     _logger.LogError($"[ENDPOINT]    La consulta excedió el timeout de 10 segundos");
+                    _logger.LogError($"[ENDPOINT]    Timestamp timeout: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    
+                    // ✅ LOG ESTADO CONEXIÓN: Verificar estado de la conexión después del timeout
+                    try
+                    {
+                        var canConnectAfterTimeout = await _context.Database.CanConnectAsync();
+                        _logger.LogError($"[ENDPOINT]    Estado conexión DESPUÉS de timeout: CanConnect={canConnectAfterTimeout}");
+                    }
+                    catch (Exception connEx)
+                    {
+                        _logger.LogError($"[ENDPOINT]    ❌ Error verificando conexión después de timeout: {connEx.Message}");
+                    }
+                    
                     return StatusCode(408, new { 
                         message = "Database query timeout. Please try again.",
                         error = "QUERY_TIMEOUT",
@@ -173,8 +236,23 @@ namespace newApi.Controllers
                 {
                     var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
                     _logger.LogError($"[ENDPOINT] ❌ GetCategories - ERROR en consulta después de {queryDuration:F2}ms");
-                    _logger.LogError($"[ENDPOINT]    Exception: {queryEx.GetType().Name} - {queryEx.Message}");
+                    _logger.LogError($"[ENDPOINT]    Exception Type: {queryEx.GetType().Name}");
+                    _logger.LogError($"[ENDPOINT]    Exception Message: {queryEx.Message}");
+                    _logger.LogError($"[ENDPOINT]    Inner Exception: {queryEx.InnerException?.Message ?? "None"}");
                     _logger.LogError($"[ENDPOINT]    StackTrace: {queryEx.StackTrace}");
+                    _logger.LogError($"[ENDPOINT]    Timestamp error: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    
+                    // ✅ LOG ESTADO CONEXIÓN: Verificar estado de la conexión después del error
+                    try
+                    {
+                        var canConnectAfterError = await _context.Database.CanConnectAsync();
+                        _logger.LogError($"[ENDPOINT]    Estado conexión DESPUÉS de error: CanConnect={canConnectAfterError}");
+                    }
+                    catch (Exception connEx)
+                    {
+                        _logger.LogError($"[ENDPOINT]    ❌ Error verificando conexión después de error: {connEx.Message}");
+                    }
+                    
                     throw; // Re-lanzar para que se maneje en el catch general
                 }
 

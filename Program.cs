@@ -2248,6 +2248,46 @@ logger.LogInformation("========================================");
 logger.LogInformation($"✅ Total endpoints registrados: {endpointList.Count}");
 logger.LogInformation("========================================");
 
+// ✅ CRÍTICO: Verificar conexión a la DB al iniciar
+logger.LogInformation("========================================");
+logger.LogInformation("🔍 VERIFICANDO CONEXIÓN A BASE DE DATOS...");
+logger.LogInformation("========================================");
+
+try
+{
+    using var scope = app.Services.CreateScope();
+    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var dbLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    
+    var dbStartTime = DateTime.UtcNow;
+    dbLogger.LogInformation("[DB-INIT] Verificando CanConnectAsync()...");
+    var canConnect = await dbContext.Database.CanConnectAsync();
+    var dbDuration = (DateTime.UtcNow - dbStartTime).TotalMilliseconds;
+    
+    if (canConnect)
+    {
+        dbLogger.LogInformation($"[DB-INIT] ✅ Conexión exitosa ({dbDuration:F2}ms)");
+        
+        // Hacer una query simple
+        dbStartTime = DateTime.UtcNow;
+        dbLogger.LogInformation("[DB-INIT] Ejecutando query de prueba: db.Users.CountAsync()...");
+        var userCount = await dbContext.Users.CountAsync();
+        var queryDuration = (DateTime.UtcNow - dbStartTime).TotalMilliseconds;
+        dbLogger.LogInformation($"[DB-INIT] ✅ Query exitosa: {userCount} usuarios ({queryDuration:F2}ms)");
+    }
+    else
+    {
+        dbLogger.LogError($"[DB-INIT] ❌ NO SE PUEDE CONECTAR A LA BASE DE DATOS ({dbDuration:F2}ms)");
+    }
+    
+    logger.LogInformation("========================================");
+}
+catch (Exception dbEx)
+{
+    logger.LogError(dbEx, "[DB-INIT] ❌ ERROR al verificar conexión a la DB");
+    logger.LogInformation("========================================");
+}
+
 // ✅ RENDER.COM: Configuración final antes de iniciar
 
 if (!isDevelopment)

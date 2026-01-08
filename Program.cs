@@ -1915,6 +1915,64 @@ app.UseResponseCompression();
 // Esto incluye errores, timeouts, y respuestas normales
 app.UseCors("AllowSpecificOrigin");
 
+// ✅ CRÍTICO: Middleware para FORZAR headers CORS en TODAS las respuestas
+// Esto asegura que incluso si el middleware de CORS no los agrega, los tengamos
+app.Use(async (context, next) =>
+{
+    var origin = context.Request.Headers["Origin"].ToString();
+    var allowedOrigins = new[] { 
+        "http://localhost:3000", 
+        "http://localhost:5173", 
+        "https://inspecciono.com", 
+        "https://www.inspecciono.com" 
+    };
+    
+    // Si hay un Origin header y está permitido, agregar headers CORS
+    if (!string.IsNullOrEmpty(origin))
+    {
+        var isAllowed = allowedOrigins.Any(o => origin.StartsWith(o, StringComparison.OrdinalIgnoreCase));
+        if (isAllowed)
+        {
+            // Agregar headers CORS explícitamente
+            if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Origin"))
+            {
+                context.Response.Headers["Access-Control-Allow-Origin"] = origin;
+            }
+            if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Credentials"))
+            {
+                context.Response.Headers["Access-Control-Allow-Credentials"] = "true";
+            }
+            if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Methods"))
+            {
+                context.Response.Headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS";
+            }
+            if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Headers"))
+            {
+                context.Response.Headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With";
+            }
+        }
+    }
+    // Si NO hay Origin header pero es una request a la API, agregar headers CORS para permitir cualquier origen (solo para errores)
+    else if (context.Request.Path.StartsWithSegments("/api"))
+    {
+        // Para requests sin Origin (como errores), permitir cualquier origen
+        if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Origin"))
+        {
+            context.Response.Headers["Access-Control-Allow-Origin"] = "*";
+        }
+        if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Methods"))
+        {
+            context.Response.Headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS";
+        }
+        if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Headers"))
+        {
+            context.Response.Headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With";
+        }
+    }
+    
+    await next();
+});
+
 // ✅ CRÍTICO: Manejo de errores global - DEBE ir DESPUÉS de CORS
 // Esto asegura que TODAS las excepciones devuelvan JSON con headers CORS
 app.UseExceptionHandler(errorApp =>

@@ -138,11 +138,17 @@ namespace newApi.Controllers
                 // ✅ TIMEOUT: Agregar timeout de 10 segundos para evitar bloqueos
                 using var queryCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 
+                // ✅ LOG TIMEOUT: Registrar cuando se crea el token de cancelación
+                _logger.LogInformation($"[ENDPOINT]    ⏱️ Timeout configurado: 10 segundos");
+                _logger.LogInformation($"[ENDPOINT]    Token de cancelación creado: {queryCts.Token.CanBeCanceled}");
+                
                 var serviceTypes = new List<dynamic>();
+                double queryDuration = 0; // ✅ Declarar fuera del try para que esté disponible después
                 try
                 {
                     _logger.LogInformation($"[ENDPOINT]    ⏱️ Iniciando ToListAsync con timeout de 10 segundos...");
                     _logger.LogInformation($"[ENDPOINT]    Timestamp inicio: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    _logger.LogInformation($"[ENDPOINT]    Token antes de ToListAsync: IsCancellationRequested={queryCts.Token.IsCancellationRequested}");
                     
                     serviceTypes = (await _context.ServiceTypes
                         .AsNoTracking() // ✅ Evitar tracking innecesario y problemas con multiplexing
@@ -161,7 +167,8 @@ namespace newApi.Controllers
                         })
                         .ToListAsync(queryCts.Token)).Cast<dynamic>().ToList();
                     
-                    var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    
                     _logger.LogInformation($"[ENDPOINT]    Timestamp fin: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
                     _logger.LogInformation($"[ENDPOINT] ✅ GetServiceTypesPublic - Consulta completada: {serviceTypes.Count} service types, Duración: {queryDuration:F2}ms");
                     
@@ -176,11 +183,15 @@ namespace newApi.Controllers
                         _logger.LogWarning($"[ENDPOINT]    ⚠️ Error verificando conexión después de query: {connEx.Message}");
                     }
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException timeoutEx)
                 {
-                    var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
-                    _logger.LogError($"[ENDPOINT] ❌ GetServiceTypesPublic - TIMEOUT en consulta después de {queryDuration:F2}ms");
+                    queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    _logger.LogError(timeoutEx, $"[ENDPOINT] ❌ GetServiceTypesPublic - TIMEOUT en consulta después de {queryDuration:F2}ms");
                     _logger.LogError($"[ENDPOINT]    La consulta excedió el timeout de 10 segundos");
+                    _logger.LogError($"[ENDPOINT]    Timestamp timeout: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    _logger.LogError($"[ENDPOINT]    Exception Type: {timeoutEx.GetType().Name}");
+                    _logger.LogError($"[ENDPOINT]    Exception Message: {timeoutEx.Message}");
+                    _logger.LogError($"[ENDPOINT]    Token IsCancellationRequested: {queryCts.Token.IsCancellationRequested}");
                     _logger.LogError($"[ENDPOINT]    Timestamp timeout: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
                     
                     // ✅ LOG ESTADO CONEXIÓN: Verificar estado de la conexión después del timeout
@@ -203,7 +214,7 @@ namespace newApi.Controllers
                 }
                 catch (Exception queryEx)
                 {
-                    var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
                     _logger.LogError($"[ENDPOINT] ❌ GetServiceTypesPublic - ERROR en consulta después de {queryDuration:F2}ms");
                     _logger.LogError($"[ENDPOINT]    Exception Type: {queryEx.GetType().Name}");
                     _logger.LogError($"[ENDPOINT]    Exception Message: {queryEx.Message}");

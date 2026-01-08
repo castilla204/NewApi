@@ -1962,58 +1962,11 @@ app.UseExceptionHandler(errorApp =>
     });
 });
 
-// ✅ CRÍTICO: Manejar códigos de estado HTTP (404, 408, 500, etc.) para devolver JSON
-// Esto asegura que errores como 404 y 408 también devuelvan JSON con headers CORS
-app.UseStatusCodePages(async context =>
-{
-    // ✅ CRÍTICO: Asegurar headers CORS incluso en códigos de estado
-    var origin = context.HttpContext.Request.Headers["Origin"].ToString();
-    if (!string.IsNullOrEmpty(origin))
-    {
-        var allowedOrigins = new[] { 
-            "http://localhost:3000", 
-            "http://localhost:5173", 
-            "https://inspecciono.com", 
-            "https://www.inspecciono.com" 
-        };
-        if (allowedOrigins.Any(o => origin.StartsWith(o, StringComparison.OrdinalIgnoreCase)))
-        {
-            context.HttpContext.Response.Headers["Access-Control-Allow-Origin"] = origin;
-            context.HttpContext.Response.Headers["Access-Control-Allow-Credentials"] = "true";
-        }
-    }
-    
-    // Solo manejar si es una request a la API
-    if (context.HttpContext.Request.Path.StartsWithSegments("/api"))
-    {
-        context.HttpContext.Response.ContentType = "application/json";
-        
-        var message = context.HttpContext.Response.StatusCode switch
-        {
-            404 => "Endpoint not found",
-            401 => "Unauthorized",
-            403 => "Forbidden",
-            408 => "Request timeout", // ✅ CRÍTICO: Agregar 408 para timeouts
-            500 => "Internal server error",
-            _ => "An error occurred"
-        };
-        
-        var response = new
-        {
-            message = message,
-            statusCode = context.HttpContext.Response.StatusCode,
-            path = context.HttpContext.Request.Path,
-            timestamp = DateTime.UtcNow
-        };
-        
-        await context.HttpContext.Response.WriteAsJsonAsync(response);
-    }
-});
-
+// ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
 // ✅ CRÍTICO: Middleware de logging completo del pipeline (PRIMERO después de CORS)
 // Este middleware captura TODO el flujo de la request para diagnosticar problemas
 // Basado en mejores prácticas para identificar por qué algunos endpoints funcionan y otros no
-app.UseMiddleware<newApi.Middleware.RequestPipelineLoggingMiddleware>();
+// app.UseMiddleware<newApi.Middleware.RequestPipelineLoggingMiddleware>();
 
 // ✅ DEBUG: Logging detallado de CORS para diagnosticar problemas
 app.Use(async (context, next) =>
@@ -2094,8 +2047,9 @@ app.Use(async (context, next) =>
     await next();
 });
 
+// ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
 // ✅ SEGURIDAD 2025: Aplicar Rate Limiting
-app.UseRateLimiter();
+// app.UseRateLimiter();
 
 // ✅ RENDER.COM: Los timeouts de Kestrel ya están configurados (KeepAliveTimeout=5min, RequestHeadersTimeout=2min)
 // Esto permite queries largas a la base de datos sin que se cancelen prematuramente
@@ -2141,7 +2095,9 @@ context.Request.Headers.ContainsKey("X-Bypass-Auth"))
 });
 */
 
+// ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
 // ✅ DEBUG: Logging ANTES de autenticación (para capturar estado inicial)
+/*
 app.Use(async (context, next) =>
 {
     var requestLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
@@ -2172,11 +2128,65 @@ app.Use(async (context, next) =>
     
     await next();
 });
+*/
 
 app.UseAuthentication();
 app.UseAuthorization();
 
+// ✅ CRÍTICO: UseStatusCodePages DEBE ir DESPUÉS de UseRouting() pero ANTES de MapControllers()
+// Esto asegura que los códigos de estado (404, 408, etc.) devuelvan JSON con headers CORS
+// IMPORTANTE: UseStatusCodePages solo funciona si la respuesta NO ha comenzado
+// Si un controlador devuelve StatusCode(408) directamente, la respuesta ya comenzó
+// Por eso también necesitamos asegurar CORS en los controladores
+app.UseStatusCodePages(async context =>
+{
+    // ✅ CRÍTICO: Asegurar headers CORS incluso en códigos de estado
+    var origin = context.HttpContext.Request.Headers["Origin"].ToString();
+    if (!string.IsNullOrEmpty(origin))
+    {
+        var allowedOrigins = new[] { 
+            "http://localhost:3000", 
+            "http://localhost:5173", 
+            "https://inspecciono.com", 
+            "https://www.inspecciono.com" 
+        };
+        if (allowedOrigins.Any(o => origin.StartsWith(o, StringComparison.OrdinalIgnoreCase)))
+        {
+            context.HttpContext.Response.Headers["Access-Control-Allow-Origin"] = origin;
+            context.HttpContext.Response.Headers["Access-Control-Allow-Credentials"] = "true";
+        }
+    }
+    
+    // Solo manejar si es una request a la API y la respuesta NO ha comenzado
+    if (context.HttpContext.Request.Path.StartsWithSegments("/api") && !context.HttpContext.Response.HasStarted)
+    {
+        context.HttpContext.Response.ContentType = "application/json";
+        
+        var message = context.HttpContext.Response.StatusCode switch
+        {
+            404 => "Endpoint not found",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            408 => "Request timeout", // ✅ CRÍTICO: Agregar 408 para timeouts
+            500 => "Internal server error",
+            _ => "An error occurred"
+        };
+        
+        var response = new
+        {
+            message = message,
+            statusCode = context.HttpContext.Response.StatusCode,
+            path = context.HttpContext.Request.Path,
+            timestamp = DateTime.UtcNow
+        };
+        
+        await context.HttpContext.Response.WriteAsJsonAsync(response);
+    }
+});
+
+// ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
 // ✅ DEBUG: Logging DESPUÉS de autenticación (para capturar estado final)
+/*
 app.Use(async (context, next) =>
 {
     var requestLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
@@ -2234,8 +2244,11 @@ app.Use(async (context, next) =>
         }
     }
 });
+*/
 
+// ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
 // ✅ DEBUG: Logging antes del middleware MFA
+/*
 app.Use(async (context, next) =>
 {
     var mfaLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
@@ -2264,12 +2277,14 @@ app.Use(async (context, next) =>
         }
     }
 });
+*/
 
+// ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
 // ✅ SEGURIDAD 2025: FORZAR MFA para Admin y Expertos
 // OWASP/NIST/PCI DSS: MFA obligatorio para cuentas privilegiadas
 // IMPORTANTE: El middleware verifica rutas públicas internamente
 // por lo que puede estar antes de mapear endpoints
-app.UseRequireMfa();
+// app.UseRequireMfa();
 
 // Add health check endpoint con logging detallado
 app.MapHealthChecks("/health").WithName("HealthCheck").WithTags("System");

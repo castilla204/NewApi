@@ -92,25 +92,137 @@ namespace newApi.Controllers
             {
                 // ✅ Corregido: Usar AsNoTracking() y proyección directa sin Include() para evitar problemas con multiplexing
                 _logger.LogInformation($"[ENDPOINT] 🔍 GetServiceTypesPublic - Ejecutando consulta a base de datos...");
+                
+                // ✅ LOG ESTADO CONEXIÓN: Verificar estado de la conexión antes de la consulta
+                var connectionStateStartTime = DateTime.UtcNow;
+                try
+                {
+                    var canConnectBefore = await _context.Database.CanConnectAsync();
+                    var connectionStateDuration = (DateTime.UtcNow - connectionStateStartTime).TotalMilliseconds;
+                    _logger.LogInformation($"[ENDPOINT]    Estado conexión ANTES de query: CanConnect={canConnectBefore}, Duración verificación: {connectionStateDuration:F2}ms");
+                }
+                catch (Exception connEx)
+                {
+                    _logger.LogWarning($"[ENDPOINT]    ⚠️ Error verificando conexión antes de query: {connEx.Message}");
+                }
+                
+                // ✅ LOG SQL QUERY: Obtener la query SQL generada para diagnóstico
+                try
+                {
+                    var query = _context.ServiceTypes
+                        .AsNoTracking()
+                        .Where(st => st.IsActive)
+                        .OrderBy(st => st.Position)
+                        .ThenBy(st => st.Name)
+                        .Select(st => new 
+                        {
+                            Id = st.Id,
+                            Name = st.Name,
+                            Description = st.Description,
+                            ServiceTypeCategoryId = st.ServiceTypeCategoryId,
+                            ServiceTypeCategoryName = st.ServiceTypeCategory != null ? st.ServiceTypeCategory.Name : null,
+                            Position = st.Position,
+                            RequiresAppointment = st.RequiresAppointment
+                        });
+                    var sqlQuery = query.ToQueryString();
+                    _logger.LogInformation($"[ENDPOINT]    SQL Query generada (primeros 500 chars): {sqlQuery.Substring(0, Math.Min(500, sqlQuery.Length))}...");
+                }
+                catch (Exception sqlEx)
+                {
+                    _logger.LogWarning($"[ENDPOINT]    ⚠️ No se pudo obtener SQL query: {sqlEx.Message}");
+                }
+                
                 var queryStartTime = DateTime.UtcNow;
-                var serviceTypes = await _context.ServiceTypes
-                    .AsNoTracking() // ✅ Evitar tracking innecesario y problemas con multiplexing
-                    .Where(st => st.IsActive)
-                    .OrderBy(st => st.Position) // Ordenar por posición personalizada
-                    .ThenBy(st => st.Name) // Luego alfabéticamente como fallback
-                    .Select(st => new 
+                
+                // ✅ TIMEOUT: Agregar timeout de 10 segundos para evitar bloqueos
+                using var queryCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                
+                var serviceTypes = new List<dynamic>();
+                try
+                {
+                    _logger.LogInformation($"[ENDPOINT]    ⏱️ Iniciando ToListAsync con timeout de 10 segundos...");
+                    _logger.LogInformation($"[ENDPOINT]    Timestamp inicio: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    
+                    serviceTypes = (await _context.ServiceTypes
+                        .AsNoTracking() // ✅ Evitar tracking innecesario y problemas con multiplexing
+                        .Where(st => st.IsActive)
+                        .OrderBy(st => st.Position) // Ordenar por posición personalizada
+                        .ThenBy(st => st.Name) // Luego alfabéticamente como fallback
+                        .Select(st => new 
+                        {
+                            Id = st.Id,
+                            Name = st.Name,
+                            Description = st.Description,
+                            ServiceTypeCategoryId = st.ServiceTypeCategoryId,
+                            ServiceTypeCategoryName = st.ServiceTypeCategory != null ? st.ServiceTypeCategory.Name : null,
+                            Position = st.Position,
+                            RequiresAppointment = st.RequiresAppointment
+                        })
+                        .ToListAsync(queryCts.Token)).Cast<dynamic>().ToList();
+                    
+                    var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    _logger.LogInformation($"[ENDPOINT]    Timestamp fin: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    _logger.LogInformation($"[ENDPOINT] ✅ GetServiceTypesPublic - Consulta completada: {serviceTypes.Count} service types, Duración: {queryDuration:F2}ms");
+                    
+                    // ✅ LOG ESTADO CONEXIÓN: Verificar estado de la conexión después de la consulta
+                    try
                     {
-                        Id = st.Id,
-                        Name = st.Name,
-                        Description = st.Description,
-                        ServiceTypeCategoryId = st.ServiceTypeCategoryId,
-                        ServiceTypeCategoryName = st.ServiceTypeCategory != null ? st.ServiceTypeCategory.Name : null,
-                        Position = st.Position,
-                        RequiresAppointment = st.RequiresAppointment
-                    })
-                    .ToListAsync();
-                var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
-                _logger.LogInformation($"[ENDPOINT] ✅ GetServiceTypesPublic - Consulta completada: {serviceTypes.Count} service types, Duración: {queryDuration:F2}ms");
+                        var canConnectAfter = await _context.Database.CanConnectAsync();
+                        _logger.LogInformation($"[ENDPOINT]    Estado conexión DESPUÉS de query: CanConnect={canConnectAfter}");
+                    }
+                    catch (Exception connEx)
+                    {
+                        _logger.LogWarning($"[ENDPOINT]    ⚠️ Error verificando conexión después de query: {connEx.Message}");
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    _logger.LogError($"[ENDPOINT] ❌ GetServiceTypesPublic - TIMEOUT en consulta después de {queryDuration:F2}ms");
+                    _logger.LogError($"[ENDPOINT]    La consulta excedió el timeout de 10 segundos");
+                    _logger.LogError($"[ENDPOINT]    Timestamp timeout: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    
+                    // ✅ LOG ESTADO CONEXIÓN: Verificar estado de la conexión después del timeout
+                    try
+                    {
+                        var canConnectAfterTimeout = await _context.Database.CanConnectAsync();
+                        _logger.LogError($"[ENDPOINT]    Estado conexión DESPUÉS de timeout: CanConnect={canConnectAfterTimeout}");
+                    }
+                    catch (Exception connEx)
+                    {
+                        _logger.LogError($"[ENDPOINT]    ❌ Error verificando conexión después de timeout: {connEx.Message}");
+                    }
+                    
+                    return StatusCode(408, new { 
+                        success = false,
+                        message = "Database query timeout. Please try again.",
+                        error = "QUERY_TIMEOUT",
+                        details = "The database query took longer than 10 seconds to complete"
+                    });
+                }
+                catch (Exception queryEx)
+                {
+                    var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    _logger.LogError($"[ENDPOINT] ❌ GetServiceTypesPublic - ERROR en consulta después de {queryDuration:F2}ms");
+                    _logger.LogError($"[ENDPOINT]    Exception Type: {queryEx.GetType().Name}");
+                    _logger.LogError($"[ENDPOINT]    Exception Message: {queryEx.Message}");
+                    _logger.LogError($"[ENDPOINT]    Inner Exception: {queryEx.InnerException?.Message ?? "None"}");
+                    _logger.LogError($"[ENDPOINT]    StackTrace: {queryEx.StackTrace}");
+                    _logger.LogError($"[ENDPOINT]    Timestamp error: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    
+                    // ✅ LOG ESTADO CONEXIÓN: Verificar estado de la conexión después del error
+                    try
+                    {
+                        var canConnectAfterError = await _context.Database.CanConnectAsync();
+                        _logger.LogError($"[ENDPOINT]    Estado conexión DESPUÉS de error: CanConnect={canConnectAfterError}");
+                    }
+                    catch (Exception connEx)
+                    {
+                        _logger.LogError($"[ENDPOINT]    ❌ Error verificando conexión después de error: {connEx.Message}");
+                    }
+                    
+                    throw; // Re-lanzar para que se maneje en el catch general
+                }
 
                 var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
                 _logger.LogInformation($"[ENDPOINT] ✅ GetServiceTypesPublic COMPLETADO - RequestId: {requestId}");

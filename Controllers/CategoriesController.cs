@@ -175,13 +175,20 @@ namespace newApi.Controllers
                 // ✅ TIMEOUT: Agregar timeout de 10 segundos para evitar bloqueos
                 using var queryCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 
+                // ✅ LOG TIMEOUT: Registrar cuando se crea el token de cancelación
+                _logger.LogInformation($"[ENDPOINT]    ⏱️ Timeout configurado: 10 segundos");
+                _logger.LogInformation($"[ENDPOINT]    Token de cancelación creado: {queryCts.Token.CanBeCanceled}");
+                
                 var categoryData = new List<dynamic>();
                 double queryDuration = 0; // ✅ Declarar fuera del try para que esté disponible después
                 try
                 {
                     _logger.LogInformation($"[ENDPOINT]    ⏱️ Iniciando ToListAsync con timeout de 10 segundos...");
                     _logger.LogInformation($"[ENDPOINT]    Timestamp inicio: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    _logger.LogInformation($"[ENDPOINT]    Token antes de ToListAsync: IsCancellationRequested={queryCts.Token.IsCancellationRequested}");
                     
+                    // ✅ CRÍTICO: Usar AsSplitQuery() para evitar "cartesian explosion" cuando se cargan múltiples colecciones
+                    // Esto divide la consulta en múltiples queries separadas en lugar de una sola query con JOINs complejos
                     categoryData = (await _context.Categories
                         .AsNoTracking() // ✅ MEJORA: No tracking para mejor rendimiento y evitar problemas de conexión
                         .Where(c => c.IsActive)
@@ -192,6 +199,7 @@ namespace newApi.Controllers
                                 ? c.Subcategories.Where(sc => sc.IsActive && sc != null).ToList()
                                 : new List<Category>()
                         })
+                        .AsSplitQuery() // ✅ CRÍTICO: Dividir query para evitar "cartesian explosion" con múltiples colecciones
                         .ToListAsync(queryCts.Token)).Cast<dynamic>().ToList();
                     
                     queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
@@ -209,12 +217,15 @@ namespace newApi.Controllers
                         _logger.LogWarning($"[ENDPOINT]    ⚠️ Error verificando conexión después de query: {connEx.Message}");
                     }
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException timeoutEx)
                 {
                     queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
-                    _logger.LogError($"[ENDPOINT] ❌ GetCategories - TIMEOUT en consulta después de {queryDuration:F2}ms");
+                    _logger.LogError(timeoutEx, $"[ENDPOINT] ❌ GetCategories - TIMEOUT en consulta después de {queryDuration:F2}ms");
                     _logger.LogError($"[ENDPOINT]    La consulta excedió el timeout de 10 segundos");
                     _logger.LogError($"[ENDPOINT]    Timestamp timeout: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    _logger.LogError($"[ENDPOINT]    Exception Type: {timeoutEx.GetType().Name}");
+                    _logger.LogError($"[ENDPOINT]    Exception Message: {timeoutEx.Message}");
+                    _logger.LogError($"[ENDPOINT]    Token IsCancellationRequested: {queryCts.Token.IsCancellationRequested}");
                     
                     // ✅ LOG ESTADO CONEXIÓN: Verificar estado de la conexión después del timeout
                     try

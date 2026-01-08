@@ -1911,199 +1911,24 @@ app.UseResponseCompression();
 // ✅ RENDER.COM: Los timeouts de Kestrel ya están configurados arriba
 // KeepAliveTimeout y RequestHeadersTimeout están en 5 y 2 minutos respectivamente
 
-// ✅ CRÍTICO: CORS DEBE SER EL PRIMERO - Para que TODAS las respuestas tengan headers CORS
-// Esto incluye errores, timeouts, y respuestas normales
+// ✅ SIMPLIFICADO: Solo CORS básico - TODO LO DEMÁS COMENTADO PARA DIAGNÓSTICO
 app.UseCors("AllowSpecificOrigin");
 
+// ❌ COMENTADO TODO EL MIDDLEWARE COMPLEJO PARA DIAGNÓSTICO
+/*
 // ✅ CRÍTICO: Middleware para FORZAR headers CORS en TODAS las respuestas
-// Esto asegura que incluso si el middleware de CORS no los agrega, los tengamos
-app.Use(async (context, next) =>
-{
-    var origin = context.Request.Headers["Origin"].ToString();
-    var allowedOrigins = new[] { 
-        "http://localhost:3000", 
-        "http://localhost:5173", 
-        "https://inspecciono.com", 
-        "https://www.inspecciono.com" 
-    };
-    
-    // Si hay un Origin header y está permitido, agregar headers CORS
-    if (!string.IsNullOrEmpty(origin))
-    {
-        var isAllowed = allowedOrigins.Any(o => origin.StartsWith(o, StringComparison.OrdinalIgnoreCase));
-        if (isAllowed)
-        {
-            // Agregar headers CORS explícitamente
-            if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Origin"))
-            {
-                context.Response.Headers["Access-Control-Allow-Origin"] = origin;
-            }
-            if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Credentials"))
-            {
-                context.Response.Headers["Access-Control-Allow-Credentials"] = "true";
-            }
-            if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Methods"))
-            {
-                context.Response.Headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS";
-            }
-            if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Headers"))
-            {
-                context.Response.Headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With";
-            }
-        }
-    }
-    // Si NO hay Origin header pero es una request a la API, agregar headers CORS para permitir cualquier origen (solo para errores)
-    else if (context.Request.Path.StartsWithSegments("/api"))
-    {
-        // Para requests sin Origin (como errores), permitir cualquier origen
-        if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Origin"))
-        {
-            context.Response.Headers["Access-Control-Allow-Origin"] = "*";
-        }
-        if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Methods"))
-        {
-            context.Response.Headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS";
-        }
-        if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Headers"))
-        {
-            context.Response.Headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With";
-        }
-    }
-    
-    await next();
-});
+app.Use(async (context, next) => { ... });
 
-// ✅ CRÍTICO: Manejo de errores global - DEBE ir DESPUÉS de CORS
-// Esto asegura que TODAS las excepciones devuelvan JSON con headers CORS
-app.UseExceptionHandler(errorApp =>
-{
-    errorApp.Run(async context =>
-    {
-        var exceptionHandlerPathFeature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerPathFeature>();
-        var exception = exceptionHandlerPathFeature?.Error;
-        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
-        
-        // Log del error
-        logger.LogError(exception, "❌ Excepción no manejada: {Path}", context.Request.Path);
-        
-        // ✅ CRÍTICO: Asegurar headers CORS incluso en errores
-        var origin = context.Request.Headers["Origin"].ToString();
-        if (!string.IsNullOrEmpty(origin))
-        {
-            // Verificar si el origen está permitido
-            var allowedOrigins = new[] { 
-                "http://localhost:3000", 
-                "http://localhost:5173", 
-                "https://inspecciono.com", 
-                "https://www.inspecciono.com" 
-            };
-            if (allowedOrigins.Any(o => origin.StartsWith(o, StringComparison.OrdinalIgnoreCase)))
-            {
-                context.Response.Headers["Access-Control-Allow-Origin"] = origin;
-                context.Response.Headers["Access-Control-Allow-Credentials"] = "true";
-            }
-        }
-        
-        // Siempre devolver JSON, nunca HTML
-        context.Response.StatusCode = 500;
-        context.Response.ContentType = "application/json";
-        
-        var response = new
-        {
-            message = "An error occurred while processing your request",
-            error = exception?.Message ?? "Unknown error",
-            path = context.Request.Path,
-            timestamp = DateTime.UtcNow
-        };
-        
-        await context.Response.WriteAsJsonAsync(response);
-    });
-});
+// ✅ CRÍTICO: Manejo de errores global
+app.UseExceptionHandler(errorApp => { ... });
+*/
 
-// ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
-// ✅ CRÍTICO: Middleware de logging completo del pipeline (PRIMERO después de CORS)
-// Este middleware captura TODO el flujo de la request para diagnosticar problemas
-// Basado en mejores prácticas para identificar por qué algunos endpoints funcionan y otros no
+// ❌ COMENTADO TODO EL MIDDLEWARE COMPLEJO PARA DIAGNÓSTICO
+/*
 // app.UseMiddleware<newApi.Middleware.RequestPipelineLoggingMiddleware>();
-
-// ✅ DEBUG: Logging detallado de CORS para diagnosticar problemas
-app.Use(async (context, next) =>
-{
-    var corsLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
-    
-    // Solo loggear en producción para diagnosticar problemas
-    if (!app.Environment.IsDevelopment())
-    {
-        var path = context.Request.Path.Value ?? "";
-        var method = context.Request.Method;
-        var origin = context.Request.Headers["Origin"].ToString();
-        
-        // Loggear todas las requests, especialmente OPTIONS (preflight)
-        if (method == "OPTIONS")
-        {
-            var accessControlRequestMethod = context.Request.Headers["Access-Control-Request-Method"].ToString();
-            var accessControlRequestHeaders = context.Request.Headers["Access-Control-Request-Headers"].ToString();
-            
-            corsLogger.LogInformation($"[CORS] 🔄 PREFLIGHT REQUEST: {method} {path}");
-            corsLogger.LogInformation($"[CORS]    Origin: {origin}");
-            corsLogger.LogInformation($"[CORS]    Access-Control-Request-Method: {accessControlRequestMethod}");
-            corsLogger.LogInformation($"[CORS]    Access-Control-Request-Headers: {accessControlRequestHeaders}");
-        }
-    }
-    
-    await next();
-    
-    // Loggear headers CORS en la respuesta
-    if (!app.Environment.IsDevelopment())
-    {
-        var path = context.Request.Path.Value ?? "";
-        var method = context.Request.Method;
-        
-        if (method == "OPTIONS" || context.Request.Headers.ContainsKey("Origin"))
-        {
-            var allowOrigin = context.Response.Headers["Access-Control-Allow-Origin"].ToString();
-            var allowMethods = context.Response.Headers["Access-Control-Allow-Methods"].ToString();
-            var allowHeaders = context.Response.Headers["Access-Control-Allow-Headers"].ToString();
-            var allowCredentials = context.Response.Headers["Access-Control-Allow-Credentials"].ToString();
-            
-            corsLogger.LogInformation($"[CORS] 📤 CORS RESPONSE HEADERS para {method} {path}:");
-            corsLogger.LogInformation($"[CORS]    Access-Control-Allow-Origin: {allowOrigin}");
-            corsLogger.LogInformation($"[CORS]    Access-Control-Allow-Methods: {allowMethods}");
-            corsLogger.LogInformation($"[CORS]    Access-Control-Allow-Headers: {allowHeaders}");
-            corsLogger.LogInformation($"[CORS]    Access-Control-Allow-Credentials: {allowCredentials}");
-        }
-    }
-});
-
-// ✅ HANGFIRE IFRAME SUPPORT: Configurar headers para permitir iframes en Hangfire Dashboard
-app.Use(async (context, next) =>
-{
-    // Si es una ruta de Hangfire, configurar headers para permitir iframes
-    if (context.Request.Path.StartsWithSegments("/hangfire", StringComparison.OrdinalIgnoreCase))
-    {
-        // Permitir que se cargue en iframes desde el mismo origen o desde orígenes permitidos
-        context.Response.Headers["X-Frame-Options"] = "SAMEORIGIN";
-        
-        // Configurar Content-Security-Policy para permitir iframes
-        // frame-ancestors permite especificar qué orígenes pueden embeber esta página
-        var allowedOrigins = new[] { "https://inspecciono.com", "https://www.inspecciono.com", "http://localhost:3000", "http://localhost:5173" };
-        var frameAncestors = string.Join(" ", allowedOrigins.Select(o => o));
-        context.Response.Headers["Content-Security-Policy"] = $"frame-ancestors {frameAncestors} 'self';";
-        
-        // Asegurar que CORS permita las credenciales (CORS middleware lo manejará, pero esto es un fallback)
-        var origin = context.Request.Headers["Origin"].FirstOrDefault();
-        if (!string.IsNullOrEmpty(origin) && allowedOrigins.Any(o => origin.StartsWith(o, StringComparison.OrdinalIgnoreCase)))
-        {
-            if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Origin"))
-            {
-                context.Response.Headers["Access-Control-Allow-Origin"] = origin;
-            }
-            context.Response.Headers["Access-Control-Allow-Credentials"] = "true";
-        }
-    }
-    
-    await next();
-});
+// app.Use(async (context, next) => { ... }); // CORS logging
+// app.Use(async (context, next) => { ... }); // Hangfire iframe support
+*/
 
 // ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
 // ✅ SEGURIDAD 2025: Aplicar Rate Limiting
@@ -2191,56 +2016,8 @@ app.Use(async (context, next) =>
 app.UseAuthentication();
 app.UseAuthorization();
 
-// ✅ CRÍTICO: UseStatusCodePages DEBE ir DESPUÉS de UseRouting() pero ANTES de MapControllers()
-// Esto asegura que los códigos de estado (404, 408, etc.) devuelvan JSON con headers CORS
-// IMPORTANTE: UseStatusCodePages solo funciona si la respuesta NO ha comenzado
-// Si un controlador devuelve StatusCode(408) directamente, la respuesta ya comenzó
-// Por eso también necesitamos asegurar CORS en los controladores
-app.UseStatusCodePages(async context =>
-{
-    // ✅ CRÍTICO: Asegurar headers CORS incluso en códigos de estado
-    var origin = context.HttpContext.Request.Headers["Origin"].ToString();
-    if (!string.IsNullOrEmpty(origin))
-    {
-        var allowedOrigins = new[] { 
-            "http://localhost:3000", 
-            "http://localhost:5173", 
-            "https://inspecciono.com", 
-            "https://www.inspecciono.com" 
-        };
-        if (allowedOrigins.Any(o => origin.StartsWith(o, StringComparison.OrdinalIgnoreCase)))
-        {
-            context.HttpContext.Response.Headers["Access-Control-Allow-Origin"] = origin;
-            context.HttpContext.Response.Headers["Access-Control-Allow-Credentials"] = "true";
-        }
-    }
-    
-    // Solo manejar si es una request a la API y la respuesta NO ha comenzado
-    if (context.HttpContext.Request.Path.StartsWithSegments("/api") && !context.HttpContext.Response.HasStarted)
-    {
-        context.HttpContext.Response.ContentType = "application/json";
-        
-        var message = context.HttpContext.Response.StatusCode switch
-        {
-            404 => "Endpoint not found",
-            401 => "Unauthorized",
-            403 => "Forbidden",
-            408 => "Request timeout", // ✅ CRÍTICO: Agregar 408 para timeouts
-            500 => "Internal server error",
-            _ => "An error occurred"
-        };
-        
-        var response = new
-        {
-            message = message,
-            statusCode = context.HttpContext.Response.StatusCode,
-            path = context.HttpContext.Request.Path,
-            timestamp = DateTime.UtcNow
-        };
-        
-        await context.HttpContext.Response.WriteAsJsonAsync(response);
-    }
-});
+// ❌ COMENTADO PARA DIAGNÓSTICO
+// app.UseStatusCodePages(async context => { ... });
 
 // ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
 // ✅ DEBUG: Logging DESPUÉS de autenticación (para capturar estado final)
@@ -2395,8 +2172,55 @@ app.MapGet("/warmup", async (AppDbContext db) =>
 app.MapControllers();
 app.MapHub<ChatHub>("/chatHub");
 
+// ✅ DIAGNÓSTICO: Loggear TODOS los endpoints registrados al iniciar
+var endpointDataSource = app.Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>();
+var endpoints = endpointDataSource.Endpoints;
+var logger = app.Services.GetRequiredService<ILogger<Program>>();
+
+logger.LogInformation("========================================");
+logger.LogInformation("📋 ENDPOINTS REGISTRADOS:");
+logger.LogInformation("========================================");
+
+var endpointList = new List<string>();
+foreach (var endpoint in endpoints)
+{
+    var displayName = endpoint.DisplayName ?? "N/A";
+    
+    // Obtener ruta del endpoint
+    var routePattern = "N/A";
+    var routeEndpoint = endpoint as Microsoft.AspNetCore.Routing.RouteEndpoint;
+    if (routeEndpoint != null)
+    {
+        routePattern = routeEndpoint.RoutePattern.RawText ?? "N/A";
+    }
+    
+    // Obtener métodos HTTP
+    var httpMethods = new List<string>();
+    var httpMethodMetadata = endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Routing.HttpMethodMetadata>();
+    if (httpMethodMetadata != null)
+    {
+        httpMethods.AddRange(httpMethodMetadata.HttpMethods);
+    }
+    
+    var endpointInfo = $"  - {displayName}";
+    if (routePattern != "N/A")
+    {
+        endpointInfo += $" | Route: {routePattern}";
+    }
+    if (httpMethods.Any())
+    {
+        endpointInfo += $" | Methods: {string.Join(", ", httpMethods)}";
+    }
+    
+    endpointList.Add(endpointInfo);
+    logger.LogInformation(endpointInfo);
+}
+
+logger.LogInformation("========================================");
+logger.LogInformation($"✅ Total endpoints registrados: {endpointList.Count}");
+logger.LogInformation("========================================");
+
 // ✅ RENDER.COM: Configuración final antes de iniciar
-var startupLogger = app.Services.GetRequiredService<ILogger<Program>>();
 
 if (!isDevelopment)
 {
@@ -2412,22 +2236,22 @@ if (!isDevelopment)
     Console.WriteLine($"[RENDER] 📍 aspnetcoreUrls (variable local): {aspnetcoreUrls}");
     Console.WriteLine($"[RENDER] 📍 portToUse: {portToUse}");
     
-    startupLogger.LogInformation($"🚀 Iniciando aplicación en puerto: {finalPort}");
-    startupLogger.LogInformation($"   ASPNETCORE_URLS: {aspnetcoreUrlsFinal ?? "NO CONFIGURADO"}");
-    startupLogger.LogInformation($"   aspnetcoreUrls (variable local): {aspnetcoreUrls}");
-    startupLogger.LogInformation($"   portToUse: {portToUse}");
+    logger.LogInformation($"🚀 Iniciando aplicación en puerto: {finalPort}");
+    logger.LogInformation($"   ASPNETCORE_URLS: {aspnetcoreUrlsFinal ?? "NO CONFIGURADO"}");
+    logger.LogInformation($"   aspnetcoreUrls (variable local): {aspnetcoreUrls}");
+    logger.LogInformation($"   portToUse: {portToUse}");
 
     // Obtener URLs antes de iniciar (puede estar vacío, es normal antes de app.Run())
     var finalUrls = app.Urls.ToList();
     Console.WriteLine($"[RENDER] 📍 URLs detectadas ANTES de app.Run(): {finalUrls.Count}");
     if (finalUrls.Any())
     {
-        startupLogger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
+        logger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
         Console.WriteLine($"[RENDER] ✅ Servidor configurado para escuchar en: {string.Join(", ", finalUrls)}");
     }
     else
     {
-        startupLogger.LogWarning($"⚠️ No se detectaron URLs configuradas ANTES de app.Run(). Esto es NORMAL - las URLs se configuran cuando el servidor inicia.");
+        logger.LogWarning($"⚠️ No se detectaron URLs configuradas ANTES de app.Run(). Esto es NORMAL - las URLs se configuran cuando el servidor inicia.");
         Console.WriteLine($"[RENDER] ⚠️ INFO: No se detectaron URLs ANTES de app.Run() - esto es NORMAL");
         Console.WriteLine($"[RENDER] ⚠️ Las URLs se configurarán cuando app.Run() inicie el servidor");
     }
@@ -2440,14 +2264,14 @@ else
 {
     // ✅ DESARROLLO: Logging de configuración
     var finalUrls = app.Urls.ToList();
-    startupLogger.LogInformation($"🚀 Iniciando aplicación en desarrollo");
+    logger.LogInformation($"🚀 Iniciando aplicación en desarrollo");
     if (finalUrls.Any())
     {
-        startupLogger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
+        logger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
     }
     else
     {
-        startupLogger.LogInformation($"   Usando puerto {portToUse} (localhost:{portToUse})");
+        logger.LogInformation($"   Usando puerto {portToUse} (localhost:{portToUse})");
     }
     
     Console.WriteLine($"[DEV] ✅ Aplicación lista - URLs: {string.Join(", ", finalUrls)}");

@@ -1926,23 +1926,73 @@ app.UseRouting();
 // 2. CORS después de routing
 app.UseCors("AllowSpecificOrigin");
 
-// 3. Middleware simple de logging para diagnóstico
+// 3. Middleware DETALLADO de logging para diagnóstico COMPLETO
 app.Use(async (context, next) =>
 {
     var path = context.Request.Path.Value ?? "";
     var method = context.Request.Method;
     var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+    var startTime = DateTime.UtcNow;
     
-    logger.LogInformation($"[REQUEST] {method} {path}");
+    // ✅ LOGS DETALLADOS ANTES DE PROCESAR
+    logger.LogInformation("========================================");
+    logger.LogInformation($"[PIPELINE] 📥 REQUEST INICIADA: {method} {path}");
+    logger.LogInformation($"[PIPELINE]    Timestamp: {startTime:yyyy-MM-dd HH:mm:ss.fff}");
+    logger.LogInformation($"[PIPELINE]    Origin: {context.Request.Headers["Origin"]}");
+    logger.LogInformation($"[PIPELINE]    HasAuth: {context.Request.Headers.ContainsKey("Authorization")}");
+    logger.LogInformation($"[PIPELINE]    User-Agent: {context.Request.Headers["User-Agent"]}");
     
-    await next();
-    
-    logger.LogInformation($"[RESPONSE] {method} {path} -> {context.Response.StatusCode}");
+    try
+    {
+        await next();
+        
+        var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+        logger.LogInformation($"[PIPELINE] 📤 RESPONSE: {method} {path} -> {context.Response.StatusCode} ({duration:F2}ms)");
+        logger.LogInformation($"[PIPELINE]    Content-Type: {context.Response.ContentType ?? "N/A"}");
+        logger.LogInformation($"[PIPELINE]    CORS Headers:");
+        logger.LogInformation($"[PIPELINE]       Access-Control-Allow-Origin: {context.Response.Headers["Access-Control-Allow-Origin"]}");
+        logger.LogInformation($"[PIPELINE]       Access-Control-Allow-Credentials: {context.Response.Headers["Access-Control-Allow-Credentials"]}");
+        logger.LogInformation("========================================");
+    }
+    catch (Exception ex)
+    {
+        var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+        logger.LogError(ex, $"[PIPELINE] ❌ ERROR: {method} {path} -> Exception después de {duration:F2}ms");
+        logger.LogInformation("========================================");
+        throw;
+    }
 });
 
-// 4. Autenticación y autorización
+// 4. Autenticación y autorización con logs DETALLADOS
 app.UseAuthentication();
+app.Use(async (context, next) =>
+{
+    var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+    var path = context.Request.Path.Value ?? "";
+    var isAuthenticated = context.User?.Identity?.IsAuthenticated ?? false;
+    var userId = context.User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "N/A";
+    
+    logger.LogInformation($"[AUTH] 🔐 DESPUÉS de UseAuthentication: {path}");
+    logger.LogInformation($"[AUTH]    IsAuthenticated: {isAuthenticated}, UserId: {userId}");
+    
+    await next();
+});
+
 app.UseAuthorization();
+app.Use(async (context, next) =>
+{
+    var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+    var path = context.Request.Path.Value ?? "";
+    var endpoint = context.GetEndpoint();
+    var hasAllowAnonymous = endpoint?.Metadata?.GetMetadata<Microsoft.AspNetCore.Authorization.AllowAnonymousAttribute>() != null;
+    var hasAuthorize = endpoint?.Metadata?.GetMetadata<Microsoft.AspNetCore.Authorization.AuthorizeAttribute>() != null;
+    
+    logger.LogInformation($"[AUTH] 🔒 DESPUÉS de UseAuthorization: {path}");
+    logger.LogInformation($"[AUTH]    AllowAnonymous: {hasAllowAnonymous}, Authorize: {hasAuthorize}");
+    logger.LogInformation($"[AUTH]    Endpoint: {endpoint?.DisplayName ?? "N/A"}");
+    
+    await next();
+});
 
 // ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
 // ✅ DEBUG: Logging DESPUÉS de autenticación (para capturar estado final)
@@ -2093,6 +2143,59 @@ app.MapGet("/warmup", async (AppDbContext db) =>
         );
     }
 }).WithName("Warmup").WithTags("System");
+
+// ✅ ENDPOINT DE PRUEBA: Consulta simple a la DB para verificar conexión
+app.MapGet("/test-db", async (AppDbContext db, ILogger<Program> logger) =>
+{
+    logger.LogInformation("[TEST-DB] ========================================");
+    logger.LogInformation("[TEST-DB] 🔍 Iniciando test de conexión a DB...");
+    
+    try
+    {
+        var startTime = DateTime.UtcNow;
+        
+        // Verificar conexión
+        logger.LogInformation("[TEST-DB]    Verificando CanConnectAsync()...");
+        var canConnect = await db.Database.CanConnectAsync();
+        var canConnectDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+        logger.LogInformation($"[TEST-DB]    ✅ CanConnect: {canConnect} ({canConnectDuration:F2}ms)");
+        
+        if (!canConnect)
+        {
+            logger.LogError("[TEST-DB]    ❌ NO SE PUEDE CONECTAR A LA BASE DE DATOS");
+            return Results.Problem("Cannot connect to database", statusCode: 500);
+        }
+        
+        // Query simple
+        startTime = DateTime.UtcNow;
+        logger.LogInformation("[TEST-DB]    Ejecutando query: db.Users.CountAsync()...");
+        var userCount = await db.Users.CountAsync();
+        var queryDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+        logger.LogInformation($"[TEST-DB]    ✅ Query completada: {userCount} usuarios ({queryDuration:F2}ms)");
+        
+        logger.LogInformation("[TEST-DB] ========================================");
+        
+        return Results.Ok(new
+        {
+            success = true,
+            canConnect = canConnect,
+            userCount = userCount,
+            canConnectDuration = canConnectDuration,
+            queryDuration = queryDuration,
+            timestamp = DateTime.UtcNow
+        });
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "[TEST-DB] ❌ ERROR en test de DB");
+        logger.LogInformation("[TEST-DB] ========================================");
+        return Results.Problem(
+            detail: ex.Message,
+            statusCode: 500,
+            title: "Database test failed"
+        );
+    }
+}).WithName("TestDb").WithTags("System");
 
 app.MapControllers();
 app.MapHub<ChatHub>("/chatHub");

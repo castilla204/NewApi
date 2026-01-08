@@ -1687,79 +1687,40 @@ builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
-// ✅ RENDER.COM: CRÍTICO - Iniciar servidor INMEDIATAMENTE después de Build()
-// Render.com escanea el puerto muy temprano (timeout ~30 segundos)
-// Necesitamos que el servidor esté escuchando ANTES de cualquier inicialización pesada
-// SOLO configurar el flag aquí, iniciaremos el servidor al final después de mapear endpoints
+// ✅ RENDER.COM: CRÍTICO - Mover inicialización pesada a background task
+// Render.com necesita que el servidor esté escuchando INMEDIATAMENTE
+// La inicialización pesada (Stripe, etc.) se hará en background después de iniciar el servidor
+// Esto permite que Render.com detecte el puerto rápidamente
 
-// ✅ Cargar claves Stripe según el modo configurado en SystemSetting
-try
+// ✅ Background task para inicialización pesada (se ejecuta después de que el servidor esté escuchando)
+_ = Task.Run(async () =>
 {
-    using (var scope = app.Services.CreateScope())
+    try
     {
-        var stripeConfigService = scope.ServiceProvider.GetRequiredService<IStripeConfigService>();
-        var mode = await stripeConfigService.GetStripeModeAsync();
-        var (secretKey, webhookSecret, generalWebhookSecret) = await stripeConfigService.GetStripeKeysForModeAsync(
-            mode, 
-            GetSecretValue);
+        // Esperar un poco para que el servidor esté completamente iniciado
+        await Task.Delay(2000);
         
-        builder.Configuration["Stripe:SecretKey"] = secretKey;
-        builder.Configuration["Stripe:WebhookSecret"] = webhookSecret;
-        builder.Configuration["Stripe:GeneralWebhookSecret"] = generalWebhookSecret;
-        
-        StripeConfiguration.ApiKey = secretKey;
-        
-        var stripeLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-        stripeLogger.LogInformation($"✅ Claves Stripe cargadas en modo: {mode}");
-        stripeLogger.LogInformation($"   SecretKey presente: {!string.IsNullOrEmpty(secretKey)}");
-        stripeLogger.LogInformation($"   WebhookSecret presente: {!string.IsNullOrEmpty(webhookSecret)}");
-    }
-}
-catch (Exception ex)
-{
-    var stripeLogger = app.Services.GetRequiredService<ILogger<Program>>();
-    stripeLogger.LogError(ex, "Error cargando claves Stripe según modo, usando configuración por defecto");
-}
-
-// Configure Stripe - se configurará dinámicamente según el modo en SystemSetting
-// La configuración inicial se hace después de inicializar la base de datos (ver más abajo)
-
-// 🚨 LOG CRÍTICO: Configuración de Stripe
-var logger = app.Services.GetRequiredService<ILogger<Program>>();
-
-try
-{
-    if (string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]))
-    {
-        logger.LogError("Stripe SecretKey not found in configuration");
-        
-        // Usar scope para ILoggingService
+        // ✅ Cargar claves Stripe según el modo configurado en SystemSetting
         using (var scope = app.Services.CreateScope())
         {
-            var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
-            await loggingService.LogCriticalAsync(
-                message: "CRITICAL: Stripe configuration missing",
-                details: "Stripe SecretKey not found in configuration",
-                userId: null,
-                source: "Program.ConfigureStripe",
-                relatedEntityType: "System",
-                relatedEntityId: null,
-                additionalData: new { 
-                    Action = "StripeConfiguration",
-                    SecretKeyPresent = !string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]),
-                    PublishableKeyPresent = !string.IsNullOrEmpty(builder.Configuration["Stripe:PublishableKey"])
-                }
-            );
-        }
-    }
-    else
-    {
-        logger.LogInformation("Stripe configuration successful");
-        
-        // ✅ Log informativo del sistema - NO crear notificaciones para logs de configuración
-        // Usar scope para ILoggingService
-        using (var scope = app.Services.CreateScope())
-        {
+            var stripeConfigService = scope.ServiceProvider.GetRequiredService<IStripeConfigService>();
+            var mode = await stripeConfigService.GetStripeModeAsync();
+            var (secretKey, webhookSecret, generalWebhookSecret) = await stripeConfigService.GetStripeKeysForModeAsync(
+                mode, 
+                GetSecretValue);
+            
+            builder.Configuration["Stripe:SecretKey"] = secretKey;
+            builder.Configuration["Stripe:WebhookSecret"] = webhookSecret;
+            builder.Configuration["Stripe:GeneralWebhookSecret"] = generalWebhookSecret;
+            
+            StripeConfiguration.ApiKey = secretKey;
+            
+            var stripeLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+            stripeLogger.LogInformation($"✅ Claves Stripe cargadas en modo: {mode}");
+            stripeLogger.LogInformation($"   SecretKey presente: {!string.IsNullOrEmpty(secretKey)}");
+            stripeLogger.LogInformation($"   WebhookSecret presente: {!string.IsNullOrEmpty(webhookSecret)}");
+            
+            // ✅ Log informativo del sistema
             var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
             await loggingService.LogInfoAsync(
                 message: "Stripe configuration successful",
@@ -1770,19 +1731,42 @@ try
                 relatedEntityId: null,
                 additionalData: new { 
                     Action = "StripeConfiguration",
-                    SecretKeyPresent = !string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]),
+                    SecretKeyPresent = !string.IsNullOrEmpty(secretKey),
                     PublishableKeyPresent = !string.IsNullOrEmpty(builder.Configuration["Stripe:PublishableKey"]),
                     Success = true
                 },
-                notifyUser: false // ✅ NO notificar a usuarios - es solo un log de sistema
+                notifyUser: false
             );
         }
     }
-}
-catch (Exception ex)
-{
-    logger.LogError(ex, "Error configuring Stripe");
-}
+    catch (Exception ex)
+    {
+        var stripeLogger = app.Services.GetRequiredService<ILogger<Program>>();
+        stripeLogger.LogError(ex, "Error cargando claves Stripe según modo, usando configuración por defecto");
+        
+        // Si falla, intentar usar configuración por defecto
+        if (string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]))
+        {
+            using (var scope = app.Services.CreateScope())
+            {
+                var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+                await loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Stripe configuration missing",
+                    details: "Stripe SecretKey not found in configuration",
+                    userId: null,
+                    source: "Program.ConfigureStripe",
+                    relatedEntityType: "System",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        Action = "StripeConfiguration",
+                        SecretKeyPresent = false,
+                        PublishableKeyPresent = !string.IsNullOrEmpty(builder.Configuration["Stripe:PublishableKey"])
+                    }
+                );
+            }
+        }
+    }
+});
 
 
 // ✅ HANGFIRE DASHBOARD: Habilitado con autenticación JWT
@@ -2123,24 +2107,20 @@ else
 // ✅ CRÍTICO según documentación oficial de Render.com troubleshooting:
 // "502 Bad Gateway: A web service has misconfigured its host and port.
 //  Bind your host to 0.0.0.0 and optionally set the PORT environment variable to use a custom port (the default port is 10000)."
+// 
+// ✅ SOLUCIÓN DEFINITIVA: Usar app.Run() en TODOS los entornos
+// app.Run() es el método estándar y más confiable para iniciar el servidor
+// Inicia el servidor, lo deja escuchando, y bloquea hasta que se cierre
+// Esto es lo que Render.com espera para detectar el puerto correctamente
 if (!isDevelopment)
 {
-    // ✅ PRODUCCIÓN: Iniciar servidor INMEDIATAMENTE para que Render.com detecte el puerto
-    // Render.com escanea el puerto muy temprano, así que necesitamos iniciar ANTES del timeout
-    Console.WriteLine($"[RENDER] 🚀 INICIANDO SERVIDOR INMEDIATAMENTE para detección de puerto...");
-    Console.WriteLine($"[RENDER] ✅ Puerto: {portToUse}, ASPNETCORE_URLS: {aspnetcoreUrls}");
-    
-    await app.StartAsync();
-    
-    var urls = app.Urls.ToList();
-    Console.WriteLine($"[RENDER] ✅ Servidor INICIADO y escuchando en: {string.Join(", ", urls)}");
-    Console.WriteLine($"[RENDER] ✅ Render.com debería detectar el puerto AHORA");
-    
-    // Esperar hasta que se cierre la aplicación
-    await app.WaitForShutdownAsync();
+    Console.WriteLine($"[RENDER] 🚀 INICIANDO SERVIDOR en puerto {portToUse}...");
+    Console.WriteLine($"[RENDER] ✅ ASPNETCORE_URLS: {aspnetcoreUrls}");
+    Console.WriteLine($"[RENDER] ✅ Render.com detectará el puerto cuando el servidor esté escuchando");
 }
-else
-{
-    // ✅ DESARROLLO: app.Run() normal
-    app.Run();
-}
+
+// ✅ app.Run() inicia el servidor y lo deja escuchando en 0.0.0.0:PORT
+// Render.com detecta el puerto cuando el servidor está escuchando
+// app.Run() bloquea el proceso hasta que se cierre (correcto para Render.com)
+// Esto evita el error "No open ports detected"
+app.Run();

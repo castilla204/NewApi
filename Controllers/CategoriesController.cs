@@ -110,8 +110,10 @@ namespace newApi.Controllers
             var startTime = DateTime.UtcNow;
             var requestId = Guid.NewGuid().ToString("N")[..8];
             
-            _logger.LogInformation($"[ENDPOINT] ========================================");
-            _logger.LogInformation($"[ENDPOINT] 📥 GetCategories INICIADO - RequestId: {requestId}");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT] ========================================");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT] 🏠 HOMEPAGE ENDPOINT: /api/Categories");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT] 📥 GetCategories INICIADO - RequestId: {requestId}");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    Timestamp: {startTime:yyyy-MM-dd HH:mm:ss.fff}");
             
             try
             {
@@ -387,6 +389,16 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
+                var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                _logger.LogError(ex, $"[HOMEPAGE-ENDPOINT] ❌ GetCategories EXCEPCIÓN - RequestId: {requestId}");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT]    🏠 HOMEPAGE ENDPOINT: /api/Categories");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT]    Exception Type: {ex.GetType().Name}");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT]    Exception Message: {ex.Message}");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT]    Inner Exception: {ex.InnerException?.Message ?? "None"}");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT]    StackTrace: {ex.StackTrace}");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT]    Duración antes del error: {totalDuration:F2}ms");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT] ========================================");
+                
                 // ✅ MEJORA: Incluir más información de depuración
                 return StatusCode(500, new { 
                     message = "Failed to retrieve categories",

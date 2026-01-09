@@ -732,12 +732,15 @@ if (isDevelopment)
 else
 {
     // ✅ PRODUCCIÓN (Render.com): Connection string HARDCODEADA
-    // Transaction Pooler (puerto 6543) - Compatible con Hangfire y IPv4/IPv6
-    // Timeouts aumentados para Render.com: Timeout=60, CommandTimeout=120
-    connectionString = "User Id=postgres.rveqsehzlvbttlpmsbmi;Password=__REDACTED_CREDENTIAL__;Server=aws-1-eu-west-2.pooler.supabase.com;Port=6543;Database=postgres;SslMode=Require;Timeout=60;CommandTimeout=120;Pooling=true;Multiplexing=false;Enlist=false;Max Auto Prepare=0;KeepAlive=30;";
+    // ⚠️ CAMBIO CRÍTICO: Session Pooler (puerto 5432) para queries largas
+    // Transaction Pooler (6543) tiene timeout FIJO de 60s que NO se puede aumentar
+    // Session Pooler (5432) permite queries más largas (hasta 120s con CommandTimeout)
+    // NOTA: Session Pooler puede tener problemas con Hangfire, pero permite queries de 33+ segundos
+    connectionString = "User Id=postgres.rveqsehzlvbttlpmsbmi;Password=__REDACTED_CREDENTIAL__;Server=aws-1-eu-west-2.pooler.supabase.com;Port=5432;Database=postgres;SslMode=Require;Timeout=60;CommandTimeout=120;Pooling=true;Multiplexing=false;Enlist=false;Max Auto Prepare=0;KeepAlive=30;";
     connectionStringSource = "Hardcoded (Producción - Render.com)";
     configLogger.LogInformation("✅ Producción: Connection string HARDCODEADA (Render.com)");
-    configLogger.LogInformation("   Transaction Pooler (puerto 6543) - Compatible con Hangfire");
+    configLogger.LogWarning("   ⚠️ Session Pooler (puerto 5432) - Permite queries largas (>60s)");
+    configLogger.LogWarning("   ⚠️ NOTA: Session Pooler puede tener problemas con Hangfire");
     configLogger.LogInformation("   Timeouts aumentados: Timeout=60, CommandTimeout=120");
     configLogger.LogInformation("   KeepAlive=30 para mantener conexiones vivas");
 }

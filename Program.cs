@@ -918,20 +918,27 @@ builder.Services.AddSwaggerGen();
 // Note: Swagger security definition removed due to Microsoft.OpenApi.Models namespace issues
 // Swagger will still work for testing endpoints
 
-// ✅ OPTIMIZACIÓN: Habilitar compresión HTTP (reduce tamaño 60-80%)
-builder.Services.AddResponseCompression(options =>
-{
-    options.EnableForHttps = true;
-    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
-    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProvider>();
-    options.MimeTypes = Microsoft.AspNetCore.ResponseCompression.ResponseCompressionDefaults.MimeTypes.Concat(
-        new[] { "application/json", "application/json; charset=utf-8" });
-});
-
-builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProviderOptions>(options =>
-{
-    options.Level = System.IO.Compression.CompressionLevel.Fastest;
-});
+// ❌ DESHABILITADO: Response Compression causa timeouts en Render.com
+// El problema: Gzip/Brotli se bloquea al comprimir la respuesta
+// Síntoma: Query completa en 500ms pero cliente timeout a 30s
+// Causa: Render.com usa nginx que ya comprime, doble compresión causa deadlock
+// Solución: Render/nginx manejará la compresión automáticamente
+// Referencias:
+// - https://github.com/dotnet/aspnetcore/issues/46792
+// - https://stackoverflow.com/questions/72156784/asp-net-core-6-api-hangs-after-controller-returns-data
+// builder.Services.AddResponseCompression(options =>
+// {
+//     options.EnableForHttps = true;
+//     options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
+//     options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProvider>();
+//     options.MimeTypes = Microsoft.AspNetCore.ResponseCompression.ResponseCompressionDefaults.MimeTypes.Concat(
+//         new[] { "application/json", "application/json; charset=utf-8" });
+// });
+//
+// builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProviderOptions>(options =>
+// {
+//     options.Level = System.IO.Compression.CompressionLevel.Fastest;
+// });
 
 // ✅ SEGURIDAD 2025: Configurar Rate Limiting nativo de .NET 8
 // Configuración ajustada para aplicación web: límites más permisivos para uso normal, estrictos para endpoints sensibles
@@ -1935,8 +1942,12 @@ if (app.Environment.IsDevelopment())
     });
 }
 
-// ✅ OPTIMIZACIÓN: Habilitar compresión de respuestas (debe ir antes de otros middlewares)
-app.UseResponseCompression();
+// ❌ DESHABILITADO: Response Compression causa timeouts en Render.com
+// El problema: Gzip/Brotli se bloquea al comprimir la respuesta
+// Síntoma: Query completa en 500ms pero cliente timeout a 30s
+// Causa: Render.com usa nginx que ya comprime, doble compresión causa deadlock
+// Solución: Render/nginx manejará la compresión automáticamente
+// app.UseResponseCompression();
 
 // ✅ RENDER.COM: Los timeouts de Kestrel ya están configurados arriba
 // KeepAliveTimeout y RequestHeadersTimeout están en 5 y 2 minutos respectivamente

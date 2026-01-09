@@ -199,14 +199,17 @@ namespace newApi.Services
                             ServiceTypeId = service.ServiceTypeId,
                             ServiceTypeName = service.ServiceTypeName,
                             Price = service.Price,
-                            Images = service.Images.Select(img => img.ImageUrl).ToList(),
-                            ExpertId = service.ExpertId,
-                            ExpertName = service.ExpertName,
-                            ExpertProfilePictureUrl = service.ExpertProfilePictureUrl,
-                            ExpertCountry = service.ExpertCountry,
+                            ImageUrls = service.Images.Select(img => img.ImageUrl).ToList(),
+                            Expert = new HomepageExpertDto
+                            {
+                                Id = service.ExpertId,
+                                Name = service.ExpertName,
+                                ProfilePictureUrl = service.ExpertProfilePictureUrl,
+                                Country = service.ExpertCountry,
+                                Availability = null // Disponibilidad opcional
+                            },
                             AverageRating = service.AverageRating,
-                            CompletedSearches = service.CompletedSearches,
-                            IsAvailableNow = false // Por defecto, se puede mejorar después
+                            CompletedSearches = service.CompletedSearches
                         }
                     };
                 }).Where(f => f != null).ToList();

@@ -1874,29 +1874,35 @@ namespace newApi.Services
 
                 // ✅ OPTIMIZACIÓN HOMEPAGE: Usar proyección Select en lugar de Include - MUCHO más rápido
                 // Solo carga los campos necesarios para mostrar cards en homepage, no todas las relaciones
+                // ✅ CRÍTICO: Agregar timeout corto para evitar bloqueos de 90+ segundos
                 _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Ejecutando query para obtener datos completos de servicios...");
                 var homepageQueryStartTime = DateTime.UtcNow;
-                var homepageServices = await _context.SearchServices
-                    .AsNoTracking()
-                    .Where(ss => paginatedServiceIds.Contains(ss.Id))
-                    .Select(ss => new
-                    {
-                        ServiceId = ss.Id,
-                        CategoryId = ss.CategoryId,
-                        CategoryName = ss.Category.Name,
-                        ServiceTypeId = ss.ServiceTypeId,
-                        ServiceTypeName = ss.ServiceType.Name,
-                        Price = ss.Price,
-                        // Solo primeras 2 imágenes (suficiente para homepage) - Cargar datos sin procesar URLs
-                        Images = ss.Images
-                            .OrderBy(img => img.Id)
-                            .Take(2)
-                            .Select(img => new
-                            {
-                                ImageUrl = img.ImageUrl,
-                                ImageObjectName = img.ImageObjectName
-                            })
-                            .ToList(),
+                
+                // ✅ TIMEOUT: Usar CancellationTokenSource con timeout de 30 segundos para esta query
+                using var queryCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                queryCts.CancelAfter(TimeSpan.FromSeconds(30)); // Timeout de 30 segundos (más razonable)
+                
+                var homepageServicesQuery = _context.SearchServices
+                        .AsNoTracking()
+                        .Where(ss => paginatedServiceIds.Contains(ss.Id))
+                        .Select(ss => new
+                        {
+                            ServiceId = ss.Id,
+                            CategoryId = ss.CategoryId,
+                            CategoryName = ss.Category.Name,
+                            ServiceTypeId = ss.ServiceTypeId,
+                            ServiceTypeName = ss.ServiceType.Name,
+                            Price = ss.Price,
+                            // Solo primeras 2 imágenes (suficiente para homepage) - Cargar datos sin procesar URLs
+                            Images = ss.Images
+                                .OrderBy(img => img.Id)
+                                .Take(2)
+                                .Select(img => new
+                                {
+                                    ImageUrl = img.ImageUrl,
+                                    ImageObjectName = img.ImageObjectName
+                                })
+                                .ToList(),
                         ExpertId = ss.ExpertProfile.Id,
                         ExpertName = ss.ExpertProfile.User.Name,
                         ExpertProfilePictureUrl = ss.ExpertProfile.ProfilePictureUrl,
@@ -1906,11 +1912,13 @@ namespace newApi.Services
                         AverageRating = ss.ExpertProfile.User.ReviewsReceived.Any()
                             ? ss.ExpertProfile.User.ReviewsReceived.Average(r => (double)r.Score)
                             : 0.0,
-                        // Contar búsquedas completadas directamente en SQL
-                        CompletedSearches = ss.ExpertProfile.User.SearchHiresAsExpert
-                            .Count(sh => sh.Status != null && sh.Status.StatusValue == "completed")
-                    })
-                    .ToListAsync(cancellationToken);
+                        // ✅ OPTIMIZACIÓN: Remover Count pesado - se puede calcular después si es necesario
+                        // El Count de SearchHiresAsExpert es muy lento (puede tener miles de registros)
+                        // Por ahora retornar 0 y se puede optimizar después con un campo calculado
+                        CompletedSearches = 0 // TODO: Optimizar con campo calculado o query separada
+                    });
+                
+                var homepageServices = await homepageServicesQuery.ToListAsync(queryCts.Token);
                 var homepageQueryDuration = (DateTime.UtcNow - homepageQueryStartTime).TotalMilliseconds;
                 _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Query de datos completos completada: {homepageServices.Count} servicios, Duración: {homepageQueryDuration:F2}ms");
 

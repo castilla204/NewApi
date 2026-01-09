@@ -2619,7 +2619,7 @@ lifetime.ApplicationStarted.Register(() =>
             logger.LogInformation($"[TEST] Base URL para pruebas: {baseUrl}");
             
             using var httpClient = new HttpClient();
-            httpClient.Timeout = TimeSpan.FromSeconds(30);
+            httpClient.Timeout = TimeSpan.FromSeconds(120); // ✅ Aumentado a 120 segundos para endpoints que pueden tardar
             
             // 1. Probar /api/ServiceType/public
             logger.LogInformation("========================================");

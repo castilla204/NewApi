@@ -218,6 +218,11 @@ namespace newApi.Controllers
                         _logger.LogError($"[ENDPOINT]    ❌ Error verificando conexión después de timeout: {connEx.Message}");
                     }
                     
+                    // ✅ CRÍTICO: Asegurar headers CORS y Content-Type ANTES de devolver StatusCode
+                    Response.Headers["Access-Control-Allow-Origin"] = Request.Headers["Origin"].ToString();
+                    Response.Headers["Access-Control-Allow-Credentials"] = "true";
+                    Response.ContentType = "application/json";
+                    
                     return StatusCode(408, new { 
                         success = false,
                         message = "Database query timeout. Please try again.",

@@ -306,6 +306,11 @@ namespace newApi.Controllers
                     additionalData: new { categoryId, serviceTypeId },
                     notifyUser: false
                 );
+                // ✅ CRÍTICO: Asegurar headers CORS y Content-Type ANTES de devolver StatusCode
+                Response.Headers["Access-Control-Allow-Origin"] = Request.Headers["Origin"].ToString();
+                Response.Headers["Access-Control-Allow-Credentials"] = "true";
+                Response.ContentType = "application/json";
+                
                 return StatusCode(408, new { message = "Request timeout. Please try again.", detail = "The request took too long to complete" });
             }
             catch (ArgumentException ex)
@@ -1119,6 +1124,11 @@ namespace newApi.Controllers
                     additionalData: new { latitude, longitude, countryCode, requestId, duration = totalDuration },
                     notifyUser: false
                 );
+                // ✅ CRÍTICO: Asegurar headers CORS y Content-Type ANTES de devolver StatusCode
+                Response.Headers["Access-Control-Allow-Origin"] = Request.Headers["Origin"].ToString();
+                Response.Headers["Access-Control-Allow-Credentials"] = "true";
+                Response.ContentType = "application/json";
+                
                 return StatusCode(408, new { message = "Request timeout. Please try again.", detail = "The request took too long to complete" });
             }
             catch (Exception ex)

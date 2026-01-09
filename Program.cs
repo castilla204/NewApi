@@ -30,6 +30,8 @@ using Microsoft.AspNetCore.Routing;
 using newApi.Middleware;
 using Npgsql;
 using Microsoft.Extensions.Hosting;
+using System.Reflection;
+using Microsoft.AspNetCore.Mvc;
 
 // ✅ RENDER.COM: Configurar puerto según el entorno
 // En desarrollo: usar puerto 7124 (localhost:7124)
@@ -874,7 +876,9 @@ configLogger.LogInformation($"Environment: {(isDevelopment ? "Development" : "Pr
 configLogger.LogInformation($"Connection String (masked): {connectionStringForLog}");
 
 // Add services to the container
+// ✅ CRÍTICO: Especificar explícitamente el assembly de controladores para asegurar descubrimiento
 builder.Services.AddControllers()
+    .AddApplicationPart(typeof(CategoriesController).Assembly) // Forzar descubrimiento de controladores
     .AddJsonOptions(options =>
     {
         // ✅ CORRECCIÓN: Configurar JSON para evitar referencias circulares
@@ -1420,6 +1424,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     
     // ✅ LOGGING DETALLADO: Habilitar logging de todas las operaciones de base de datos
     // Esto incluye: queries SQL, conexiones, transacciones, timeouts, errores
+    // ✅ MEJORADO: En producción también loguear queries que fallan o son lentas
     if (isDevelopment)
     {
         // En desarrollo: logging completo
@@ -1433,16 +1438,33 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     }
     else
     {
-        // En producción: solo warnings y errores para evitar logs excesivos
+        // En producción: warnings, errores Y queries que fallan o son lentas
         options.LogTo(
             message => {
                 var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("EFCore");
-                if (message.Contains("error", StringComparison.OrdinalIgnoreCase) || 
-                    message.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
-                    message.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
-                    message.Contains("exception", StringComparison.OrdinalIgnoreCase))
+                var lowerMessage = message.ToLowerInvariant();
+                
+                // Loggear siempre: errores, timeouts, excepciones, conexiones fallidas
+                if (lowerMessage.Contains("error") || 
+                    lowerMessage.Contains("timeout") ||
+                    lowerMessage.Contains("failed") ||
+                    lowerMessage.Contains("exception") ||
+                    lowerMessage.Contains("cannot open") ||
+                    lowerMessage.Contains("connection") && (lowerMessage.Contains("refused") || lowerMessage.Contains("closed")) ||
+                    lowerMessage.Contains("authentication") ||
+                    lowerMessage.Contains("password") && lowerMessage.Contains("failed"))
                 {
-                    logger.LogWarning($"[EF CORE] {message}");
+                    logger.LogError($"[EF CORE] ❌ {message}");
+                }
+                // Loggear también: queries que toman mucho tiempo (más de 5 segundos)
+                else if (lowerMessage.Contains("executed") && lowerMessage.Contains("elapsed"))
+                {
+                    // Intentar extraer el tiempo de ejecución
+                    var elapsedMatch = System.Text.RegularExpressions.Regex.Match(message, @"(\d+\.?\d*)\s*ms");
+                    if (elapsedMatch.Success && double.TryParse(elapsedMatch.Groups[1].Value, out var elapsedMs) && elapsedMs > 5000)
+                    {
+                        logger.LogWarning($"[EF CORE] ⚠️ Query lenta detectada: {message}");
+                    }
                 }
             },
             Microsoft.Extensions.Logging.LogLevel.Warning
@@ -2171,6 +2193,106 @@ app.MapGet("/health-detailed", () =>
     });
 }).WithName("HealthCheckDetailed").WithTags("System");
 
+// ✅ DIAGNÓSTICO COMPLETO: Endpoint para verificar estado de todos los servicios críticos
+app.MapGet("/diagnostics", async (AppDbContext db, ILogger<Program> logger, IConfiguration configuration) =>
+{
+    var services = new Dictionary<string, object>();
+    
+    // 1. Verificar base de datos
+    logger.LogInformation("[DIAGNOSTICS] Verificando base de datos...");
+    try
+    {
+        var dbStartTime = DateTime.UtcNow;
+        var canConnect = await db.Database.CanConnectAsync();
+        var dbDuration = (DateTime.UtcNow - dbStartTime).TotalMilliseconds;
+        
+        services["database"] = new
+        {
+            status = canConnect ? "ok" : "failed",
+            canConnect = canConnect,
+            duration = dbDuration
+        };
+    }
+    catch (Exception ex)
+    {
+        services["database"] = new
+        {
+            status = "error",
+            error = ex.Message,
+            errorType = ex.GetType().Name
+        };
+    }
+    
+    // 2. Verificar JWT Key
+    logger.LogInformation("[DIAGNOSTICS] Verificando JWT Key...");
+    var jwtKey = configuration["Jwt:Key"];
+    services["jwt"] = new
+    {
+        status = !string.IsNullOrEmpty(jwtKey) ? "ok" : "missing",
+        keyPresent = !string.IsNullOrEmpty(jwtKey),
+        keyLength = jwtKey?.Length ?? 0
+    };
+    
+    // 3. Verificar Secret Manager
+    logger.LogInformation("[DIAGNOSTICS] Verificando Secret Manager...");
+    var googleCredJson = Environment.GetEnvironmentVariable("GoogleCredentialJson");
+    var googleAppCreds = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
+    services["secretManager"] = new
+    {
+        googleCredentialJsonPresent = !string.IsNullOrEmpty(googleCredJson),
+        googleApplicationCredentialsPresent = !string.IsNullOrEmpty(googleAppCreds),
+        googleApplicationCredentialsPath = googleAppCreds ?? "null",
+        fileExists = !string.IsNullOrEmpty(googleAppCreds) && System.IO.File.Exists(googleAppCreds)
+    };
+    
+    // 4. Verificar Stripe
+    logger.LogInformation("[DIAGNOSTICS] Verificando Stripe...");
+    var stripeKey = configuration["Stripe:SecretKey"];
+    services["stripe"] = new
+    {
+        status = !string.IsNullOrEmpty(stripeKey) ? "ok" : "missing",
+        secretKeyPresent = !string.IsNullOrEmpty(stripeKey),
+        secretKeyLength = stripeKey?.Length ?? 0
+    };
+    
+    // 5. Verificar endpoints registrados
+    logger.LogInformation("[DIAGNOSTICS] Verificando endpoints registrados...");
+    try
+    {
+        var endpointDataSource = app.Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>();
+        var endpoints = endpointDataSource.Endpoints;
+        var apiEndpointsCount = endpoints.Count(e =>
+        {
+            var routeEndpoint = e as Microsoft.AspNetCore.Routing.RouteEndpoint;
+            return routeEndpoint?.RoutePattern.RawText?.StartsWith("/api", StringComparison.OrdinalIgnoreCase) == true;
+        });
+        
+        services["endpoints"] = new
+        {
+            totalEndpoints = endpoints.Count(),
+            apiEndpoints = apiEndpointsCount,
+            status = apiEndpointsCount > 0 ? "ok" : "warning"
+        };
+    }
+    catch (Exception ex)
+    {
+        services["endpoints"] = new
+        {
+            status = "error",
+            error = ex.Message
+        };
+    }
+    
+    logger.LogInformation("[DIAGNOSTICS] Diagnóstico completado");
+    
+    return Results.Ok(new
+    {
+        timestamp = DateTime.UtcNow,
+        environment = app.Environment.EnvironmentName,
+        services = services
+    });
+}).WithName("Diagnostics").WithTags("System");
+
 // ✅ RENDER.COM: Endpoint de warmup para evitar cold starts
 // Este endpoint hace una query simple a la BD para "calentar" las conexiones
 // Útil para mantener la app activa y evitar el delay de 50+ segundos en el primer request
@@ -2198,43 +2320,187 @@ app.MapGet("/warmup", async (AppDbContext db) =>
 }).WithName("Warmup").WithTags("System");
 
 // ✅ ENDPOINT DE PRUEBA: Consulta simple a la DB para verificar conexión
+// ✅ MEJORADO: Diagnóstico completo de conexión a base de datos según análisis
 app.MapGet("/test-db", async (AppDbContext db, ILogger<Program> logger) =>
 {
+    var startTime = DateTime.UtcNow;
+    logger.LogInformation("[TEST-DB] ========================================");
+    logger.LogInformation("[TEST-DB] 🔍 Iniciando test completo de base de datos...");
+    logger.LogInformation("[TEST-DB] ========================================");
+    
     try
     {
-        var canConnect = await db.Database.CanConnectAsync();
-        if (!canConnect)
+        // 1. Verificar conexión
+        logger.LogInformation("[TEST-DB] 1️⃣ Verificando CanConnectAsync()...");
+        var canConnectStartTime = DateTime.UtcNow;
+        var canConnect = false;
+        string? canConnectError = null;
+        
+        try
         {
-            return Results.Problem("Cannot connect to database", statusCode: 500);
+            canConnect = await db.Database.CanConnectAsync();
+            var canConnectDuration = (DateTime.UtcNow - canConnectStartTime).TotalMilliseconds;
+            logger.LogInformation($"[TEST-DB]    ✅ CanConnect: {canConnect} ({canConnectDuration:F2}ms)");
+        }
+        catch (Exception connEx)
+        {
+            canConnect = false;
+            canConnectError = connEx.Message;
+            var canConnectDuration = (DateTime.UtcNow - canConnectStartTime).TotalMilliseconds;
+            logger.LogError(connEx, $"[TEST-DB]    ❌ CanConnect falló después de {canConnectDuration:F2}ms");
+            logger.LogError($"[TEST-DB]    Exception Type: {connEx.GetType().Name}");
+            logger.LogError($"[TEST-DB]    Exception Message: {connEx.Message}");
+            logger.LogError($"[TEST-DB]    Inner Exception: {connEx.InnerException?.Message ?? "None"}");
+            
+            // Detectar tipos específicos de errores
+            if (connEx.Message.Contains("password", StringComparison.OrdinalIgnoreCase) || 
+                connEx.Message.Contains("authentication", StringComparison.OrdinalIgnoreCase))
+            {
+                logger.LogError("[TEST-DB]    🔴 PROBLEMA DETECTADO: Error de autenticación - Credenciales inválidas");
+            }
+            if (connEx.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase))
+            {
+                logger.LogError("[TEST-DB]    🔴 PROBLEMA DETECTADO: Timeout - Problema de red o latencia");
+            }
+            if (connEx.Message.Contains("dns", StringComparison.OrdinalIgnoreCase) || 
+                connEx.Message.Contains("resolve", StringComparison.OrdinalIgnoreCase))
+            {
+                logger.LogError("[TEST-DB]    🔴 PROBLEMA DETECTADO: DNS - Problema de resolución de hostname");
+            }
         }
         
-        var userCount = await db.Users.CountAsync();
+        if (!canConnect)
+        {
+            logger.LogError("[TEST-DB] ❌ NO SE PUEDE CONECTAR A LA BASE DE DATOS");
+            logger.LogInformation("[TEST-DB] ========================================");
+            return Results.Problem(
+                detail: canConnectError ?? "Cannot connect to database",
+                statusCode: 503,
+                title: "Database connection failed"
+            );
+        }
+        
+        // 2. Verificar que la conexión está activa con una query simple
+        logger.LogInformation("[TEST-DB] 2️⃣ Ejecutando query simple: SELECT 1...");
+        var queryStartTime = DateTime.UtcNow;
+        int? queryResult = null;
+        string? queryError = null;
+        
+        try
+        {
+            queryResult = await db.Database.SqlQueryRaw<int>("SELECT 1").FirstOrDefaultAsync();
+            var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+            logger.LogInformation($"[TEST-DB]    ✅ Query SELECT 1 exitosa: {queryResult} ({queryDuration:F2}ms)");
+        }
+        catch (Exception queryEx)
+        {
+            queryError = queryEx.Message;
+            var queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+            logger.LogError(queryEx, $"[TEST-DB]    ❌ Query SELECT 1 falló después de {queryDuration:F2}ms");
+            logger.LogError($"[TEST-DB]    Exception Type: {queryEx.GetType().Name}");
+            logger.LogError($"[TEST-DB]    Exception Message: {queryEx.Message}");
+        }
+        
+        // 3. Contar usuarios (query más compleja)
+        logger.LogInformation("[TEST-DB] 3️⃣ Ejecutando query: db.Users.CountAsync()...");
+        var countStartTime = DateTime.UtcNow;
+        int? userCount = null;
+        string? countError = null;
+        
+        try
+        {
+            userCount = await db.Users.CountAsync();
+            var countDuration = (DateTime.UtcNow - countStartTime).TotalMilliseconds;
+            logger.LogInformation($"[TEST-DB]    ✅ CountAsync exitoso: {userCount} usuarios ({countDuration:F2}ms)");
+            
+            if (countDuration > 5000)
+            {
+                logger.LogWarning($"[TEST-DB]    ⚠️ Query lenta detectada: {countDuration:F2}ms (más de 5 segundos)");
+            }
+        }
+        catch (Exception countEx)
+        {
+            countError = countEx.Message;
+            var countDuration = (DateTime.UtcNow - countStartTime).TotalMilliseconds;
+            logger.LogError(countEx, $"[TEST-DB]    ❌ CountAsync falló después de {countDuration:F2}ms");
+            logger.LogError($"[TEST-DB]    Exception Type: {countEx.GetType().Name}");
+            logger.LogError($"[TEST-DB]    Exception Message: {countEx.Message}");
+        }
+        
+        var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+        logger.LogInformation($"[TEST-DB] ✅ Test completado en {totalDuration:F2}ms");
+        logger.LogInformation("[TEST-DB] ========================================");
         
         return Results.Ok(new
         {
             success = true,
             canConnect = canConnect,
+            queryTest = queryResult.HasValue ? "success" : "failed",
+            queryResult = queryResult,
             userCount = userCount,
-            timestamp = DateTime.UtcNow
+            userCountTest = userCount.HasValue ? "success" : "failed",
+            errors = new
+            {
+                canConnectError = canConnectError,
+                queryError = queryError,
+                countError = countError
+            },
+            timestamp = DateTime.UtcNow,
+            totalDuration = totalDuration
         });
     }
     catch (Exception ex)
     {
-        logger.LogError(ex, "[TEST-DB] ❌ ERROR en test de DB");
+        var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+        logger.LogError(ex, $"[TEST-DB] ❌ ERROR GENERAL en test de DB después de {totalDuration:F2}ms");
+        logger.LogError($"[TEST-DB]    Exception Type: {ex.GetType().Name}");
+        logger.LogError($"[TEST-DB]    Exception Message: {ex.Message}");
+        logger.LogError($"[TEST-DB]    Inner Exception: {ex.InnerException?.Message ?? "None"}");
+        logger.LogError($"[TEST-DB]    StackTrace: {ex.StackTrace}");
+        logger.LogInformation("[TEST-DB] ========================================");
+        
         return Results.Problem(
             detail: ex.Message,
             statusCode: 500,
-            title: "Database test failed"
+            title: "Database test failed",
+            extensions: new Dictionary<string, object?>
+            {
+                ["exceptionType"] = ex.GetType().Name,
+                ["innerException"] = ex.InnerException?.Message
+            }
         );
     }
 }).WithName("TestDb").WithTags("System");
+
+// ✅ CRÍTICO: Verificar que los controladores se descubrieron antes de mapear
+var logger = app.Services.GetRequiredService<ILogger<Program>>();
+var controllerTypes = typeof(CategoriesController).Assembly
+    .GetTypes()
+    .Where(t => t.IsSubclassOf(typeof(ControllerBase)) || t.IsSubclassOf(typeof(Controller)))
+    .ToList();
+
+logger.LogInformation("========================================");
+logger.LogInformation("🔍 CONTROLADORES DESCUBIERTOS EN ASSEMBLY:");
+logger.LogInformation("========================================");
+logger.LogInformation($"✅ Total controladores encontrados: {controllerTypes.Count}");
+foreach (var controllerType in controllerTypes)
+{
+    var routeAttr = controllerType.GetCustomAttributes(typeof(Microsoft.AspNetCore.Mvc.RouteAttribute), false)
+        .FirstOrDefault() as Microsoft.AspNetCore.Mvc.RouteAttribute;
+    var apiControllerAttr = controllerType.GetCustomAttributes(typeof(Microsoft.AspNetCore.Mvc.ApiControllerAttribute), false)
+        .FirstOrDefault();
+    
+    logger.LogInformation($"  - {controllerType.Name}");
+    logger.LogInformation($"    Route: {routeAttr?.Template ?? "N/A"}");
+    logger.LogInformation($"    ApiController: {apiControllerAttr != null}");
+}
+logger.LogInformation("========================================");
 
 app.MapControllers();
 app.MapHub<ChatHub>("/chatHub");
 
 // ✅ CRÍTICO: Logging de endpoints para diagnosticar por qué /api no funciona
 // Esto es TEMPORAL para ver qué endpoints se están registrando
-var logger = app.Services.GetRequiredService<ILogger<Program>>();
 var endpointDataSource = app.Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>();
 var endpoints = endpointDataSource.Endpoints;
 
@@ -2339,14 +2605,18 @@ lifetime.ApplicationStarted.Register(() =>
             logger.LogInformation("========================================");
             
             // Obtener la URL base del servidor
+            // ✅ FIX: No usar 0.0.0.0 para HTTP requests (solo para escuchar)
+            // Usar localhost o 127.0.0.1 para pruebas internas
             var urls = app.Urls.ToList();
-            var baseUrl = urls.FirstOrDefault() ?? "http://localhost:10000";
+            var rawUrl = urls.FirstOrDefault() ?? "http://0.0.0.0:10000";
+            var baseUrl = rawUrl.Replace("0.0.0.0", "localhost").Replace("::0", "localhost");
             if (baseUrl.EndsWith("/"))
             {
                 baseUrl = baseUrl.TrimEnd('/');
             }
             
-            logger.LogInformation($"[TEST] Base URL: {baseUrl}");
+            logger.LogInformation($"[TEST] Base URL original: {rawUrl}");
+            logger.LogInformation($"[TEST] Base URL para pruebas: {baseUrl}");
             
             using var httpClient = new HttpClient();
             httpClient.Timeout = TimeSpan.FromSeconds(30);

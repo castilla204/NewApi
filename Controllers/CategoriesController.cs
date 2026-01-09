@@ -8,6 +8,7 @@ using newApi.DataLayer.Models;
 using Npgsql;
 using Microsoft.Extensions.Logging;
 using System.Threading;
+using System.Linq;
 
 namespace newApi.Controllers
 {
@@ -174,25 +175,25 @@ namespace newApi.Controllers
                 
                 var queryStartTime = DateTime.UtcNow;
                 
-                // ✅ TIMEOUT: Agregar timeout de 10 segundos para evitar bloqueos
-                using var queryCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                // ✅ TIMEOUT: Agregar timeout de 30 segundos para desarrollo (PC lento)
+                using var queryCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 
                 // ✅ LOG TIMEOUT: Registrar cuando se crea el token de cancelación
-                _logger.LogInformation($"[ENDPOINT]    ⏱️ Timeout configurado: 10 segundos");
+                _logger.LogInformation($"[ENDPOINT]    ⏱️ Timeout configurado: 30 segundos");
                 _logger.LogInformation($"[ENDPOINT]    Token de cancelación creado: {queryCts.Token.CanBeCanceled}");
                 
-                var categoryData = new List<dynamic>();
+                List<(Category Category, List<Category> ActiveSubcategories)> categoryData = new List<(Category, List<Category>)>();
                 double queryDuration = 0; // ✅ Declarar fuera del try para que esté disponible después
                 try
                 {
-                    _logger.LogInformation($"[ENDPOINT]    ⏱️ Iniciando ToListAsync con timeout de 10 segundos...");
+                    _logger.LogInformation($"[ENDPOINT]    ⏱️ Iniciando ToListAsync con timeout de 30 segundos...");
                     _logger.LogInformation($"[ENDPOINT]    Timestamp inicio: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
                     _logger.LogInformation($"[ENDPOINT]    Token antes de ToListAsync: IsCancellationRequested={queryCts.Token.IsCancellationRequested}");
                     
                     // ✅ CRÍTICO PRODUCCIÓN: El CommandTimeout de la connection string (120s) tiene prioridad sobre CancellationToken
                     // ✅ SOLUCIÓN: Establecer timeout temporalmente en el DbContext antes de la query
                     var originalTimeout = _context.Database.GetCommandTimeout();
-                    _context.Database.SetCommandTimeout(10); // ✅ Forzar timeout de 10 segundos para esta query
+                    _context.Database.SetCommandTimeout(30); // ✅ Forzar timeout de 30 segundos para desarrollo
                     
                     try
                     {
@@ -216,14 +217,13 @@ namespace newApi.Controllers
                             .GroupBy(sc => sc.ParentId!.Value)
                             .ToDictionary(g => g.Key, g => g.ToList());
                         
-                        // Construir resultado
-                        categoryData = categories.Select(c => new
-                        {
-                            Category = c,
-                            ActiveSubcategories = subcategoriesByParent.ContainsKey(c.Id) 
+                        // Construir resultado usando tuplas en lugar de dynamic
+                        categoryData = categories.Select(c => (
+                            Category: c,
+                            ActiveSubcategories: subcategoriesByParent.ContainsKey(c.Id) 
                                 ? subcategoriesByParent[c.Id] 
                                 : new List<Category>()
-                        }).Cast<dynamic>().ToList();
+                        )).ToList();
                     }
                     finally
                     {
@@ -250,7 +250,7 @@ namespace newApi.Controllers
                 {
                     queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
                     _logger.LogError(timeoutEx, $"[ENDPOINT] ❌ GetCategories - TIMEOUT en consulta después de {queryDuration:F2}ms");
-                    _logger.LogError($"[ENDPOINT]    La consulta excedió el timeout de 10 segundos");
+                    _logger.LogError($"[ENDPOINT]    La consulta excedió el timeout de 30 segundos");
                     _logger.LogError($"[ENDPOINT]    Timestamp timeout: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
                     _logger.LogError($"[ENDPOINT]    Exception Type: {timeoutEx.GetType().Name}");
                     _logger.LogError($"[ENDPOINT]    Exception Message: {timeoutEx.Message}");
@@ -276,7 +276,7 @@ namespace newApi.Controllers
                     return StatusCode(408, new { 
                         message = "Database query timeout. Please try again.",
                         error = "QUERY_TIMEOUT",
-                        details = "The database query took longer than 10 seconds to complete"
+                        details = "The database query took longer than 30 seconds to complete"
                     });
                 }
                 catch (Exception queryEx)
@@ -315,7 +315,7 @@ namespace newApi.Controllers
                     CreatedAt = x.Category.CreatedAt,
                     UpdatedAt = x.Category.UpdatedAt,
                     IsParent = x.Category.ParentId == null,
-                    HasSubcategories = x.ActiveSubcategories.Any(),
+                    HasSubcategories = x.ActiveSubcategories.Any(), // ✅ Ahora funciona porque x.ActiveSubcategories es List<Category>
                     SubcategoriesCount = x.ActiveSubcategories.Count
                 }).ToList();
                 var mappingDuration = (DateTime.UtcNow - mappingStartTime).TotalMilliseconds;

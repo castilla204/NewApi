@@ -19,5 +19,8 @@
         public virtual ICollection<SearchHire> SearchHires { get; set; }
         public virtual ICollection<SearchServiceImage> Images { get; set; } = new List<SearchServiceImage>();
         public virtual ICollection<SearchServiceDeliverableType> SelectedDeliverableTypes { get; set; } = new List<SearchServiceDeliverableType>();
+        
+        // ✅ FAVORITOS: Usuarios que marcaron este servicio como favorito
+        public virtual ICollection<SearchServiceFavorite> FavoritedBy { get; set; } = new List<SearchServiceFavorite>();
     }
 }

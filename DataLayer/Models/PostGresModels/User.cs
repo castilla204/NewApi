@@ -37,6 +37,9 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual ICollection<FinancialTransaction> FinancialTransactions { get; set; }
         public virtual ICollection<Conversation> ConversationsAsClient { get; set; } = new List<Conversation>();
         public virtual ICollection<Conversation> ConversationsAsExpert { get; set; } = new List<Conversation>(); 
-        public virtual ICollection<Message> MessagesSent { get; set; } = new List<Message>(); 
+        public virtual ICollection<Message> MessagesSent { get; set; } = new List<Message>();
+        
+        // ✅ FAVORITOS: Servicios marcados como favoritos por el usuario
+        public virtual ICollection<SearchServiceFavorite> FavoriteServices { get; set; } = new List<SearchServiceFavorite>();
     }
 }

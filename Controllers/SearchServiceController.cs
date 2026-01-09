@@ -933,9 +933,9 @@ namespace newApi.Controllers
             _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    nearbyPage: {nearbyPage}, nearbyPageSize: {nearbyPageSize}");
             _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    popularPage: {popularPage}, popularPageSize: {popularPageSize}");
             
-            // ✅ RENDER.COM: Timeout aumentado a 90 segundos para consultas complejas
-            // La connection string tiene CommandTimeout=120, así que 90s es razonable
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            // ✅ DESARROLLO: Timeout aumentado a 120 segundos para desarrollo (PC lento)
+            // La connection string tiene CommandTimeout=120, así que 120s es razonable para desarrollo
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
             try
             {
                 // Validar que categoryId sea válido
@@ -1120,7 +1120,7 @@ namespace newApi.Controllers
                 
                 await _loggingService.LogErrorAsync(
                     message: "Timeout al obtener el muro de homepage",
-                    details: "La operación excedió el tiempo máximo de espera (90 segundos)",
+                    details: "La operación excedió el tiempo máximo de espera (120 segundos)",
                     source: "SearchServiceController.GetHomepageWall",
                     relatedEntityType: "HomepageWall",
                     additionalData: new { latitude, longitude, countryCode, requestId, duration = totalDuration },

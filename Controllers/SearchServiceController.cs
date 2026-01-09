@@ -921,15 +921,17 @@ namespace newApi.Controllers
             var startTime = DateTime.UtcNow;
             var requestId = Guid.NewGuid().ToString("N")[..8];
             
-            _logger.LogInformation($"[ENDPOINT] ========================================");
-            _logger.LogInformation($"[ENDPOINT] 📥 GetHomepageWall INICIADO - RequestId: {requestId}");
-            _logger.LogInformation($"[ENDPOINT]    categoryId: {categoryId}");
-            _logger.LogInformation($"[ENDPOINT]    latitude: {latitude ?? "null"}");
-            _logger.LogInformation($"[ENDPOINT]    longitude: {longitude ?? "null"}");
-            _logger.LogInformation($"[ENDPOINT]    countryCode: {countryCode ?? "null"}");
-            _logger.LogInformation($"[ENDPOINT]    locationRange: {locationRange}");
-            _logger.LogInformation($"[ENDPOINT]    nearbyPage: {nearbyPage}, nearbyPageSize: {nearbyPageSize}");
-            _logger.LogInformation($"[ENDPOINT]    popularPage: {popularPage}, popularPageSize: {popularPageSize}");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT] ========================================");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT] 🏠 HOMEPAGE ENDPOINT: /api/SearchService/homepage-wall");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT] 📥 GetHomepageWall INICIADO - RequestId: {requestId}");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    Timestamp: {startTime:yyyy-MM-dd HH:mm:ss.fff}");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    categoryId: {categoryId}");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    latitude: {latitude ?? "null"}");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    longitude: {longitude ?? "null"}");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    countryCode: {countryCode ?? "null"}");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    locationRange: {locationRange}");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    nearbyPage: {nearbyPage}, nearbyPageSize: {nearbyPageSize}");
+            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    popularPage: {popularPage}, popularPageSize: {popularPageSize}");
             
             // ✅ RENDER.COM: Timeout aumentado a 90 segundos para consultas complejas
             // La connection string tiene CommandTimeout=120, así que 90s es razonable
@@ -1134,12 +1136,15 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
-                _logger.LogError(ex, $"[ENDPOINT] ❌ GetHomepageWall ERROR - RequestId: {requestId}");
-                _logger.LogError($"[ENDPOINT]    Exception Type: {ex.GetType().Name}");
-                _logger.LogError($"[ENDPOINT]    Exception Message: {ex.Message}");
-                _logger.LogError($"[ENDPOINT]    Inner Exception: {ex.InnerException?.Message ?? "None"}");
-                _logger.LogError($"[ENDPOINT]    StackTrace: {ex.StackTrace}");
-                _logger.LogError($"[ENDPOINT]    Duración antes del error: {totalDuration:F2}ms");
+                _logger.LogError(ex, $"[HOMEPAGE-ENDPOINT] ❌ GetHomepageWall EXCEPCIÓN - RequestId: {requestId}");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT]    🏠 HOMEPAGE ENDPOINT: /api/SearchService/homepage-wall");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT]    Exception Type: {ex.GetType().Name}");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT]    Exception Message: {ex.Message}");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT]    Inner Exception: {ex.InnerException?.Message ?? "None"}");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT]    StackTrace: {ex.StackTrace}");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT]    Duración antes del error: {totalDuration:F2}ms");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT]    categoryId: {categoryId}, countryCode: {countryCode ?? "null"}");
+                _logger.LogError($"[HOMEPAGE-ENDPOINT] ========================================");
                 
                 // Log del error con información detallada
                 var requestParams = new

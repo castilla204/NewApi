@@ -1926,6 +1926,8 @@ app.UseRouting();
 // 2. CORS después de routing
 app.UseCors("AllowSpecificOrigin");
 
+// ❌ COMENTADO TEMPORALMENTE: Middleware de logging detallado
+/*
 // 3. Middleware DETALLADO de logging para diagnóstico COMPLETO
 app.Use(async (context, next) =>
 {
@@ -1962,9 +1964,13 @@ app.Use(async (context, next) =>
         throw;
     }
 });
+*/
 
-// 4. Autenticación y autorización con logs DETALLADOS
+// 4. Autenticación y autorización
 app.UseAuthentication();
+
+// ❌ COMENTADO TEMPORALMENTE: Logging después de autenticación
+/*
 app.Use(async (context, next) =>
 {
     var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
@@ -1977,8 +1983,12 @@ app.Use(async (context, next) =>
     
     await next();
 });
+*/
 
 app.UseAuthorization();
+
+// ❌ COMENTADO TEMPORALMENTE: Logging después de autorización
+/*
 app.Use(async (context, next) =>
 {
     var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
@@ -1993,6 +2003,49 @@ app.Use(async (context, next) =>
     
     await next();
 });
+*/
+
+// ❌ COMENTADO TEMPORALMENTE: Middleware de diagnóstico para /api/*
+/*
+app.Use(async (context, next) =>
+{
+    var path = context.Request.Path.Value ?? "";
+    if (path.StartsWith("/api", StringComparison.OrdinalIgnoreCase))
+    {
+        var apiLogger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        var method = context.Request.Method;
+        var endpoint = context.GetEndpoint();
+        
+        apiLogger.LogInformation("========================================");
+        apiLogger.LogInformation($"[API-DIAG] 📥 REQUEST A /api: {method} {path}");
+        apiLogger.LogInformation($"[API-DIAG]    Endpoint ANTES de routing: {endpoint?.DisplayName ?? "NULL - NO MATCHED AÚN"}");
+        apiLogger.LogInformation($"[API-DIAG]    HasAuth: {context.Request.Headers.ContainsKey("Authorization")}");
+        apiLogger.LogInformation($"[API-DIAG]    IsAuthenticated: {context.User?.Identity?.IsAuthenticated ?? false}");
+        
+        try
+        {
+            await next();
+            
+            // Obtener endpoint DESPUÉS del routing
+            endpoint = context.GetEndpoint();
+            apiLogger.LogInformation($"[API-DIAG]    Endpoint DESPUÉS de routing: {endpoint?.DisplayName ?? "NULL - NO MATCHED"}");
+            apiLogger.LogInformation($"[API-DIAG]    RoutePattern: {(endpoint as Microsoft.AspNetCore.Routing.RouteEndpoint)?.RoutePattern.RawText ?? "N/A"}");
+            apiLogger.LogInformation($"[API-DIAG] 📤 RESPONSE: {method} {path} -> {context.Response.StatusCode}");
+            apiLogger.LogInformation("========================================");
+        }
+        catch (Exception ex)
+        {
+            apiLogger.LogError(ex, $"[API-DIAG] ❌ ERROR en {method} {path}");
+            apiLogger.LogInformation("========================================");
+            throw;
+        }
+    }
+    else
+    {
+        await next();
+    }
+});
+*/
 
 // ❌ COMENTADO TEMPORALMENTE PARA DIAGNÓSTICO
 // ✅ DEBUG: Logging DESPUÉS de autenticación (para capturar estado final)
@@ -2147,48 +2200,27 @@ app.MapGet("/warmup", async (AppDbContext db) =>
 // ✅ ENDPOINT DE PRUEBA: Consulta simple a la DB para verificar conexión
 app.MapGet("/test-db", async (AppDbContext db, ILogger<Program> logger) =>
 {
-    logger.LogInformation("[TEST-DB] ========================================");
-    logger.LogInformation("[TEST-DB] 🔍 Iniciando test de conexión a DB...");
-    
     try
     {
-        var startTime = DateTime.UtcNow;
-        
-        // Verificar conexión
-        logger.LogInformation("[TEST-DB]    Verificando CanConnectAsync()...");
         var canConnect = await db.Database.CanConnectAsync();
-        var canConnectDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
-        logger.LogInformation($"[TEST-DB]    ✅ CanConnect: {canConnect} ({canConnectDuration:F2}ms)");
-        
         if (!canConnect)
         {
-            logger.LogError("[TEST-DB]    ❌ NO SE PUEDE CONECTAR A LA BASE DE DATOS");
             return Results.Problem("Cannot connect to database", statusCode: 500);
         }
         
-        // Query simple
-        startTime = DateTime.UtcNow;
-        logger.LogInformation("[TEST-DB]    Ejecutando query: db.Users.CountAsync()...");
         var userCount = await db.Users.CountAsync();
-        var queryDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
-        logger.LogInformation($"[TEST-DB]    ✅ Query completada: {userCount} usuarios ({queryDuration:F2}ms)");
-        
-        logger.LogInformation("[TEST-DB] ========================================");
         
         return Results.Ok(new
         {
             success = true,
             canConnect = canConnect,
             userCount = userCount,
-            canConnectDuration = canConnectDuration,
-            queryDuration = queryDuration,
             timestamp = DateTime.UtcNow
         });
     }
     catch (Exception ex)
     {
         logger.LogError(ex, "[TEST-DB] ❌ ERROR en test de DB");
-        logger.LogInformation("[TEST-DB] ========================================");
         return Results.Problem(
             detail: ex.Message,
             statusCode: 500,
@@ -2200,6 +2232,88 @@ app.MapGet("/test-db", async (AppDbContext db, ILogger<Program> logger) =>
 app.MapControllers();
 app.MapHub<ChatHub>("/chatHub");
 
+// ✅ CRÍTICO: Logging de endpoints para diagnosticar por qué /api no funciona
+// Esto es TEMPORAL para ver qué endpoints se están registrando
+var logger = app.Services.GetRequiredService<ILogger<Program>>();
+var endpointDataSource = app.Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>();
+var endpoints = endpointDataSource.Endpoints;
+
+logger.LogInformation("========================================");
+logger.LogInformation("📋 ENDPOINTS REGISTRADOS DESPUÉS DE MapControllers():");
+logger.LogInformation("========================================");
+
+var apiEndpoints = new List<string>();
+var otherEndpoints = new List<string>();
+
+foreach (var endpoint in endpoints)
+{
+    var displayName = endpoint.DisplayName ?? "N/A";
+    
+    // Obtener ruta del endpoint
+    var routePattern = "N/A";
+    var routeEndpoint = endpoint as Microsoft.AspNetCore.Routing.RouteEndpoint;
+    if (routeEndpoint != null)
+    {
+        routePattern = routeEndpoint.RoutePattern.RawText ?? "N/A";
+    }
+    
+    // Obtener métodos HTTP
+    var httpMethods = new List<string>();
+    var httpMethodMetadata = endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Routing.HttpMethodMetadata>();
+    if (httpMethodMetadata != null)
+    {
+        httpMethods.AddRange(httpMethodMetadata.HttpMethods);
+    }
+    
+    var endpointInfo = $"  - {displayName}";
+    if (routePattern != "N/A")
+    {
+        endpointInfo += $" | Route: {routePattern}";
+    }
+    if (httpMethods.Any())
+    {
+        endpointInfo += $" | Methods: {string.Join(", ", httpMethods)}";
+    }
+    
+    if (routePattern.StartsWith("/api", StringComparison.OrdinalIgnoreCase))
+    {
+        apiEndpoints.Add(endpointInfo);
+    }
+    else
+    {
+        otherEndpoints.Add(endpointInfo);
+    }
+}
+
+logger.LogInformation($"✅ Total endpoints: {endpoints.Count()}");
+logger.LogInformation($"✅ Endpoints /api: {apiEndpoints.Count}");
+logger.LogInformation($"✅ Otros endpoints: {otherEndpoints.Count}");
+
+if (apiEndpoints.Any())
+{
+    logger.LogInformation("========================================");
+    logger.LogInformation("📋 ENDPOINTS /api REGISTRADOS:");
+    logger.LogInformation("========================================");
+    foreach (var apiEndpoint in apiEndpoints)
+    {
+        logger.LogInformation(apiEndpoint);
+    }
+}
+else
+{
+    logger.LogWarning("⚠️ ⚠️ ⚠️ NO SE ENCONTRARON ENDPOINTS /api REGISTRADOS ⚠️ ⚠️ ⚠️");
+    logger.LogWarning("Esto indica que MapControllers() no está registrando los controladores correctamente");
+}
+
+logger.LogInformation("========================================");
+logger.LogInformation("📋 OTROS ENDPOINTS REGISTRADOS:");
+logger.LogInformation("========================================");
+foreach (var otherEndpoint in otherEndpoints)
+{
+    logger.LogInformation(otherEndpoint);
+}
+logger.LogInformation("========================================");
+
 // ✅ RENDER.COM: Según documentación oficial
 // "Bind your host to 0.0.0.0 and optionally set the PORT environment variable"
 // https://render.com/docs/troubleshooting-deploys
@@ -2208,7 +2322,6 @@ app.MapHub<ChatHub>("/chatHub");
 // Cualquier inicialización pesada (DB, logging, etc.) se hace DESPUÉS en background
 // Esto permite que Render.com detecte el puerto rápidamente
 
-var logger = app.Services.GetRequiredService<ILogger<Program>>();
 var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
 
 // ✅ Background task: Inicialización pesada DESPUÉS de que el servidor inicie
@@ -2216,44 +2329,136 @@ lifetime.ApplicationStarted.Register(() =>
 {
     _ = Task.Run(async () =>
     {
+        var logger = app.Services.GetRequiredService<ILogger<Program>>();
         try
         {
-            await Task.Delay(1000); // Esperar 1 segundo para que el servidor esté completamente iniciado
+            await Task.Delay(2000); // Esperar 2 segundos para que el servidor esté completamente listo
             
             logger.LogInformation("========================================");
-            logger.LogInformation("🔍 VERIFICANDO CONEXIÓN A BASE DE DATOS...");
+            logger.LogInformation("🧪 PROBANDO ENDPOINTS DE HOMEPAGE...");
             logger.LogInformation("========================================");
             
-            using var scope = app.Services.CreateScope();
-            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var dbLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-            
-            var dbStartTime = DateTime.UtcNow;
-            dbLogger.LogInformation("[DB-INIT] Verificando CanConnectAsync()...");
-            var canConnect = await dbContext.Database.CanConnectAsync();
-            var dbDuration = (DateTime.UtcNow - dbStartTime).TotalMilliseconds;
-            
-            if (canConnect)
+            // Obtener la URL base del servidor
+            var urls = app.Urls.ToList();
+            var baseUrl = urls.FirstOrDefault() ?? "http://localhost:10000";
+            if (baseUrl.EndsWith("/"))
             {
-                dbLogger.LogInformation($"[DB-INIT] ✅ Conexión exitosa ({dbDuration:F2}ms)");
+                baseUrl = baseUrl.TrimEnd('/');
+            }
+            
+            logger.LogInformation($"[TEST] Base URL: {baseUrl}");
+            
+            using var httpClient = new HttpClient();
+            httpClient.Timeout = TimeSpan.FromSeconds(30);
+            
+            // 1. Probar /api/ServiceType/public
+            logger.LogInformation("========================================");
+            logger.LogInformation("[TEST] 🧪 Probando: GET /api/ServiceType/public");
+            logger.LogInformation("========================================");
+            try
+            {
+                var startTime = DateTime.UtcNow;
+                var response = await httpClient.GetAsync($"{baseUrl}/api/ServiceType/public");
+                var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                var content = await response.Content.ReadAsStringAsync();
                 
-                var dbStartTime2 = DateTime.UtcNow;
-                dbLogger.LogInformation("[DB-INIT] Ejecutando query de prueba: db.Users.CountAsync()...");
-                var userCount = await dbContext.Users.CountAsync();
-                var queryDuration = (DateTime.UtcNow - dbStartTime2).TotalMilliseconds;
-                dbLogger.LogInformation($"[DB-INIT] ✅ Query exitosa: {userCount} usuarios ({queryDuration:F2}ms)");
+                logger.LogInformation($"[TEST] ✅ Status Code: {response.StatusCode}");
+                logger.LogInformation($"[TEST] ✅ Duración: {duration:F2}ms");
+                logger.LogInformation($"[TEST] ✅ Content Length: {content.Length} caracteres");
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    logger.LogInformation($"[TEST] ✅ JSON Response (primeros 500 chars):");
+                    var preview = content.Length > 500 ? content.Substring(0, 500) + "..." : content;
+                    logger.LogInformation($"[TEST] {preview}");
+                }
+                else
+                {
+                    logger.LogError($"[TEST] ❌ ERROR: Status {response.StatusCode}");
+                    logger.LogError($"[TEST] ❌ Response: {content}");
+                }
             }
-            else
+            catch (Exception ex)
             {
-                dbLogger.LogError($"[DB-INIT] ❌ NO SE PUEDE CONECTAR A LA BASE DE DATOS ({dbDuration:F2}ms)");
+                logger.LogError(ex, "[TEST] ❌ EXCEPCIÓN al probar /api/ServiceType/public");
+                logger.LogError($"[TEST]    Exception Type: {ex.GetType().Name}");
+                logger.LogError($"[TEST]    Exception Message: {ex.Message}");
+                logger.LogError($"[TEST]    Inner Exception: {ex.InnerException?.Message ?? "None"}");
+            }
+            
+            // 2. Probar /api/Categories
+            logger.LogInformation("========================================");
+            logger.LogInformation("[TEST] 🧪 Probando: GET /api/Categories");
+            logger.LogInformation("========================================");
+            try
+            {
+                var startTime = DateTime.UtcNow;
+                var response = await httpClient.GetAsync($"{baseUrl}/api/Categories");
+                var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                var content = await response.Content.ReadAsStringAsync();
+                
+                logger.LogInformation($"[TEST] ✅ Status Code: {response.StatusCode}");
+                logger.LogInformation($"[TEST] ✅ Duración: {duration:F2}ms");
+                logger.LogInformation($"[TEST] ✅ Content Length: {content.Length} caracteres");
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    logger.LogInformation($"[TEST] ✅ JSON Response (primeros 500 chars):");
+                    var preview = content.Length > 500 ? content.Substring(0, 500) + "..." : content;
+                    logger.LogInformation($"[TEST] {preview}");
+                }
+                else
+                {
+                    logger.LogError($"[TEST] ❌ ERROR: Status {response.StatusCode}");
+                    logger.LogError($"[TEST] ❌ Response: {content}");
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "[TEST] ❌ EXCEPCIÓN al probar /api/Categories");
+                logger.LogError($"[TEST]    Exception Type: {ex.GetType().Name}");
+                logger.LogError($"[TEST]    Exception Message: {ex.Message}");
+                logger.LogError($"[TEST]    Inner Exception: {ex.InnerException?.Message ?? "None"}");
+            }
+            
+            // 3. Probar /api/SearchService/homepage-wall (necesita categoryId)
+            logger.LogInformation("========================================");
+            logger.LogInformation("[TEST] 🧪 Probando: GET /api/SearchService/homepage-wall?categoryId=1");
+            logger.LogInformation("========================================");
+            try
+            {
+                var startTime = DateTime.UtcNow;
+                var response = await httpClient.GetAsync($"{baseUrl}/api/SearchService/homepage-wall?categoryId=1");
+                var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                var content = await response.Content.ReadAsStringAsync();
+                
+                logger.LogInformation($"[TEST] ✅ Status Code: {response.StatusCode}");
+                logger.LogInformation($"[TEST] ✅ Duración: {duration:F2}ms");
+                logger.LogInformation($"[TEST] ✅ Content Length: {content.Length} caracteres");
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    logger.LogInformation($"[TEST] ✅ JSON Response (primeros 500 chars):");
+                    var preview = content.Length > 500 ? content.Substring(0, 500) + "..." : content;
+                    logger.LogInformation($"[TEST] {preview}");
+                }
+                else
+                {
+                    logger.LogError($"[TEST] ❌ ERROR: Status {response.StatusCode}");
+                    logger.LogError($"[TEST] ❌ Response: {content}");
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "[TEST] ❌ EXCEPCIÓN al probar /api/SearchService/homepage-wall");
+                logger.LogError($"[TEST]    Exception Type: {ex.GetType().Name}");
+                logger.LogError($"[TEST]    Exception Message: {ex.Message}");
+                logger.LogError($"[TEST]    Inner Exception: {ex.InnerException?.Message ?? "None"}");
             }
             
             logger.LogInformation("========================================");
-            
-            // Logging de endpoints (opcional, no crítico)
-            var endpointDataSource = app.Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>();
-            var endpoints = endpointDataSource.Endpoints;
-            logger.LogInformation($"✅ Total endpoints registrados: {endpoints.Count()}");
+            logger.LogInformation("✅ PRUEBAS DE ENDPOINTS COMPLETADAS");
+            logger.LogInformation("========================================");
         }
         catch (Exception ex)
         {
@@ -2262,6 +2467,7 @@ lifetime.ApplicationStarted.Register(() =>
     });
     
     // Logging simple del servidor iniciado
+    var logger = app.Services.GetRequiredService<ILogger<Program>>();
     var urlsAfterStart = app.Urls.ToList();
     if (urlsAfterStart.Any())
     {

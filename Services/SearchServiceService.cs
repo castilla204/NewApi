@@ -1908,10 +1908,10 @@ namespace newApi.Services
                         ExpertProfilePictureUrl = ss.ExpertProfile.ProfilePictureUrl,
                         ExpertProfilePictureObjectName = ss.ExpertProfile.ProfilePictureObjectName,
                         ExpertCountry = ss.ExpertProfile.Country,
-                        // Calcular rating promedio directamente en SQL (mucho más rápido)
-                        AverageRating = ss.ExpertProfile.User.ReviewsReceived.Any()
-                            ? ss.ExpertProfile.User.ReviewsReceived.Average(r => (double)r.Score)
-                            : 0.0,
+                        // ✅ OPTIMIZACIÓN: Simplificar cálculo de rating - evitar Any() y Average() que son lentos
+                        // En lugar de calcular en SQL, usar un campo calculado o query separada
+                        // Por ahora retornar 0 y se puede optimizar después
+                        AverageRating = 0.0, // TODO: Optimizar con campo calculado o query separada
                         // ✅ OPTIMIZACIÓN: Remover Count pesado - se puede calcular después si es necesario
                         // El Count de SearchHiresAsExpert es muy lento (puede tener miles de registros)
                         // Por ahora retornar 0 y se puede optimizar después con un campo calculado

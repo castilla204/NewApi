@@ -53,6 +53,10 @@ namespace newApi.DataLayer.Models
         public DbSet<UserMfaSettings> UserMfaSettings { get; set; }
         public DbSet<DeliverableType> DeliverableTypes { get; set; }
         public DbSet<SearchServiceDeliverableType> SearchServiceDeliverableTypes { get; set; }
+        
+        // ✅ FAVORITOS: Servicios marcados como favoritos
+        public DbSet<SearchServiceFavorite> SearchServiceFavorites { get; set; }
+        
         // Tablas redundantes eliminadas - reemplazadas por StatusConfigurations
         // public DbSet<AppointmentStatusConfig> AppointmentStatusConfigs { get; set; }
         // public DbSet<ServiceTypeCategoryConfig> ServiceTypeCategoryConfigs { get; set; }
@@ -735,6 +739,36 @@ namespace newApi.DataLayer.Models
 
                 // Un usuario solo puede tener una configuración MFA
                 entity.HasIndex(mfa => mfa.UserId).IsUnique();
+            });
+
+            // ✅ FAVORITOS: Configuración de SearchServiceFavorite
+            modelBuilder.Entity<SearchServiceFavorite>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                
+                entity.Property(e => e.CreatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                // Relación con User
+                entity.HasOne(f => f.User)
+                    .WithMany(u => u.FavoriteServices)
+                    .HasForeignKey(f => f.UserId)
+                    .OnDelete(DeleteBehavior.Cascade); // Eliminar favoritos si se elimina usuario
+
+                // Relación con SearchService
+                entity.HasOne(f => f.SearchService)
+                    .WithMany(ss => ss.FavoritedBy)
+                    .HasForeignKey(f => f.SearchServiceId)
+                    .OnDelete(DeleteBehavior.Cascade); // Eliminar favoritos si se elimina servicio
+
+                // Índice único: un usuario no puede marcar el mismo servicio como favorito múltiples veces
+                entity.HasIndex(e => new { e.UserId, e.SearchServiceId })
+                    .IsUnique();
+                
+                // Índices para rendimiento
+                entity.HasIndex(e => e.UserId);
+                entity.HasIndex(e => e.SearchServiceId);
+                entity.HasIndex(e => e.CreatedAt);
             });
         }
     }

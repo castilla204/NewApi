@@ -1878,9 +1878,9 @@ namespace newApi.Services
                 _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Ejecutando query para obtener datos completos de servicios...");
                 var homepageQueryStartTime = DateTime.UtcNow;
                 
-                // ✅ TIMEOUT: Usar CancellationTokenSource con timeout de 30 segundos para esta query
+                // ✅ DESARROLLO: Timeout aumentado a 60 segundos para desarrollo (PC lento)
                 using var queryCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                queryCts.CancelAfter(TimeSpan.FromSeconds(30)); // Timeout de 30 segundos (más razonable)
+                queryCts.CancelAfter(TimeSpan.FromSeconds(60)); // Timeout de 60 segundos para desarrollo
                 
                 var homepageServicesQuery = _context.SearchServices
                         .AsNoTracking()

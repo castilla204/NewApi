@@ -2200,217 +2200,77 @@ app.MapGet("/test-db", async (AppDbContext db, ILogger<Program> logger) =>
 app.MapControllers();
 app.MapHub<ChatHub>("/chatHub");
 
-// ✅ DIAGNÓSTICO: Loggear TODOS los endpoints registrados al iniciar
-var endpointDataSource = app.Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>();
-var endpoints = endpointDataSource.Endpoints;
-var logger = app.Services.GetRequiredService<ILogger<Program>>();
-
-logger.LogInformation("========================================");
-logger.LogInformation("📋 ENDPOINTS REGISTRADOS:");
-logger.LogInformation("========================================");
-
-var endpointList = new List<string>();
-foreach (var endpoint in endpoints)
-{
-    var displayName = endpoint.DisplayName ?? "N/A";
-    
-    // Obtener ruta del endpoint
-    var routePattern = "N/A";
-    var routeEndpoint = endpoint as Microsoft.AspNetCore.Routing.RouteEndpoint;
-    if (routeEndpoint != null)
-    {
-        routePattern = routeEndpoint.RoutePattern.RawText ?? "N/A";
-    }
-    
-    // Obtener métodos HTTP
-    var httpMethods = new List<string>();
-    var httpMethodMetadata = endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Routing.HttpMethodMetadata>();
-    if (httpMethodMetadata != null)
-    {
-        httpMethods.AddRange(httpMethodMetadata.HttpMethods);
-    }
-    
-    var endpointInfo = $"  - {displayName}";
-    if (routePattern != "N/A")
-    {
-        endpointInfo += $" | Route: {routePattern}";
-    }
-    if (httpMethods.Any())
-    {
-        endpointInfo += $" | Methods: {string.Join(", ", httpMethods)}";
-    }
-    
-    endpointList.Add(endpointInfo);
-    logger.LogInformation(endpointInfo);
-}
-
-logger.LogInformation("========================================");
-logger.LogInformation($"✅ Total endpoints registrados: {endpointList.Count}");
-logger.LogInformation("========================================");
-
-// ✅ CRÍTICO: Verificar conexión a la DB al iniciar
-logger.LogInformation("========================================");
-logger.LogInformation("🔍 VERIFICANDO CONEXIÓN A BASE DE DATOS...");
-logger.LogInformation("========================================");
-
-try
-{
-    using var scope = app.Services.CreateScope();
-    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    var dbLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-    
-    var dbStartTime = DateTime.UtcNow;
-    dbLogger.LogInformation("[DB-INIT] Verificando CanConnectAsync()...");
-    var canConnect = await dbContext.Database.CanConnectAsync();
-    var dbDuration = (DateTime.UtcNow - dbStartTime).TotalMilliseconds;
-    
-    if (canConnect)
-    {
-        dbLogger.LogInformation($"[DB-INIT] ✅ Conexión exitosa ({dbDuration:F2}ms)");
-        
-        // Hacer una query simple
-        dbStartTime = DateTime.UtcNow;
-        dbLogger.LogInformation("[DB-INIT] Ejecutando query de prueba: db.Users.CountAsync()...");
-        var userCount = await dbContext.Users.CountAsync();
-        var queryDuration = (DateTime.UtcNow - dbStartTime).TotalMilliseconds;
-        dbLogger.LogInformation($"[DB-INIT] ✅ Query exitosa: {userCount} usuarios ({queryDuration:F2}ms)");
-    }
-    else
-    {
-        dbLogger.LogError($"[DB-INIT] ❌ NO SE PUEDE CONECTAR A LA BASE DE DATOS ({dbDuration:F2}ms)");
-    }
-    
-    logger.LogInformation("========================================");
-}
-catch (Exception dbEx)
-{
-    logger.LogError(dbEx, "[DB-INIT] ❌ ERROR al verificar conexión a la DB");
-    logger.LogInformation("========================================");
-}
-
-// ✅ RENDER.COM: Configuración final antes de iniciar
-
-if (!isDevelopment)
-{
-    // ✅ PRODUCCIÓN (Render.com): Configuración específica
-    var finalPort = Environment.GetEnvironmentVariable("PORT") ?? portToUse;
-    var aspnetcoreUrlsFinal = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
-
-    Console.WriteLine($"[RENDER] ========================================");
-    Console.WriteLine($"[RENDER] 🚀 CONFIGURACIÓN FINAL ANTES DE INICIAR");
-    Console.WriteLine($"[RENDER] ========================================");
-    Console.WriteLine($"[RENDER] 📍 Puerto final: {finalPort}");
-    Console.WriteLine($"[RENDER] 📍 ASPNETCORE_URLS: {aspnetcoreUrlsFinal ?? "NO CONFIGURADO"}");
-    Console.WriteLine($"[RENDER] 📍 aspnetcoreUrls (variable local): {aspnetcoreUrls}");
-    Console.WriteLine($"[RENDER] 📍 portToUse: {portToUse}");
-    
-    logger.LogInformation($"🚀 Iniciando aplicación en puerto: {finalPort}");
-    logger.LogInformation($"   ASPNETCORE_URLS: {aspnetcoreUrlsFinal ?? "NO CONFIGURADO"}");
-    logger.LogInformation($"   aspnetcoreUrls (variable local): {aspnetcoreUrls}");
-    logger.LogInformation($"   portToUse: {portToUse}");
-
-    // Obtener URLs antes de iniciar (puede estar vacío, es normal antes de app.Run())
-    var finalUrls = app.Urls.ToList();
-    Console.WriteLine($"[RENDER] 📍 URLs detectadas ANTES de app.Run(): {finalUrls.Count}");
-    if (finalUrls.Any())
-    {
-        logger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
-        Console.WriteLine($"[RENDER] ✅ Servidor configurado para escuchar en: {string.Join(", ", finalUrls)}");
-    }
-    else
-    {
-        logger.LogWarning($"⚠️ No se detectaron URLs configuradas ANTES de app.Run(). Esto es NORMAL - las URLs se configuran cuando el servidor inicia.");
-        Console.WriteLine($"[RENDER] ⚠️ INFO: No se detectaron URLs ANTES de app.Run() - esto es NORMAL");
-        Console.WriteLine($"[RENDER] ⚠️ Las URLs se configurarán cuando app.Run() inicie el servidor");
-    }
-    
-    Console.WriteLine($"[RENDER] ========================================");
-    Console.WriteLine($"[RENDER] ✅ Iniciando servidor - Render.com debería detectar el puerto {finalPort} ahora");
-    Console.WriteLine($"[RENDER] ========================================");
-}
-else
-{
-    // ✅ DESARROLLO: Logging de configuración
-    var finalUrls = app.Urls.ToList();
-    logger.LogInformation($"🚀 Iniciando aplicación en desarrollo");
-    if (finalUrls.Any())
-    {
-        logger.LogInformation($"   URLs configuradas: {string.Join(", ", finalUrls)}");
-    }
-    else
-    {
-        logger.LogInformation($"   Usando puerto {portToUse} (localhost:{portToUse})");
-    }
-    
-    Console.WriteLine($"[DEV] ✅ Aplicación lista - URLs: {string.Join(", ", finalUrls)}");
-}
-
-// ✅ CRÍTICO según documentación oficial de Render.com troubleshooting:
-// "502 Bad Gateway: A web service has misconfigured its host and port.
-//  Bind your host to 0.0.0.0 and optionally set the PORT environment variable to use a custom port (the default port is 10000)."
+// ✅ RENDER.COM: Según documentación oficial
+// "Bind your host to 0.0.0.0 and optionally set the PORT environment variable"
+// https://render.com/docs/troubleshooting-deploys
 // 
-// ✅ SOLUCIÓN DEFINITIVA: Usar app.Run() en TODOS los entornos
-// app.Run() es el método estándar y más confiable para iniciar el servidor
-// Inicia el servidor, lo deja escuchando, y bloquea hasta que se cierre
-// Esto es lo que Render.com espera para detectar el puerto correctamente
+// ✅ CRÍTICO: app.Run() DEBE llamarse INMEDIATAMENTE
+// Cualquier inicialización pesada (DB, logging, etc.) se hace DESPUÉS en background
+// Esto permite que Render.com detecte el puerto rápidamente
 
-// ✅ Registrar evento de lifetime para verificar cuando el servidor realmente inicia
+var logger = app.Services.GetRequiredService<ILogger<Program>>();
 var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+
+// ✅ Background task: Inicialización pesada DESPUÉS de que el servidor inicie
 lifetime.ApplicationStarted.Register(() =>
 {
-    Console.WriteLine($"[RENDER] ========================================");
-    Console.WriteLine($"[RENDER] ✅ SERVIDOR INICIADO - ApplicationStarted event");
-    Console.WriteLine($"[RENDER] ========================================");
-    
-    // Verificar URLs después de que el servidor inicia
-    var urlsAfterStart = app.Urls.ToList();
-    Console.WriteLine($"[RENDER] 📍 URLs detectadas DESPUÉS de iniciar: {urlsAfterStart.Count}");
-    if (urlsAfterStart.Any())
+    _ = Task.Run(async () =>
     {
-        Console.WriteLine($"[RENDER] ✅ Servidor escuchando en: {string.Join(", ", urlsAfterStart)}");
-        foreach (var url in urlsAfterStart)
+        try
         {
-            Console.WriteLine($"[RENDER]    - {url}");
+            await Task.Delay(1000); // Esperar 1 segundo para que el servidor esté completamente iniciado
+            
+            logger.LogInformation("========================================");
+            logger.LogInformation("🔍 VERIFICANDO CONEXIÓN A BASE DE DATOS...");
+            logger.LogInformation("========================================");
+            
+            using var scope = app.Services.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var dbLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+            
+            var dbStartTime = DateTime.UtcNow;
+            dbLogger.LogInformation("[DB-INIT] Verificando CanConnectAsync()...");
+            var canConnect = await dbContext.Database.CanConnectAsync();
+            var dbDuration = (DateTime.UtcNow - dbStartTime).TotalMilliseconds;
+            
+            if (canConnect)
+            {
+                dbLogger.LogInformation($"[DB-INIT] ✅ Conexión exitosa ({dbDuration:F2}ms)");
+                
+                var dbStartTime2 = DateTime.UtcNow;
+                dbLogger.LogInformation("[DB-INIT] Ejecutando query de prueba: db.Users.CountAsync()...");
+                var userCount = await dbContext.Users.CountAsync();
+                var queryDuration = (DateTime.UtcNow - dbStartTime2).TotalMilliseconds;
+                dbLogger.LogInformation($"[DB-INIT] ✅ Query exitosa: {userCount} usuarios ({queryDuration:F2}ms)");
+            }
+            else
+            {
+                dbLogger.LogError($"[DB-INIT] ❌ NO SE PUEDE CONECTAR A LA BASE DE DATOS ({dbDuration:F2}ms)");
+            }
+            
+            logger.LogInformation("========================================");
+            
+            // Logging de endpoints (opcional, no crítico)
+            var endpointDataSource = app.Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>();
+            var endpoints = endpointDataSource.Endpoints;
+            logger.LogInformation($"✅ Total endpoints registrados: {endpoints.Count()}");
         }
-    }
-    else
-    {
-        Console.WriteLine($"[RENDER] ⚠️ ADVERTENCIA: No se detectaron URLs después de iniciar");
-    }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "[INIT] ❌ ERROR en inicialización en background");
+        }
+    });
     
-    // Verificar variables de entorno
-    var portEnv = Environment.GetEnvironmentVariable("PORT");
-    var urlsEnv = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
-    Console.WriteLine($"[RENDER] 📍 Variables de entorno:");
-    Console.WriteLine($"[RENDER]    - PORT: {portEnv ?? "NO CONFIGURADO"}");
-    Console.WriteLine($"[RENDER]    - ASPNETCORE_URLS: {urlsEnv ?? "NO CONFIGURADO"}");
-    
-    Console.WriteLine($"[RENDER] ========================================");
-    Console.WriteLine($"[RENDER] ✅ Render.com debería detectar el puerto AHORA");
-    Console.WriteLine($"[RENDER] ========================================");
-    
-    var logger = app.Services.GetRequiredService<ILogger<Program>>();
-    logger.LogInformation("✅ Servidor iniciado y escuchando - Render.com puede detectar el puerto");
+    // Logging simple del servidor iniciado
+    var urlsAfterStart = app.Urls.ToList();
     if (urlsAfterStart.Any())
     {
-        logger.LogInformation($"   URLs: {string.Join(", ", urlsAfterStart)}");
+        logger.LogInformation($"✅ Servidor iniciado y escuchando en: {string.Join(", ", urlsAfterStart)}");
+        Console.WriteLine($"[RENDER] ✅ Servidor escuchando en: {string.Join(", ", urlsAfterStart)}");
     }
 });
 
-if (!isDevelopment)
-{
-    Console.WriteLine($"[RENDER] ========================================");
-    Console.WriteLine($"[RENDER] 🚀 LLAMANDO app.Run() - INICIANDO SERVIDOR");
-    Console.WriteLine($"[RENDER] ========================================");
-    Console.WriteLine($"[RENDER] 📍 Puerto esperado: {portToUse}");
-    Console.WriteLine($"[RENDER] 📍 ASPNETCORE_URLS configurado: {aspnetcoreUrls}");
-    Console.WriteLine($"[RENDER] 📍 Host: 0.0.0.0 (todas las interfaces)");
-    Console.WriteLine($"[RENDER] ⏳ app.Run() bloqueará hasta que el servidor esté listo...");
-    Console.WriteLine($"[RENDER] ========================================");
-}
-
-// ✅ app.Run() inicia el servidor y lo deja escuchando en 0.0.0.0:PORT
-// Render.com detecta el puerto cuando el servidor está escuchando
-// app.Run() bloquea el proceso hasta que se cierre (correcto para Render.com)
-// Esto evita el error "No open ports detected"
+// ✅ app.Run() - INICIAR SERVIDOR INMEDIATAMENTE
+// Según documentación de Render.com: "Bind your host to 0.0.0.0"
+// El servidor debe estar escuchando lo más rápido posible
 app.Run();

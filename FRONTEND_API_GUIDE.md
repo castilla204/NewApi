@@ -230,7 +230,7 @@ async function handleApiCall(apiFunction) {
     try {
         const data = await apiFunction();
         return { success: true, data };
-    } catch (error) {
+  } catch (error) {
         // Verificar si es un error de HTML
         if (error.message.includes('HTML') || error.message.includes('<!doctype')) {
             return {

@@ -904,7 +904,7 @@ namespace newApi.Controllers
         /// <param name="nearbyPageSize">Tamaño de página para servicios cercanos (por defecto 20, máximo 50)</param>
         /// <param name="popularPage">Página para servicios populares (por defecto 1)</param>
         /// <param name="popularPageSize">Tamaño de página para servicios populares (por defecto 20, máximo 50)</param>
-        /// <returns>Array plano con secciones: "Revisiones [Categoría] cerca de mí", "Revisiones [Categoría] populares", y secciones específicas por país (solo para Coches y Motos)</returns>
+        /// <returns>Array plano con secciones: "Revisiones cerca de mí", "Revisiones populares", y secciones específicas por país (solo para Coches y Motos)</returns>
         [HttpGet("homepage-wall")]
         [AllowAnonymous] // ✅ PÚBLICO: Permitir acceso sin autenticación para homepage
         public async Task<IActionResult> GetHomepageWall(
@@ -1002,10 +1002,10 @@ namespace newApi.Controllers
                 // ✅ Construir array plano con todas las secciones
                 var allSections = new List<object>();
                 
-                // 1. Sección "Cerca de mí" - Incluir categoría
+                // 1. Sección "Cerca de mí"
                 allSections.Add(new
                 {
-                    title = $"Revisiones {categoryName} cerca de mí",
+                    title = "Revisiones cerca de mí",
                     services = nearbyServices,
                     pagination = new
                     {
@@ -1018,10 +1018,10 @@ namespace newApi.Controllers
                     }
                 });
                 
-                // 2. Sección "Populares" - Incluir categoría
+                // 2. Sección "Populares"
                 allSections.Add(new
                 {
-                    title = $"Revisiones {categoryName} populares",
+                    title = "Revisiones populares",
                     services = popularServices,
                     pagination = new
                     {
@@ -1066,7 +1066,7 @@ namespace newApi.Controllers
                         
                         allSections.Add(new
                         {
-                            title = $"Revisiones {sectionCategoryName} en {GetCountryDisplayName(country)}", // Ej: "Revisiones Coches en Alemania"
+                            title = $"Revisiones en {GetCountryDisplayName(country)}", // Ej: "Revisiones en Alemania"
                             services = services,
                             categoryName = sectionCategoryName,
                             country = country,

@@ -1124,73 +1124,12 @@ builder.Services.AddAutoMapper(cfg =>
     cfg.AddProfile<UserMappingProfile>();
 });
 
-// ✅ MEJORAS 2025: Configure SignalR con mejores prácticas
-// - Timeouts optimizados para conexiones estables
-// - KeepAlive mejorado para detectar desconexiones rápidamente
-// - Protocolos optimizados para mejor rendimiento
-// - Soporte para reconexión automática mejorada
-var signalRBuilder = builder.Services.AddSignalR(options =>
-{
-    // ✅ MEJORA 2025: Habilitar errores detallados solo en desarrollo
-    options.EnableDetailedErrors = isDevelopment;
-    
-    // ✅ MEJORA 2025: KeepAlive optimizado - enviar ping cada 15 segundos
-    // Esto ayuda a detectar conexiones muertas más rápido
-    options.KeepAliveInterval = TimeSpan.FromSeconds(15);
-    
-    // ✅ MEJORA 2025: Timeout de cliente aumentado a 60 segundos
-    // Permite más tiempo para reconexión automática antes de marcar como desconectado
-    options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);
-    
-    // ✅ MEJORA 2025: MaximumReceiveMessageSize aumentado para archivos grandes
-    // Permite mensajes más grandes (útil para metadata de archivos)
-    options.MaximumReceiveMessageSize = 32 * 1024; // 32KB
-    
-    // ✅ MEJORA 2025: MaximumParallelInvocationsPerClient
-    // Limita invocaciones paralelas por cliente para evitar sobrecarga
-    options.MaximumParallelInvocationsPerClient = 5;
-    
-    // ✅ MEJORA 2025: StreamBufferCapacity para streaming (si se usa en el futuro)
-    options.StreamBufferCapacity = 10;
-})
-.AddJsonProtocol(options =>
-{
-    // ✅ MEJORA 2025: Mantener naming policy null para compatibilidad con frontend
-    options.PayloadSerializerOptions.PropertyNamingPolicy = null;
-    
-    // ✅ MEJORA 2025: Configurar opciones de serialización para mejor rendimiento
-    options.PayloadSerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
-    options.PayloadSerializerOptions.WriteIndented = false; // No indentar en producción
-});
-
-// ✅ ESCALABILIDAD: Configurar Redis como backplane para SignalR
-// Esto permite que los mensajes se compartan entre múltiples instancias del servidor
-// Solo en producción (en desarrollo no es necesario)
-if (!isDevelopment)
-{
-    var redisConnectionString = GetSecretValue("redis-connection-string", null);
-    
-    if (!string.IsNullOrEmpty(redisConnectionString))
-    {
-        var signalRLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-        signalRLogger.LogInformation("Configurando Redis como backplane para SignalR...");
-        signalRLogger.LogInformation($"Redis Connection String: {redisConnectionString.Substring(0, Math.Min(20, redisConnectionString.Length))}***");
-        
-        signalRBuilder.AddStackExchangeRedis(redisConnectionString, redisOptions =>
-        {
-            redisOptions.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal("SignalR");
-            redisOptions.Configuration.DefaultDatabase = 0;
-        });
-        
-        signalRLogger.LogInformation("✅ Redis backplane configurado para SignalR");
-    }
-    else
-    {
-        var signalRLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-        signalRLogger.LogWarning("⚠️ Redis no configurado para SignalR. Los mensajes NO se compartirán entre instancias.");
-        signalRLogger.LogWarning("   Para escalabilidad, configura REDIS_CONNECTION_STRING o 'redis-connection-string' en Secret Manager.");
-    }
-}
+// ✅ 2026: SignalR REMOVIDO - Usando Supabase Realtime para chat en tiempo real
+// Ventajas de Supabase Realtime:
+// - Escalabilidad automática global
+// - Presence integrado (sin diccionarios en memoria)
+// - Postgres Changes para sincronización automática
+// - RLS para seguridad a nivel de fila
 
 // Configure JWT Authentication
 builder.Services.AddAuthentication(options =>
@@ -1224,11 +1163,8 @@ builder.Services.AddAuthentication(options =>
             
             logger.LogInformation($"[JWT] OnMessageReceived - Path: {path}, HasQueryToken: {!string.IsNullOrEmpty(accessToken)}");
             
-            if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/chatHub"))
-            {
-                context.Token = accessToken;
-                logger.LogInformation($"[JWT] ✅ Token extraído de query string para {path}");
-            }
+            // SignalR chatHub removido - Usando Supabase Realtime
+            // El frontend ahora usa tokens JWT directamente con Supabase
             return Task.CompletedTask;
         },
         OnTokenValidated = context =>
@@ -1783,6 +1719,7 @@ builder.Services.AddScoped<RefreshTokenCleanupService>(); // ✅ SEGURIDAD 2025:
 builder.Services.AddScoped<MfaService>(); // ✅ SEGURIDAD 2025: Autenticación Multifactor (MFA/2FA)
 builder.Services.AddScoped<ITimezoneService, TimezoneService>(); // ✅ Servicio para detección de timezone y country desde coordenadas
 builder.Services.AddScoped<IFavoriteService, FavoriteService>(); // ✅ FAVORITOS: Gestión de servicios favoritos
+builder.Services.AddScoped<ISupabaseRealtimeService, SupabaseRealtimeService>(); // ✅ SUPABASE REALTIME: Reemplaza SignalR para chat en tiempo real
 
 // Background services - AppointmentTimerBackgroundService migrated to Hangfire
 
@@ -1791,6 +1728,7 @@ builder.Services.AddScoped<SearchServiceService>();
 builder.Services.AddScoped<SearchHireService>();
 
 builder.Services.AddHttpClient();
+builder.Services.AddHttpClient("Supabase"); // HttpClient nombrado para Supabase Realtime
 
 // Add Health Checks
 builder.Services.AddHealthChecks();
@@ -2512,7 +2450,7 @@ foreach (var controllerType in controllerTypes)
 logger.LogInformation("========================================");
 
 app.MapControllers();
-app.MapHub<ChatHub>("/chatHub");
+// SignalR ChatHub removido - Usando Supabase Realtime para chat en tiempo real
 
 // ✅ CRÍTICO: Logging de endpoints para diagnosticar por qué /api no funciona
 // Esto es TEMPORAL para ver qué endpoints se están registrando

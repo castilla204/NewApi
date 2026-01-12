@@ -1297,9 +1297,10 @@ namespace newApi.Services
                     // ✅ FUTURE REQUIREMENTS
                     StripeFutureRequirements = ss.ExpertProfile.StripeFutureRequirements,
                     StripeFutureDueAt = ss.ExpertProfile.StripeFutureDueAt,
-                    // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto
+                    // ✅ INTERNACIONALIZACIÓN: Timezone, país y ciudad del experto
                     Timezone = ss.ExpertProfile.Timezone,
-                    Country = ss.ExpertProfile.Country
+                    Country = ss.ExpertProfile.Country,
+                    City = ss.ExpertProfile.City
                 };
             }
 
@@ -1908,6 +1909,7 @@ namespace newApi.Services
                         ExpertProfilePictureUrl = ss.ExpertProfile.ProfilePictureUrl,
                         ExpertProfilePictureObjectName = ss.ExpertProfile.ProfilePictureObjectName,
                         ExpertCountry = ss.ExpertProfile.Country,
+                        ExpertCity = ss.ExpertProfile.City,
                         // ✅ OPTIMIZACIÓN: Simplificar cálculo de rating - evitar Any() y Average() que son lentos
                         // En lugar de calcular en SQL, usar un campo calculado o query separada
                         // Por ahora retornar 0 y se puede optimizar después
@@ -2031,6 +2033,7 @@ namespace newApi.Services
                                 ? _signedUrlService.GetSignedUrl(s.ExpertProfilePictureObjectName) ?? s.ExpertProfilePictureUrl ?? string.Empty
                                 : s.ExpertProfilePictureUrl ?? string.Empty,
                             Country = s.ExpertCountry,
+                            City = s.ExpertCity,
                             Availability = availabilityDto
                         },
                         AverageRating = s.AverageRating,
@@ -2153,6 +2156,7 @@ namespace newApi.Services
                         ExpertProfilePictureUrl = ss.ExpertProfile.ProfilePictureUrl,
                         ExpertProfilePictureObjectName = ss.ExpertProfile.ProfilePictureObjectName,
                         ExpertCountry = ss.ExpertProfile.Country,
+                        ExpertCity = ss.ExpertProfile.City,
                         AverageRating = ss.ExpertProfile.User.ReviewsReceived.Any()
                             ? ss.ExpertProfile.User.ReviewsReceived.Average(r => (double)r.Score)
                             : 0.0,
@@ -2248,6 +2252,7 @@ namespace newApi.Services
                                 ? _signedUrlService.GetSignedUrl(s.ExpertProfilePictureObjectName) ?? s.ExpertProfilePictureUrl ?? string.Empty
                                 : s.ExpertProfilePictureUrl ?? string.Empty,
                             Country = s.ExpertCountry,
+                            City = s.ExpertCity,
                             Availability = availabilityDto
                         },
                         AverageRating = s.AverageRating,
@@ -2379,6 +2384,7 @@ namespace newApi.Services
                             ExpertProfilePictureUrl = ss.ExpertProfile.ProfilePictureUrl,
                             ExpertProfilePictureObjectName = ss.ExpertProfile.ProfilePictureObjectName,
                             ExpertCountry = ss.ExpertProfile.Country,
+                            ExpertCity = ss.ExpertProfile.City,
                             AverageRating = ss.ExpertProfile.User.ReviewsReceived.Any()
                                 ? ss.ExpertProfile.User.ReviewsReceived.Average(r => (double)r.Score)
                                 : 0.0,
@@ -2449,6 +2455,7 @@ namespace newApi.Services
                                     ? _signedUrlService.GetSignedUrl(s.ExpertProfilePictureObjectName) ?? s.ExpertProfilePictureUrl ?? string.Empty
                                     : s.ExpertProfilePictureUrl ?? string.Empty,
                                 Country = s.ExpertCountry,
+                                City = s.ExpertCity,
                                 Availability = availabilityDto
                             },
                             AverageRating = s.AverageRating,

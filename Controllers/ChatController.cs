@@ -7,7 +7,6 @@ using Microsoft.AspNetCore.Authorization;
 using System.Threading.Tasks;
 using System.Linq;
 using System;
-using Microsoft.AspNetCore.SignalR;
 using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -20,7 +19,7 @@ using newApi.Services;
 
 namespace newApi.Controllers
 {
-    // ✅ REMOVED: Duplicate ChatHub class - using the one in ChatHub.cs file
+    // ✅ 2026: SignalR reemplazado por Supabase Realtime para chat en tiempo real
 
     [Route("api/[controller]")]
     [ApiController]
@@ -28,7 +27,7 @@ namespace newApi.Controllers
     public class ChatController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly IHubContext<ChatHub> _hubContext;
+        private readonly ISupabaseRealtimeService _realtimeService; // ✅ Supabase Realtime en lugar de SignalR
         private readonly StorageClient _storageClient;
         private readonly IConfiguration _configuration;
         private readonly IAuthorizationServices _authService;
@@ -42,7 +41,7 @@ namespace newApi.Controllers
 
         public ChatController(
             AppDbContext context,
-            IHubContext<ChatHub> hubContext,
+            ISupabaseRealtimeService realtimeService, // ✅ Supabase Realtime en lugar de IHubContext
             StorageClient storageClient,
             IConfiguration configuration,
             IAuthorizationServices authService,
@@ -50,7 +49,7 @@ namespace newApi.Controllers
             ISignedUrlService signedUrlService)
         {
             _context = context;
-            _hubContext = hubContext;
+            _realtimeService = realtimeService;
             _storageClient = storageClient;
             _configuration = configuration;
             _authService = authService;
@@ -588,17 +587,16 @@ namespace newApi.Controllers
                     AttachmentUrls = attachmentUrls
                 };
 
-                // ✅ CORRECCIÓN: Enviar mensaje a través de SignalR con mejor manejo de errores
+                // ✅ 2026: Notificar nuevo mensaje via Supabase Realtime (reemplaza SignalR)
+                // El mensaje ya está en la BD, Postgres Changes notificará automáticamente
+                // Este broadcast es adicional para typing indicators y notificaciones inmediatas
                 try
                 {
-                    // Enviar a todos los usuarios en el grupo de la conversación
-                    await _hubContext.Clients.Group($"conversation-{dto.ConversationId}")
-                        .SendAsync("ReceiveMessage", messageDto);
+                    await _realtimeService.NotifyNewMessageAsync(dto.ConversationId, messageDto);
                     
-                    // ✅ LOG: Confirmar que el mensaje se envió por SignalR
                     await _loggingService.LogInfoAsync(
-                        message: "Message sent via SignalR",
-                        details: $"Message {messageDto.Id} sent to conversation {dto.ConversationId} via SignalR",
+                        message: "Message notification sent via Supabase Realtime",
+                        details: $"Message {messageDto.Id} notification sent to conversation {dto.ConversationId}",
                         userId: userId,
                         source: "ChatController.SendMessage",
                         relatedEntityType: "Message",
@@ -611,13 +609,13 @@ namespace newApi.Controllers
                         notifyUser: false
                     );
                 }
-                catch (Exception signalREx)
+                catch (Exception realtimeEx)
                 {
-                    // ✅ MEJORA: Loggear error de SignalR pero no fallar la petición
-                    // El mensaje ya está guardado en la BD, así que el usuario puede verlo al recargar
+                    // El mensaje ya está guardado en la BD, Postgres Changes lo notificará
+                    // Este error solo afecta al broadcast adicional
                     await _loggingService.LogWarningAsync(
-                        message: "SignalR error sending message",
-                        details: $"Message {messageDto.Id} was saved but SignalR broadcast failed: {signalREx.Message}",
+                        message: "Supabase Realtime broadcast warning",
+                        details: $"Message {messageDto.Id} saved but optional broadcast failed: {realtimeEx.Message}",
                         userId: userId,
                         source: "ChatController.SendMessage",
                         relatedEntityType: "Message",
@@ -625,11 +623,10 @@ namespace newApi.Controllers
                         additionalData: new { 
                             MessageId = messageDto.Id,
                             ConversationId = dto.ConversationId,
-                            Exception = signalREx.Message,
-                            StackTrace = signalREx.StackTrace
+                            Exception = realtimeEx.Message
                         }
                     );
-                    // No lanzar excepción - el mensaje ya está guardado
+                    // No lanzar excepción - el mensaje ya está guardado y Postgres Changes lo notificará
                 }
 
                 return Ok(messageDto);
@@ -689,14 +686,17 @@ namespace newApi.Controllers
                 message.IsRead = true;
                 await _context.SaveChangesAsync();
 
+                // ✅ 2026: Notificar via Supabase Realtime (opcional, Postgres Changes también lo notifica)
                 try
                 {
-                    await _hubContext.Clients.Group($"conversation-{message.ConversationId}")
-                        .SendAsync("MessageRead", messageId);
+                    await _realtimeService.BroadcastToChannelAsync(
+                        $"conversation:{message.ConversationId}", 
+                        "message_read", 
+                        new { messageId, conversationId = message.ConversationId });
                 }
                 catch (Exception)
                 {
-                    // Silently ignore SignalR errors - message is already saved
+                    // Silently ignore - Postgres Changes will notify the change
                 }
 
                 return Ok();
@@ -790,19 +790,22 @@ namespace newApi.Controllers
                     CreatedAt = DateTime.UtcNow
                 };
 
+                // ✅ 2026: Notificar via Supabase Realtime
                 try
                 {
                     var conversation = await _context.Conversations
                         .FirstOrDefaultAsync(c => c.SearchHireId == searchHireId);
                     if (conversation != null)
                     {
-                        await _hubContext.Clients.Group($"conversation-{conversation.Id}")
-                            .SendAsync("ReceiveDeliverable", response);
+                        await _realtimeService.BroadcastToChannelAsync(
+                            $"conversation:{conversation.Id}", 
+                            "deliverable_uploaded", 
+                            response);
                     }
                 }
                 catch (Exception)
                 {
-                    // Silently ignore SignalR errors - message is already saved
+                    // Silently ignore - deliverable is already saved
                 }
 
                 return Ok(new { message = "Deliverable uploaded successfully", deliverable = response });
@@ -895,6 +898,49 @@ namespace newApi.Controllers
                 );
                 
                 return StatusCode(500, new { message = "An error occurred while retrieving deliverables" });
+            }
+        }
+
+        /// <summary>
+        /// ✅ 2026: Endpoint para notificar que el usuario está escribiendo
+        /// Reemplaza el método UserTyping de SignalR
+        /// </summary>
+        [HttpPost("typing")]
+        public async Task<ActionResult> NotifyTyping([FromBody] TypingNotificationDto dto)
+        {
+            try
+            {
+                if (!int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
+                {
+                    return Unauthorized(new { message = "Invalid or missing user ID in token" });
+                }
+
+                var conversation = await _context.Conversations
+                    .FirstOrDefaultAsync(c => c.Id == dto.ConversationId);
+
+                if (conversation == null)
+                {
+                    return NotFound(new { message = "Conversation not found" });
+                }
+
+                var isAdmin = _authService.IsAdmin(User);
+                if (!UserBelongsToConversation(conversation, userId, isAdmin))
+                {
+                    return Unauthorized(new { message = "You are not authorized for this conversation" });
+                }
+
+                await _realtimeService.NotifyUserTypingAsync(dto.ConversationId, userId, dto.IsTyping);
+                
+                return Ok();
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogErrorAsync(
+                    message: "Error sending typing notification",
+                    details: ex.Message,
+                    source: "ChatController.NotifyTyping"
+                );
+                return StatusCode(500, new { message = "Failed to send typing notification" });
             }
         }
 
@@ -1284,5 +1330,14 @@ namespace newApi.Controllers
         public int SearchHireId { get; set; }
         public List<string> DeliverableUrls { get; set; } = new List<string>();
         public DateTime CreatedAt { get; set; }
+    }
+
+    /// <summary>
+    /// ✅ 2026: DTO para notificaciones de typing (reemplaza SignalR UserTyping)
+    /// </summary>
+    public class TypingNotificationDto
+    {
+        public int ConversationId { get; set; }
+        public bool IsTyping { get; set; }
     }
 }

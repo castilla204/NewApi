@@ -175,6 +175,10 @@ namespace newApi.DataLayer.Models.DTOs
         public string ProfilePictureUrl { get; set; }
         public string? Country { get; set; }
         /// <summary>
+        /// Nombre de la ciudad del experto (ej: "Madrid", "Barcelona")
+        /// </summary>
+        public string? City { get; set; }
+        /// <summary>
         /// Horario de disponibilidad del experto (opcional - solo si tiene disponibilidad configurada)
         /// </summary>
         public HomepageExpertAvailabilityDto? Availability { get; set; }
@@ -210,7 +214,7 @@ namespace newApi.DataLayer.Models.DTOs
         public string? StripeFutureRequirements { get; set; }
         public DateTime? StripeFutureDueAt { get; set; }
         
-        // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto
+        // ✅ INTERNACIONALIZACIÓN: Timezone, país y ciudad del experto
         /// <summary>
         /// Timezone IANA del experto (ej: "Europe/Madrid", "America/Mexico_City")
         /// </summary>
@@ -220,6 +224,11 @@ namespace newApi.DataLayer.Models.DTOs
         /// País del experto (ISO 3166-1 alpha-2, ej: "ES", "MX")
         /// </summary>
         public string? Country { get; set; }
+        
+        /// <summary>
+        /// Ciudad del experto (ej: "Madrid", "Barcelona")
+        /// </summary>
+        public string? City { get; set; }
     }
 
     public class UserDto

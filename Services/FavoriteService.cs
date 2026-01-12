@@ -172,6 +172,7 @@ namespace newApi.Services
                         ExpertProfilePictureUrl = ss.ExpertProfile.ProfilePictureUrl,
                         ExpertProfilePictureObjectName = ss.ExpertProfile.ProfilePictureObjectName,
                         ExpertCountry = ss.ExpertProfile.Country,
+                        ExpertCity = ss.ExpertProfile.City,
                         AverageRating = ss.ExpertProfile.User.ReviewsReceived.Any()
                             ? ss.ExpertProfile.User.ReviewsReceived.Average(r => (double)r.Score)
                             : 0.0,
@@ -206,6 +207,7 @@ namespace newApi.Services
                                 Name = service.ExpertName,
                                 ProfilePictureUrl = service.ExpertProfilePictureUrl,
                                 Country = service.ExpertCountry,
+                                City = service.ExpertCity,
                                 Availability = null // Disponibilidad opcional
                             },
                             AverageRating = service.AverageRating,

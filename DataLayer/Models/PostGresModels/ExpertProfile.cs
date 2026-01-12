@@ -48,6 +48,12 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// </summary>
         public string? Country { get; set; }
         
+        /// <summary>
+        /// Nombre de la ciudad del experto (ej: "Madrid", "Barcelona", "México City")
+        /// Se detecta automáticamente desde las coordenadas usando Google Geocoding API
+        /// </summary>
+        public string? City { get; set; }
+        
         public virtual User User { get; set; }
         public virtual ICollection<newApi.DataLayer.Models.PostGresModels.SearchService> SearchServices { get; set; }
     }

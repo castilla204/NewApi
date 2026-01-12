@@ -71,6 +71,15 @@ namespace newApi.Services
         /// <param name="longitude">Longitud en grados decimales</param>
         /// <returns>Código de país ISO 3166-1 alpha-2 (ej: "ES", "US", "MX") o null si no se puede detectar</returns>
         Task<string?> GetCountryFromCoordinatesAsync(decimal latitude, decimal longitude);
+        
+        /// <summary>
+        /// Detecta la ciudad desde coordenadas geográficas (latitud, longitud)
+        /// Usa Google Geocoding API para obtener el nombre de la ciudad
+        /// </summary>
+        /// <param name="latitude">Latitud en grados decimales</param>
+        /// <param name="longitude">Longitud en grados decimales</param>
+        /// <returns>Nombre de la ciudad (ej: "Madrid", "Barcelona") o null si no se puede detectar</returns>
+        Task<string?> GetCityFromCoordinatesAsync(decimal latitude, decimal longitude);
     }
 
     public class TimezoneService : ITimezoneService
@@ -505,6 +514,179 @@ namespace newApi.Services
                         throw new InvalidOperationException(
                             $"Google Geocoding API error: {statusValue}. {errorMessage}. " +
                             $"No se puede detectar país para coordenadas ({latitude}, {longitude}).");
+                    }
+                }
+                else
+                {
+                    _logger.LogError("❌ Respuesta de Google API sin campo 'status'. Response: {Response}", json);
+                    throw new InvalidOperationException(
+                        $"Respuesta de Google API sin campo 'status' para coordenadas ({latitude}, {longitude}).");
+                }
+            }
+            catch (TaskCanceledException ex)
+            {
+                _logger.LogError(ex, "❌ Timeout llamando a Google Geocoding API para coordenadas ({Latitude}, {Longitude})", 
+                    latitude, longitude);
+                throw new InvalidOperationException(
+                    $"Timeout llamando a Google Geocoding API para coordenadas ({latitude}, {longitude}). " +
+                    "Verifica tu conexión a internet y la configuración de la API key.");
+            }
+            catch (InvalidOperationException)
+            {
+                // Re-lanzar excepciones de InvalidOperationException (ya tienen mensajes claros)
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error inesperado llamando a Google Geocoding API para coordenadas ({Latitude}, {Longitude})", 
+                    latitude, longitude);
+                throw new InvalidOperationException(
+                    $"Error inesperado llamando a Google Geocoding API para coordenadas ({latitude}, {longitude}): {ex.Message}");
+            }
+        }
+        
+        public async Task<string?> GetCityFromCoordinatesAsync(decimal latitude, decimal longitude)
+        {
+            // ✅ Usar Google Geocoding API para obtener la ciudad
+            if (string.IsNullOrWhiteSpace(_googleApiKey))
+            {
+                _logger.LogError("❌ Google Maps API Key no configurada. No se puede detectar ciudad para coordenadas ({Latitude}, {Longitude}). " +
+                    "Configura 'google-maps-api-key' en Google Cloud Secret Manager.", latitude, longitude);
+                throw new InvalidOperationException(
+                    $"Google Maps API Key no configurada. No se puede detectar ciudad para coordenadas ({latitude}, {longitude}). " +
+                    "Configura 'google-maps-api-key' en Google Cloud Secret Manager.");
+            }
+
+            try
+            {
+                // ✅ CRÍTICO: Usar formato invariante (punto decimal) para las coordenadas
+                var latStr = latitude.ToString(CultureInfo.InvariantCulture);
+                var lonStr = longitude.ToString(CultureInfo.InvariantCulture);
+                // No filtrar por result_type para obtener información completa de la ubicación
+                var url = $"https://maps.googleapis.com/maps/api/geocode/json?latlng={latStr},{lonStr}&key={_googleApiKey}";
+                
+                _logger.LogDebug("Llamando a Google Geocoding API para detectar ciudad en coordenadas ({Latitude}, {Longitude})", 
+                    latitude, longitude);
+                
+                var response = await _httpClient.GetAsync(url);
+                var json = await response.Content.ReadAsStringAsync();
+                
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogError("❌ Google Geocoding API request failed. Status: {StatusCode}, Response: {Response}", 
+                        response.StatusCode, json);
+                    throw new InvalidOperationException(
+                        $"Google Geocoding API request failed. Status: {response.StatusCode}. " +
+                        $"No se puede detectar ciudad para coordenadas ({latitude}, {longitude}).");
+                }
+                
+                var jsonDoc = JsonDocument.Parse(json);
+                
+                if (jsonDoc.RootElement.TryGetProperty("status", out var status))
+                {
+                    var statusValue = status.GetString();
+                    
+                    if (statusValue == "OK")
+                    {
+                        if (jsonDoc.RootElement.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
+                        {
+                            // Buscar el componente de tipo "locality" (ciudad) en los resultados
+                            foreach (var result in results.EnumerateArray())
+                            {
+                                if (result.TryGetProperty("address_components", out var addressComponents) && 
+                                    addressComponents.ValueKind == JsonValueKind.Array)
+                                {
+                                    foreach (var component in addressComponents.EnumerateArray())
+                                    {
+                                        if (component.TryGetProperty("types", out var types) && types.ValueKind == JsonValueKind.Array)
+                                        {
+                                            // Verificar si este componente es de tipo "locality" (ciudad)
+                                            bool isLocality = false;
+                                            foreach (var type in types.EnumerateArray())
+                                            {
+                                                if (type.GetString() == "locality")
+                                                {
+                                                    isLocality = true;
+                                                    break;
+                                                }
+                                            }
+                                            
+                                            if (isLocality && component.TryGetProperty("long_name", out var longName))
+                                            {
+                                                var cityName = longName.GetString();
+                                                
+                                                if (!string.IsNullOrWhiteSpace(cityName))
+                                                {
+                                                    _logger.LogInformation("✅ Ciudad detectada: '{City}' desde Google API para coordenadas ({Latitude}, {Longitude})", 
+                                                        cityName, latitude, longitude);
+                                                    return cityName;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Si no encontramos "locality", intentar con "administrative_area_level_2" o "administrative_area_level_1"
+                            foreach (var result in results.EnumerateArray())
+                            {
+                                if (result.TryGetProperty("address_components", out var addressComponents) && 
+                                    addressComponents.ValueKind == JsonValueKind.Array)
+                                {
+                                    foreach (var component in addressComponents.EnumerateArray())
+                                    {
+                                        if (component.TryGetProperty("types", out var types) && types.ValueKind == JsonValueKind.Array)
+                                        {
+                                            bool isAdminArea = false;
+                                            foreach (var type in types.EnumerateArray())
+                                            {
+                                                var typeStr = type.GetString();
+                                                if (typeStr == "administrative_area_level_2" || typeStr == "administrative_area_level_1")
+                                                {
+                                                    isAdminArea = true;
+                                                    break;
+                                                }
+                                            }
+                                            
+                                            if (isAdminArea && component.TryGetProperty("long_name", out var longName))
+                                            {
+                                                var areaName = longName.GetString();
+                                                
+                                                if (!string.IsNullOrWhiteSpace(areaName))
+                                                {
+                                                    _logger.LogInformation("✅ Área administrativa detectada como ciudad: '{City}' desde Google API para coordenadas ({Latitude}, {Longitude})", 
+                                                        areaName, latitude, longitude);
+                                                    return areaName;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Si llegamos aquí, no encontramos una ciudad en los resultados
+                            _logger.LogWarning("⚠️ Google API devolvió status OK pero no se encontró componente de tipo 'locality' en los resultados. Response: {Response}", json);
+                            return null;
+                        }
+                        else
+                        {
+                            _logger.LogError("❌ Google API devolvió status OK pero sin campo 'results' o no es un array. Response: {Response}", json);
+                            return null;
+                        }
+                    }
+                    else
+                    {
+                        // Error de Google API
+                        var errorMessage = jsonDoc.RootElement.TryGetProperty("error_message", out var errorMsg) 
+                            ? errorMsg.GetString() 
+                            : "Sin mensaje de error";
+                        
+                        _logger.LogError("❌ Google Geocoding API error. Status: {Status}, Message: {Message}, Response: {Response}", 
+                            statusValue, errorMessage, json);
+                        
+                        throw new InvalidOperationException(
+                            $"Google Geocoding API error: {statusValue}. {errorMessage}. " +
+                            $"No se puede detectar ciudad para coordenadas ({latitude}, {longitude}).");
                     }
                 }
                 else

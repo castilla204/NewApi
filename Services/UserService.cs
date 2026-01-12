@@ -528,27 +528,29 @@ namespace newApi.Services
             var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
             user.Role = UserRole.Expert;
 
-            // ✅ DETECTAR TIMEZONE Y COUNTRY automáticamente desde coordenadas
+            // ✅ DETECTAR TIMEZONE, COUNTRY Y CITY automáticamente desde coordenadas
             string expertTimezone = "UTC";
             string? expertCountry = null;
+            string? expertCity = null;
             
             try
             {
                 expertTimezone = await _timezoneService.GetTimezoneFromCoordinatesAsync(latitude, longitude);
                 expertCountry = await _timezoneService.GetCountryFromCoordinatesAsync(latitude, longitude);
+                expertCity = await _timezoneService.GetCityFromCoordinatesAsync(latitude, longitude);
             }
             catch (Exception ex)
             {
                 // Si falla la detección, usar UTC como fallback y continuar
                 await _loggingService.LogWarningAsync(
-                    message: "Failed to detect timezone/country from coordinates",
-                    details: $"Could not detect timezone/country for coordinates ({latitude}, {longitude}): {ex.Message}. Using UTC as fallback.",
+                    message: "Failed to detect timezone/country/city from coordinates",
+                    details: $"Could not detect timezone/country/city for coordinates ({latitude}, {longitude}): {ex.Message}. Using UTC as fallback.",
                     userId: userId,
                     source: "UserService.BecomeExpert",
                     relatedEntityType: "ExpertProfile",
                     relatedEntityId: null,
                     additionalData: new { 
-                        Action = "DetectTimezoneCountry",
+                        Action = "DetectTimezoneCountryCity",
                         Latitude = latitude,
                         Longitude = longitude,
                         Exception = ex.Message
@@ -566,6 +568,7 @@ namespace newApi.Services
                 Longitude = request.Longitude,
                 Timezone = expertTimezone,
                 Country = expertCountry,
+                City = expertCity,
                 StripeAccountId = null, // No guardar StripeAccountId, se genera en el onboarding
                 CreatedAt = DateTime.UtcNow
             };
@@ -759,30 +762,33 @@ namespace newApi.Services
                 expertProfile.Latitude = request.Latitude;
                 expertProfile.Longitude = request.Longitude;
                 
-                // Si cambian las coordenadas, detectar nuevo timezone y country
+                // Si cambian las coordenadas, detectar nuevo timezone, country y city
                 if (coordinatesChanged)
                 {
                     try
                     {
                         var detectedTimezone = await _timezoneService.GetTimezoneFromCoordinatesAsync(latitude, longitude);
                         var detectedCountry = await _timezoneService.GetCountryFromCoordinatesAsync(latitude, longitude);
+                        var detectedCity = await _timezoneService.GetCityFromCoordinatesAsync(latitude, longitude);
                         
                         expertProfile.Timezone = detectedTimezone;
                         expertProfile.Country = detectedCountry;
+                        expertProfile.City = detectedCity;
                         
                         await _loggingService.LogInfoAsync(
-                            message: "Timezone and country updated from coordinates",
-                            details: $"Updated timezone to {detectedTimezone} and country to {detectedCountry} for coordinates ({latitude}, {longitude})",
+                            message: "Timezone, country and city updated from coordinates",
+                            details: $"Updated timezone to {detectedTimezone}, country to {detectedCountry} and city to {detectedCity} for coordinates ({latitude}, {longitude})",
                             userId: userId,
                             source: "UserService.UpdateExpertProfile",
                             relatedEntityType: "ExpertProfile",
                             relatedEntityId: expertProfile.Id,
                             additionalData: new { 
-                                Action = "UpdateTimezoneCountry",
+                                Action = "UpdateTimezoneCountryCity",
                                 Latitude = latitude,
                                 Longitude = longitude,
                                 Timezone = detectedTimezone,
-                                Country = detectedCountry
+                                Country = detectedCountry,
+                                City = detectedCity
                             }
                         );
                     }
@@ -790,14 +796,14 @@ namespace newApi.Services
                     {
                         // Si falla la detección, mantener los valores actuales y loguear el error
                         await _loggingService.LogWarningAsync(
-                            message: "Failed to detect timezone/country from new coordinates",
-                            details: $"Could not detect timezone/country for new coordinates ({latitude}, {longitude}): {ex.Message}. Keeping existing values.",
+                            message: "Failed to detect timezone/country/city from new coordinates",
+                            details: $"Could not detect timezone/country/city for new coordinates ({latitude}, {longitude}): {ex.Message}. Keeping existing values.",
                             userId: userId,
                             source: "UserService.UpdateExpertProfile",
                             relatedEntityType: "ExpertProfile",
                             relatedEntityId: expertProfile.Id,
                             additionalData: new { 
-                                Action = "DetectTimezoneCountry",
+                                Action = "DetectTimezoneCountryCity",
                                 Latitude = latitude,
                                 Longitude = longitude,
                                 Exception = ex.Message

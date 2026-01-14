@@ -44,13 +44,14 @@ namespace newApi.Controllers
         private readonly IInvoiceService _invoiceService;
         private readonly IStripeValidationService _stripeValidationService;
         private readonly IAppointmentService _appointmentService;
+        private readonly IServiceScopeFactory _serviceScopeFactory;
 
         // ✅ Propiedades para leer claves dinámicamente desde configuración
         private string? WebhookSecret => _configuration["Stripe:WebhookSecret"];
         private string? GeneralWebhookSecret => _configuration["Stripe:GeneralWebhookSecret"];
         private string? StripeSecretKey => _configuration["Stripe:SecretKey"];
 
-        public SubscriptionController(AppDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService, IInvoiceService invoiceService, IAppointmentService appointmentService)
+        public SubscriptionController(AppDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService, IInvoiceService invoiceService, IAppointmentService appointmentService, IServiceScopeFactory serviceScopeFactory)
         {
             _context = context;
             _systemStatusService = systemStatusService;
@@ -63,6 +64,7 @@ namespace newApi.Controllers
             _stripeValidationService = stripeValidationService;
             _invoiceService = invoiceService;
             _appointmentService = appointmentService;
+            _serviceScopeFactory = serviceScopeFactory;
             
             // ✅ Actualizar StripeConfiguration.ApiKey dinámicamente
             // Se actualizará cada vez que se acceda a StripeSecretKey
@@ -460,6 +462,7 @@ namespace newApi.Controllers
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> CreateExpertOnboarding()
         {
+            var requestId = Guid.NewGuid().ToString();
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
@@ -468,12 +471,65 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
+                // ✅ LOG: Inicio del proceso
+                await _loggingService.LogInfoAsync(
+                    message: "Expert onboarding request started",
+                    details: $"User {userId} requested expert onboarding. RequestId: {requestId}",
+                    userId: userId,
+                    source: "SubscriptionController.CreateExpertOnboarding",
+                    relatedEntityType: "ExpertProfile",
+                    additionalData: new { RequestId = requestId });
+
                 var expertProfile = await _context.ExpertProfiles
                     .FirstOrDefaultAsync(ep => ep.UserId == userId);
 
                 if (expertProfile == null)
                 {
+                    await _loggingService.LogWarningAsync(
+                        message: "Expert profile not found for onboarding",
+                        details: $"User {userId} requested onboarding but expert profile not found. RequestId: {requestId}",
+                        userId: userId,
+                        source: "SubscriptionController.CreateExpertOnboarding",
+                        relatedEntityType: "ExpertProfile",
+                        additionalData: new { RequestId = requestId });
                     return NotFound(new { message = "Expert profile not found" });
+                }
+
+                // ✅ LOG: Estado actual del perfil
+                await _loggingService.LogInfoAsync(
+                    message: "Expert profile status check",
+                    details: $"User {userId} - StripeStatus: {expertProfile.StripeStatus}, OnboardingCompleted: {expertProfile.OnboardingCompleted}, StripeAccountId: {expertProfile.StripeAccountId ?? "null"}, PendingStripeAccountId: {expertProfile.PendingStripeAccountId ?? "null"}. RequestId: {requestId}",
+                    userId: userId,
+                    source: "SubscriptionController.CreateExpertOnboarding",
+                    relatedEntityType: "ExpertProfile",
+                    relatedEntityId: expertProfile.Id,
+                    additionalData: new { 
+                        RequestId = requestId,
+                        StripeStatus = expertProfile.StripeStatus.ToString(),
+                        OnboardingCompleted = expertProfile.OnboardingCompleted,
+                        HasStripeAccountId = !string.IsNullOrEmpty(expertProfile.StripeAccountId),
+                        HasPendingStripeAccountId = !string.IsNullOrEmpty(expertProfile.PendingStripeAccountId)
+                    });
+
+                // ✅ VALIDACIÓN: Si está Approved pero no tiene StripeAccountId real, no permitir onboarding
+                if (expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted && string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Onboarding requested but account already approved without StripeAccountId",
+                        details: $"User {userId} requested onboarding but StripeStatus is Approved and OnboardingCompleted is true, but StripeAccountId is null. This should not happen. RequestId: {requestId}",
+                        userId: userId,
+                        source: "SubscriptionController.CreateExpertOnboarding",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: expertProfile.Id,
+                        additionalData: new { RequestId = requestId });
+                    
+                    return BadRequest(new { 
+                        message = "Tu cuenta ya está aprobada pero no tiene una cuenta de Stripe asociada. Por favor, contacta al soporte técnico.",
+                        stripeStatus = "Approved",
+                        onboardingCompleted = true,
+                        hasStripeAccount = false,
+                        requestId = requestId
+                    });
                 }
 
                 // ⚠️ BLOQUEAR SOLO si es un rechazo permanente; permitir reintentos si es temporal
@@ -543,6 +599,15 @@ namespace newApi.Controllers
 
                 if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
                 {
+                    // ✅ LOG: Intentando crear link para cuenta existente
+                    await _loggingService.LogInfoAsync(
+                        message: "Creating Stripe account link for existing account",
+                        details: $"User {userId} has StripeAccountId: {expertProfile.StripeAccountId}, Status: {expertProfile.StripeStatus}, OnboardingCompleted: {expertProfile.OnboardingCompleted}",
+                        userId: userId,
+                        source: "SubscriptionController.CreateExpertOnboarding",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: expertProfile.Id);
+
                     // Clean up PendingStripeAccountId if it exists (shouldn't happen but just in case)
                     if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
                     {
@@ -552,7 +617,7 @@ namespace newApi.Controllers
                     }
                     
                     // If expert already has a completed Stripe account, create a login link instead
-                    var linkOptions = new AccountLinkCreateOptions
+                    var existingAccountLinkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.StripeAccountId,
                         RefreshUrl = "https://inspecciono.com/refresh-onboarding",
@@ -560,23 +625,52 @@ namespace newApi.Controllers
                         Type = "account_onboarding"
                     };
                     
-                    var linkService = new AccountLinkService();
+                    var existingAccountLinkService = new AccountLinkService();
                     
                     try
                     {
-                        var accountLink = await linkService.CreateAsync(linkOptions);
-                        return Ok(new { url = accountLink.Url, isLoginLink = true });
+                        var existingAccountLink = await existingAccountLinkService.CreateAsync(existingAccountLinkOptions);
+                        await _loggingService.LogInfoAsync(
+                            message: "Stripe account link created successfully",
+                            details: $"Account link created for StripeAccountId: {expertProfile.StripeAccountId}",
+                            userId: userId,
+                            source: "SubscriptionController.CreateExpertOnboarding",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: expertProfile.Id);
+                        return Ok(new { url = existingAccountLink.Url, isLoginLink = true });
                     }
                     catch (StripeException ex)
                     {
-                        return StatusCode(500, new { message = "Failed to create Stripe account link" });
+                        // ✅ LOG DETALLADO: Error de Stripe
+                        await _loggingService.LogErrorAsync(
+                            message: "Failed to create Stripe account link",
+                            details: $"StripeException creating account link. StripeAccountId: {expertProfile.StripeAccountId}, StripeStatus: {expertProfile.StripeStatus}, OnboardingCompleted: {expertProfile.OnboardingCompleted}, Error: {ex.Message}, StripeErrorCode: {ex.StripeError?.Code}, StripeErrorType: {ex.StripeError?.Type}",
+                            userId: userId,
+                            source: "SubscriptionController.CreateExpertOnboarding",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: expertProfile.Id,
+                            additionalData: new { 
+                                StripeAccountId = expertProfile.StripeAccountId,
+                                StripeStatus = expertProfile.StripeStatus.ToString(),
+                                OnboardingCompleted = expertProfile.OnboardingCompleted,
+                                StripeErrorCode = ex.StripeError?.Code,
+                                StripeErrorType = ex.StripeError?.Type,
+                                StripeErrorMessage = ex.Message
+                            });
+                        return StatusCode(500, new { 
+                            message = "Failed to create Stripe account link",
+                            error = ex.Message,
+                            stripeErrorCode = ex.StripeError?.Code,
+                            stripeErrorType = ex.StripeError?.Type,
+                            details = $"StripeAccountId: {expertProfile.StripeAccountId} may not exist in Stripe"
+                        });
                     }
                 }
 
                 if (!string.IsNullOrEmpty(expertProfile.PendingStripeAccountId))
                 {
                     // Si tiene cuenta pendiente pero no completó onboarding, crear nuevo link para continuar
-                    var linkOptions = new AccountLinkCreateOptions
+                    var pendingAccountLinkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.PendingStripeAccountId,
                         RefreshUrl = "https://inspecciono.com/refresh-onboarding",
@@ -585,12 +679,12 @@ namespace newApi.Controllers
                         Collect = "eventually_due"
                     };
                     
-                    var linkService = new AccountLinkService();
+                    var pendingAccountLinkService = new AccountLinkService();
                     
                     try
                     {
-                        var accountLink = await linkService.CreateAsync(linkOptions);
-                        return Ok(new { url = accountLink.Url, isLoginLink = false });
+                        var pendingAccountLink = await pendingAccountLinkService.CreateAsync(pendingAccountLinkOptions);
+                        return Ok(new { url = pendingAccountLink.Url, isLoginLink = false });
                     }
                     catch (StripeException ex)
                     {
@@ -606,7 +700,56 @@ namespace newApi.Controllers
 
                 // Marcar como pendiente antes de crear la cuenta
                 expertProfile.StripeStatus = StripeStatus.Pending;
-                await _context.SaveChangesAsync();
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var recoveryProfile = await recoveryContext.ExpertProfiles
+                        .FirstOrDefaultAsync(ep => ep.UserId == userId);
+                    
+                    if (recoveryProfile != null)
+                    {
+                        recoveryProfile.StripeStatus = StripeStatus.Pending;
+                        await recoveryContext.SaveChangesAsync();
+                        expertProfile = recoveryProfile; // Actualizar referencia
+                    }
+                    else
+                    {
+                        return StatusCode(500, new { 
+                            message = "Failed to save Stripe account status", 
+                            details = "Connection disposed and recovery failed",
+                            error = "CONNECTION_DISPOSED"
+                        });
+                    }
+                }
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var recoveryProfile = await recoveryContext.ExpertProfiles
+                        .FirstOrDefaultAsync(ep => ep.UserId == userId);
+                    
+                    if (recoveryProfile != null)
+                    {
+                        recoveryProfile.StripeStatus = StripeStatus.Pending;
+                        await recoveryContext.SaveChangesAsync();
+                        expertProfile = recoveryProfile; // Actualizar referencia
+                    }
+                    else
+                    {
+                        return StatusCode(500, new { 
+                            message = "Failed to save Stripe account status", 
+                            details = disposedEx.Message,
+                            error = "CONNECTION_DISPOSED"
+                        });
+                    }
+                }
                 var accountOptions = new AccountCreateOptions
                 {
                     Type = "express",
@@ -634,57 +777,112 @@ namespace newApi.Controllers
                     return StatusCode(500, new { message = "Failed to create Stripe account" });
                 }
 
-                // Usar la estrategia de ejecución para manejar transacciones con reintentos
-                var strategy = _context.Database.CreateExecutionStrategy();
-                return await strategy.ExecuteAsync(async () =>
-                {
-                using var transaction = await _context.Database.BeginTransactionAsync();
+                // ✅ FIX CRÍTICO: NO usar transacciones manuales con ExecutionStrategy habilitado
+                // Guardar primero el estado antes de crear el link (sin transacción para evitar conflicto con ExecutionStrategy)
+                expertProfile.PendingStripeAccountId = account.Id;
+                expertProfile.OnboardingCompleted = false;
+                expertProfile.StripeStatus = StripeStatus.Pending;
+                
                 try
                 {
-                    // Guardar temporalmente el account ID hasta que se complete el onboarding
-                    expertProfile.PendingStripeAccountId = account.Id;
-                    expertProfile.OnboardingCompleted = false;
-                        expertProfile.StripeStatus = StripeStatus.Pending;
                     await _context.SaveChangesAsync();
-                    var linkOptions = new AccountLinkCreateOptions
+                }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var recoveryProfile = await recoveryContext.ExpertProfiles
+                        .FirstOrDefaultAsync(ep => ep.UserId == userId);
+                    
+                    if (recoveryProfile != null)
                     {
-                        Account = account.Id,
-                        RefreshUrl = "https://inspecciono.com/refresh-onboarding",
-                        ReturnUrl = "https://inspecciono.com/complete-onboarding",
-                        Type = "account_onboarding",
-                        Collect = "eventually_due"
-                    };
-
-                    var linkService = new AccountLinkService();
-                    AccountLink accountLink;
-                    try
-                    {
-                        accountLink = await linkService.CreateAsync(linkOptions);
+                        recoveryProfile.PendingStripeAccountId = account.Id;
+                        recoveryProfile.OnboardingCompleted = false;
+                        recoveryProfile.StripeStatus = StripeStatus.Pending;
+                        await recoveryContext.SaveChangesAsync();
+                        expertProfile = recoveryProfile; // Actualizar referencia
                     }
-                    catch (StripeException ex)
+                    else
                     {
-                        await transaction.RollbackAsync();
-                        return StatusCode(500, new { message = "Failed to create onboarding link" });
+                        return StatusCode(500, new { 
+                            message = "Failed to save Stripe account status", 
+                            details = "Connection disposed and recovery failed",
+                            error = "CONNECTION_DISPOSED"
+                        });
                     }
+                }
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var recoveryProfile = await recoveryContext.ExpertProfiles
+                        .FirstOrDefaultAsync(ep => ep.UserId == userId);
+                    
+                    if (recoveryProfile != null)
+                    {
+                        recoveryProfile.PendingStripeAccountId = account.Id;
+                        recoveryProfile.OnboardingCompleted = false;
+                        recoveryProfile.StripeStatus = StripeStatus.Pending;
+                        await recoveryContext.SaveChangesAsync();
+                        expertProfile = recoveryProfile; // Actualizar referencia
+                    }
+                    else
+                    {
+                        return StatusCode(500, new { 
+                            message = "Failed to save Stripe account status", 
+                            details = disposedEx.Message,
+                            error = "CONNECTION_DISPOSED"
+                        });
+                    }
+                }
+                
+                // Crear el link de onboarding después de guardar
+                var linkOptions = new AccountLinkCreateOptions
+                {
+                    Account = account.Id,
+                    RefreshUrl = "https://inspecciono.com/refresh-onboarding",
+                    ReturnUrl = "https://inspecciono.com/complete-onboarding",
+                    Type = "account_onboarding",
+                    Collect = "eventually_due"
+                };
 
-                    await transaction.CommitAsync();
+                var linkService = new AccountLinkService();
+                AccountLink accountLink;
+                try
+                {
+                    accountLink = await linkService.CreateAsync(linkOptions);
                     return Ok(new { url = accountLink.Url });
                 }
-                    catch (DbUpdateException dbEx)
-                    {
-                        await transaction.RollbackAsync();
-                        return StatusCode(500, new { message = "Failed to save Stripe account", details = dbEx.InnerException?.Message ?? dbEx.Message });
-                }
-                catch (Exception ex)
+                catch (StripeException ex)
                 {
-                    await transaction.RollbackAsync();
-                        return StatusCode(500, new { message = "Failed to save Stripe account", details = ex.Message });
+                    // Si falla crear el link, el estado ya está guardado, pero eso está bien
+                    // El usuario puede intentar de nuevo y se creará un nuevo link
+                    return StatusCode(500, new { message = "Failed to create onboarding link", error = ex.Message });
                 }
-                });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Failed to process expert onboarding" });
+                // ✅ LOG: Error general
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                int.TryParse(userIdClaim, out int userId);
+                await _loggingService.LogErrorAsync(
+                    message: "Failed to process expert onboarding",
+                    details: $"Exception in CreateExpertOnboarding. UserId: {userId}, Error: {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId > 0 ? userId : null,
+                    source: "SubscriptionController.CreateExpertOnboarding",
+                    relatedEntityType: "ExpertProfile",
+                    additionalData: new { 
+                        ExceptionType = ex.GetType().Name,
+                        ExceptionMessage = ex.Message,
+                        InnerException = ex.InnerException?.Message
+                    });
+                return StatusCode(500, new { 
+                    message = "Failed to process expert onboarding",
+                    error = ex.Message,
+                    errorType = ex.GetType().Name
+                });
             }
         }
 
@@ -1154,10 +1352,26 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Amount must be between 0.01 and 1000" });
                 }
 
+                // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
                 // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var user = await _context.Users
-                    .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
-                    .FirstOrDefaultAsync();
+                User? user = null;
+                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
+                {
+                    try
+                    {
+                        user = await _context.Users
+                            .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
+                            .FirstOrDefaultAsync();
+                        
+                        await lockTransaction.CommitAsync();
+                    }
+                    catch
+                    {
+                        try { await lockTransaction.RollbackAsync(); } catch { }
+                        throw;
+                    }
+                }
+                
                 if (user == null)
                 {
                     return NotFound(new { message = "User not found" });
@@ -1314,10 +1528,26 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
                 }
 
+                // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
                 // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var user = await _context.Users
-                    .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
-                    .FirstOrDefaultAsync();
+                User? user = null;
+                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
+                {
+                    try
+                    {
+                        user = await _context.Users
+                            .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
+                            .FirstOrDefaultAsync();
+                        
+                        await lockTransaction.CommitAsync();
+                    }
+                    catch
+                    {
+                        try { await lockTransaction.RollbackAsync(); } catch { }
+                        throw;
+                    }
+                }
+                
                 if (user == null)
                 {
                     return NotFound(new { message = "User not found" });
@@ -1467,6 +1697,21 @@ namespace newApi.Controllers
         [AllowAnonymous]
         public async Task<IActionResult> HandleStripeWebhook()
         {
+            // ✅ LOG DIAGNÓSTICO: Inicio del webhook
+            var webhookStartTime = DateTime.UtcNow;
+            var originalColor = Console.ForegroundColor;
+            try
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                var separator = new string('=', 80);
+                Console.WriteLine($"\n{separator}");
+                Console.WriteLine($"📥 [WEBHOOK] Iniciando procesamiento de webhook Connect");
+                Console.WriteLine($"{separator}");
+                Console.WriteLine($"Timestamp: {webhookStartTime:yyyy-MM-dd HH:mm:ss.fff}");
+                Console.ForegroundColor = originalColor;
+            }
+            catch { }
+            
             // ✅ SEGURIDAD CRÍTICA: Habilitar buffering para permitir múltiples lecturas del body
             Request.EnableBuffering();
             var json = await new StreamReader(Request.Body).ReadToEndAsync();
@@ -1567,10 +1812,42 @@ namespace newApi.Controllers
                     var expectedVersion = "2025-11-17.clover"; // Versión esperada por Stripe.NET 50.0.0
                     if (stripeEvent.ApiVersion != expectedVersion)
                     {
+                        var warningMessage = $"⚠️ Stripe webhook API version mismatch: Received '{stripeEvent.ApiVersion}', but SDK expects '{expectedVersion}'. " +
+                                           $"Consider updating the webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}' for better compatibility.";
+                        
+                        // ✅ Mostrar en consola para visibilidad inmediata (en amarillo porque es warning)
+                        var separatorApiVersionConnect3 = new string('=', 80);
+                        var originalColorApiVersionConnect3 = Console.ForegroundColor;
+                        try
+                        {
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine($"\n{separatorApiVersionConnect3}");
+                            Console.WriteLine($"⚠️ [STRIPE WEBHOOK] API Version Mismatch");
+                            Console.WriteLine($"{separatorApiVersionConnect3}");
+                            Console.WriteLine($"Received: {stripeEvent.ApiVersion}");
+                            Console.WriteLine($"Expected: {expectedVersion}");
+                            Console.WriteLine($"Event Type: {stripeEvent.Type}");
+                            Console.WriteLine($"Event ID: {stripeEvent.Id}");
+                            Console.WriteLine($"Recommendation: Update webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}'");
+                            Console.WriteLine($"{separatorApiVersionConnect3}\n");
+                            Console.ForegroundColor = originalColorApiVersionConnect3;
+                        }
+                        catch
+                        {
+                            Console.WriteLine($"\n{separatorApiVersionConnect3}");
+                            Console.WriteLine($"⚠️ [STRIPE WEBHOOK] API Version Mismatch");
+                            Console.WriteLine($"{separatorApiVersionConnect3}");
+                            Console.WriteLine($"Received: {stripeEvent.ApiVersion}");
+                            Console.WriteLine($"Expected: {expectedVersion}");
+                            Console.WriteLine($"Event Type: {stripeEvent.Type}");
+                            Console.WriteLine($"Event ID: {stripeEvent.Id}");
+                            Console.WriteLine($"Recommendation: Update webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}'");
+                            Console.WriteLine($"{separatorApiVersionConnect3}\n");
+                        }
+                        
                         await _loggingService.LogWarningAsync(
                             message: "Stripe webhook API version mismatch",
-                            details: $"Webhook event received with API version '{stripeEvent.ApiVersion}', but SDK expects '{expectedVersion}'. " +
-                                    $"Consider updating the webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}' for better compatibility.",
+                            details: warningMessage,
                             userId: null,
                             source: "SubscriptionController.HandleStripeWebhook",
                             relatedEntityType: "Webhook",
@@ -1589,6 +1866,25 @@ namespace newApi.Controllers
                     return Ok(new { message = "Event already processed" });
                 }
 
+                // ✅ LOG DIAGNÓSTICO: Evento recibido
+                var originalColor1 = Console.ForegroundColor;
+                try
+                {
+                    Console.ForegroundColor = ConsoleColor.Cyan;
+                    var separator1 = new string('=', 80);
+                    Console.WriteLine($"\n{separator1}");
+                    Console.WriteLine($"📨 [WEBHOOK] Evento recibido");
+                    Console.WriteLine($"{separator1}");
+                    Console.WriteLine($"EventId: {stripeEvent.Id}");
+                    Console.WriteLine($"EventType: {stripeEvent.Type}");
+                    Console.WriteLine($"AccountId: {stripeEvent.Account ?? "N/A"}");
+                    Console.WriteLine($"ApiVersion: {stripeEvent.ApiVersion ?? "N/A"}");
+                    Console.WriteLine($"Created: {stripeEvent.Created:yyyy-MM-dd HH:mm:ss}");
+                    Console.WriteLine($"{separator1}\n");
+                    Console.ForegroundColor = originalColor1;
+                }
+                catch { }
+                
                 // ✅ CORRECCIÓN CRÍTICA: Marcar idempotencia ANTES de procesar (Stripe Best Practices)
                 // Esto previene procesamiento duplicado si hay error durante el procesamiento
                 await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account, null, "Processing");
@@ -1659,10 +1955,10 @@ namespace newApi.Controllers
                             StatusDetails = $"{GetStatusMessage(StripeStatus.Deauthorized)} Stripe desconectó tu cuenta el {DateTime.UtcNow:yyyy-MM-dd}."
                         };
 
-                        var deauthStrategy = _context.Database.CreateExecutionStrategy();
-                        await deauthStrategy.ExecuteAsync(async () =>
                         {
-                            await using var transaction = await _context.Database.BeginTransactionAsync();
+                            // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+                            // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+                            await using var deauthTransaction = await _context.Database.BeginTransactionAsync();
                             try
                             {
                                 ApplyStripeAccountState(deauthorizedExpertProfile, deauthorizedState);
@@ -1672,14 +1968,38 @@ namespace newApi.Controllers
                                 deauthorizedExpertProfile.PendingStripeAccountId = null;
 
                                 await _context.SaveChangesAsync();
-                                await transaction.CommitAsync();
+                                await deauthTransaction.CommitAsync();
+                            }
+                            catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                            {
+                                // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                                try
+                                {
+                                    await deauthTransaction.RollbackAsync();
+                                }
+                                catch { }
+                                throw; // Re-lanzar para que el usuario pueda reintentar
+                            }
+                            catch (ObjectDisposedException)
+                            {
+                                // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                                try
+                                {
+                                    await deauthTransaction.RollbackAsync();
+                                }
+                                catch { }
+                                throw; // Re-lanzar para que el usuario pueda reintentar
                             }
                             catch
                             {
-                                await transaction.RollbackAsync();
+                                try
+                                {
+                                    await deauthTransaction.RollbackAsync();
+                                }
+                                catch { }
                                 throw;
                             }
-                        });
+                        }
 
                         var deauthReason = $"Stripe desconectó la cuenta (application={deauthorizedApp?.Id ?? "n/a"})";
                         await HandleAccountDeauthorization(deauthorizedExpertProfile.UserId, deauthReason);
@@ -1696,22 +2016,65 @@ namespace newApi.Controllers
                         break;
 
                     case "account.updated":
+                        // ✅ LOG DIAGNÓSTICO: Inicio de procesamiento account.updated
+                        var originalColor2 = Console.ForegroundColor;
+                        try
+                        {
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            var separator2 = new string('=', 80);
+                            Console.WriteLine($"\n{separator2}");
+                            Console.WriteLine($"🔄 [WEBHOOK] Procesando account.updated");
+                            Console.WriteLine($"{separator2}");
+                            Console.WriteLine($"EventId: {stripeEvent.Id}");
+                            Console.WriteLine($"Timestamp: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                            Console.ForegroundColor = originalColor2;
+                        }
+                        catch { }
+                        
                         var account = stripeEvent.Data.Object as Account;
                         if (account == null)
                         {
+                            // ✅ LOG ERROR: Account es null
+                            await _loggingService.LogErrorAsync(
+                                message: "account.updated: Account object is null",
+                                details: $"EventId: {stripeEvent.Id}, EventType: {stripeEvent.Type}",
+                                source: "SubscriptionController.account.updated",
+                                relatedEntityType: "Webhook");
                             break;
                         }
+
+                        // ✅ LOG DIAGNÓSTICO: Account recibido
+                        try
+                        {
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine($"AccountId: {account.Id}");
+                            Console.WriteLine($"ChargesEnabled: {account.ChargesEnabled}");
+                            Console.WriteLine($"PayoutsEnabled: {account.PayoutsEnabled}");
+                            Console.WriteLine($"DetailsSubmitted: {account.DetailsSubmitted}");
+                            Console.WriteLine($"TosAcceptance: {(account.TosAcceptance?.Date != null ? "Accepted" : "Not accepted")}");
+                            Console.ForegroundColor = originalColor2;
+                        }
+                        catch { }
 
                         var idempotencyKey = stripeEvent.Request?.IdempotencyKey;
                         var eventIdToCheck = !string.IsNullOrEmpty(idempotencyKey) ? idempotencyKey : stripeEvent.Id;
                         if (await IsEventProcessedAsync(eventIdToCheck))
                         {
+                            // ✅ LOG DIAGNÓSTICO: Evento ya procesado
+                            try
+                            {
+                                Console.ForegroundColor = ConsoleColor.Green;
+                                Console.WriteLine($"✅ Evento ya procesado anteriormente: {eventIdToCheck}");
+                                Console.ForegroundColor = originalColor2;
+                            }
+                            catch { }
                             break;
                         }
 
                         var profileToUpdate = await FindExpertProfileForAccountAsync(account);
                         if (profileToUpdate == null)
                         {
+                            // ✅ LOG ERROR: Profile no encontrado
                             await _loggingService.LogWarningAsync(
                                 message: "Stripe account updated without matching expert profile",
                                 details: $"account_id={account.Id}",
@@ -1724,44 +2087,189 @@ namespace newApi.Controllers
                             break;
                         }
 
+                        // ✅ LOG DIAGNÓSTICO: Profile encontrado
                         try
                         {
-                            var strategy = _context.Database.CreateExecutionStrategy();
-                            await strategy.ExecuteAsync(async () =>
-                            {
-                                await using var transaction = await _context.Database.BeginTransactionAsync();
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine($"ExpertProfile encontrado:");
+                            Console.WriteLine($"  ProfileId: {profileToUpdate.Id}");
+                            Console.WriteLine($"  UserId: {profileToUpdate.UserId}");
+                            Console.WriteLine($"  Estado actual: {profileToUpdate.StripeStatus}");
+                            Console.WriteLine($"  OnboardingCompleted: {profileToUpdate.OnboardingCompleted}");
+                            Console.ForegroundColor = originalColor2;
+                        }
+                        catch { }
+
+                        try
+                        {
+                            var currentPreviousStatus = profileToUpdate.StripeStatus;
+                                
+                                // ✅ LOG DIAGNÓSTICO: Evaluando estado
                                 try
                                 {
-                                    var previousStatus = profileToUpdate.StripeStatus;
-                                    var state = EvaluateStripeAccount(account);
-
-                                    ApplyStripeAccountState(profileToUpdate, state, account.Id);
-
-                                    await _context.SaveChangesAsync();
-                                    await transaction.CommitAsync();
-
-                                    if (previousStatus != state.Status)
-                                    {
-                                        await NotifyStripeStatusTransitionAsync(
-                                            profileToUpdate,
-                                            previousStatus,
-                                            state,
-                                            "SubscriptionController.account.updated");
-                                    }
-
-                                    await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, profileToUpdate.UserId);
+                                    Console.ForegroundColor = ConsoleColor.Yellow;
+                                    Console.WriteLine($"Evaluando estado de Stripe account...");
+                                    Console.ForegroundColor = originalColor2;
                                 }
-                                catch (Exception ex)
+                                catch { }
+                                
+                                var state = EvaluateStripeAccount(account);
+                                
+                                // ✅ LOG DIAGNÓSTICO: Estado evaluado
+                                try
                                 {
-                                    await transaction.RollbackAsync();
-                                    await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, profileToUpdate.UserId, "Failed", ex.Message);
-                                    throw;
+                                    Console.ForegroundColor = ConsoleColor.Cyan;
+                                    Console.WriteLine($"Estado evaluado:");
+                                    Console.WriteLine($"  Estado anterior: {currentPreviousStatus}");
+                                    Console.WriteLine($"  Estado nuevo: {state.Status}");
+                                    Console.WriteLine($"  OnboardingCompleted: {state.OnboardingCompleted}");
+                                    Console.WriteLine($"  Cambio de estado: {currentPreviousStatus != state.Status}");
+                                    Console.ForegroundColor = originalColor2;
                                 }
-                            });
+                                catch { }
+
+                                ApplyStripeAccountState(profileToUpdate, state, account.Id);
+
+                                // ✅ LOG DIAGNÓSTICO: Guardando cambios
+                                try
+                                {
+                                    Console.ForegroundColor = ConsoleColor.Yellow;
+                                    Console.WriteLine($"Guardando cambios en base de datos...");
+                                    Console.ForegroundColor = originalColor2;
+                                }
+                                catch { }
+                                
+                                // ✅ FIX CRÍTICO: NO usar transacciones manuales con ExecutionStrategy habilitado
+                                // Guardar directamente sin transacción para evitar conflicto con ExecutionStrategy
+                                try
+                                {
+                                    await _context.SaveChangesAsync();
+                                }
+                                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                                {
+                                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                                    var recoveryProfile = await recoveryContext.ExpertProfiles
+                                        .FirstOrDefaultAsync(ep => ep.StripeAccountId == account.Id);
+                                    
+                                    if (recoveryProfile != null)
+                                    {
+                                        var recoveryPreviousStatus = recoveryProfile.StripeStatus;
+                                        var recoveryState = EvaluateStripeAccount(account);
+                                        ApplyStripeAccountState(recoveryProfile, recoveryState, account.Id);
+                                        await recoveryContext.SaveChangesAsync();
+                                        
+                                        if (recoveryPreviousStatus != recoveryState.Status)
+                                        {
+                                            await NotifyStripeStatusTransitionAsync(
+                                                recoveryProfile,
+                                                recoveryPreviousStatus,
+                                                recoveryState,
+                                                "SubscriptionController.account.updated");
+                                        }
+                                        
+                                        await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, recoveryProfile.UserId);
+                                        // Recovery exitoso, continuar con el flujo normal
+                                        profileToUpdate = recoveryProfile; // Actualizar referencia
+                                        currentPreviousStatus = recoveryPreviousStatus;
+                                        state = recoveryState;
+                                    }
+                                    else
+                                    {
+                                        await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, null, "Failed", "Connection disposed and recovery failed");
+                                        throw new Exception("Connection disposed and recovery failed");
+                                    }
+                                }
+                                catch (ObjectDisposedException disposedEx)
+                                {
+                                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                                    using var recoveryScope2 = _serviceScopeFactory.CreateScope();
+                                    var recoveryContext2 = recoveryScope2.ServiceProvider.GetRequiredService<AppDbContext>();
+                                    var recoveryProfile2 = await recoveryContext2.ExpertProfiles
+                                        .FirstOrDefaultAsync(ep => ep.StripeAccountId == account.Id);
+                                    
+                                    if (recoveryProfile2 != null)
+                                    {
+                                        var recoveryPreviousStatus2 = recoveryProfile2.StripeStatus;
+                                        var recoveryState2 = EvaluateStripeAccount(account);
+                                        ApplyStripeAccountState(recoveryProfile2, recoveryState2, account.Id);
+                                        await recoveryContext2.SaveChangesAsync();
+                                        
+                                        if (recoveryPreviousStatus2 != recoveryState2.Status)
+                                        {
+                                            await NotifyStripeStatusTransitionAsync(
+                                                recoveryProfile2,
+                                                recoveryPreviousStatus2,
+                                                recoveryState2,
+                                                "SubscriptionController.account.updated");
+                                        }
+                                        
+                                        await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, recoveryProfile2.UserId);
+                                        // Recovery exitoso, continuar con el flujo normal
+                                        profileToUpdate = recoveryProfile2; // Actualizar referencia
+                                        currentPreviousStatus = recoveryPreviousStatus2;
+                                        state = recoveryState2;
+                                    }
+                                    else
+                                    {
+                                        await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, null, "Failed", disposedEx.Message);
+                                        throw new Exception($"Connection disposed: {disposedEx.Message}");
+                                    }
+                                }
+                                
+                                // ✅ LOG DIAGNÓSTICO: Cambios guardados exitosamente
+                                try
+                                {
+                                    Console.ForegroundColor = ConsoleColor.Green;
+                                    Console.WriteLine($"✅ Cambios guardados exitosamente");
+                                    Console.WriteLine($"  StripeStatus: {profileToUpdate.StripeStatus}");
+                                    Console.WriteLine($"  OnboardingCompleted: {profileToUpdate.OnboardingCompleted}");
+                                    Console.ForegroundColor = originalColor2;
+                                }
+                                catch { }
+                                
+                                if (currentPreviousStatus != state.Status)
+                                {
+                                    await NotifyStripeStatusTransitionAsync(
+                                        profileToUpdate,
+                                        currentPreviousStatus,
+                                        state,
+                                        "SubscriptionController.account.updated");
+                                }
+                                
+                                await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, profileToUpdate.UserId);
                         }
-                        catch (Exception logicEx)
+                        catch (Exception ex)
                         {
-                            await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, profileToUpdate.UserId, "Error", logicEx.Message);
+                            // ✅ LOG ERROR: Excepción general
+                            var originalColor5 = Console.ForegroundColor;
+                            try
+                            {
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                var separator5 = new string('=', 80);
+                                Console.Error.WriteLine($"\n{separator5}");
+                                Console.Error.WriteLine($"🔴 [WEBHOOK ERROR] Excepción general en account.updated");
+                                Console.Error.WriteLine($"{separator5}");
+                                Console.Error.WriteLine($"EventId: {eventIdToCheck}");
+                                Console.Error.WriteLine($"AccountId: {account.Id}");
+                                Console.Error.WriteLine($"Error Type: {ex.GetType().Name}");
+                                Console.Error.WriteLine($"Error Message: {ex.Message}");
+                                Console.Error.WriteLine($"Stack Trace: {ex.StackTrace}");
+                                Console.Error.WriteLine($"{separator5}\n");
+                                Console.ForegroundColor = originalColor5;
+                            }
+                            catch { }
+                            
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Excepción general en account.updated",
+                                details: $"EventId: {eventIdToCheck}, AccountId: {account.Id}, Error Type: {ex.GetType().Name}, Error: {ex.Message}, StackTrace: {ex.StackTrace}",
+                                source: "SubscriptionController.account.updated",
+                                relatedEntityType: "Webhook",
+                                additionalData: new { EventId = eventIdToCheck, AccountId = account.Id, ErrorType = ex.GetType().Name, Error = ex.Message, StackTrace = ex.StackTrace });
+                            
+                            // Marcar evento como fallido
+                            await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, profileToUpdate?.UserId, "Failed", ex.Message);
                             if (eventMarkedProcessing && currentEventId != null)
                             {
                                 await MarkEventAsProcessedAsync(
@@ -1770,7 +2278,7 @@ namespace newApi.Controllers
                                     currentAccountId,
                                     null,
                                     "Error",
-                                    logicEx.Message);
+                                    ex.Message);
                                 eventMarkedProcessing = false;
                             }
                             return Ok(new { message = "Event processed with errors" });
@@ -1787,10 +2295,9 @@ namespace newApi.Controllers
                                 .FirstOrDefaultAsync(sh => sh.ExpertTransferId == transfer.Id);
                             if (searchHire != null)
                             {
-                                var transferFailedStrategy = _context.Database.CreateExecutionStrategy();
-                                await transferFailedStrategy.ExecuteAsync(async () =>
-                                {
-                                    await using var transaction = await _context.Database.BeginTransactionAsync();
+                                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+                                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+                                await using var transferFailedTransaction = await _context.Database.BeginTransactionAsync();
                                 try
                                 {
                                     // 🚨 REGISTRAR FALLO DE TRANSFER - NO DEVOLVER AL CLIENTE
@@ -1841,7 +2348,7 @@ namespace newApi.Controllers
                                     searchHire.UpdatedAt = DateTime.UtcNow;
                                     
                                 await _context.SaveChangesAsync();
-                                    await transaction.CommitAsync();
+                                    await transferFailedTransaction.CommitAsync();
 
                                     if (searchHire.ExpertId.HasValue)
                                     {
@@ -1866,11 +2373,35 @@ namespace newApi.Controllers
                                         notifyUser: true
                                     );
                                 }
+                                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                                {
+                                    // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                                    try
+                                    {
+                                        await transferFailedTransaction.RollbackAsync();
+                                    }
+                                    catch { }
+                                    throw; // Re-lanzar para que el usuario pueda reintentar
+                                }
+                                catch (ObjectDisposedException)
+                                {
+                                    // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                                    try
+                                    {
+                                        await transferFailedTransaction.RollbackAsync();
+                                    }
+                                    catch { }
+                                    throw; // Re-lanzar para que el usuario pueda reintentar
+                                }
                                 catch (Exception ex)
                                 {
-                                    await transaction.RollbackAsync();
+                                    try
+                                    {
+                                        await transferFailedTransaction.RollbackAsync();
+                                    }
+                                    catch { }
+                                    throw;
                                 }
-                                });
                             }
                             else
                             {
@@ -1889,10 +2420,51 @@ namespace newApi.Controllers
                     await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account, null, "Success");
                     eventMarkedProcessing = false;
                 }
+                
+                // ✅ LOG DIAGNÓSTICO: Webhook Connect completado exitosamente
+                var webhookEndTime = DateTime.UtcNow;
+                var webhookDuration = (webhookEndTime - webhookStartTime).TotalMilliseconds;
+                var originalColorGen2 = Console.ForegroundColor;
+                try
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    var separatorGen2 = new string('=', 80);
+                    Console.WriteLine($"\n{separatorGen2}");
+                    Console.WriteLine($"✅ [WEBHOOK] Webhook Connect procesado exitosamente");
+                    Console.WriteLine($"{separatorGen2}");
+                    Console.WriteLine($"EventId: {currentEventId ?? "N/A"}");
+                    Console.WriteLine($"EventType: {currentEventType ?? "N/A"}");
+                    Console.WriteLine($"AccountId: {currentAccountId ?? "N/A"}");
+                    Console.WriteLine($"Duración total: {webhookDuration:F2}ms");
+                    Console.WriteLine($"Timestamp: {webhookEndTime:yyyy-MM-dd HH:mm:ss.fff}");
+                    Console.WriteLine($"{separatorGen2}\n");
+                    Console.ForegroundColor = originalColorGen2;
+                }
+                catch { }
+                
                 return Ok();
             }
             catch (StripeException e)
             {
+                // ✅ LOG ERROR: StripeException en consola en rojo
+                var originalColor7 = Console.ForegroundColor;
+                try
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    var separator7 = new string('=', 80);
+                    Console.Error.WriteLine($"\n{separator7}");
+                    Console.Error.WriteLine($"🔴 [WEBHOOK ERROR] StripeException");
+                    Console.Error.WriteLine($"{separator7}");
+                    Console.Error.WriteLine($"Error Type: {e.GetType().Name}");
+                    Console.Error.WriteLine($"Error Message: {e.Message}");
+                    Console.Error.WriteLine($"StripeError Type: {e.StripeError?.Type ?? "N/A"}");
+                    Console.Error.WriteLine($"StripeError Code: {e.StripeError?.Code ?? "N/A"}");
+                    Console.Error.WriteLine($"Timestamp: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    Console.Error.WriteLine($"{separator7}\n");
+                    Console.ForegroundColor = originalColor7;
+                }
+                catch { }
+                
                 // ✅ SEGURIDAD: Si la signature es inválida, ConstructEvent lanza StripeException
                 // Esto previene ataques de replay e inyección de eventos falsos
                 if (e.Message?.Contains("signature") == true || e.Message?.Contains("Invalid signature") == true)
@@ -1941,16 +2513,38 @@ namespace newApi.Controllers
             }
             catch (Exception e)
             {
+                // ✅ LOG ERROR: Excepción general en consola en rojo
+                var originalColor8 = Console.ForegroundColor;
+                try
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    var separator8 = new string('=', 80);
+                    Console.Error.WriteLine($"\n{separator8}");
+                    Console.Error.WriteLine($"🔴 [WEBHOOK ERROR] Excepción general");
+                    Console.Error.WriteLine($"{separator8}");
+                    Console.Error.WriteLine($"Error Type: {e.GetType().Name}");
+                    Console.Error.WriteLine($"Error Message: {e.Message}");
+                    Console.Error.WriteLine($"Stack Trace: {e.StackTrace}");
+                    Console.Error.WriteLine($"Inner Exception: {e.InnerException?.Message ?? "None"}");
+                    Console.Error.WriteLine($"Timestamp: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    Console.Error.WriteLine($"Duración total: {(DateTime.UtcNow - webhookStartTime).TotalMilliseconds:F2}ms");
+                    Console.Error.WriteLine($"{separator8}\n");
+                    Console.ForegroundColor = originalColor8;
+                }
+                catch { }
+                
                 // 🚨 LOG CRÍTICO: Error general en webhook (puede afectar dinero)
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: General webhook error",
-                    details: $"General exception in webhook handler: {e.Message}",
+                    details: $"General exception in webhook handler: {e.Message}, Type: {e.GetType().Name}, StackTrace: {e.StackTrace}",
                     source: "SubscriptionController.HandleStripeWebhook",
                     relatedEntityType: "Webhook",
                     additionalData: new { 
                         Action = "StripeWebhook",
                         Exception = e.Message,
+                        ExceptionType = e.GetType().Name,
                         StackTrace = e.StackTrace,
+                        InnerException = e.InnerException?.Message,
                         Payload = json?.Substring(0, Math.Min(500, json?.Length ?? 0))
                     }
                 );
@@ -1973,6 +2567,21 @@ namespace newApi.Controllers
         [AllowAnonymous]
         public async Task<IActionResult> HandleGeneralStripeWebhook()
         {
+            // ✅ LOG DIAGNÓSTICO: Inicio del webhook general
+            var webhookGeneralStartTime = DateTime.UtcNow;
+            var originalColorGen1 = Console.ForegroundColor;
+            try
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                var separatorGen1 = new string('=', 80);
+                Console.WriteLine($"\n{separatorGen1}");
+                Console.WriteLine($"📥 [WEBHOOK GENERAL] Iniciando procesamiento de webhook general");
+                Console.WriteLine($"{separatorGen1}");
+                Console.WriteLine($"Timestamp: {webhookGeneralStartTime:yyyy-MM-dd HH:mm:ss.fff}");
+                Console.ForegroundColor = originalColorGen1;
+            }
+            catch { }
+            
             // ✅ SEGURIDAD CRÍTICA: Habilitar buffering para permitir múltiples lecturas del body
             Request.EnableBuffering();
             var json = await new StreamReader(Request.Body).ReadToEndAsync();
@@ -2017,10 +2626,42 @@ namespace newApi.Controllers
                     var expectedVersion = "2025-11-17.clover"; // Versión esperada por Stripe.NET 50.0.0
                     if (stripeEvent.ApiVersion != expectedVersion)
                     {
+                        var warningMessage = $"⚠️ Stripe webhook API version mismatch: Received '{stripeEvent.ApiVersion}', but SDK expects '{expectedVersion}'. " +
+                                           $"Consider updating the webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}' for better compatibility.";
+                        
+                        // ✅ Mostrar en consola para visibilidad inmediata (en amarillo porque es warning)
+                        var separator = new string('=', 80);
+                        var originalColor = Console.ForegroundColor;
+                        try
+                        {
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine($"\n{separator}");
+                            Console.WriteLine($"⚠️ [STRIPE WEBHOOK] API Version Mismatch");
+                            Console.WriteLine($"{separator}");
+                            Console.WriteLine($"Received: {stripeEvent.ApiVersion}");
+                            Console.WriteLine($"Expected: {expectedVersion}");
+                            Console.WriteLine($"Event Type: {stripeEvent.Type}");
+                            Console.WriteLine($"Event ID: {stripeEvent.Id}");
+                            Console.WriteLine($"Recommendation: Update webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}'");
+                            Console.WriteLine($"{separator}\n");
+                            Console.ForegroundColor = originalColor;
+                        }
+                        catch
+                        {
+                            Console.WriteLine($"\n{separator}");
+                            Console.WriteLine($"⚠️ [STRIPE WEBHOOK] API Version Mismatch");
+                            Console.WriteLine($"{separator}");
+                            Console.WriteLine($"Received: {stripeEvent.ApiVersion}");
+                            Console.WriteLine($"Expected: {expectedVersion}");
+                            Console.WriteLine($"Event Type: {stripeEvent.Type}");
+                            Console.WriteLine($"Event ID: {stripeEvent.Id}");
+                            Console.WriteLine($"Recommendation: Update webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}'");
+                            Console.WriteLine($"{separator}\n");
+                        }
+                        
                         await _loggingService.LogWarningAsync(
                             message: "Stripe webhook API version mismatch",
-                            details: $"Webhook event received with API version '{stripeEvent.ApiVersion}', but SDK expects '{expectedVersion}'. " +
-                                    $"Consider updating the webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}' for better compatibility.",
+                            details: warningMessage,
                             userId: null,
                             source: "SubscriptionController.HandleGeneralStripeWebhook",
                             relatedEntityType: "Webhook",
@@ -2179,6 +2820,28 @@ namespace newApi.Controllers
                     await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account, null, "Success");
                     eventMarkedProcessing = false;
                 }
+                
+                // ✅ LOG DIAGNÓSTICO: Webhook general completado exitosamente
+                var webhookGeneralEndTimeFinal = DateTime.UtcNow;
+                var webhookGeneralDurationFinal = (webhookGeneralEndTimeFinal - webhookGeneralStartTime).TotalMilliseconds;
+                var originalColorGenFinal = Console.ForegroundColor;
+                try
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    var separatorGenFinal = new string('=', 80);
+                    Console.WriteLine($"\n{separatorGenFinal}");
+                    Console.WriteLine($"✅ [WEBHOOK GENERAL] Webhook general procesado exitosamente");
+                    Console.WriteLine($"{separatorGenFinal}");
+                    Console.WriteLine($"EventId: {currentEventId ?? "N/A"}");
+                    Console.WriteLine($"EventType: {currentEventType ?? "N/A"}");
+                    Console.WriteLine($"AccountId: {currentAccountId ?? "N/A"}");
+                    Console.WriteLine($"Duración total: {webhookGeneralDurationFinal:F2}ms");
+                    Console.WriteLine($"Timestamp: {webhookGeneralEndTimeFinal:yyyy-MM-dd HH:mm:ss.fff}");
+                    Console.WriteLine($"{separatorGenFinal}\n");
+                    Console.ForegroundColor = originalColorGenFinal;
+                }
+                catch { }
+                
                 return Ok();
             }
             catch (StripeException e)
@@ -2292,10 +2955,26 @@ namespace newApi.Controllers
                 );
                 return;
             }
+            // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
             // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-            var user = await _context.Users
-                .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
-                .FirstOrDefaultAsync();
+            User? user = null;
+            await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
+            {
+                try
+                {
+                    user = await _context.Users
+                        .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
+                        .FirstOrDefaultAsync();
+                    
+                    await lockTransaction.CommitAsync();
+                }
+                catch
+                {
+                    try { await lockTransaction.RollbackAsync(); } catch { }
+                    throw;
+                }
+            }
+            
             if (user == null)
             {
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
@@ -2352,16 +3031,111 @@ namespace newApi.Controllers
             }
             */
 
-            var strategy = _context.Database.CreateExecutionStrategy();
-            await strategy.ExecuteAsync(async () =>
+            // ✅ FIX CRÍTICO: Obtener StatusId ANTES de iniciar la transacción para evitar conflictos con ExecutionStrategy
+            var pendingStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Pending.ToStringValue());
+            
+            // ✅ FIX CRÍTICO: Obtener TODAS las queries ANTES de iniciar la transacción para evitar ExecutionStrategy
+            // Estas queries activan ExecutionStrategy automáticamente si están dentro de una transacción
+            var expertProfile = await _context.ExpertProfiles
+                .AsNoTracking() // ✅ FIX: AsNoTracking evita que EF Core intente usar ExecutionStrategy
+                .FirstOrDefaultAsync(z => z.Id == service.ExpertProfileId);
+
+            var expertuserid = expertProfile?.UserId ?? 0;
+
+            // Validar que el experto no se contrate a sí mismo
+            if (expertuserid == userId)
             {
+                return; // ✅ CORRECTO: Salir silenciosamente en método async Task
+            }
+
+            // Obtener la disponibilidad actual del experto al momento de la contratación
+            int? currentAvailabilityId = null;
+            if (expertProfile != null)
+            {
+                var currentAvailability = await _context.ExpertAvailabilities
+                    .AsNoTracking() // ✅ FIX: AsNoTracking evita que EF Core intente usar ExecutionStrategy
+                    .Where(ea => ea.ExpertId == expertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
+                    .OrderByDescending(ea => ea.EffectiveFrom)
+                    .FirstOrDefaultAsync();
+                currentAvailabilityId = currentAvailability?.Id;
+            }
+
+            // ✅ INTERNACIONALIZACIÓN: Obtener timezone y country del experto al momento de crear la contratación
+            // Esto crea un snapshot que protege las contrataciones activas si el experto cambia de ubicación
+            var expertTimezone = expertProfile?.Timezone ?? "UTC";
+            var expertCountry = expertProfile?.Country;
+
+            // ✅ FIX CRÍTICO: Obtener platforms ANTES de iniciar la transacción
+            List<Platform> platforms = new List<Platform>();
+            if (parameterDto.PlatformIds != null && parameterDto.PlatformIds.Any())
+            {
+                platforms = await _context.Platforms
+                    .AsNoTracking() // ✅ FIX: AsNoTracking evita que EF Core intente usar ExecutionStrategy
+                    .Where(p => parameterDto.PlatformIds.Contains(p.Id))
+                    .ToListAsync();
+                if (platforms.Count != parameterDto.PlatformIds.Count)
+                {
+                    return; // ✅ CORRECTO: Salir silenciosamente si hay IDs inválidos
+                }
+            }
+            
+            // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+            // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
             using var transaction = await _context.Database.BeginTransactionAsync();
             SearchHire? searchHire = null;
+            int searchHireId = 0; // ✅ FIX: Declarar searchHireId antes del try para que esté disponible en catch
             try
             {
                     // ✅ REMOVED: Balance system eliminated - all payments are direct Stripe
                 
-                await _context.SaveChangesAsync();
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear la búsqueda en el nuevo contexto si es necesario
+                    // Por ahora, solo loguear el error
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Connection disposed in HandlePendingHireCompleted - initial SaveChanges",
+                        details: $"Connection disposed while saving initial changes. UserId: {userId}, ServiceId: {serviceId}",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: serviceId
+                    );
+                    return; // Salir si no se puede recuperar
+                }
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Connection disposed in HandlePendingHireCompleted - initial SaveChanges",
+                        details: $"Connection disposed while saving initial changes. UserId: {userId}, ServiceId: {serviceId}",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: serviceId
+                    );
+                    return; // Salir si no se puede recuperar
+                }
 
                 // Create search
                 var search = new Search
@@ -2376,7 +3150,64 @@ namespace newApi.Controllers
                     CreatedAt = DateTime.UtcNow
                 };
                 await _context.Searches.AddAsync(search);
-                await _context.SaveChangesAsync();
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear la búsqueda en el nuevo contexto
+                    var recoverySearch = new Search
+                    {
+                        UserId = userId,
+                        Frequency = searchDto.Frequency,
+                        Title = searchDto.Title,
+                        Description = searchDto.Description,
+                        IsActive = searchDto.IsActive,
+                        NextExecution = DateTime.UtcNow,
+                        StartDate = searchDto.StartDate,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    recoveryContext.Searches.Add(recoverySearch);
+                    await recoveryContext.SaveChangesAsync();
+                    search = recoverySearch; // Actualizar referencia
+                }
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear la búsqueda en el nuevo contexto
+                    var recoverySearch = new Search
+                    {
+                        UserId = userId,
+                        Frequency = searchDto.Frequency,
+                        Title = searchDto.Title,
+                        Description = searchDto.Description,
+                        IsActive = searchDto.IsActive,
+                        NextExecution = DateTime.UtcNow,
+                        StartDate = searchDto.StartDate,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    recoveryContext.Searches.Add(recoverySearch);
+                    await recoveryContext.SaveChangesAsync();
+                    search = recoverySearch; // Actualizar referencia
+                }
 
                 // Create search parameters
                 var searchParameter = new SearchParameter
@@ -2398,18 +3229,82 @@ namespace newApi.Controllers
                     SearchId = search.Id
                 };
                 await _context.SearchParameters.AddAsync(searchParameter);
-                await _context.SaveChangesAsync();
-
-                // Create platform associations
-                if (parameterDto.PlatformIds != null && parameterDto.PlatformIds.Any())
+                try
                 {
-                    var platforms = await _context.Platforms
-                        .Where(p => parameterDto.PlatformIds.Contains(p.Id))
-                        .ToListAsync();
-                    if (platforms.Count != parameterDto.PlatformIds.Count)
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
                     {
-                        throw new Exception("Some platform IDs are invalid");
+                        await transaction.RollbackAsync();
                     }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear el parámetro de búsqueda en el nuevo contexto
+                    var recoverySearchParameter = new SearchParameter
+                    {
+                        Keywords = parameterDto.Keywords,
+                        UserSearch = parameterDto.UserSearch,
+                        Latitude = parameterDto.Latitude,
+                        Longitude = parameterDto.Longitude,
+                        LocationName = parameterDto.LocationName,
+                        ShippingAvailable = parameterDto.ShippingAvailable,
+                        StrictMatchOnly = parameterDto.StrictMatchOnly,
+                        Category = parameterDto.Category,
+                        LocationRange = parameterDto.LocationRange,
+                        MinPrice = parameterDto.MinPrice,
+                        MaxPrice = parameterDto.MaxPrice,
+                        BrandId = parameterDto.BrandId,
+                        ModelId = parameterDto.ModelId,
+                        ServiceTypeId = parameterDto.ServiceTypeId,
+                        SearchId = search.Id
+                    };
+                    recoveryContext.SearchParameters.Add(recoverySearchParameter);
+                    await recoveryContext.SaveChangesAsync();
+                    searchParameter = recoverySearchParameter; // Actualizar referencia
+                }
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear el parámetro de búsqueda en el nuevo contexto
+                    var recoverySearchParameter = new SearchParameter
+                    {
+                        Keywords = parameterDto.Keywords,
+                        UserSearch = parameterDto.UserSearch,
+                        Latitude = parameterDto.Latitude,
+                        Longitude = parameterDto.Longitude,
+                        LocationName = parameterDto.LocationName,
+                        ShippingAvailable = parameterDto.ShippingAvailable,
+                        StrictMatchOnly = parameterDto.StrictMatchOnly,
+                        Category = parameterDto.Category,
+                        LocationRange = parameterDto.LocationRange,
+                        MinPrice = parameterDto.MinPrice,
+                        MaxPrice = parameterDto.MaxPrice,
+                        BrandId = parameterDto.BrandId,
+                        ModelId = parameterDto.ModelId,
+                        ServiceTypeId = parameterDto.ServiceTypeId,
+                        SearchId = search.Id
+                    };
+                    recoveryContext.SearchParameters.Add(recoverySearchParameter);
+                    await recoveryContext.SaveChangesAsync();
+                    searchParameter = recoverySearchParameter; // Actualizar referencia
+                }
+
+                // Create platform associations (platforms ya obtenidos antes de la transacción)
+                if (platforms.Any())
+                {
                     foreach (var platform in platforms)
                     {
                         _context.SearchParameterPlatforms.Add(new SearchParameterPlatform
@@ -2419,33 +3314,6 @@ namespace newApi.Controllers
                         });
                     }
                 }
-
-                var expertProfile = await _context.ExpertProfiles
-                       .FirstOrDefaultAsync(z => z.Id == service.ExpertProfileId);
-
-                var expertuserid = expertProfile?.UserId ?? 0;
-
-                // Validar que el experto no se contrate a sí mismo
-                if (expertuserid == userId)
-                {
-                    throw new InvalidOperationException("No puedes contratarte a ti mismo como experto");
-                }
-
-                // Obtener la disponibilidad actual del experto al momento de la contratación
-                int? currentAvailabilityId = null;
-                if (expertProfile != null)
-                {
-                    var currentAvailability = await _context.ExpertAvailabilities
-                        .Where(ea => ea.ExpertId == expertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
-                        .OrderByDescending(ea => ea.EffectiveFrom)
-                        .FirstOrDefaultAsync();
-                    currentAvailabilityId = currentAvailability?.Id;
-                }
-
-                // ✅ INTERNACIONALIZACIÓN: Obtener timezone y country del experto al momento de crear la contratación
-                // Esto crea un snapshot que protege las contrataciones activas si el experto cambia de ubicación
-                var expertTimezone = expertProfile?.Timezone ?? "UTC";
-                var expertCountry = expertProfile?.Country;
 
                 // ✅ STRIPE TAX: Obtener tax breakdown de la Checkout Session (NO PaymentIntent)
                 // El tax breakdown está en la Session, no en el PaymentIntent
@@ -2521,7 +3389,7 @@ namespace newApi.Controllers
                     ExpertId = expertuserid,
                     SearchServiceId = service.Id,
                     SearchId = search.Id,
-                        StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Pending.ToStringValue()),
+                        StatusId = pendingStatusId, // ✅ FIX: Usar StatusId obtenido antes de la transacción
                     Amount = totalAmount, // Total con IVA (€110)
                     BaseAmount = baseAmount, // Base sin IVA (€90.91) ✅ STRIPE TAX
                     TaxAmount = taxAmount, // IVA (€19.09) ✅ STRIPE TAX
@@ -2538,7 +3406,77 @@ namespace newApi.Controllers
                     // ✅ REMOVED: Balance deduction eliminated - all payments are direct Stripe
                 
                 _context.SearchHires.Add(searchHire);
+                try
+                {
                     await _context.SaveChangesAsync(); // ✅ SAVE FIRST to get the real ID
+                    searchHireId = searchHire.Id;
+                }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear el SearchHire en el nuevo contexto
+                    var recoverySearchHire = new SearchHire
+                    {
+                        ClientId = userId,
+                        ExpertId = expertuserid,
+                        SearchServiceId = service.Id,
+                        SearchId = search.Id,
+                        StatusId = pendingStatusId,
+                        Amount = totalAmount,
+                        BaseAmount = baseAmount,
+                        TaxAmount = taxAmount,
+                        CreatedAt = DateTime.UtcNow,
+                        CompletionDeadline = DateTime.UtcNow.AddDays(7),
+                        ExpertAvailabilityId = currentAvailabilityId,
+                        ExpertTimezone = expertTimezone,
+                        ExpertCountry = expertCountry
+                    };
+                    recoveryContext.SearchHires.Add(recoverySearchHire);
+                    await recoveryContext.SaveChangesAsync();
+                    searchHireId = recoverySearchHire.Id;
+                    searchHire = recoverySearchHire; // Actualizar referencia
+                }
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear el SearchHire en el nuevo contexto
+                    var recoverySearchHire = new SearchHire
+                    {
+                        ClientId = userId,
+                        ExpertId = expertuserid,
+                        SearchServiceId = service.Id,
+                        SearchId = search.Id,
+                        StatusId = pendingStatusId,
+                        Amount = totalAmount,
+                        BaseAmount = baseAmount,
+                        TaxAmount = taxAmount,
+                        CreatedAt = DateTime.UtcNow,
+                        CompletionDeadline = DateTime.UtcNow.AddDays(7),
+                        ExpertAvailabilityId = currentAvailabilityId,
+                        ExpertTimezone = expertTimezone,
+                        ExpertCountry = expertCountry
+                    };
+                    recoveryContext.SearchHires.Add(recoverySearchHire);
+                    await recoveryContext.SaveChangesAsync();
+                    searchHireId = recoverySearchHire.Id;
+                    searchHire = recoverySearchHire; // Actualizar referencia
+                }
 
                 var paymentTransaction = new FinancialTransaction
                 {
@@ -2546,13 +3484,66 @@ namespace newApi.Controllers
                     Amount = -service.Price,
                     TransactionType = "ServicePayment",
                     RelatedEntityType = "SearchHire",
-                        RelatedEntityId = searchHire.Id, // ✅ NOW searchHire.Id has the real ID
+                        RelatedEntityId = searchHireId, // ✅ FIX: Usar searchHireId guardado
                         StripePaymentIntentId = session.PaymentIntentId, // ✅ ADDED: Track Stripe payment intent
                     CreatedAt = DateTime.UtcNow
                 };
                 _context.FinancialTransactions.Add(paymentTransaction);
 
-                await _context.SaveChangesAsync();
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear la transacción financiera en el nuevo contexto
+                    var recoveryPaymentTransaction = new FinancialTransaction
+                    {
+                        UserId = userId,
+                        Amount = -service.Price,
+                        TransactionType = "ServicePayment",
+                        RelatedEntityType = "SearchHire",
+                        RelatedEntityId = searchHireId,
+                        StripePaymentIntentId = session.PaymentIntentId,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    recoveryContext.FinancialTransactions.Add(recoveryPaymentTransaction);
+                    await recoveryContext.SaveChangesAsync();
+                }
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear la transacción financiera en el nuevo contexto
+                    var recoveryPaymentTransaction = new FinancialTransaction
+                    {
+                        UserId = userId,
+                        Amount = -service.Price,
+                        TransactionType = "ServicePayment",
+                        RelatedEntityType = "SearchHire",
+                        RelatedEntityId = searchHireId,
+                        StripePaymentIntentId = session.PaymentIntentId,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    recoveryContext.FinancialTransactions.Add(recoveryPaymentTransaction);
+                    await recoveryContext.SaveChangesAsync();
+                }
 
                 if (string.IsNullOrEmpty(session.PaymentIntentId))
                 {
@@ -2561,11 +3552,11 @@ namespace newApi.Controllers
                         userId: userId,
                         serviceId: serviceId,
                         failureReason: "Stripe checkout session did not include a PaymentIntentId.",
-                        searchHireId: searchHire.Id);
+                        searchHireId: searchHireId); // ✅ FIX: Usar searchHireId guardado
                     throw new InvalidOperationException("PaymentIntentId is missing from checkout session.");
                 }
 
-                await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHire.Id);
+                await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHireId); // ✅ FIX: Usar searchHireId guardado
 
                 await transaction.CommitAsync();
 
@@ -2575,7 +3566,7 @@ namespace newApi.Controllers
                 {
                     // Verificar que no exista ya una cita (por si acaso)
                     var existingAppointment = await _context.Appointments
-                        .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
+                        .FirstOrDefaultAsync(a => a.SearchHireId == searchHireId); // ✅ FIX: Usar searchHireId guardado
                     
                     if (existingAppointment == null)
                     {
@@ -2588,7 +3579,7 @@ namespace newApi.Controllers
                         {
                             var appointment = new Appointment
                             {
-                                SearchHireId = searchHire.Id,
+                                SearchHireId = searchHireId, // ✅ FIX: Usar searchHireId guardado
                                 StatusId = awaitingStatus.Id,
                                 CreatedAt = DateTime.UtcNow,
                                 UpdatedAt = DateTime.UtcNow
@@ -2628,16 +3619,16 @@ namespace newApi.Controllers
                     // 🚨 LOG CRÍTICO: Error al crear cita automática y timer inicial
                     await _loggingService.LogCriticalAsync(
                         message: "CRITICAL: Failed to create automatic appointment and initial timer",
-                        details: $"Error creating automatic appointment for SearchHire {searchHire.Id} in HandlePendingHireCompleted. " +
+                        details: $"Error creating automatic appointment for SearchHire {searchHireId} in HandlePendingHireCompleted. " + // ✅ FIX: Usar searchHireId guardado
                                 $"The SearchHire was confirmed but the Appointment/Timer flow failed. " +
                                 $"Error: {ex.Message}. StackTrace: {ex.StackTrace}",
                         userId: userId,
                         source: "SubscriptionController.HandlePendingHireCompleted",
                         relatedEntityType: "SearchHire",
-                        relatedEntityId: searchHire.Id,
+                        relatedEntityId: searchHireId, // ✅ FIX: Usar searchHireId guardado
                         additionalData: new { 
                             Action = "CreateAutomaticAppointment",
-                            SearchHireId = searchHire.Id,
+                            SearchHireId = searchHireId, // ✅ FIX: Usar searchHireId guardado
                             ClientId = userId,
                             ExpertId = expertuserid,
                             Exception = ex.Message
@@ -2649,11 +3640,11 @@ namespace newApi.Controllers
                 // ✅ Notificar al cliente y experto cuando se confirma la contratación
                 await _loggingService.LogInfoAsync(
                     message: "Contratación confirmada",
-                    details: $"Tu pago se procesó correctamente. La contratación #{searchHire.Id} está activa y el experto ha sido notificado.",
+                    details: $"Tu pago se procesó correctamente. La contratación #{searchHireId} está activa y el experto ha sido notificado.", // ✅ FIX: Usar searchHireId guardado
                     userId: userId,
                     source: "SubscriptionController.HandlePendingHireCompleted",
                     relatedEntityType: "SearchHire",
-                    relatedEntityId: searchHire.Id,
+                    relatedEntityId: searchHireId, // ✅ FIX: Usar searchHireId guardado
                     notifyUser: true
                 );
 
@@ -2661,8 +3652,8 @@ namespace newApi.Controllers
                 if (!string.IsNullOrEmpty(user.Email))
                 {
                     Hangfire.BackgroundJob.Enqueue<IInvoiceService>(service => 
-                        service.SendInvoiceByEmailBackgroundJob(searchHire.Id, user.Email));
-                    Console.WriteLine($"[SUBSCRIPTION CONTROLLER] [INVOICE] Factura encolada para envío. SearchHireId: {searchHire.Id}, Email: {user.Email}");
+                        service.SendInvoiceByEmailBackgroundJob(searchHireId, user.Email)); // ✅ FIX: Usar searchHireId guardado
+                    Console.WriteLine($"[SUBSCRIPTION CONTROLLER] [INVOICE] Factura encolada para envío. SearchHireId: {searchHireId}, Email: {user.Email}"); // ✅ FIX: Usar searchHireId guardado
                 }
 
                 // ✅ Notificar al experto sobre la nueva contratación
@@ -2670,15 +3661,71 @@ namespace newApi.Controllers
                 {
                     await _loggingService.LogInfoAsync(
                         message: "Nueva contratación recibida",
-                        details: $"Has recibido una nueva contratación #{searchHire.Id} por {service.Price}€. Revisa los detalles y contacta con el cliente.",
+                        details: $"Has recibido una nueva contratación #{searchHireId} por {service.Price}€. Revisa los detalles y contacta con el cliente.", // ✅ FIX: Usar searchHireId guardado
                         userId: expertuserid,
                         source: "SubscriptionController.HandlePendingHireCompleted",
                         relatedEntityType: "SearchHire",
-                        relatedEntityId: searchHire.Id,
+                        relatedEntityId: searchHireId, // ✅ FIX: Usar searchHireId guardado
                         notifyUser: true
                     );
                 }
 
+            }
+            catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+            {
+                // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                try
+                {
+                    await transaction.RollbackAsync();
+                }
+                catch
+                {
+                    // Ignorar errores de rollback si la conexión ya está disposed
+                }
+                
+                // Log error pero no reintentar - el webhook ya respondió 200 OK
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Connection disposed in HandlePendingHireCompleted",
+                    details: $"Connection disposed while processing pending hire. UserId: {userId}, ServiceId: {serviceId}, SessionId: {session?.Id}",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted",
+                    relatedEntityType: "Payment",
+                    relatedEntityId: serviceId,
+                    additionalData: new { 
+                        UserId = userId, 
+                        ServiceId = serviceId, 
+                        SessionId = session?.Id,
+                        Error = dbEx.Message
+                    }
+                );
+            }
+            catch (ObjectDisposedException disposedEx)
+            {
+                // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                try
+                {
+                    await transaction.RollbackAsync();
+                }
+                catch
+                {
+                    // Ignorar errores de rollback si la conexión ya está disposed
+                }
+                
+                // Log error pero no reintentar - el webhook ya respondió 200 OK
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Connection disposed in HandlePendingHireCompleted",
+                    details: $"Connection disposed while processing pending hire. UserId: {userId}, ServiceId: {serviceId}, SessionId: {session?.Id}",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted",
+                    relatedEntityType: "Payment",
+                    relatedEntityId: serviceId,
+                    additionalData: new { 
+                        UserId = userId, 
+                        ServiceId = serviceId, 
+                        SessionId = session?.Id,
+                        Error = disposedEx.Message
+                    }
+                );
             }
             catch (Exception ex)
             {
@@ -2691,7 +3738,7 @@ namespace newApi.Controllers
                         userId: userId,
                         serviceId: serviceId,
                         failureReason: ex.Message,
-                        searchHireId: searchHire?.Id);
+                        searchHireId: searchHireId > 0 ? searchHireId : (int?)null); // ✅ FIX: Usar searchHireId guardado
 
                     await _loggingService.LogWarningAsync(
                         message: "Intento de pago no capturado",
@@ -2700,14 +3747,13 @@ namespace newApi.Controllers
                         source: "SubscriptionController.HandlePendingHireCompleted",
                         relatedEntityType: "Payment",
                         relatedEntityId: serviceId,
-                        additionalData: new { PaymentIntentId = session.PaymentIntentId, SearchHireId = searchHire?.Id },
+                        additionalData: new { PaymentIntentId = session.PaymentIntentId, SearchHireId = searchHireId > 0 ? searchHireId : (int?)null }, // ✅ FIX: Usar searchHireId guardado
                         notifyUser: true
                     );
                 }
 
                 throw;
             }
-            });
         }
 
         // ❌ ELIMINADO: ProcessAutomaticRefundOnError - No se usa (reemplazado por captura manual)
@@ -3074,11 +4120,27 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
                 }
 
+                // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
                 // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var user = await _context.Users
-                    .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
-                    .Include(u => u.ExpertProfile)
-                    .FirstOrDefaultAsync();
+                User? user = null;
+                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
+                {
+                    try
+                    {
+                        user = await _context.Users
+                            .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
+                            .Include(u => u.ExpertProfile)
+                            .FirstOrDefaultAsync();
+                        
+                        await lockTransaction.CommitAsync();
+                    }
+                    catch
+                    {
+                        try { await lockTransaction.RollbackAsync(); } catch { }
+                        throw;
+                    }
+                }
+                
                 if (user == null)
                 {
                     return NotFound(new { message = "User not found" });
@@ -3221,16 +4283,31 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
+                // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
                 // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} AND \"ExpertId\" = {userId} FOR UPDATE")
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.Appointment)
-                    .Include(sh => sh.SearchService)
-                        .ThenInclude(ss => ss.ServiceType)
-                            .ThenInclude(st => st.ServiceTypeCategory)
-                    .FirstOrDefaultAsync();
+                SearchHire? searchHire = null;
+                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
+                {
+                    try
+                    {
+                        searchHire = await _context.SearchHires
+                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} AND \"ExpertId\" = {userId} FOR UPDATE")
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.Client)
+                            .Include(sh => sh.Appointment)
+                            .Include(sh => sh.SearchService)
+                                .ThenInclude(ss => ss.ServiceType)
+                                    .ThenInclude(st => st.ServiceTypeCategory)
+                            .FirstOrDefaultAsync();
+                        
+                        await lockTransaction.CommitAsync();
+                    }
+                    catch
+                    {
+                        try { await lockTransaction.RollbackAsync(); } catch { }
+                        throw;
+                    }
+                }
 
                 if (searchHire == null)
                 {
@@ -3333,14 +4410,29 @@ namespace newApi.Controllers
             }
             try
             {
+                // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
                 // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.Expert)
-                    .ThenInclude(e => e.ExpertProfile)
-                    .FirstOrDefaultAsync();
+                SearchHire? searchHire = null;
+                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
+                {
+                    try
+                    {
+                        searchHire = await _context.SearchHires
+                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.Client)
+                            .Include(sh => sh.Expert)
+                            .ThenInclude(e => e.ExpertProfile)
+                            .FirstOrDefaultAsync();
+                        
+                        await lockTransaction.CommitAsync();
+                    }
+                    catch
+                    {
+                        try { await lockTransaction.RollbackAsync(); } catch { }
+                        throw;
+                    }
+                }
 
                 if (searchHire == null)
                 {
@@ -3397,14 +4489,29 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Resolution reason is required" });
                 }
 
+                // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
                 // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.Expert)
-                    .ThenInclude(e => e.ExpertProfile)
-                    .FirstOrDefaultAsync();
+                SearchHire? searchHire = null;
+                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
+                {
+                    try
+                    {
+                        searchHire = await _context.SearchHires
+                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.Client)
+                            .Include(sh => sh.Expert)
+                            .ThenInclude(e => e.ExpertProfile)
+                            .FirstOrDefaultAsync();
+                        
+                        await lockTransaction.CommitAsync();
+                    }
+                    catch
+                    {
+                        try { await lockTransaction.RollbackAsync(); } catch { }
+                        throw;
+                    }
+                }
 
                 if (searchHire == null)
                 {
@@ -3763,23 +4870,160 @@ namespace newApi.Controllers
                 else
                 {
                     // Crear nuevo evento
-                var processedEvent = new ProcessedWebhookEvent
-                {
-                    EventId = eventId,
-                    EventType = eventType,
-                    StripeAccountId = stripeAccountId,
-                    UserId = userId,
-                    Status = status,
-                    ErrorMessage = errorMessage,
-                    ProcessedAt = DateTime.UtcNow
-                };
-                _context.ProcessedWebhookEvents.Add(processedEvent);
+                    var processedEvent = new ProcessedWebhookEvent
+                    {
+                        EventId = eventId,
+                        EventType = eventType,
+                        StripeAccountId = stripeAccountId,
+                        UserId = userId,
+                        Status = status,
+                        ErrorMessage = errorMessage,
+                        ProcessedAt = DateTime.UtcNow
+                    };
+                    _context.ProcessedWebhookEvents.Add(processedEvent);
                 }
                 
                 await _context.SaveChangesAsync();
             }
+            catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+            {
+                // ✅ FIX CRÍTICO: Si la conexión está disposed, usar un nuevo contexto
+                try
+                {
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    
+                    var existingEvent = await recoveryContext.ProcessedWebhookEvents
+                        .FirstOrDefaultAsync(e => e.EventId == eventId);
+
+                    if (existingEvent != null)
+                    {
+                        existingEvent.Status = status;
+                        existingEvent.ErrorMessage = errorMessage;
+                        existingEvent.ProcessedAt = DateTime.UtcNow;
+                    }
+                    else
+                    {
+                        var processedEvent = new ProcessedWebhookEvent
+                        {
+                            EventId = eventId,
+                            EventType = eventType,
+                            StripeAccountId = stripeAccountId,
+                            UserId = userId,
+                            Status = status,
+                            ErrorMessage = errorMessage,
+                            ProcessedAt = DateTime.UtcNow
+                        };
+                        recoveryContext.ProcessedWebhookEvents.Add(processedEvent);
+                    }
+                    
+                    await recoveryContext.SaveChangesAsync();
+                }
+                catch (Exception recoveryEx)
+                {
+                    // ✅ CRÍTICO: Si falla el recovery, loguear en consola en rojo
+                    var originalColor = Console.ForegroundColor;
+                    try
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        var separator1 = new string('=', 80);
+                        Console.Error.WriteLine($"\n{separator1}");
+                        Console.Error.WriteLine($"🔴 [CRITICAL] Failed to mark webhook event as processed (recovery failed)");
+                        Console.Error.WriteLine($"{separator1}");
+                        Console.Error.WriteLine($"EventId: {eventId}");
+                        Console.Error.WriteLine($"EventType: {eventType}");
+                        Console.Error.WriteLine($"Status: {status}");
+                        Console.Error.WriteLine($"Error: {recoveryEx.Message}");
+                        Console.Error.WriteLine($"{separator1}\n");
+                        Console.ForegroundColor = originalColor;
+                    }
+                    catch
+                    {
+                        Console.Error.WriteLine($"Failed to mark webhook event as processed: {eventId}, Error: {recoveryEx.Message}");
+                    }
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                // ✅ FIX CRÍTICO: Si la conexión está disposed, usar un nuevo contexto
+                try
+                {
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    
+                    var existingEvent = await recoveryContext.ProcessedWebhookEvents
+                        .FirstOrDefaultAsync(e => e.EventId == eventId);
+
+                    if (existingEvent != null)
+                    {
+                        existingEvent.Status = status;
+                        existingEvent.ErrorMessage = errorMessage;
+                        existingEvent.ProcessedAt = DateTime.UtcNow;
+                    }
+                    else
+                    {
+                        var processedEvent = new ProcessedWebhookEvent
+                        {
+                            EventId = eventId,
+                            EventType = eventType,
+                            StripeAccountId = stripeAccountId,
+                            UserId = userId,
+                            Status = status,
+                            ErrorMessage = errorMessage,
+                            ProcessedAt = DateTime.UtcNow
+                        };
+                        recoveryContext.ProcessedWebhookEvents.Add(processedEvent);
+                    }
+                    
+                    await recoveryContext.SaveChangesAsync();
+                }
+                catch (Exception recoveryEx)
+                {
+                    // ✅ CRÍTICO: Si falla el recovery, loguear en consola en rojo
+                    var originalColor = Console.ForegroundColor;
+                    try
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        var separator1 = new string('=', 80);
+                        Console.Error.WriteLine($"\n{separator1}");
+                        Console.Error.WriteLine($"🔴 [CRITICAL] Failed to mark webhook event as processed (recovery failed)");
+                        Console.Error.WriteLine($"{separator1}");
+                        Console.Error.WriteLine($"EventId: {eventId}");
+                        Console.Error.WriteLine($"EventType: {eventType}");
+                        Console.Error.WriteLine($"Status: {status}");
+                        Console.Error.WriteLine($"Error: {recoveryEx.Message}");
+                        Console.Error.WriteLine($"{separator1}\n");
+                        Console.ForegroundColor = originalColor;
+                    }
+                    catch
+                    {
+                        Console.Error.WriteLine($"Failed to mark webhook event as processed: {eventId}, Error: {recoveryEx.Message}");
+                    }
+                }
+            }
             catch (Exception ex)
             {
+                // ✅ CRÍTICO: Loguear error en consola en rojo
+                var originalColor = Console.ForegroundColor;
+                try
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    var separator2 = new string('=', 80);
+                    Console.Error.WriteLine($"\n{separator2}");
+                    Console.Error.WriteLine($"🔴 [ERROR] Failed to mark webhook event as processed");
+                    Console.Error.WriteLine($"{separator2}");
+                    Console.Error.WriteLine($"EventId: {eventId}");
+                    Console.Error.WriteLine($"EventType: {eventType}");
+                    Console.Error.WriteLine($"Status: {status}");
+                    Console.Error.WriteLine($"Error Type: {ex.GetType().Name}");
+                    Console.Error.WriteLine($"Error Message: {ex.Message}");
+                    Console.Error.WriteLine($"{separator2}\n");
+                    Console.ForegroundColor = originalColor;
+                }
+                catch
+                {
+                    Console.Error.WriteLine($"Failed to mark webhook event as processed: {eventId}, Error: {ex.Message}");
+                }
                 // No lanzar excepción para no interrumpir el flujo principal
             }
         }

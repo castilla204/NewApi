@@ -151,13 +151,11 @@ namespace newApi.Services
                     return; // Aún no han pasado 24 horas
                 }
 
-                // ✅ CORRECCIÓN: Usar la estrategia de ejecución para manejar transacciones con reintentos
-                var strategy = _context.Database.CreateExecutionStrategy();
-                await strategy.ExecuteAsync(async () =>
+                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+                using var transaction = await _context.Database.BeginTransactionAsync();
+                try
                 {
-                    using var transaction = await _context.Database.BeginTransactionAsync();
-                    try
-                    {
                         // Verificar nuevamente dentro de la transacción
                         var currentSearchHire = await _context.SearchHires
                             .Include(sh => sh.Status)
@@ -233,6 +231,32 @@ namespace newApi.Services
                         await _context.SaveChangesAsync();
                         await transaction.CommitAsync();
                     }
+                    catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch
+                        {
+                            // Ignorar errores de rollback si la conexión ya está disposed
+                        }
+                        throw;
+                    }
+                    catch (ObjectDisposedException disposedEx)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch
+                        {
+                            // Ignorar errores de rollback si la conexión ya está disposed
+                        }
+                        throw;
+                    }
                     catch (Exception ex)
                     {
                         await transaction.RollbackAsync();
@@ -248,9 +272,8 @@ namespace newApi.Services
                                 ErrorMessage = ex.Message
                             }
                         );
-                        throw; // Re-throw para que la estrategia de ejecución pueda reintentar
+                        throw;
                     }
-                });
             }
             catch (Exception ex)
             {

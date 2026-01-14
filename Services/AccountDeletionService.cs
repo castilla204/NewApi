@@ -151,11 +151,10 @@ namespace newApi.Services
             // ✅ La transacción solo cubre la eliminación de datos, NO el procesamiento de dinero
             // Si esta fase falla, el dinero ya está seguro (procesado en Fase 1)
             
-            var strategy = _context.Database.CreateExecutionStrategy();
-            return await strategy.ExecuteAsync(async () =>
-            {
-                using var transaction = await _context.Database.BeginTransactionAsync(linkedCts.Token);
-                try
+            // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+            // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+            using var transaction = await _context.Database.BeginTransactionAsync(linkedCts.Token);
+            try
             {
                 // 4. Eliminar datos del usuario (dentro de transacción)
                 await DeleteUserDataAsync(userId, linkedCts.Token);
@@ -398,6 +397,32 @@ namespace newApi.Services
                     
                     throw;
                 }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
+                    try
+                    {
+                        await transaction.RollbackAsync(linkedCts.Token);
+                    }
+                    catch
+                    {
+                        // Ignorar errores de rollback si la conexión ya está disposed
+                    }
+                    throw;
+                }
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
+                    try
+                    {
+                        await transaction.RollbackAsync(linkedCts.Token);
+                    }
+                    catch
+                    {
+                        // Ignorar errores de rollback si la conexión ya está disposed
+                    }
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     // ✅ MEJOR PRÁCTICA: Logging completo del error antes de rethrow (catch-all para otros errores)
@@ -435,7 +460,6 @@ namespace newApi.Services
                     
                     throw; // Re-throw para que el controller maneje el error
                 }
-            });
         }
 
         private async Task<List<ActiveContractInfo>> GetActiveContractsAsync(int userId, CancellationToken cancellationToken = default)

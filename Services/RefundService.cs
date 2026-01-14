@@ -43,16 +43,33 @@ namespace newApi.Services
         {
             try
             {
-                // Bloqueo a nivel de fila para consistencia
-                var searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {searchHireId} FOR UPDATE")
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.Expert)
-                        .ThenInclude(e => e.ExpertProfile)
-                    .Include(sh => sh.SearchService)
-                        .ThenInclude(ss => ss.ServiceType)
-                    .FirstOrDefaultAsync();
+                // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
+                // Abrir transacción temporal solo para el bloqueo FOR UPDATE
+                SearchHire? searchHire = null;
+                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
+                {
+                    try
+                    {
+                        // Bloqueo a nivel de fila para consistencia
+                        searchHire = await _context.SearchHires
+                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {searchHireId} FOR UPDATE")
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.Client)
+                            .Include(sh => sh.Expert)
+                                .ThenInclude(e => e.ExpertProfile)
+                            .Include(sh => sh.SearchService)
+                                .ThenInclude(ss => ss.ServiceType)
+                            .FirstOrDefaultAsync();
+                        
+                        // Commit inmediato para liberar el lock (el bloqueo se mantiene hasta el commit)
+                        await lockTransaction.CommitAsync();
+                    }
+                    catch
+                    {
+                        try { await lockTransaction.RollbackAsync(); } catch { }
+                        throw;
+                    }
+                }
 
                 if (searchHire == null)
                 {
@@ -545,17 +562,15 @@ namespace newApi.Services
                     var existingTransaction = _context.Database.CurrentTransaction;
                     bool stateUpdateSuccess = false;
                     
-                    // ✅ Si no hay transacción existente, crear una nueva con estrategia de reintento
+                    // ✅ Si no hay transacción existente, crear una nueva
+                    // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
                     if (existingTransaction == null)
                     {
-                        var stateStrategy = _context.Database.CreateExecutionStrategy();
-                        stateUpdateSuccess = await stateStrategy.ExecuteAsync(async () =>
+                        using var stateTransaction = await _context.Database.BeginTransactionAsync(
+                            System.Data.IsolationLevel.ReadCommitted
+                        );
+                        try
                         {
-                            using var stateTransaction = await _context.Database.BeginTransactionAsync(
-                                System.Data.IsolationLevel.ReadCommitted
-                            );
-                            try
-                            {
                             // ✅ MEJORA GROK: Cargar entidades explícitamente para evitar null references
                             var searchHireForState = await _context.SearchHires
                                 .Include(sh => sh.Status)
@@ -666,6 +681,58 @@ namespace newApi.Services
                         );
                         return false; // NO procesar dinero si no pudimos cambiar estado
                     }
+                    catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
+                        try
+                        {
+                            await stateTransaction.RollbackAsync();
+                        }
+                        catch
+                        {
+                            // Ignorar errores de rollback si la conexión ya está disposed
+                        }
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Connection disposed updating state",
+                            details: $"Connection disposed while updating state for SearchHire {searchHireId}. Error: {dbEx.Message}",
+                            userId: initiatedByUserId ?? searchHire?.ClientId ?? 0,
+                            source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId,
+                            additionalData: new { 
+                                Status = statusValue,
+                                Error = dbEx.Message,
+                                ErrorType = dbEx.GetType().Name
+                            }
+                        );
+                        return false;
+                    }
+                    catch (ObjectDisposedException disposedEx)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
+                        try
+                        {
+                            await stateTransaction.RollbackAsync();
+                        }
+                        catch
+                        {
+                            // Ignorar errores de rollback si la conexión ya está disposed
+                        }
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Connection disposed updating state",
+                            details: $"Connection disposed while updating state for SearchHire {searchHireId}. Error: {disposedEx.Message}",
+                            userId: initiatedByUserId ?? searchHire?.ClientId ?? 0,
+                            source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId,
+                            additionalData: new { 
+                                Status = statusValue,
+                                Error = disposedEx.Message,
+                                ErrorType = disposedEx.GetType().Name
+                            }
+                        );
+                        return false;
+                    }
                     catch (Exception ex)
                     {
                         // Error de BD al cambiar estado → Revertir
@@ -687,7 +754,7 @@ namespace newApi.Services
                         );
                         return false; // NO procesar dinero si no pudimos cambiar estado
                     }
-                    });
+                    stateUpdateSuccess = true; // ✅ Si llegamos aquí, la transacción se completó exitosamente
                     }
                     else
                     {
@@ -2419,18 +2486,10 @@ namespace newApi.Services
                     }
                 };
                 
-                // ✅ Si no hay transacción existente, usar estrategia de reintento
-                if (existingTransactionForMoney == null)
-                {
-                    var strategy = _context.Database.CreateExecutionStrategy();
-                    return await strategy.ExecuteAsync(ProcessMoneyAsync);
-                }
-                else
-                {
-                    // ✅ Usar transacción existente - ejecutar directamente sin estrategia de reintento
-                    // (el reintento se maneja a nivel de la transacción global)
-                    return await ProcessMoneyAsync();
-                }
+                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+                // Ejecutar directamente - ProcessMoneyAsync ya maneja su propia transacción si no existe una
+                return await ProcessMoneyAsync();
             }
             catch (Exception ex)
             {

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 using newApi.DataLayer.Models;
 
@@ -36,6 +37,7 @@ namespace newApi.Services
         
         private readonly ITimezoneService _timezoneService;
         private readonly INotificationService _notificationService;
+        private readonly IServiceScopeFactory _serviceScopeFactory;
 
         // ✅ MEJORA: Cache de estados para evitar consultas repetidas a la BD
         // Usa una clave compuesta: "StatusType|StatusValue" -> StatusId
@@ -47,7 +49,7 @@ namespace newApi.Services
         /// <summary>
         /// Constructor
         /// </summary>
-        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService, INotificationService notificationService)
+        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService, INotificationService notificationService, IServiceScopeFactory serviceScopeFactory)
         {
 
             _context = context;
@@ -61,6 +63,8 @@ namespace newApi.Services
             _stripeValidationService = stripeValidationService;
             
             _timezoneService = timezoneService;
+            
+            _serviceScopeFactory = serviceScopeFactory;
             
             _notificationService = notificationService;
 
@@ -352,248 +356,418 @@ namespace newApi.Services
 
             {
 
-                // ✅ CORRECCIÓN: Usar la estrategia de ejecución para manejar transacciones con reintentos (NpgsqlRetryingExecutionStrategy)
+                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+                // ✅ PROTECCIÓN: Abrir transacción ANTES de cualquier operación para evitar race conditions
 
-                var strategy = _context.Database.CreateExecutionStrategy();
+                using var transaction = await _context.Database.BeginTransactionAsync();
 
-                return await strategy.ExecuteAsync(async () =>
+                try
 
                 {
 
-                    // ✅ PROTECCIÓN: Abrir transacción ANTES de cualquier operación para evitar race conditions
+                    // ✅ PROTECCIÓN: Usar row-level locking dentro de la transacción para evitar race conditions
 
-                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    // Bloquear el SearchHire con FOR UPDATE para evitar que dos usuarios creen citas simultáneamente
+
+                    var searchHire = await _context.SearchHires
+
+                        .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {dto.SearchHireId} FOR UPDATE")
+
+                        .Include(sh => sh.Appointment)
+
+                        .Include(sh => sh.Status)
+
+                        .Include(sh => sh.SearchService)
+
+                            .ThenInclude(ss => ss.ExpertProfile)
+
+                        .FirstOrDefaultAsync();
+
+
+
+                    if (searchHire == null)
+
+                        throw new ArgumentException("SearchHire not found");
+
+
+
+                    // ✅ VALIDACIÓN CRÍTICA: Verificar que el SearchHire NO esté finalizado
+
+                    if (searchHire.Status?.IsFinalizationStatus == true)
+
+                    {
+
+                        var searchHireStatus = searchHire.Status?.StatusValue ?? "unknown";
+
+                        throw new InvalidOperationException(
+
+                            $"No se puede crear una cita cuando el servicio está en estado de finalización '{searchHireStatus}'. " +
+
+                            $"El servicio debe estar activo para poder crear citas."
+
+                        );
+
+                    }
+
+
+
+                    // ✅ VALIDACIÓN: Verificar que no tenga ya una cita (con el bloqueo activo para evitar race conditions)
+
+                    if (searchHire.Appointment != null)
+
+                        throw new InvalidOperationException("SearchHire already has an appointment");
+
+
+
+                    // ✅ MEJORA: Obtener el estado "awaiting_appointment" usando cache
+                    var awaitingStatusId = await GetStatusIdByValueAsync(
+                        AppointmentStatus.AwaitingAppointment.ToStringValue(), 
+                        "AppointmentStatus"
+                    );
+
+                    // ✅ INTERNACIONALIZACIÓN: Obtener timezone efectivo y convertir fecha/hora local a UTC
+                    // Prioridad: DTO > SearchHire.ExpertTimezone > ExpertProfile.Timezone > UTC
+                    var expertTimezone = !string.IsNullOrWhiteSpace(dto.Timezone) && _timezoneService.IsValidTimezone(dto.Timezone)
+                        ? dto.Timezone
+                        : _timezoneService.GetEffectiveTimezone(
+                            searchHire.ExpertTimezone,
+                            searchHire.SearchService?.ExpertProfile?.Timezone
+                        );
+                    
+                    // Construir DateTime local (asumiendo que viene en hora local del experto)
+                    var proposedDateTimeLocal = dto.ProposedDate.Date + dto.ProposedTime;
+                    
+                    // Convertir de hora local a UTC
+                    var proposedDateTimeUtc = _timezoneService.ConvertToUtc(proposedDateTimeLocal, expertTimezone);
+                    
+                    // Separar fecha y hora en UTC para guardar
+                    var proposedDateUtc = proposedDateTimeUtc.Date;
+                    var proposedTimeUtc = proposedDateTimeUtc.TimeOfDay;
+
+                    // ✅ VALIDACIÓN: Verificar que la cita tenga al menos 24 horas de anticipación
+                    var timeUntilAppointment = proposedDateTimeUtc - DateTime.UtcNow;
+
+                    
+
+                    if (timeUntilAppointment.TotalHours < 24)
+
+                    {
+
+                        throw new InvalidOperationException(
+
+                            $"Las citas deben crearse con al menos 24 horas de anticipación. " +
+
+                            $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
+
+                            $"Fecha/hora propuesta: {proposedDateTimeUtc:dd/MM/yyyy HH:mm} UTC ({proposedDateTimeLocal:dd/MM/yyyy HH:mm} {expertTimezone})"
+
+                        );
+
+                    }
+
+
+
+                    // ✅ VALIDACIÓN: Verificar que la ubicación propuesta esté dentro del rango del experto
+
+                    await ValidateAppointmentLocationAsync(searchHire, dto.Latitude, dto.Longitude);
+
+
+
+                    // ✅ VALIDACIÓN: Verificar que la fecha/hora propuesta esté dentro del horario de disponibilidad del experto
+                    // Usar la fecha/hora en UTC para la validación
+                    await ValidateAppointmentAvailabilityAsync(searchHire, proposedDateTimeUtc);
+
+
+
+                    // Crear la cita dentro de la transacción
+                    // ✅ INTERNACIONALIZACIÓN: Guardar fecha/hora en UTC (convertida desde hora local)
+
+                    var appointment = new Appointment
+
+                    {
+
+                        SearchHireId = dto.SearchHireId,
+
+                        StatusId = awaitingStatusId,
+
+                        ProposedDate = DateTime.SpecifyKind(proposedDateUtc, DateTimeKind.Utc),
+
+                        ProposedTime = proposedTimeUtc,
+
+                        Location = dto.Location,
+
+                        Latitude = dto.Latitude,
+
+                        Longitude = dto.Longitude,
+
+                        DoorNumber = dto.DoorNumber,
+
+                        OwnerPhone = dto.OwnerPhone,
+
+                        SiteDetails = dto.SiteDetails,
+
+                        CreatedAt = DateTime.UtcNow,
+
+                        UpdatedAt = DateTime.UtcNow
+
+                    };
+
+
+
+                    _context.Appointments.Add(appointment);
 
                     try
-
                     {
-
-                        // ✅ PROTECCIÓN: Usar row-level locking dentro de la transacción para evitar race conditions
-
-                        // Bloquear el SearchHire con FOR UPDATE para evitar que dos usuarios creen citas simultáneamente
-
-                        var searchHire = await _context.SearchHires
-
-                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {dto.SearchHireId} FOR UPDATE")
-
-                            .Include(sh => sh.Appointment)
-
-                            .Include(sh => sh.Status)
-
-                            .Include(sh => sh.SearchService)
-
-                                .ThenInclude(ss => ss.ExpertProfile)
-
-                            .FirstOrDefaultAsync();
-
-
-
-                        if (searchHire == null)
-
-                            throw new ArgumentException("SearchHire not found");
-
-
-
-                        // ✅ VALIDACIÓN CRÍTICA: Verificar que el SearchHire NO esté finalizado
-
-                        if (searchHire.Status?.IsFinalizationStatus == true)
-
-                        {
-
-                            var searchHireStatus = searchHire.Status?.StatusValue ?? "unknown";
-
-                            throw new InvalidOperationException(
-
-                                $"No se puede crear una cita cuando el servicio está en estado de finalización '{searchHireStatus}'. " +
-
-                                $"El servicio debe estar activo para poder crear citas."
-
-                            );
-
-                        }
-
-
-
-                        // ✅ VALIDACIÓN: Verificar que no tenga ya una cita (con el bloqueo activo para evitar race conditions)
-
-                        if (searchHire.Appointment != null)
-
-                            throw new InvalidOperationException("SearchHire already has an appointment");
-
-
-
-                        // ✅ MEJORA: Obtener el estado "awaiting_appointment" usando cache
-                        var awaitingStatusId = await GetStatusIdByValueAsync(
-                            AppointmentStatus.AwaitingAppointment.ToStringValue(), 
-                            "AppointmentStatus"
-                        );
-
-                        // ✅ INTERNACIONALIZACIÓN: Obtener timezone efectivo y convertir fecha/hora local a UTC
-                        // Prioridad: DTO > SearchHire.ExpertTimezone > ExpertProfile.Timezone > UTC
-                        var expertTimezone = !string.IsNullOrWhiteSpace(dto.Timezone) && _timezoneService.IsValidTimezone(dto.Timezone)
-                            ? dto.Timezone
-                            : _timezoneService.GetEffectiveTimezone(
-                                searchHire.ExpertTimezone,
-                                searchHire.SearchService?.ExpertProfile?.Timezone
-                            );
-                        
-                        // Construir DateTime local (asumiendo que viene en hora local del experto)
-                        var proposedDateTimeLocal = dto.ProposedDate.Date + dto.ProposedTime;
-                        
-                        // Convertir de hora local a UTC
-                        var proposedDateTimeUtc = _timezoneService.ConvertToUtc(proposedDateTimeLocal, expertTimezone);
-                        
-                        // Separar fecha y hora en UTC para guardar
-                        var proposedDateUtc = proposedDateTimeUtc.Date;
-                        var proposedTimeUtc = proposedDateTimeUtc.TimeOfDay;
-
-                        // ✅ VALIDACIÓN: Verificar que la cita tenga al menos 24 horas de anticipación
-                        var timeUntilAppointment = proposedDateTimeUtc - DateTime.UtcNow;
-
-                        
-
-                        if (timeUntilAppointment.TotalHours < 24)
-
-                        {
-
-                            throw new InvalidOperationException(
-
-                                $"Las citas deben crearse con al menos 24 horas de anticipación. " +
-
-                                $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
-
-                                $"Fecha/hora propuesta: {proposedDateTimeUtc:dd/MM/yyyy HH:mm} UTC ({proposedDateTimeLocal:dd/MM/yyyy HH:mm} {expertTimezone})"
-
-                            );
-
-                        }
-
-
-
-                        // ✅ VALIDACIÓN: Verificar que la ubicación propuesta esté dentro del rango del experto
-
-                        await ValidateAppointmentLocationAsync(searchHire, dto.Latitude, dto.Longitude);
-
-
-
-                        // ✅ VALIDACIÓN: Verificar que la fecha/hora propuesta esté dentro del horario de disponibilidad del experto
-                        // Usar la fecha/hora en UTC para la validación
-                        await ValidateAppointmentAvailabilityAsync(searchHire, proposedDateTimeUtc);
-
-
-
-                        // Crear la cita dentro de la transacción
-                        // ✅ INTERNACIONALIZACIÓN: Guardar fecha/hora en UTC (convertida desde hora local)
-
-                        var appointment = new Appointment
-
-                        {
-
-                            SearchHireId = dto.SearchHireId,
-
-                            StatusId = awaitingStatusId,
-
-                            ProposedDate = DateTime.SpecifyKind(proposedDateUtc, DateTimeKind.Utc),
-
-                            ProposedTime = proposedTimeUtc,
-
-                            Location = dto.Location,
-
-                            Latitude = dto.Latitude,
-
-                            Longitude = dto.Longitude,
-
-                            DoorNumber = dto.DoorNumber,
-
-                            OwnerPhone = dto.OwnerPhone,
-
-                            SiteDetails = dto.SiteDetails,
-
-                            CreatedAt = DateTime.UtcNow,
-
-                            UpdatedAt = DateTime.UtcNow
-
-                        };
-
-
-
-                        _context.Appointments.Add(appointment);
-
                         await _context.SaveChangesAsync();
-
-                        // ✅ Crear timer para propuesta del cliente (24 horas)
-                        // Cuando se crea la cita, el estado es "awaiting_appointment", 
-                        // por lo que el cliente tiene 24 horas para proponer una fecha/hora
-                        var proposalTimer = new AppointmentTimer
-                        {
-                            AppointmentId = appointment.Id,
-                            TimerType = "proposal",
-                            StartTime = DateTime.UtcNow,
-                            EndTime = DateTime.UtcNow.AddHours(24),
-                            IsExpired = false,
-                            CreatedAt = DateTime.UtcNow
-                        };
-
-                        _context.AppointmentTimers.Add(proposalTimer);
-                        await _context.SaveChangesAsync();
-
-                        // Programar scheduled job para cuando expire el timer (24 horas)
-                        var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                            service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
-                            proposalTimer.EndTime - DateTime.UtcNow
-                        );
-
-                        // Guardar el JobId en el timer
-                        proposalTimer.HangfireJobId = jobId;
-                        await _context.SaveChangesAsync();
-
-                        // Commit de la transacción
-
-                        await transaction.CommitAsync();
-
-
-
-                        // Cargar la cita con todas las relaciones para devolver el DTO completo
-
-                        var createdAppointment = await _context.Appointments
-
-                            .Include(a => a.SearchHire)
-
-                                .ThenInclude(sh => sh.Client)
-
-                            .Include(a => a.SearchHire)
-
-                                .ThenInclude(sh => sh.Expert)
-
-                            .Include(a => a.SearchHire)
-
-                                .ThenInclude(sh => sh.Status)
-
-                            .Include(a => a.Status)
-
-                            .Include(a => a.Timers)
-
-                            .FirstAsync(a => a.Id == appointment.Id);
-
-
-
-                        return MapToDto(createdAppointment);
-
                     }
-
-                    catch
-
+                    catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
                     {
-
-                        // Rollback en caso de error
-
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
                         await transaction.RollbackAsync();
-
-                        throw;
-
+                        using var recoveryScope = _serviceScopeFactory.CreateScope();
+                        var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                        var recoverySearchHire = await recoveryContext.SearchHires
+                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {dto.SearchHireId} FOR UPDATE")
+                            .Include(sh => sh.Appointment)
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.SearchService)
+                                .ThenInclude(ss => ss.ExpertProfile)
+                            .FirstOrDefaultAsync();
+                        
+                        if (recoverySearchHire == null || recoverySearchHire.Appointment != null)
+                        {
+                            throw; // Re-lanzar si no se puede recuperar
+                        }
+                        
+                        await using var recoveryTransaction = await recoveryContext.Database.BeginTransactionAsync();
+                        try
+                        {
+                            var recoveryAppointment = new Appointment
+                            {
+                                SearchHireId = dto.SearchHireId,
+                                StatusId = awaitingStatusId,
+                                ProposedDate = DateTime.SpecifyKind(proposedDateUtc, DateTimeKind.Utc),
+                                ProposedTime = proposedTimeUtc,
+                                Location = dto.Location,
+                                Latitude = dto.Latitude,
+                                Longitude = dto.Longitude,
+                                DoorNumber = dto.DoorNumber,
+                                OwnerPhone = dto.OwnerPhone,
+                                SiteDetails = dto.SiteDetails,
+                                CreatedAt = DateTime.UtcNow,
+                                UpdatedAt = DateTime.UtcNow
+                            };
+                            
+                            recoveryContext.Appointments.Add(recoveryAppointment);
+                            await recoveryContext.SaveChangesAsync();
+                            
+                            var recoveryProposalTimer = new AppointmentTimer
+                            {
+                                AppointmentId = recoveryAppointment.Id,
+                                TimerType = "proposal",
+                                StartTime = DateTime.UtcNow,
+                                EndTime = DateTime.UtcNow.AddHours(24),
+                                IsExpired = false,
+                                CreatedAt = DateTime.UtcNow
+                            };
+                            
+                            recoveryContext.AppointmentTimers.Add(recoveryProposalTimer);
+                            await recoveryContext.SaveChangesAsync();
+                            
+                            var recoveryJobId = BackgroundJob.Schedule<IAppointmentService>(
+                                service => service.ProcessAppointmentTimerAsync(recoveryProposalTimer.Id),
+                                recoveryProposalTimer.EndTime - DateTime.UtcNow
+                            );
+                            
+                            recoveryProposalTimer.HangfireJobId = recoveryJobId;
+                            await recoveryContext.SaveChangesAsync();
+                            
+                            await recoveryTransaction.CommitAsync();
+                            
+                            var recoveryCreatedAppointment = await recoveryContext.Appointments
+                                .Include(a => a.SearchHire)
+                                    .ThenInclude(sh => sh.Client)
+                                .Include(a => a.SearchHire)
+                                    .ThenInclude(sh => sh.Expert)
+                                .Include(a => a.SearchHire)
+                                    .ThenInclude(sh => sh.Status)
+                                .Include(a => a.Status)
+                                .Include(a => a.Timers)
+                                .FirstAsync(a => a.Id == recoveryAppointment.Id);
+                            
+                            return MapToDto(recoveryCreatedAppointment);
+                        }
+                        catch
+                        {
+                            await recoveryTransaction.RollbackAsync();
+                            throw;
+                        }
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch { }
+                        
+                        using var recoveryScope = _serviceScopeFactory.CreateScope();
+                        var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                        var recoverySearchHire = await recoveryContext.SearchHires
+                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {dto.SearchHireId} FOR UPDATE")
+                            .Include(sh => sh.Appointment)
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.SearchService)
+                                .ThenInclude(ss => ss.ExpertProfile)
+                            .FirstOrDefaultAsync();
+                        
+                        if (recoverySearchHire == null || recoverySearchHire.Appointment != null)
+                        {
+                            throw; // Re-lanzar si no se puede recuperar
+                        }
+                        
+                        await using var recoveryTransaction = await recoveryContext.Database.BeginTransactionAsync();
+                        try
+                        {
+                            var recoveryAppointment = new Appointment
+                            {
+                                SearchHireId = dto.SearchHireId,
+                                StatusId = awaitingStatusId,
+                                ProposedDate = DateTime.SpecifyKind(proposedDateUtc, DateTimeKind.Utc),
+                                ProposedTime = proposedTimeUtc,
+                                Location = dto.Location,
+                                Latitude = dto.Latitude,
+                                Longitude = dto.Longitude,
+                                DoorNumber = dto.DoorNumber,
+                                OwnerPhone = dto.OwnerPhone,
+                                SiteDetails = dto.SiteDetails,
+                                CreatedAt = DateTime.UtcNow,
+                                UpdatedAt = DateTime.UtcNow
+                            };
+                            
+                            recoveryContext.Appointments.Add(recoveryAppointment);
+                            await recoveryContext.SaveChangesAsync();
+                            
+                            var recoveryProposalTimer = new AppointmentTimer
+                            {
+                                AppointmentId = recoveryAppointment.Id,
+                                TimerType = "proposal",
+                                StartTime = DateTime.UtcNow,
+                                EndTime = DateTime.UtcNow.AddHours(24),
+                                IsExpired = false,
+                                CreatedAt = DateTime.UtcNow
+                            };
+                            
+                            recoveryContext.AppointmentTimers.Add(recoveryProposalTimer);
+                            await recoveryContext.SaveChangesAsync();
+                            
+                            var recoveryJobId = BackgroundJob.Schedule<IAppointmentService>(
+                                service => service.ProcessAppointmentTimerAsync(recoveryProposalTimer.Id),
+                                recoveryProposalTimer.EndTime - DateTime.UtcNow
+                            );
+                            
+                            recoveryProposalTimer.HangfireJobId = recoveryJobId;
+                            await recoveryContext.SaveChangesAsync();
+                            
+                            await recoveryTransaction.CommitAsync();
+                            
+                            var recoveryCreatedAppointment = await recoveryContext.Appointments
+                                .Include(a => a.SearchHire)
+                                    .ThenInclude(sh => sh.Client)
+                                .Include(a => a.SearchHire)
+                                    .ThenInclude(sh => sh.Expert)
+                                .Include(a => a.SearchHire)
+                                    .ThenInclude(sh => sh.Status)
+                                .Include(a => a.Status)
+                                .Include(a => a.Timers)
+                                .FirstAsync(a => a.Id == recoveryAppointment.Id);
+                            
+                            return MapToDto(recoveryCreatedAppointment);
+                        }
+                        catch
+                        {
+                            await recoveryTransaction.RollbackAsync();
+                            throw;
+                        }
                     }
 
-                });
+                    // ✅ Crear timer para propuesta del cliente (24 horas)
+                    // Cuando se crea la cita, el estado es "awaiting_appointment", 
+                    // por lo que el cliente tiene 24 horas para proponer una fecha/hora
+                    var proposalTimer = new AppointmentTimer
+                    {
+                        AppointmentId = appointment.Id,
+                        TimerType = "proposal",
+                        StartTime = DateTime.UtcNow,
+                        EndTime = DateTime.UtcNow.AddHours(24),
+                        IsExpired = false,
+                        CreatedAt = DateTime.UtcNow
+                    };
+
+                    _context.AppointmentTimers.Add(proposalTimer);
+                    await _context.SaveChangesAsync();
+
+                    // Programar scheduled job para cuando expire el timer (24 horas)
+                    var jobId = BackgroundJob.Schedule<IAppointmentService>(
+                        service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
+                        proposalTimer.EndTime - DateTime.UtcNow
+                    );
+
+                    // Guardar el JobId en el timer
+                    proposalTimer.HangfireJobId = jobId;
+                    await _context.SaveChangesAsync();
+
+                    // Commit de la transacción
+
+                    await transaction.CommitAsync();
+
+
+
+                    // Cargar la cita con todas las relaciones para devolver el DTO completo
+
+                    var createdAppointment = await _context.Appointments
+
+                        .Include(a => a.SearchHire)
+
+                            .ThenInclude(sh => sh.Client)
+
+                        .Include(a => a.SearchHire)
+
+                            .ThenInclude(sh => sh.Expert)
+
+                        .Include(a => a.SearchHire)
+
+                            .ThenInclude(sh => sh.Status)
+
+                        .Include(a => a.Status)
+
+                        .Include(a => a.Timers)
+
+                        .FirstAsync(a => a.Id == appointment.Id);
+
+
+
+                    return MapToDto(createdAppointment);
+
+                }
+
+                catch
+
+                {
+
+                    // Rollback en caso de error
+
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+
+                    throw;
+
+                }
 
             }
 
@@ -617,17 +791,11 @@ namespace newApi.Services
 
             {
 
-                // ✅ CORRECCIÓN: Usar la estrategia de ejecución para manejar transacciones con reintentos (NpgsqlRetryingExecutionStrategy)
+                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+                // ✅ PROTECCIÓN: Abrir transacción ANTES de cualquier operación para evitar race conditions
 
-                var strategy = _context.Database.CreateExecutionStrategy();
-
-                return await strategy.ExecuteAsync(async () =>
-
-                {
-
-                    // ✅ PROTECCIÓN: Abrir transacción ANTES de cualquier operación para evitar race conditions
-
-                    using var transaction = await _context.Database.BeginTransactionAsync();
+                using var transaction = await _context.Database.BeginTransactionAsync();
 
                     try
 
@@ -1085,19 +1253,41 @@ namespace newApi.Services
 
                     }
 
+                    catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch { }
+                        throw; // Re-lanzar para que el usuario pueda reintentar
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch { }
+                        throw; // Re-lanzar para que el usuario pueda reintentar
+                    }
                     catch (Exception innerEx)
 
                     {
 
                         // ✅ ROLLBACK: Revertir la transacción en caso de error
 
-                        await transaction.RollbackAsync();
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch { }
 
                         throw;
 
                     }
-
-                });
 
             }
 
@@ -1170,13 +1360,10 @@ namespace newApi.Services
                     notifyUser: false
                 );
 
-                // ✅ CORRECCIÓN: Usar la estrategia de ejecución para manejar transacciones con reintentos (NpgsqlRetryingExecutionStrategy)
-                var strategy = _context.Database.CreateExecutionStrategy();
-
-                return await strategy.ExecuteAsync(async () =>
-                {
-                    // ✅ PROTECCIÓN: Abrir transacción ANTES del FOR UPDATE para que el bloqueo funcione
-                    using (var transaction = await _context.Database.BeginTransactionAsync())
+                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+                // ✅ PROTECCIÓN: Abrir transacción ANTES del FOR UPDATE para que el bloqueo funcione
+                using (var transaction = await _context.Database.BeginTransactionAsync())
                     {
                         try
                         {
@@ -1345,6 +1532,26 @@ namespace newApi.Services
                                 notifyUser: false
                             );
                         }
+                        catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                        {
+                            // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                            try
+                            {
+                                await transaction.RollbackAsync();
+                            }
+                            catch { }
+                            throw; // Re-lanzar para que el usuario pueda reintentar
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                            try
+                            {
+                                await transaction.RollbackAsync();
+                            }
+                            catch { }
+                            throw; // Re-lanzar para que el usuario pueda reintentar
+                        }
                         catch (Exception innerEx)
                         {
                             // ✅ LOG: Error en transacción
@@ -1359,7 +1566,11 @@ namespace newApi.Services
                             );
 
                             // ✅ ROLLBACK: Revertir la transacción en caso de error
-                            await transaction.RollbackAsync();
+                            try
+                            {
+                                await transaction.RollbackAsync();
+                            }
+                            catch { }
                             throw;
                         }
                     } // Cierre del using var transaction
@@ -1651,8 +1862,6 @@ namespace newApi.Services
 
                 return result;
 
-                });
-
             }
 
             catch (Exception ex)
@@ -1717,17 +1926,11 @@ namespace newApi.Services
 
             {
 
-                // ✅ CORRECCIÓN: Usar la estrategia de ejecución para manejar transacciones con reintentos (NpgsqlRetryingExecutionStrategy)
+                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+                // ✅ PROTECCIÓN: Abrir transacción ANTES del FOR UPDATE para que el bloqueo funcione
 
-                var strategy = _context.Database.CreateExecutionStrategy();
-
-                return await strategy.ExecuteAsync(async () =>
-
-                {
-
-                    // ✅ PROTECCIÓN: Abrir transacción ANTES del FOR UPDATE para que el bloqueo funcione
-
-                    using var transaction = await _context.Database.BeginTransactionAsync();
+                using var transaction = await _context.Database.BeginTransactionAsync();
 
                     try
 
@@ -2348,19 +2551,41 @@ namespace newApi.Services
 
                     }
 
+                    catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch { }
+                        throw; // Re-lanzar para que el usuario pueda reintentar
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch { }
+                        throw; // Re-lanzar para que el usuario pueda reintentar
+                    }
                     catch (Exception innerEx)
 
                     {
 
                         // ✅ ROLLBACK: Revertir la transacción en caso de error
 
-                        await transaction.RollbackAsync();
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch { }
 
                         throw;
 
                     }
-
-                });
 
             }
 
@@ -2426,17 +2651,11 @@ namespace newApi.Services
 
             {
 
-                // ✅ CORRECCIÓN: Usar la estrategia de ejecución para manejar transacciones con reintentos (NpgsqlRetryingExecutionStrategy)
+                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+                // ✅ PROTECCIÓN: Abrir transacción ANTES del FOR UPDATE para que el bloqueo funcione
 
-                var strategy = _context.Database.CreateExecutionStrategy();
-
-                return await strategy.ExecuteAsync(async () =>
-
-                {
-
-                    // ✅ PROTECCIÓN: Abrir transacción ANTES del FOR UPDATE para que el bloqueo funcione
-
-                    using var transaction = await _context.Database.BeginTransactionAsync();
+                using var transaction = await _context.Database.BeginTransactionAsync();
 
                     try
 
@@ -3142,19 +3361,41 @@ namespace newApi.Services
 
                     }
 
+                    catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch { }
+                        throw; // Re-lanzar para que el usuario pueda reintentar
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch { }
+                        throw; // Re-lanzar para que el usuario pueda reintentar
+                    }
                     catch (Exception innerEx)
 
                     {
 
                         // ✅ ROLLBACK: Revertir la transacción en caso de error
 
-                        await transaction.RollbackAsync();
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch { }
 
                         throw;
 
                     }
-
-                });
 
             }
 
@@ -5786,17 +6027,11 @@ namespace newApi.Services
 
             {
 
-                // ✅ CORRECCIÓN: Usar la estrategia de ejecución para manejar transacciones con reintentos (NpgsqlRetryingExecutionStrategy)
+                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+                // ✅ PROTECCIÓN: Abrir transacción ANTES del FOR UPDATE para que el bloqueo funcione
 
-                var strategy = _context.Database.CreateExecutionStrategy();
-
-                return await strategy.ExecuteAsync(async () =>
-
-                {
-
-                    // ✅ PROTECCIÓN: Abrir transacción ANTES del FOR UPDATE para que el bloqueo funcione
-
-                    using var transaction = await _context.Database.BeginTransactionAsync();
+                using var transaction = await _context.Database.BeginTransactionAsync();
 
                     try
 
@@ -6137,19 +6372,41 @@ namespace newApi.Services
 
                     }
 
+                    catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch { }
+                        throw; // Re-lanzar para que el usuario pueda reintentar
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch { }
+                        throw; // Re-lanzar para que el usuario pueda reintentar
+                    }
                     catch (Exception innerEx)
 
                     {
 
                         // ✅ ROLLBACK: Revertir la transacción en caso de error
 
-                        await transaction.RollbackAsync();
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch { }
 
                         throw;
 
                     }
-
-                });
 
             }
 

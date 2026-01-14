@@ -395,80 +395,75 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
                 }
 
-                var strategy = _context.Database.CreateExecutionStrategy();
-                return await strategy.ExecuteAsync(async () =>
+                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+                // Este método solo crea una sesión de Stripe (operación externa), no necesita transacción
+                // Eliminada transacción y ExecutionStrategy para evitar conflictos con PgBouncer
+                try
                 {
-                    using var transaction = await _context.Database.BeginTransactionAsync();
-                    try
+                    // ✅ All payments are now processed through Stripe - no internal balance system
+                    var amountToCharge = service.Price;
+
+                    var domain = "https://inspecciono.com";
+                    var options = new SessionCreateOptions
                     {
-                        // ✅ All payments are now processed through Stripe - no internal balance system
-                        var amountToCharge = service.Price;
-
-                        var domain = "https://inspecciono.com";
-                        var options = new SessionCreateOptions
+                        PaymentMethodTypes = new List<string> { "card" },
+                        LineItems = new List<SessionLineItemOptions>
                         {
-                            PaymentMethodTypes = new List<string> { "card" },
-                            LineItems = new List<SessionLineItemOptions>
+                            new SessionLineItemOptions
                             {
-                                new SessionLineItemOptions
+                                PriceData = new SessionLineItemPriceDataOptions
                                 {
-                                    PriceData = new SessionLineItemPriceDataOptions
+                                    Currency = "eur",
+                                    UnitAmount = checked((long)Math.Round(amountToCharge * 100)),
+                                    ProductData = new SessionLineItemPriceDataProductDataOptions
                                     {
-                                        Currency = "eur",
-                                        UnitAmount = checked((long)Math.Round(amountToCharge * 100)),
-                                        ProductData = new SessionLineItemPriceDataProductDataOptions
-                                        {
-                                            Name = $"Payment for Service {service.Id}"
-                                        },
-                                        // ✅ STRIPE TAX: Configurar tax como inclusivo
-                                        TaxBehavior = "inclusive"
+                                        Name = $"Payment for Service {service.Id}"
                                     },
-                                    Quantity = 1
-                                }
-                            },
-                            // ✅ STRIPE TAX: Habilitar cálculo automático de tax
-                            AutomaticTax = new SessionAutomaticTaxOptions
-                            {
-                                Enabled = true
-                            },
-                            Mode = "payment",
-                            SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}&serviceId={service.Id}",
-                            CancelUrl = $"{domain}/cancel",
-                            CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "unknown@example.com",
-                            Metadata = new Dictionary<string, string>
-                            {
-                                { "userId", userId.ToString() },
-                                { "serviceId", service.Id.ToString() },
-                                { "amount", amountToCharge.ToString() },
-                                { "pendingHire", "true" },
-                                { "searchData", JsonSerializer.Serialize(searchDto) },
-                                { "parameters", JsonSerializer.Serialize(parameterDto) }
-                            },
-                            // ✅ CAPTURA MANUAL: Autoriza el pago pero no lo captura hasta validar todo en el webhook
-                            // Esto evita perder comisiones si algo falla después del pago
-                            PaymentIntentData = new SessionPaymentIntentDataOptions
-                            {
-                                CaptureMethod = "manual"
+                                    // ✅ STRIPE TAX: Configurar tax como inclusivo
+                                    TaxBehavior = "inclusive"
+                                },
+                                Quantity = 1
                             }
-                        };
-
-                        var serviceStripe = new SessionService();
-                        var session = await serviceStripe.CreateAsync(options);
-                        await transaction.CommitAsync();
-
-                        return Ok(new { url = session.Url });
-                    }
-                        catch (StripeException ex)
+                        },
+                        // ✅ STRIPE TAX: Habilitar cálculo automático de tax
+                        AutomaticTax = new SessionAutomaticTaxOptions
                         {
-                            await transaction.RollbackAsync();
-                            return StatusCode(500, new { message = ex.Message });
-                        }
-                        catch (Exception ex)
+                            Enabled = true
+                        },
+                        Mode = "payment",
+                        SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}&serviceId={service.Id}",
+                        CancelUrl = $"{domain}/cancel",
+                        CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "unknown@example.com",
+                        Metadata = new Dictionary<string, string>
                         {
-                            await transaction.RollbackAsync();
-                            return StatusCode(500, new { message = ex.Message });
+                            { "userId", userId.ToString() },
+                            { "serviceId", service.Id.ToString() },
+                            { "amount", amountToCharge.ToString() },
+                            { "pendingHire", "true" },
+                            { "searchData", JsonSerializer.Serialize(searchDto) },
+                            { "parameters", JsonSerializer.Serialize(parameterDto) }
+                        },
+                        // ✅ CAPTURA MANUAL: Autoriza el pago pero no lo captura hasta validar todo en el webhook
+                        // Esto evita perder comisiones si algo falla después del pago
+                        PaymentIntentData = new SessionPaymentIntentDataOptions
+                        {
+                            CaptureMethod = "manual"
                         }
-                    });
+                    };
+
+                    var serviceStripe = new SessionService();
+                    var session = await serviceStripe.CreateAsync(options);
+
+                    return Ok(new { url = session.Url });
+                }
+                catch (StripeException ex)
+                {
+                    return StatusCode(500, new { message = ex.Message });
+                }
+                catch (Exception ex)
+                {
+                    return StatusCode(500, new { message = ex.Message });
+                }
             }
             catch (Exception ex)
             {

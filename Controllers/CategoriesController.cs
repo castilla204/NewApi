@@ -279,6 +279,44 @@ namespace newApi.Controllers
                         details = "The database query took longer than 30 seconds to complete"
                     });
                 }
+                catch (NpgsqlException npgsqlEx) when (npgsqlEx.Message.Contains("SSL handshake", StringComparison.OrdinalIgnoreCase))
+                {
+                    queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    _logger.LogError(npgsqlEx, $"[ENDPOINT] ❌ GetCategories - SSL HANDSHAKE ERROR después de {queryDuration:F2}ms");
+                    _logger.LogError($"[ENDPOINT]    Exception Type: {npgsqlEx.GetType().Name}");
+                    _logger.LogError($"[ENDPOINT]    Exception Message: {npgsqlEx.Message}");
+                    _logger.LogError($"[ENDPOINT]    Inner Exception: {npgsqlEx.InnerException?.Message ?? "None"}");
+                    
+                    // ✅ CRÍTICO: Asegurar headers CORS y Content-Type ANTES de devolver StatusCode
+                    Response.Headers["Access-Control-Allow-Origin"] = Request.Headers["Origin"].ToString();
+                    Response.Headers["Access-Control-Allow-Credentials"] = "true";
+                    Response.ContentType = "application/json";
+                    
+                    return StatusCode(503, new { 
+                        message = "Database SSL connection error. Please try again.",
+                        error = "SSL_HANDSHAKE_ERROR",
+                        details = "Failed to establish secure connection to database"
+                    });
+                }
+                catch (ObjectDisposedException disposedEx) when (disposedEx.Message.Contains("ManualResetEventSlim", StringComparison.OrdinalIgnoreCase))
+                {
+                    queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    _logger.LogError(disposedEx, $"[ENDPOINT] ❌ GetCategories - OBJECT DISPOSED durante cancelación después de {queryDuration:F2}ms");
+                    _logger.LogError($"[ENDPOINT]    Exception Type: {disposedEx.GetType().Name}");
+                    _logger.LogError($"[ENDPOINT]    Exception Message: {disposedEx.Message}");
+                    _logger.LogError($"[ENDPOINT]    Esto puede ocurrir cuando se cancela una operación y el objeto ya está disposed");
+                    
+                    // ✅ CRÍTICO: Asegurar headers CORS y Content-Type ANTES de devolver StatusCode
+                    Response.Headers["Access-Control-Allow-Origin"] = Request.Headers["Origin"].ToString();
+                    Response.Headers["Access-Control-Allow-Credentials"] = "true";
+                    Response.ContentType = "application/json";
+                    
+                    return StatusCode(408, new { 
+                        message = "Database query was cancelled. Please try again.",
+                        error = "QUERY_CANCELLED",
+                        details = "The database query was cancelled due to timeout or connection issue"
+                    });
+                }
                 catch (Exception queryEx)
                 {
                     queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;

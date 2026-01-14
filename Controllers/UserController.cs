@@ -738,9 +738,31 @@ public class UserController : ControllerBase
         {
             // 🚨 LOG CRÍTICO: Error al convertirse en experto
             var userIdForLog = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userIdValue) ? userIdValue : (int?)null;
+            
+            // Obtener información detallada de la excepción
+            var exceptionDetails = new
+            {
+                ExceptionType = ex.GetType().FullName,
+                Message = ex.Message,
+                StackTrace = ex.StackTrace,
+                InnerException = ex.InnerException != null ? new
+                {
+                    Type = ex.InnerException.GetType().FullName,
+                    Message = ex.InnerException.Message,
+                    StackTrace = ex.InnerException.StackTrace
+                } : null,
+                Source = ex.Source,
+                TargetSite = ex.TargetSite?.ToString(),
+                Data = ex.Data?.Count > 0 ? ex.Data : null
+            };
+            
             await _loggingService.LogCriticalAsync(
                 message: "CRITICAL: Exception during become expert",
-                details: $"User {userIdForLog} encountered exception while becoming expert: {ex.Message}",
+                details: $"User {userIdForLog} encountered exception while becoming expert. " +
+                        $"Exception Type: {ex.GetType().FullName}. " +
+                        $"Message: {ex.Message}. " +
+                        $"Source: {ex.Source}. " +
+                        $"Inner Exception: {(ex.InnerException != null ? ex.InnerException.Message : "None")}",
                 userId: userIdForLog,
                 source: "UserController.BecomeExpert",
                 relatedEntityType: "User",
@@ -748,8 +770,18 @@ public class UserController : ControllerBase
                 additionalData: new { 
                     Action = "BecomeExpert",
                     UserId = userIdForLog,
-                    Exception = ex.Message,
-                    StackTrace = ex.StackTrace
+                    ExceptionDetails = exceptionDetails,
+                    RequestData = new {
+                        HasProfilePicture = request?.ProfilePicture != null,
+                        ProfilePictureSize = request?.ProfilePicture?.Length ?? 0,
+                        ProfilePictureFileName = request?.ProfilePicture?.FileName,
+                        Description = request?.Description,
+                        Latitude = request?.Latitude,
+                        Longitude = request?.Longitude,
+                        AvailabilityDaysOfWeek = request?.AvailabilityDaysOfWeek?.Count ?? 0,
+                        AvailabilityStartTime = request?.AvailabilityStartTime,
+                        AvailabilityEndTime = request?.AvailabilityEndTime
+                    }
                 }
             );
             

@@ -138,16 +138,32 @@ namespace newApi.Controllers
                 var queryStartTime = DateTime.UtcNow;
                 
                 // ✅ TIMEOUT: Agregar timeout de 10 segundos para evitar bloqueos
-                using var queryCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                
-                // ✅ LOG TIMEOUT: Registrar cuando se crea el token de cancelación
-                _logger.LogInformation($"[ENDPOINT]    ⏱️ Timeout configurado: 10 segundos");
-                _logger.LogInformation($"[ENDPOINT]    Token de cancelación creado: {queryCts.Token.CanBeCanceled}");
+                // ✅ FIX CRÍTICO: Usar try-finally para asegurar que CancellationTokenSource se disponga correctamente
+                // incluso si hay ObjectDisposedException durante la cancelación
+                CancellationTokenSource? queryCts = null;
+                try
+                {
+                    queryCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    
+                    // ✅ LOG TIMEOUT: Registrar cuando se crea el token de cancelación
+                    _logger.LogInformation($"[ENDPOINT]    ⏱️ Timeout configurado: 10 segundos");
+                    _logger.LogInformation($"[ENDPOINT]    Token de cancelación creado: {queryCts.Token.CanBeCanceled}");
+                }
+                catch (Exception ctsEx)
+                {
+                    _logger.LogError(ctsEx, $"[ENDPOINT] ❌ Error creando CancellationTokenSource: {ctsEx.Message}");
+                    // Continuar sin timeout si falla la creación
+                    queryCts = null;
+                }
                 
                 var serviceTypes = new List<dynamic>();
                 double queryDuration = 0; // ✅ Declarar fuera del try para que esté disponible después
                 try
                 {
+                    if (queryCts == null)
+                    {
+                        _logger.LogWarning($"[ENDPOINT] ⚠️ Continuando sin timeout (CancellationTokenSource no disponible)");
+                    }
                     _logger.LogInformation($"[ENDPOINT]    ⏱️ Iniciando ToListAsync con timeout de 10 segundos...");
                     _logger.LogInformation($"[ENDPOINT]    Timestamp inicio: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
                     _logger.LogInformation($"[ENDPOINT]    Token antes de ToListAsync: IsCancellationRequested={queryCts.Token.IsCancellationRequested}");
@@ -159,6 +175,9 @@ namespace newApi.Controllers
                     
                     try
                     {
+                        // ✅ FIX CRÍTICO: Usar token solo si está disponible, sino usar CancellationToken.None
+                        var cancellationToken = queryCts?.Token ?? CancellationToken.None;
+                        
                         serviceTypes = (await _context.ServiceTypes
                             .AsNoTracking() // ✅ Evitar tracking innecesario y problemas con multiplexing
                             .Where(st => st.IsActive)
@@ -174,7 +193,7 @@ namespace newApi.Controllers
                                 Position = st.Position,
                                 RequiresAppointment = st.RequiresAppointment
                             })
-                            .ToListAsync(queryCts.Token)).Cast<dynamic>().ToList();
+                            .ToListAsync(cancellationToken)).Cast<dynamic>().ToList();
                     }
                     finally
                     {
@@ -206,7 +225,17 @@ namespace newApi.Controllers
                     _logger.LogError($"[ENDPOINT]    Timestamp timeout: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
                     _logger.LogError($"[ENDPOINT]    Exception Type: {timeoutEx.GetType().Name}");
                     _logger.LogError($"[ENDPOINT]    Exception Message: {timeoutEx.Message}");
-                    _logger.LogError($"[ENDPOINT]    Token IsCancellationRequested: {queryCts.Token.IsCancellationRequested}");
+                    if (queryCts != null)
+                    {
+                        try
+                        {
+                            _logger.LogError($"[ENDPOINT]    Token IsCancellationRequested: {queryCts.Token.IsCancellationRequested}");
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            _logger.LogError($"[ENDPOINT]    Token ya fue disposed (normal después de timeout)");
+                        }
+                    }
                     _logger.LogError($"[ENDPOINT]    Timestamp timeout: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
                     
                     // ✅ LOG ESTADO CONEXIÓN: Verificar estado de la conexión después del timeout
@@ -219,6 +248,48 @@ namespace newApi.Controllers
                     {
                         _logger.LogError($"[ENDPOINT]    ❌ Error verificando conexión después de timeout: {connEx.Message}");
                     }
+                    
+                    // ✅ CRÍTICO: Asegurar headers CORS y Content-Type ANTES de devolver StatusCode
+                    Response.Headers["Access-Control-Allow-Origin"] = Request.Headers["Origin"].ToString();
+                    Response.Headers["Access-Control-Allow-Credentials"] = "true";
+                    Response.ContentType = "application/json";
+                    
+                    return StatusCode(408, new { 
+                        success = false,
+                        message = "Database query timeout. Please try again.",
+                        error = "QUERY_TIMEOUT",
+                        details = "The database query took longer than 10 seconds to complete"
+                    });
+                }
+                catch (AggregateException aggEx) when (aggEx.InnerException is ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Manejar AggregateException con ObjectDisposedException
+                    // Esto ocurre cuando el CancellationTokenSource intenta cancelar una operación
+                    // mientras la conexión ya está siendo disposed
+                    queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    _logger.LogWarning(aggEx, $"[ENDPOINT] ⚠️ GetServiceTypesPublic - ObjectDisposedException durante cancelación después de {queryDuration:F2}ms");
+                    _logger.LogWarning($"[ENDPOINT]    Esto es normal cuando la conexión se cierra durante un timeout");
+                    _logger.LogWarning($"[ENDPOINT]    Exception Type: {aggEx.GetType().Name}");
+                    _logger.LogWarning($"[ENDPOINT]    Inner Exception: {disposedEx.Message}");
+                    
+                    // ✅ CRÍTICO: Asegurar headers CORS y Content-Type ANTES de devolver StatusCode
+                    Response.Headers["Access-Control-Allow-Origin"] = Request.Headers["Origin"].ToString();
+                    Response.Headers["Access-Control-Allow-Credentials"] = "true";
+                    Response.ContentType = "application/json";
+                    
+                    return StatusCode(408, new { 
+                        success = false,
+                        message = "Database query timeout. Please try again.",
+                        error = "QUERY_TIMEOUT",
+                        details = "The database query took longer than 10 seconds to complete"
+                    });
+                }
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Manejar ObjectDisposedException directamente
+                    queryDuration = (DateTime.UtcNow - queryStartTime).TotalMilliseconds;
+                    _logger.LogWarning(disposedEx, $"[ENDPOINT] ⚠️ GetServiceTypesPublic - ObjectDisposedException después de {queryDuration:F2}ms");
+                    _logger.LogWarning($"[ENDPOINT]    Esto puede ocurrir cuando la conexión se cierra durante un timeout");
                     
                     // ✅ CRÍTICO: Asegurar headers CORS y Content-Type ANTES de devolver StatusCode
                     Response.Headers["Access-Control-Allow-Origin"] = Request.Headers["Origin"].ToString();
@@ -254,6 +325,43 @@ namespace newApi.Controllers
                     }
                     
                     throw; // Re-lanzar para que se maneje en el catch general
+                }
+                finally
+                {
+                    // ✅ FIX CRÍTICO: Asegurar que CancellationTokenSource se disponga correctamente
+                    // incluso si hay ObjectDisposedException durante la cancelación
+                    if (queryCts != null)
+                    {
+                        try
+                        {
+                            // Cancelar primero para evitar que el timer siga ejecutándose
+                            if (!queryCts.Token.IsCancellationRequested)
+                            {
+                                queryCts.Cancel();
+                            }
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            // Ya está disposed, ignorar
+                        }
+                        catch (Exception disposeEx)
+                        {
+                            _logger.LogWarning(disposeEx, $"[ENDPOINT] ⚠️ Error cancelando CancellationTokenSource: {disposeEx.Message}");
+                        }
+                        
+                        try
+                        {
+                            queryCts.Dispose();
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            // Ya está disposed, ignorar
+                        }
+                        catch (Exception disposeEx)
+                        {
+                            _logger.LogWarning(disposeEx, $"[ENDPOINT] ⚠️ Error disponiendo CancellationTokenSource: {disposeEx.Message}");
+                        }
+                    }
                 }
 
                 var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;

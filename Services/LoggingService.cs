@@ -100,7 +100,8 @@ namespace newApi.Services
             var logStartTime = DateTime.UtcNow;
             var logStartTimeUnix = ((DateTimeOffset)logStartTime).ToUnixTimeMilliseconds();
             
-            // ✅ CONSOLE OUTPUT: Mostrar log en consola antes de guardarlo en BD
+            // ✅ CONSOLE OUTPUT: Mostrar log en consola SIEMPRE, antes de guardarlo en BD
+            // Esto asegura que los logs se vean incluso si falla guardar en BD
             var consolePrefix = logLevel switch
             {
                 "Critical" => "🔴 [CRITICAL]",
@@ -111,32 +112,81 @@ namespace newApi.Services
                 _ => "[LOG]"
             };
             
-            var consoleMessage = $"{consolePrefix} [{source}] {message}";
+            // ✅ MEJORADO: Formato más visible y estructurado
+            var separator = new string('=', 80);
+            var consoleMessage = $"\n{separator}\n";
+            consoleMessage += $"{consolePrefix} [{source ?? "Unknown"}]\n";
+            consoleMessage += $"{separator}\n";
+            consoleMessage += $"Message: {message}\n";
+            
             if (!string.IsNullOrEmpty(details))
             {
-                consoleMessage += $"\n   Details: {details}";
+                consoleMessage += $"\nDetails:\n{details}\n";
             }
+            
             if (userId.HasValue)
             {
-                consoleMessage += $"\n   UserId: {userId}";
+                consoleMessage += $"\nUserId: {userId}\n";
             }
+            
             if (relatedEntityType != null && relatedEntityId.HasValue)
             {
-                consoleMessage += $"\n   Related: {relatedEntityType} (ID: {relatedEntityId})";
+                consoleMessage += $"\nRelated Entity: {relatedEntityType} (ID: {relatedEntityId})\n";
             }
+            
             if (additionalData != null)
             {
                 try
                 {
-                    var dataJson = JsonSerializer.Serialize(additionalData, new JsonSerializerOptions { WriteIndented = false });
-                    consoleMessage += $"\n   Data: {dataJson}";
+                    var dataJson = JsonSerializer.Serialize(additionalData, new JsonSerializerOptions { WriteIndented = true });
+                    consoleMessage += $"\nAdditional Data:\n{dataJson}\n";
                 }
                 catch
                 {
-                    consoleMessage += "\n   Data: [Error serializing]";
+                    consoleMessage += "\nAdditional Data: [Error serializing]\n";
                 }
             }
-            Console.WriteLine(consoleMessage);
+            
+            consoleMessage += $"{separator}\n";
+            
+            // ✅ CRÍTICO: Escribir en consola SIEMPRE, incluso si falla guardar en BD
+            // ✅ COLORES: Usar color rojo para errores críticos y errores para mejor visibilidad
+            var originalColor = Console.ForegroundColor;
+            try
+            {
+                if (logLevel == "Critical" || logLevel == "Error")
+                {
+                    // ✅ COLOR ROJO: Errores críticos y errores en rojo para distinguirlos fácilmente
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Error.WriteLine(consoleMessage);
+                    Console.ForegroundColor = originalColor;
+                    // También escribir en stdout con color
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine(consoleMessage);
+                    Console.ForegroundColor = originalColor;
+                }
+                else if (logLevel == "Warning")
+                {
+                    // ✅ COLOR AMARILLO: Warnings en amarillo
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine(consoleMessage);
+                    Console.ForegroundColor = originalColor;
+                }
+                else
+                {
+                    // Info y Debug en color normal
+                    Console.WriteLine(consoleMessage);
+                }
+            }
+            catch
+            {
+                // Si falla cambiar el color (por ejemplo, en algunos entornos), escribir sin color
+                Console.WriteLine(consoleMessage);
+                if (logLevel == "Critical" || logLevel == "Error")
+                {
+                    Console.Error.WriteLine(consoleMessage);
+                }
+            }
             
             // ✅ BEST PRACTICE: Usar scope separado para logging independiente de transacciones externas
             // Esto asegura que los logs se guarden incluso si hay rollbacks en otras transacciones
@@ -145,99 +195,142 @@ namespace newApi.Services
             
             try
             {
-                // ✅ FIX CRÍTICO: Usar Execution Strategy para transacciones manuales con EnableRetryOnFailure
-                // Cuando EnableRetryOnFailure está habilitado, las transacciones manuales DEBEN estar dentro de CreateExecutionStrategy
-                var strategy = scopedContext.Database.CreateExecutionStrategy();
-                
                 LogType? logType = null;
                 Log? log = null;
                 
-                await strategy.ExecuteAsync(async () =>
+                // ✅ FIX CRÍTICO: Intentar obtener LogType SIN usar ExecutionStrategy primero
+                // Si la conexión está disposed, ExecutionStrategy también fallará
+                try
                 {
-                    await using var transaction = await scopedContext.Database.BeginTransactionAsync();
-                    try
+                    logType = await GetLogTypeAsyncInternal(scopedContext, logLevel);
+                    if (logType == null)
                     {
-                        // Obtener o crear el tipo de log usando el contexto scoped
-                        logType = await GetLogTypeAsyncInternal(scopedContext, logLevel);
-                        if (logType == null)
-                        {
-                            // Crear tipo de log por defecto si no existe
-                            logType = await CreateDefaultLogTypeAsyncInternal(scopedContext, logLevel);
-                        }
+                        // Crear tipo de log por defecto si no existe
+                        logType = await CreateDefaultLogTypeAsyncInternal(scopedContext, logLevel);
+                    }
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Si la conexión está disposed, crear LogType temporal
+                    Console.WriteLine($"[LOGGING SERVICE] ⚠️ Connection disposed al obtener LogType '{logLevel}'. Usando LogType temporal.");
+                    logType = new LogType
+                    {
+                        Id = 0, // ID temporal, se ignorará (NULL en BD)
+                        Name = logLevel,
+                        Description = $"Temporary log type for {logLevel}",
+                        IsActive = true,
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow
+                    };
+                }
+                catch (Exception logTypeEx)
+                {
+                    // Si falla al obtener/crear LogType (por ejemplo, conexión disposed), crear uno en memoria
+                    Console.WriteLine($"[LOGGING SERVICE] ⚠️ Error al obtener/crear LogType '{logLevel}': {logTypeEx.Message}. Creando LogType temporal.");
+                    logType = new LogType
+                    {
+                        Id = 0, // ID temporal, se ignorará (NULL en BD)
+                        Name = logLevel,
+                        Description = $"Temporary log type for {logLevel}",
+                        IsActive = true,
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow
+                    };
+                }
+                
+                // ✅ FIX CRÍTICO: NO usar transacciones manuales en LoggingService
+                // Las transacciones manuales con EnableRetryOnFailure causan ObjectDisposedException
+                // porque EF Core intenta crear savepoints automáticamente
+                // El logging no es crítico - si falla, ya se mostró en consola
+                try
+                {
+                    // ✅ TIMING: Agregar información de timing automáticamente al additionalData
+                    // Serializar additionalData original si existe
+                    string? originalAdditionalDataJson = null;
+                    if (additionalData != null)
+                    {
+                        originalAdditionalDataJson = JsonSerializer.Serialize(additionalData);
+                    }
 
-                        // ✅ TIMING: Agregar información de timing automáticamente al additionalData
-                        // Serializar additionalData original si existe
-                        string? originalAdditionalDataJson = null;
-                        if (additionalData != null)
+                    // Combinar additionalData original con timing info en un diccionario
+                    var enhancedAdditionalData = new Dictionary<string, object>();
+                    
+                    // Si hay additionalData original, deserializarlo y agregarlo al diccionario
+                    if (!string.IsNullOrEmpty(originalAdditionalDataJson))
+                    {
+                        var originalDict = JsonSerializer.Deserialize<Dictionary<string, object>>(originalAdditionalDataJson);
+                        if (originalDict != null)
                         {
-                            originalAdditionalDataJson = JsonSerializer.Serialize(additionalData);
-                        }
-
-                        // Combinar additionalData original con timing info en un diccionario
-                        var enhancedAdditionalData = new Dictionary<string, object>();
-                        
-                        // Si hay additionalData original, deserializarlo y agregarlo al diccionario
-                        if (!string.IsNullOrEmpty(originalAdditionalDataJson))
-                        {
-                            var originalDict = JsonSerializer.Deserialize<Dictionary<string, object>>(originalAdditionalDataJson);
-                            if (originalDict != null)
+                            foreach (var kvp in originalDict)
                             {
-                                foreach (var kvp in originalDict)
-                                {
-                                    enhancedAdditionalData[kvp.Key] = kvp.Value;
-                                }
+                                enhancedAdditionalData[kvp.Key] = kvp.Value;
                             }
                         }
-
-                        // ✅ TIMING: Agregar información de timing (siempre presente en todos los logs)
-                        enhancedAdditionalData["LogStartTime"] = logStartTime.ToString("O"); // ISO 8601
-                        enhancedAdditionalData["LogStartTimeUnix"] = logStartTimeUnix;
-                        
-                        // Serializar el diccionario completo con timing incluido
-                        var additionalDataJson = JsonSerializer.Serialize(enhancedAdditionalData);
-
-                        // Crear el log con timestamp preciso
-                        log = new Log
-                        {
-                            Message = message,
-                            Details = details,
-                            UserId = userId,
-                            Source = source,
-                            LogTypeId = logType.Id,
-                            RelatedEntityType = relatedEntityType,
-                            RelatedEntityId = relatedEntityId,
-                            AdditionalData = additionalDataJson,
-                            CreatedAt = logStartTime // ✅ TIMING: Usar timestamp capturado al inicio
-                        };
-
-                        scopedContext.Logs.Add(log);
-                        
-                        // ✅ TIMING: Medir tiempo de ejecución de SaveChangesAsync
-                        var saveStartTime = DateTime.UtcNow;
-                        await scopedContext.SaveChangesAsync(); // ✅ Guardar en contexto separado
-                        var saveElapsedMs = (DateTime.UtcNow - saveStartTime).TotalMilliseconds;
-                        var logEndTime = DateTime.UtcNow;
-                        var totalLogElapsedMs = (logEndTime - logStartTime).TotalMilliseconds;
-                        
-                        // ✅ TIMING: Actualizar log con información de timing completa (SaveElapsedMs, LogEndTime, TotalLogElapsedMs)
-                        var finalAdditionalDataDict = JsonSerializer.Deserialize<Dictionary<string, object>>(additionalDataJson);
-                        if (finalAdditionalDataDict != null)
-                        {
-                            finalAdditionalDataDict["SaveElapsedMs"] = saveElapsedMs;
-                            finalAdditionalDataDict["LogEndTime"] = logEndTime.ToString("O");
-                            finalAdditionalDataDict["TotalLogElapsedMs"] = totalLogElapsedMs;
-                            log.AdditionalData = JsonSerializer.Serialize(finalAdditionalDataDict);
-                            await scopedContext.SaveChangesAsync(); // ✅ Actualizar en contexto separado
-                        }
-
-                        await transaction.CommitAsync();
                     }
-                    catch
+
+                    // ✅ TIMING: Agregar información de timing (siempre presente en todos los logs)
+                    enhancedAdditionalData["LogStartTime"] = logStartTime.ToString("O"); // ISO 8601
+                    enhancedAdditionalData["LogStartTimeUnix"] = logStartTimeUnix;
+                    
+                    // Serializar el diccionario completo con timing incluido
+                    var additionalDataJson = JsonSerializer.Serialize(enhancedAdditionalData);
+
+                    // Crear el log con timestamp preciso
+                    log = new Log
                     {
-                        await transaction.RollbackAsync();
-                        throw;
+                        Message = message,
+                        Details = details,
+                        UserId = userId,
+                        Source = source,
+                        LogTypeId = logType?.Id > 0 ? logType.Id : null, // Si LogType es temporal (ID=0), usar NULL
+                        RelatedEntityType = relatedEntityType,
+                        RelatedEntityId = relatedEntityId,
+                        AdditionalData = additionalDataJson,
+                        CreatedAt = logStartTime // ✅ TIMING: Usar timestamp capturado al inicio
+                    };
+
+                    scopedContext.Logs.Add(log);
+                    
+                    // ✅ TIMING: Medir tiempo de ejecución de SaveChangesAsync
+                    var saveStartTime = DateTime.UtcNow;
+                    await scopedContext.SaveChangesAsync(); // ✅ Guardar sin transacción manual
+                    var saveElapsedMs = (DateTime.UtcNow - saveStartTime).TotalMilliseconds;
+                    var logEndTime = DateTime.UtcNow;
+                    var totalLogElapsedMs = (logEndTime - logStartTime).TotalMilliseconds;
+                    
+                    // ✅ TIMING: Actualizar log con información de timing completa (SaveElapsedMs, LogEndTime, TotalLogElapsedMs)
+                    var finalAdditionalDataDict = JsonSerializer.Deserialize<Dictionary<string, object>>(additionalDataJson);
+                    if (finalAdditionalDataDict != null)
+                    {
+                        finalAdditionalDataDict["SaveElapsedMs"] = saveElapsedMs;
+                        finalAdditionalDataDict["LogEndTime"] = logEndTime.ToString("O");
+                        finalAdditionalDataDict["TotalLogElapsedMs"] = totalLogElapsedMs;
+                        log.AdditionalData = JsonSerializer.Serialize(finalAdditionalDataDict);
+                        await scopedContext.SaveChangesAsync(); // ✅ Actualizar sin transacción manual
                     }
-                });
+                }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, NO reintentar
+                    // El log ya se mostró en consola, no es necesario guardarlo en BD
+                    // NO hacer throw - el log ya se mostró en consola
+                    return;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, NO reintentar
+                    // El log ya se mostró en consola, no es necesario guardarlo en BD
+                    // NO hacer throw - el log ya se mostró en consola
+                    return;
+                }
+                catch (Exception saveEx)
+                {
+                    // ✅ Si falla guardar el log, no es crítico - ya se mostró en consola
+                    // Solo loguear el error en consola, no intentar guardarlo en BD (evitar bucles)
+                    Console.WriteLine($"[LOGGING SERVICE] ⚠️ Error guardando log en BD: {saveEx.Message}");
+                    // NO hacer throw - el log ya se mostró en consola
+                    return;
+                }
 
                 // Si requiere notificación de administrador, procesar (fuera de la transacción)
                 if (logType != null && log != null && logType.RequiresAdminNotification)
@@ -250,27 +343,127 @@ namespace newApi.Services
                     await ProcessUserNotificationAsync(scopedContext, userId.Value, message, details, logLevel, relatedEntityType, relatedEntityId);
                 }
             }
+            catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+            {
+                // ✅ FIX CRÍTICO: Si la conexión está disposed dentro de DbUpdateException, NO intentar guardar un log de error
+                // porque eso causaría un bucle infinito de errores
+                // ✅ MEJORADO: Log más visible en consola
+                var ex = dbEx.InnerException as ObjectDisposedException;
+                var errorSeparator = new string('=', 80);
+                var errorMsg = $"\n{errorSeparator}\n";
+                errorMsg += $"🔴 [LOGGING SERVICE ERROR] Connection Disposed (DbUpdateException)\n";
+                errorMsg += $"{errorSeparator}\n";
+                errorMsg += $"Original log message: {message}\n";
+                if (!string.IsNullOrEmpty(details))
+                {
+                    errorMsg += $"Original details: {details}\n";
+                }
+                errorMsg += $"Error: {ex?.Message ?? dbEx.Message}\n";
+                errorMsg += $"Stack Trace: {ex?.StackTrace ?? dbEx.StackTrace}\n";
+                errorMsg += $"{errorSeparator}\n";
+                // ✅ COLOR ROJO: Errores de logging en rojo
+                var originalColor1 = Console.ForegroundColor;
+                try
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Error.WriteLine(errorMsg);
+                    Console.WriteLine(errorMsg);
+                    Console.ForegroundColor = originalColor1;
+                }
+                catch
+                {
+                    Console.Error.WriteLine(errorMsg);
+                    Console.WriteLine(errorMsg);
+                }
+                // NO intentar guardar nada más, solo loguear en consola
+            }
+            catch (ObjectDisposedException ex)
+            {
+                // ✅ FIX CRÍTICO: Si la conexión está disposed, NO intentar guardar un log de error
+                // porque eso causaría un bucle infinito de errores
+                // ✅ MEJORADO: Log más visible en consola
+                var errorSeparator2 = new string('=', 80);
+                var errorMsg2 = $"\n{errorSeparator2}\n";
+                errorMsg2 += $"🔴 [LOGGING SERVICE ERROR] Connection Disposed\n";
+                errorMsg2 += $"{errorSeparator2}\n";
+                errorMsg2 += $"Original log message: {message}\n";
+                if (!string.IsNullOrEmpty(details))
+                {
+                    errorMsg2 += $"Original details: {details}\n";
+                }
+                errorMsg2 += $"Error: {ex.Message}\n";
+                errorMsg2 += $"Stack Trace: {ex.StackTrace}\n";
+                errorMsg2 += $"{errorSeparator2}\n";
+                // ✅ COLOR ROJO: Errores de logging en rojo
+                var originalColor2 = Console.ForegroundColor;
+                try
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Error.WriteLine(errorMsg2);
+                    Console.WriteLine(errorMsg2);
+                    Console.ForegroundColor = originalColor2;
+                }
+                catch
+                {
+                    Console.Error.WriteLine(errorMsg2);
+                    Console.WriteLine(errorMsg2);
+                }
+                // NO intentar guardar nada más, solo loguear en consola
+            }
             catch (Exception ex)
             {
                 // ✅ BEST PRACTICE: Si falla el logging, intentar loguear el error en el contexto original
                 // pero sin lanzar excepción para no interrumpir el flujo principal
+                // ✅ MEJORADO: Log más visible en consola
+                var errorSeparator3 = new string('=', 80);
+                var errorMsg3 = $"\n{errorSeparator3}\n";
+                errorMsg3 += $"🔴 [LOGGING SERVICE ERROR] Failed to Save Log\n";
+                errorMsg3 += $"{errorSeparator3}\n";
+                errorMsg3 += $"Original log message: {message}\n";
+                if (!string.IsNullOrEmpty(details))
+                {
+                    errorMsg3 += $"Original details: {details}\n";
+                }
+                errorMsg3 += $"Error Type: {ex.GetType().FullName}\n";
+                errorMsg3 += $"Error Message: {ex.Message}\n";
+                errorMsg3 += $"Stack Trace: {ex.StackTrace}\n";
+                errorMsg3 += $"{errorSeparator3}\n";
+                // ✅ COLOR ROJO: Errores de logging en rojo
+                var originalColor3 = Console.ForegroundColor;
                 try
                 {
-                    // Intentar guardar el error de logging en el contexto scoped (que es más seguro)
-                    var errorLog = new Log
-                    {
-                        Message = $"CRITICAL: Failed to save log - {ex.Message}",
-                        Details = $"Original log message: {message}. Error: {ex.StackTrace}",
-                        UserId = userId,
-                        Source = "LoggingService.LogAsync",
-                        CreatedAt = DateTime.UtcNow
-                    };
-                    scopedContext.Logs.Add(errorLog);
-                    await scopedContext.SaveChangesAsync();
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Error.WriteLine(errorMsg3);
+                    Console.WriteLine(errorMsg3);
+                    Console.ForegroundColor = originalColor3;
                 }
                 catch
                 {
-                    // Si incluso esto falla, no hacer nada para no interrumpir el flujo principal
+                    Console.Error.WriteLine(errorMsg3);
+                    Console.WriteLine(errorMsg3);
+                }
+                
+                // ✅ FIX: Solo intentar guardar si NO es ObjectDisposedException (para evitar bucles)
+                if (ex is not ObjectDisposedException)
+                {
+                    try
+                    {
+                        // Intentar guardar el error de logging en el contexto scoped (que es más seguro)
+                        var errorLog = new Log
+                        {
+                            Message = $"CRITICAL: Failed to save log - {ex.Message}",
+                            Details = $"Original log message: {message}. Error: {ex.StackTrace}",
+                            UserId = userId,
+                            Source = "LoggingService.LogAsync",
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        scopedContext.Logs.Add(errorLog);
+                        await scopedContext.SaveChangesAsync();
+                    }
+                    catch
+                    {
+                        // Si incluso esto falla, el mensaje ya se mostró en consola arriba
+                    }
                 }
             }
         }
@@ -278,8 +471,25 @@ namespace newApi.Services
         // ✅ Helper methods para usar contexto scoped
         private async Task<LogType?> GetLogTypeAsyncInternal(AppDbContext context, string name)
         {
-            return await context.LogTypes
-                .FirstOrDefaultAsync(lt => lt.Name == name && lt.IsActive);
+            try
+            {
+                // Usar AsNoTracking para evitar problemas con el contexto
+                return await context.LogTypes
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(lt => lt.Name == name && lt.IsActive);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Si el contexto está disposed, retornar null para que se cree uno por defecto
+                Console.WriteLine($"[LOGGING SERVICE] ⚠️ Context disposed al obtener LogType '{name}'. Se creará uno por defecto.");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                // Cualquier otro error también retorna null
+                Console.WriteLine($"[LOGGING SERVICE] ⚠️ Error al obtener LogType '{name}': {ex.Message}. Se creará uno por defecto.");
+                return null;
+            }
         }
 
         private async Task<LogType> CreateDefaultLogTypeAsyncInternal(AppDbContext context, string logLevel)

@@ -783,14 +783,12 @@ namespace newApi.Controllers
                     return BadRequest(new { error = "ClientApproved is required" });
                 }
 
-                // 🔄 USAR EXECUTION STRATEGY para compatibilidad con NpgsqlRetryingExecutionStrategy
-                var strategy = _context.Database.CreateExecutionStrategy();
-                return await strategy.ExecuteAsync(async () =>
+                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+                SearchHire? searchHire = null;
+                await using var transaction = await _context.Database.BeginTransactionAsync();
+                try
                 {
-                    SearchHire? searchHire = null;
-                    await using var transaction = await _context.Database.BeginTransactionAsync();
-                    try
-                    {
                         // 🔒 ROW-LEVEL LOCKING dentro de la transacción para que el candado se mantenga hasta el commit/rollback
                         searchHire = await _context.SearchHires
                             .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
@@ -987,6 +985,32 @@ namespace newApi.Controllers
                         
                         return StatusCode(500, new { message = "Failed to process payment to expert" });
                     }
+                    catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch
+                        {
+                            // Ignorar errores de rollback si la conexión ya está disposed
+                        }
+                        return StatusCode(500, new { message = "Failed to complete service - connection error" });
+                    }
+                    catch (ObjectDisposedException disposedEx)
+                    {
+                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch
+                        {
+                            // Ignorar errores de rollback si la conexión ya está disposed
+                        }
+                        return StatusCode(500, new { message = "Failed to complete service - connection error" });
+                    }
                     catch (Exception ex)
                     {
                         await _loggingService.LogCriticalAsync(
@@ -1017,7 +1041,6 @@ namespace newApi.Controllers
                         
                         return StatusCode(500, new { message = "Failed to complete service" });
                     }
-                });
             }
             catch (Exception ex)
             {

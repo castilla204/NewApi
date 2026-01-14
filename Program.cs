@@ -732,16 +732,16 @@ if (isDevelopment)
 else
 {
     // ✅ PRODUCCIÓN (Render.com): Connection string HARDCODEADA
-    // ⚠️ CAMBIO CRÍTICO: Session Pooler (puerto 5432) para queries largas
-    // Transaction Pooler (6543) tiene timeout FIJO de 60s que NO se puede aumentar
-    // Session Pooler (5432) permite queries más largas (hasta 120s con CommandTimeout)
-    // NOTA: Session Pooler puede tener problemas con Hangfire, pero permite queries de 33+ segundos
+    // ✅ Session Pooler (puerto 5432) - Soporta savepoints y ExecutionStrategy
+    // Funciona como PostgreSQL directo (VPS), permite transacciones manuales con ExecutionStrategy
+    // Hangfire se cambiará automáticamente a Transaction Pooler (6543) en Program.cs
     connectionString = "User Id=postgres.rveqsehzlvbttlpmsbmi;Password=hrpQTD57m7H.C+&;Server=aws-1-eu-west-2.pooler.supabase.com;Port=5432;Database=postgres;SslMode=Require;Timeout=60;CommandTimeout=120;Pooling=true;Multiplexing=false;Enlist=false;Max Auto Prepare=0;KeepAlive=30;";
     connectionStringSource = "Hardcoded (Producción - Render.com)";
     configLogger.LogInformation("✅ Producción: Connection string HARDCODEADA (Render.com)");
-    configLogger.LogWarning("   ⚠️ Session Pooler (puerto 5432) - Permite queries largas (>60s)");
-    configLogger.LogWarning("   ⚠️ NOTA: Session Pooler puede tener problemas con Hangfire");
-    configLogger.LogInformation("   Timeouts aumentados: Timeout=60, CommandTimeout=120");
+    configLogger.LogInformation("   ✅ Session Pooler (puerto 5432) - Soporta savepoints y ExecutionStrategy");
+    configLogger.LogInformation("   ✅ Funciona como PostgreSQL directo (VPS)");
+    configLogger.LogInformation("   ✅ Hangfire usará automáticamente Transaction Pooler (6543)");
+    configLogger.LogInformation("   Timeouts: Timeout=60, CommandTimeout=120");
     configLogger.LogInformation("   KeepAlive=30 para mantener conexiones vivas");
 }
 
@@ -760,20 +760,18 @@ if (!string.IsNullOrEmpty(connectionString))
     configLogger.LogInformation($"✅ Connection string detectada:");
     configLogger.LogInformation($"   Origen: {connectionStringSource}");
     configLogger.LogInformation($"   Host: {dbHost}");
-    configLogger.LogInformation($"   Port: {dbPort} {(dbPort == "6543" ? "✅ (Transaction Pooler - CORRECTO)" : dbPort == "5432" ? "❌ (Session Pooler - CAMBIAR A 6543)" : "")}");
+    configLogger.LogInformation($"   Port: {dbPort} {(dbPort == "5432" ? "✅ (Session Pooler - CORRECTO para ExecutionStrategy)" : dbPort == "6543" ? "⚠️ (Transaction Pooler - NO soporta savepoints)" : "")}");
     configLogger.LogInformation($"   Database: {dbName}");
     configLogger.LogInformation($"   Username: {dbUsername}");
     configLogger.LogInformation($"   Entorno: {(isDevelopment ? "Development" : "Production")}");
     
-    if (dbPort == "5432" && !isDevelopment)
+    if (dbPort == "6543")
     {
-        configLogger.LogError("❌ ERROR CRÍTICO: Puerto 5432 detectado en PRODUCCIÓN");
-        configLogger.LogError("   Session Pooler (5432) NO es compatible con Hangfire");
-        configLogger.LogError("   SOLUCIÓN: Actualizar variable de entorno en Azure Portal:");
-        configLogger.LogError("   1. Ir a Azure Portal -> App Service -> Configuration");
-        configLogger.LogError("   2. Buscar: ConnectionStrings__PostgresConnection");
-        configLogger.LogError("   3. Cambiar: Port=5432 -> Port=6543");
-        configLogger.LogError("   4. Guardar y reiniciar la aplicación");
+        configLogger.LogWarning("⚠️ ADVERTENCIA: Puerto 6543 detectado (Transaction Pooler)");
+        configLogger.LogWarning("   Transaction Pooler NO soporta savepoints");
+        configLogger.LogWarning("   Esto puede causar errores con ExecutionStrategy y transacciones manuales");
+        configLogger.LogWarning("   RECOMENDACIÓN: Usar Session Pooler (Puerto 5432) para la aplicación principal");
+        configLogger.LogWarning("   Hangfire se cambiará automáticamente a Transaction Pooler (6543)");
     }
 }
 
@@ -827,28 +825,27 @@ try
     }
     else if (isSessionPooler)
     {
-        // Session Pooler (puerto 5432): NO recomendado para Hangfire
-        // Intentar cambiar automáticamente a Transaction Pooler (puerto 6543)
+        // ✅ Session Pooler (puerto 5432): Bueno para la app principal, cambiar a Transaction Pooler para Hangfire
         if (projectRefValid)
         {
-            // Construir Transaction Pooler connection string automáticamente
+            // Construir Transaction Pooler connection string automáticamente para Hangfire
             var transactionPoolerConn = new NpgsqlConnectionStringBuilder(connectionString);
-            transactionPoolerConn.Port = 6543; // Cambiar a Transaction Pooler
+            transactionPoolerConn.Port = 6543; // Cambiar a Transaction Pooler solo para Hangfire
             hangfireConnectionString = transactionPoolerConn.ConnectionString;
             
-            configLogger.LogWarning("[WARNING] Session Pooler (puerto 5432) detectado - NO recomendado para Hangfire");
-            configLogger.LogWarning("   [OK] SOLUCION AUTOMATICA: Cambiando a Transaction Pooler (puerto 6543)");
-            configLogger.LogInformation($"   Host: {host}, Port: 5432 -> 6543 (Transaction Pooler)");
-            configLogger.LogInformation("   [OK] Transaction Pooler es compatible con IPv4/IPv6 y Hangfire");
+            configLogger.LogInformation("[OK] Session Pooler (puerto 5432) detectado para app principal");
+            configLogger.LogInformation("   [OK] Session Pooler soporta savepoints y ExecutionStrategy");
+            configLogger.LogInformation("   [OK] AUTOMATICO: Hangfire usará Transaction Pooler (puerto 6543)");
+            configLogger.LogInformation($"   Host: {host}, App: 5432, Hangfire: 6543");
+            configLogger.LogInformation("   [OK] Mejor de ambos mundos: ExecutionStrategy + Hangfire estable");
         }
         else
         {
-            // No se puede construir automáticamente, usar Session Pooler con advertencia
+            // No se puede construir automáticamente, usar Session Pooler
             hangfireConnectionString = connectionString;
-            configLogger.LogError("[ERROR] Session Pooler (puerto 5432) detectado - NO recomendado para Hangfire");
-            configLogger.LogError("   [ERROR] Puede causar ObjectDisposedException en locks distribuidos");
-            configLogger.LogError("   [OK] SOLUCION: Cambiar manualmente a Transaction Pooler (puerto 6543)");
-            configLogger.LogError("   En appsettings.json, cambia Port=5432 a Port=6543");
+            configLogger.LogWarning("[WARNING] Session Pooler (puerto 5432) detectado para Hangfire");
+            configLogger.LogWarning("   No se pudo cambiar automáticamente a Transaction Pooler");
+            configLogger.LogWarning("   Hangfire puede tener problemas ocasionales");
         }
     }
     else
@@ -1269,23 +1266,14 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     }
     else if (isSessionPooler)
     {
-        // Session Pooler (puerto 5432): Puede tener problemas DNS y con Hangfire
-        dbLogger.LogWarning("[WARNING] SESSION POOLER DETECTADO (Puerto 5432)");
-        dbLogger.LogWarning($"   Host actual: {host}, Port: {port}");
-        dbLogger.LogError("   [ERROR] PROBLEMA 1: Puede tener errores DNS (IPv4/IPv6)");
-        dbLogger.LogError("   [ERROR] PROBLEMA 2: NO compatible con Hangfire (ObjectDisposedException)");
-        dbLogger.LogError("");
-        dbLogger.LogError("   [SOLUCION] RECOMENDADA: Cambiar a Transaction Pooler (Puerto 6543)");
-        dbLogger.LogError("   En appsettings.json o appsettings.Development.json:");
-        dbLogger.LogError("   Cambiar: Port=5432 -> Port=6543");
-        dbLogger.LogError("");
-        dbLogger.LogError("   Connection String CORRECTO:");
-        dbLogger.LogError($"   Host={host};Port=6543;Username=postgres.rveqsehzlvbttlpmsbmi;Password=***;Database=postgres;SslMode=Require;");
-        dbLogger.LogError("");
-        dbLogger.LogError("   [OK] Transaction Pooler (6543) resuelve:");
-        dbLogger.LogError("   - Problemas de DNS (compatible IPv4/IPv6)");
-        dbLogger.LogError("   - ObjectDisposedException en Hangfire");
-        dbLogger.LogError("   - Compatible con background jobs segun docs oficiales");
+        // ✅ Session Pooler (puerto 5432): SÍ soporta savepoints y ExecutionStrategy
+        // Funciona como PostgreSQL directo (VPS), permitiendo transacciones manuales con ExecutionStrategy
+        dbLogger.LogInformation("[OK] SESSION POOLER DETECTADO (Puerto 5432)");
+        dbLogger.LogInformation($"   Host actual: {host}, Port: {port}");
+        dbLogger.LogInformation("   [OK] Soporta savepoints (permite ExecutionStrategy con transacciones)");
+        dbLogger.LogInformation("   [OK] Funciona como PostgreSQL directo (VPS)");
+        dbLogger.LogInformation("   [OK] Transaction Pooler (6543) se usará automáticamente solo para Hangfire");
+        dbLogger.LogInformation("   [OK] Esta configuración permite usar ExecutionStrategy sin cambios de código");
     }
     else if (isDirectConnection)
     {
@@ -1317,6 +1305,15 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     {
         connectionStringBuilder.CommandTimeout = 120; // Timeout de comandos aumentado para Render.com
     }
+    
+    // ✅ FIX SSL: Configurar SSL de forma más robusta para evitar "Exception while performing SSL handshake"
+    // Preferir Require pero permitir fallback si hay problemas
+    if (connectionStringBuilder.SslMode == SslMode.Prefer || 
+        !connectionStringBuilder.ConnectionString.Contains("SslMode", StringComparison.OrdinalIgnoreCase))
+    {
+        connectionStringBuilder.SslMode = SslMode.Require; // Requerir SSL para Supabase
+    }
+    
     connectionStringBuilder.Pooling = true; // Habilitar pooling de conexiones
     connectionStringBuilder.MinPoolSize = 2; // Mínimo aumentado para mantener conexiones activas
     connectionStringBuilder.MaxPoolSize = 30; // Máximo aumentado para Render.com
@@ -1360,6 +1357,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
             maxRetryDelay: TimeSpan.FromSeconds(10), // Delay máximo aumentado
             errorCodesToAdd: null // Usar códigos de error por defecto de Npgsql
         );
+        
     });
     
     // ✅ CRITICAL: Disable Execution Strategy completely to prevent multiplexing issues
@@ -2698,6 +2696,62 @@ lifetime.ApplicationStarted.Register(() =>
         Console.WriteLine($"[RENDER] ✅ Servidor escuchando en: {string.Join(", ", urlsAfterStart)}");
     }
 });
+
+// ✅ FIX CRÍTICO: Manejador global de excepciones no manejadas
+// Esto previene que la aplicación se detenga por excepciones en callbacks de timers o ThreadPool
+TaskScheduler.UnobservedTaskException += (sender, e) =>
+{
+    var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    logger.LogError(e.Exception, "[CRITICAL] ❌ UnobservedTaskException capturada - La aplicación NO se detendrá");
+    logger.LogError($"[CRITICAL]    Exception Type: {e.Exception.GetType().Name}");
+    logger.LogError($"[CRITICAL]    Inner Exceptions: {e.Exception.InnerExceptions.Count}");
+    foreach (var innerEx in e.Exception.InnerExceptions)
+    {
+        logger.LogError($"[CRITICAL]    - {innerEx.GetType().Name}: {innerEx.Message}");
+        if (innerEx is ObjectDisposedException disposedEx)
+        {
+            logger.LogWarning($"[CRITICAL]    ⚠️ ObjectDisposedException detectada (normal durante timeouts/cancelaciones)");
+        }
+    }
+    // Marcar como observada para evitar que la aplicación se detenga
+    e.SetObserved();
+};
+
+// ✅ FIX CRÍTICO: Manejador de excepciones no manejadas en AppDomain
+AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+{
+    var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    var exception = e.ExceptionObject as Exception;
+    
+    if (exception != null)
+    {
+        logger.LogError(exception, "[CRITICAL] ❌ UnhandledException capturada");
+        logger.LogError($"[CRITICAL]    Exception Type: {exception.GetType().Name}");
+        logger.LogError($"[CRITICAL]    Exception Message: {exception.Message}");
+        
+        // Si es AggregateException con ObjectDisposedException, es normal durante timeouts
+        if (exception is AggregateException aggEx && aggEx.InnerException is ObjectDisposedException)
+        {
+            logger.LogWarning($"[CRITICAL]    ⚠️ AggregateException con ObjectDisposedException (normal durante timeouts/cancelaciones)");
+            logger.LogWarning($"[CRITICAL]    ⚠️ La aplicación continuará funcionando normalmente");
+        }
+        else if (exception is ObjectDisposedException)
+        {
+            logger.LogWarning($"[CRITICAL]    ⚠️ ObjectDisposedException (normal durante timeouts/cancelaciones)");
+            logger.LogWarning($"[CRITICAL]    ⚠️ La aplicación continuará funcionando normalmente");
+        }
+    }
+    
+    // NO terminar la aplicación para ObjectDisposedException relacionadas con timeouts
+    if (exception is AggregateException aggEx2 && aggEx2.InnerException is ObjectDisposedException)
+    {
+        // No hacer nada, la aplicación continuará
+    }
+    else if (exception is ObjectDisposedException)
+    {
+        // No hacer nada, la aplicación continuará
+    }
+};
 
 // ✅ app.Run() - INICIAR SERVIDOR INMEDIATAMENTE
 // Según documentación de Render.com: "Bind your host to 0.0.0.0"

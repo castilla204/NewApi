@@ -1141,15 +1141,18 @@ namespace newApi.Services
 
 
 
-                // ✅ VALIDACIÓN: Verificar que la ubicación propuesta esté dentro del rango del experto
+                // ✅ VALIDACIÓN: Verificar que SearchHire esté cargado antes de validar
+                if (appointment.SearchHire == null)
+                {
+                    throw new InvalidOperationException("SearchHire no está cargado en el Appointment");
+                }
 
+                // ✅ VALIDACIÓN: Verificar que la ubicación propuesta esté dentro del rango del experto
                 await ValidateAppointmentLocationAsync(appointment.SearchHire, dto.Latitude, dto.Longitude);
 
-
-
-                        // ✅ VALIDACIÓN: Verificar que la fecha/hora propuesta esté dentro del horario de disponibilidad del experto
-                        // Usar la fecha/hora en UTC para la validación
-                        await ValidateAppointmentAvailabilityAsync(appointment.SearchHire, proposedDateTimeUtc);
+                // ✅ VALIDACIÓN: Verificar que la fecha/hora propuesta esté dentro del horario de disponibilidad del experto
+                // Usar la fecha/hora en UTC para la validación
+                await ValidateAppointmentAvailabilityAsync(appointment.SearchHire, proposedDateTimeUtc);
 
 
 
@@ -1174,6 +1177,21 @@ namespace newApi.Services
                 appointment.LastProposalAt = DateTime.UtcNow;
 
                 appointment.UpdatedAt = DateTime.UtcNow;
+
+                // ✅ CRÍTICO: Marcar la entidad como Modified explícitamente porque se cargó con FromSqlInterpolated
+                // FromSqlInterpolated puede no detectar cambios automáticamente, necesitamos forzar el estado
+                _context.Entry(appointment).State = EntityState.Modified;
+
+                // ✅ DEBUG: Verificar que los valores se asignaron correctamente antes de SaveChanges
+                await _loggingService.LogInfoAsync(
+                    message: "Valores asignados al Appointment antes de SaveChanges",
+                    details: $"AppointmentId: {appointment.Id}, ProposedDate: {appointment.ProposedDate}, ProposedTime: {appointment.ProposedTime}, Location: {appointment.Location}, StatusId: {appointment.StatusId}, EntityState: {_context.Entry(appointment).State}",
+                    userId: userId,
+                    source: "AppointmentService.ProposeAppointmentAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointment.Id,
+                    notifyUser: false
+                );
 
 
 
@@ -1213,10 +1231,24 @@ namespace newApi.Services
                 _context.AppointmentTimers.Add(responseTimer);
 
                 // ✅ OPTIMIZACIÓN: Un solo SaveChangesAsync para todas las operaciones de BD
-                await _context.SaveChangesAsync();
+                var saveChangesResult = await _context.SaveChangesAsync();
+                
+                // ✅ DEBUG: Verificar que SaveChanges se ejecutó correctamente
+                await _loggingService.LogInfoAsync(
+                    message: "SaveChanges ejecutado en ProposeAppointment",
+                    details: $"SaveChangesResult: {saveChangesResult} entidades modificadas. AppointmentId: {appointment.Id}, ProposedDate: {appointment.ProposedDate}, ProposedTime: {appointment.ProposedTime}, Location: {appointment.Location}",
+                    userId: userId,
+                    source: "AppointmentService.ProposeAppointmentAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointment.Id,
+                    notifyUser: false
+                );
 
                         // ✅ COMMIT: Confirmar la transacción
                         await transaction.CommitAsync();
+
+                        // ✅ CRÍTICO: Detach el appointment del contexto para forzar recarga desde BD
+                        _context.Entry(appointment).State = EntityState.Detached;
 
                         // ✅ CANCELAR jobs de Hangfire DESPUÉS del commit (mejor práctica: operaciones externas fuera de transacción)
                         foreach (var jobId in hangfireJobIdsToCancel)
@@ -1241,27 +1273,30 @@ namespace newApi.Services
                         responseTimer.HangfireJobId = responseJobId;
                         await _context.SaveChangesAsync();
 
-                // Cargar la cita actualizada con todas las relaciones
-
+                // ✅ CRÍTICO: Cargar la cita actualizada con todas las relaciones usando AsNoTracking para evitar problemas de caché
+                // O usar una nueva query para forzar la recarga desde la base de datos
                 var updatedAppointment = await _context.Appointments
-
+                    .AsNoTracking()
                     .Include(a => a.SearchHire)
-
                         .ThenInclude(sh => sh.Client)
-
                     .Include(a => a.SearchHire)
-
                         .ThenInclude(sh => sh.Expert)
-
                     .Include(a => a.SearchHire)
-
                         .ThenInclude(sh => sh.Status)
-
                     .Include(a => a.Status)
-
                     .Include(a => a.Timers)
-
                     .FirstAsync(a => a.Id == appointment.Id);
+
+                // ✅ DEBUG: Verificar que los valores se cargaron correctamente después del commit
+                await _loggingService.LogInfoAsync(
+                    message: "Appointment recargado después del commit",
+                    details: $"AppointmentId: {updatedAppointment.Id}, ProposedDate: {updatedAppointment.ProposedDate}, ProposedTime: {updatedAppointment.ProposedTime}, Location: {updatedAppointment.Location}, StatusId: {updatedAppointment.StatusId}, UpdatedAt: {updatedAppointment.UpdatedAt}",
+                    userId: userId,
+                    source: "AppointmentService.ProposeAppointmentAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: updatedAppointment.Id,
+                    notifyUser: false
+                );
 
 
 
@@ -1538,6 +1573,9 @@ namespace newApi.Services
                             appointment.StatusId = confirmedStatus.Id;
                             appointment.LastResponseAt = DateTime.UtcNow;
                             appointment.UpdatedAt = DateTime.UtcNow;
+
+                            // ✅ CRÍTICO: Marcar la entidad como Modified explícitamente porque se cargó con FromSqlInterpolated
+                            _context.Entry(appointment).State = EntityState.Modified;
 
                             // Marcar timers de respuesta como expirados y cancelar jobs de Hangfire
                             var responseTimers = await _context.AppointmentTimers
@@ -2214,6 +2252,9 @@ namespace newApi.Services
 
                 appointment.UpdatedAt = DateTime.UtcNow;
 
+                // ✅ CRÍTICO: Marcar la entidad como Modified explícitamente porque se cargó con FromSqlInterpolated
+                _context.Entry(appointment).State = EntityState.Modified;
+
                 // Actualizar el SearchHire según el mapeo de estados
 
                 var appointmentStatusEnum = statusValue switch
@@ -2307,157 +2348,96 @@ namespace newApi.Services
 
 
 
-                await _context.SaveChangesAsync();
+                var saveChangesResult = await _context.SaveChangesAsync();
 
+                // ✅ DEBUG: Verificar que SaveChanges se ejecutó correctamente
+                await _loggingService.LogInfoAsync(
+                    message: "SaveChanges ejecutado en RejectAppointment",
+                    details: $"SaveChangesResult: {saveChangesResult} entidades modificadas. AppointmentId: {appointment.Id}, StatusId: {appointment.StatusId}, RejectionCount: {appointment.RejectionCount}",
+                    userId: userId,
+                    source: "AppointmentService.RejectAppointmentAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointment.Id,
+                    notifyUser: false
+                );
 
+                
 
-                // ✅ CORRECCIÓN: Procesar refund automático para segunda cancelación
-
+                // ✅ CORRECCIÓN: Procesar refund automático para segunda cancelación DENTRO de la transacción
+                // RefundService ahora detecta transacciones existentes y las usa en lugar de crear nuevas
                 if (isSecondRejection)
-
                 {
-
                     try
-
                     {
-
                         // 🔍 LOG: Verificar configuración de dinero antes del refund
-
                         var moneyConfig = await _systemStatusService.GetMoneyDistributionConfigAsync(
-
                             AppointmentStatus.AppointmentCancelledByExpertRejection.ToStringValue(), 
-
                             appointment.SearchHire.SearchService?.CategoryId, 
-
                             appointment.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
 
                         // Orquestar refund+transfer según configuración del subestado de finalización
-                        // ✅ OPTIMIZACIÓN: updateState: false porque ya cambiamos el estado arriba (líneas 1466, 1512-1514)
-
+                        // ✅ OPTIMIZACIÓN: updateState: false porque ya cambiamos el estado arriba
                         var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
-
                             appointment.SearchHireId,
-
                             AppointmentStatus.AppointmentCancelledByExpertRejection.ToStringValue(),
-
                             "Segundo rechazo del experto - penalización máxima",
-
                             userId,
                             updateState: false);
 
-                        
-
-                        if (refundSuccess)
-
+                        if (!refundSuccess)
                         {
-
-                        }
-
-                        else
-
-                        {
-
                             // Log critical error for money transaction failure
-
                             await _loggingService.LogCriticalAsync(
-
                                 message: "CRITICAL: Automatic refund failed",
-
                                 details: $"Automatic refund failed for Appointment {appointment.Id}",
-
                                 userId: appointment.SearchHire?.ClientId,
-
                                 source: "AppointmentService.RejectAppointmentAsync",
-
                                 relatedEntityType: "Refund",
-
                                 relatedEntityId: appointment.SearchHireId,
-
                                 additionalData: new { 
-
                                     AppointmentId = appointment.Id,
-
                                     SearchHireId = appointment.SearchHireId,
-
                                     Amount = appointment.SearchHire?.Amount,
-
                                     ClientId = appointment.SearchHire?.ClientId,
-
                                     ExpertId = appointment.SearchHire?.ExpertId
-
                                 }
-
                             );
-
                         }
-
                     }
-
                     catch (Exception refundEx)
-
                     {
-
                         // 🚨 LOG CRÍTICO: Error procesando refund automático (una sola vez, con información completa)
-
                         await _loggingService.LogCriticalAsync(
-
                             message: "CRITICAL: Error processing automatic refund during appointment rejection",
-
                             details: $"Automatic refund failed during appointment rejection for Appointment {appointment.Id} (SearchHire {appointment.SearchHireId}). " +
-
                                     $"This occurred on second rejection by expert {userId}. " +
-
                                     $"Error Type: {refundEx.GetType().Name}, Error Message: {refundEx.Message}. " +
-
                                     $"SearchHire Amount: {appointment.SearchHire?.Amount}€, ClientId: {appointment.SearchHire?.ClientId}, ExpertId: {appointment.SearchHire?.ExpertId}. " +
-
                                     $"Stack Trace: {refundEx.StackTrace}. " +
-
                                     $"ACTION REQUIRED: Review refund error and manually process refund if needed. Appointment rejection completed but refund failed.",
-
                             userId: appointment.SearchHire?.ClientId,
-
                             source: "AppointmentService.RejectAppointmentAsync",
-
                             relatedEntityType: "Appointment",
-
                             relatedEntityId: appointment.Id,
-
                             additionalData: new { 
-
                                 AppointmentId = appointment.Id,
-
                                 SearchHireId = appointment.SearchHireId,
-
                                 Amount = appointment.SearchHire?.Amount,
-
                                 ClientId = appointment.SearchHire?.ClientId,
-
                                 ExpertId = appointment.SearchHire?.ExpertId,
-
                                 ExpertUserId = userId,
-
                                 ErrorType = refundEx.GetType().Name,
-
                                 ErrorMessage = refundEx.Message,
-
                                 StackTrace = refundEx.StackTrace,
-
                                 InnerException = refundEx.InnerException?.Message
-
                             }
-
                         );
-
                         
-
                         // No lanzar la excepción para no afectar el flujo principal
-
                     }
-
                 }
 
-                else
+                if (!isSecondRejection)
 
                 {
                     // ✅ Si es primer rechazo, restaurar timer de 24h para que el cliente proponga otra vez
@@ -2495,35 +2475,40 @@ namespace newApi.Services
 
                         await transaction.CommitAsync();
 
-                // Cargar la cita actualizada con todas las relaciones
+                        // ✅ CRÍTICO: Detach el appointment del contexto para forzar recarga desde BD
+                        _context.Entry(appointment).State = EntityState.Detached;
 
+                // ✅ CRÍTICO: Cargar la cita actualizada con todas las relaciones usando AsNoTracking para evitar problemas de caché
                 var updatedAppointment = await _context.Appointments
-
+                    .AsNoTracking()
                     .Include(a => a.SearchHire)
-
                         .ThenInclude(sh => sh.Client)
-
                     .Include(a => a.SearchHire)
-
                         .ThenInclude(sh => sh.Expert)
-
                     .Include(a => a.SearchHire)
-
                         .ThenInclude(sh => sh.Status)
-
                     .Include(a => a.Status)
-
                     .Include(a => a.Timers)
-
                     .FirstAsync(a => a.Id == appointment.Id);
 
+                // ✅ DEBUG: Verificar que los valores se cargaron correctamente después del commit
+                await _loggingService.LogInfoAsync(
+                    message: "Appointment recargado después del commit en RejectAppointment",
+                    details: $"AppointmentId: {updatedAppointment.Id}, StatusId: {updatedAppointment.StatusId}, StatusValue: {updatedAppointment.Status?.StatusValue}, RejectionCount: {updatedAppointment.RejectionCount}, UpdatedAt: {updatedAppointment.UpdatedAt}",
+                    userId: userId,
+                    source: "AppointmentService.RejectAppointmentAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: updatedAppointment.Id,
+                    notifyUser: false
+                );
 
+                
 
                 // ✅ Enviar mensaje al chat con el cambio de estado (después del commit)
 
                 // El statusValue se determina según si es primera o segunda cancelación
 
-                var statusValueToSend = isSecondRejection 
+                var statusValueToSend = isSecondRejection
 
                     ? AppointmentStatus.AppointmentCancelledByExpertRejection.ToStringValue()
 
@@ -3030,7 +3015,10 @@ namespace newApi.Services
 
                 appointment.UpdatedAt = DateTime.UtcNow;
 
+                // ✅ CRÍTICO: Marcar la entidad como Modified explícitamente porque se cargó con FromSqlInterpolated
+                _context.Entry(appointment).State = EntityState.Modified;
 
+                
 
                 // Actualizar el SearchHire según el mapeo de estados
 
@@ -6286,6 +6274,9 @@ namespace newApi.Services
                 appointment.StatusId = appointmentReportSentStatus.Id;
 
                 appointment.UpdatedAt = DateTime.UtcNow;
+
+                // ✅ CRÍTICO: Marcar la entidad como Modified explícitamente porque se cargó con FromSqlInterpolated
+                _context.Entry(appointment).State = EntityState.Modified;
 
 
 

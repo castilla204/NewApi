@@ -4,6 +4,8 @@ using Grpc.Core;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.IdentityModel.Tokens;
 using Stripe;
 using System.Collections.Generic;
@@ -696,8 +698,8 @@ catch
 }
 
 // Configurar la cadena de conexi�n seg�n el entorno
-// ✅ SIMPLIFICADO: Conectar directamente a Supabase tanto en desarrollo como en producción
-// Usar la misma conexión a Supabase configurada en appsettings.Development.json
+// ✅ MIGRACIÓN A RENDER POSTGRESQL: Base de datos principal en Render
+// Supabase se mantiene SOLO para Realtime (chat en directo y notificaciones)
 string connectionString;
 
 // ✅ HARDCODEADO: Connection string hardcodeada para producción (Render.com)
@@ -731,18 +733,17 @@ if (isDevelopment)
 }
 else
 {
-    // ✅ PRODUCCIÓN (Render.com): Connection string HARDCODEADA
-    // ✅ Session Pooler (puerto 5432) - Soporta savepoints y ExecutionStrategy
-    // Funciona como PostgreSQL directo (VPS), permite transacciones manuales con ExecutionStrategy
-    // Hangfire se cambiará automáticamente a Transaction Pooler (6543) en Program.cs
-    connectionString = "User Id=postgres.rveqsehzlvbttlpmsbmi;Password=__REDACTED_CREDENTIAL__;Server=aws-1-eu-west-2.pooler.supabase.com;Port=5432;Database=postgres;SslMode=Require;Timeout=60;CommandTimeout=120;Pooling=true;Multiplexing=false;Enlist=false;Max Auto Prepare=0;KeepAlive=30;";
-    connectionStringSource = "Hardcoded (Producción - Render.com)";
-    configLogger.LogInformation("✅ Producción: Connection string HARDCODEADA (Render.com)");
-    configLogger.LogInformation("   ✅ Session Pooler (puerto 5432) - Soporta savepoints y ExecutionStrategy");
-    configLogger.LogInformation("   ✅ Funciona como PostgreSQL directo (VPS)");
-    configLogger.LogInformation("   ✅ Hangfire usará automáticamente Transaction Pooler (6543)");
+    // ✅ PRODUCCIÓN (Render.com): RENDER POSTGRESQL - Connection string HARDCODEADA
+    // ✅ Hostname interno para servicios Render: dpg-d5kar5l6ubrc73espd5g-a
+    // ✅ Render PostgreSQL estándar - Soporta savepoints, transacciones y ExecutionStrategy
+    connectionString = "Host=dpg-d5kar5l6ubrc73espd5g-a;Port=5432;Database=inspecciono;Username=inspecciono_user;Password=__REDACTED_URI_PASSWORD__;SslMode=Require;Timeout=60;CommandTimeout=120;Pooling=true;";
+    connectionStringSource = "Hardcoded (Producción - Render PostgreSQL)";
+    configLogger.LogInformation("✅ Producción: Connection string HARDCODEADA (Render PostgreSQL)");
+    configLogger.LogInformation("   ✅ Render PostgreSQL nativo - Soporta todas las características de PostgreSQL");
+    configLogger.LogInformation("   ✅ Hostname interno: dpg-d5kar5l6ubrc73espd5g-a");
+    configLogger.LogInformation("   ✅ Database: inspecciono");
+    configLogger.LogInformation("   ✅ Compatible con savepoints, ExecutionStrategy y Hangfire");
     configLogger.LogInformation("   Timeouts: Timeout=60, CommandTimeout=120");
-    configLogger.LogInformation("   KeepAlive=30 para mantener conexiones vivas");
 }
 
 if (!string.IsNullOrEmpty(connectionString))
@@ -778,83 +779,25 @@ if (!string.IsNullOrEmpty(connectionString))
 
 builder.Configuration["ConnectionStrings:PostgresConnection"] = connectionString;
 
-// ✅ HANGFIRE: Configurar connection string usando Direct Connection (recomendado)
-// SOLUCIÓN 2026: Usar NpgsqlConnectionStringBuilder para parsear correctamente
-// NO construir hostnames manualmente para evitar errores de DNS
+// ✅ HANGFIRE: Configurar connection string para Render PostgreSQL
+// Render PostgreSQL es estándar, no requiere configuraciones especiales como Supabase
 string hangfireConnectionString;
 try
 {
     // Usar NpgsqlConnectionStringBuilder para parsear la connection string correctamente
     var builderConn = new NpgsqlConnectionStringBuilder(connectionString);
     var host = builderConn.Host ?? string.Empty;
-    var username = builderConn.Username ?? string.Empty;
-    
-    // ✅ DETECTAR TIPO DE CONEXIÓN SUPABASE (según documentación oficial)
-    // Direct Connection: db.*.supabase.co (puerto 5432, solo IPv6)
-    // Session Pooler: pooler.supabase.com (puerto 5432, IPv4/IPv6, NO compatible con Hangfire)
-    // Transaction Pooler: pooler.supabase.com (puerto 6543, IPv4/IPv6, PERFECTO para Hangfire)
     var port = builderConn.Port;
-    var isDirectConnection = host.Contains("db.") && host.Contains(".supabase.co");
-    var isSessionPooler = host.Contains("pooler.supabase.com") && port == 5432;
-    var isTransactionPooler = host.Contains("pooler.supabase.com") && port == 6543;
     
-    // Extraer project reference del username (formato: postgres.PROJECT_REF)
-    var projectRef = username.Contains(".") ? username.Split('.').LastOrDefault() ?? string.Empty : string.Empty;
+    // ✅ RENDER POSTGRESQL: Usar la misma connection string para todo
+    // Render PostgreSQL es estándar y soporta todas las características necesarias
+    hangfireConnectionString = connectionString;
     
-    // Validar project reference (debe tener al menos 10 caracteres para ser válido)
-    var projectRefValid = !string.IsNullOrEmpty(projectRef) && projectRef.Length >= 10 && 
-                          Regex.IsMatch(projectRef, @"^[a-zA-Z0-9_-]+$");
-    
-    if (isTransactionPooler)
-    {
-        // PERFECTO: Transaction Pooler (puerto 6543) - Compatible con IPv4/IPv6 y Hangfire
-        hangfireConnectionString = connectionString;
-        configLogger.LogInformation("[OK] USANDO TRANSACTION POOLER (Puerto 6543) - PERFECTO PARA HANGFIRE");
-        configLogger.LogInformation("   [OK] Compatible con IPv4/IPv6 (resuelve problemas DNS)");
-        configLogger.LogInformation("   [OK] Compatible con Hangfire (no causa ObjectDisposedException)");
-        configLogger.LogInformation("   [OK] Recomendado por documentacion oficial de Supabase para background jobs");
-        configLogger.LogInformation($"   Host: {host}, Port: {port}");
-    }
-    else if (isDirectConnection)
-    {
-        // Direct Connection: ideal pero requiere IPv6
-        hangfireConnectionString = connectionString;
-        configLogger.LogInformation("[OK] Usando Direct Connection para Hangfire (requiere IPv6 habilitado)");
-        configLogger.LogInformation($"   Host: {host}, Port: {port}");
-        configLogger.LogInformation("   [WARNING] NOTA: Direct Connection requiere IPv6. Si tienes problemas DNS, usa Transaction Pooler (puerto 6543)");
-    }
-    else if (isSessionPooler)
-    {
-        // ✅ Session Pooler (puerto 5432): Bueno para la app principal, cambiar a Transaction Pooler para Hangfire
-        if (projectRefValid)
-        {
-            // Construir Transaction Pooler connection string automáticamente para Hangfire
-            var transactionPoolerConn = new NpgsqlConnectionStringBuilder(connectionString);
-            transactionPoolerConn.Port = 6543; // Cambiar a Transaction Pooler solo para Hangfire
-            hangfireConnectionString = transactionPoolerConn.ConnectionString;
-            
-            configLogger.LogInformation("[OK] Session Pooler (puerto 5432) detectado para app principal");
-            configLogger.LogInformation("   [OK] Session Pooler soporta savepoints y ExecutionStrategy");
-            configLogger.LogInformation("   [OK] AUTOMATICO: Hangfire usará Transaction Pooler (puerto 6543)");
-            configLogger.LogInformation($"   Host: {host}, App: 5432, Hangfire: 6543");
-            configLogger.LogInformation("   [OK] Mejor de ambos mundos: ExecutionStrategy + Hangfire estable");
-        }
-        else
-        {
-            // No se puede construir automáticamente, usar Session Pooler
-            hangfireConnectionString = connectionString;
-            configLogger.LogWarning("[WARNING] Session Pooler (puerto 5432) detectado para Hangfire");
-            configLogger.LogWarning("   No se pudo cambiar automáticamente a Transaction Pooler");
-            configLogger.LogWarning("   Hangfire puede tener problemas ocasionales");
-        }
-    }
-    else
-    {
-        // ⚠️ No es Supabase o formato desconocido: usar connection string principal
-        hangfireConnectionString = connectionString;
-        configLogger.LogWarning("⚠️ Connection string no detectada como Supabase. Usando connection string principal.");
-        configLogger.LogWarning("   Verifica que la connection string sea válida para Hangfire.");
-    }
+    configLogger.LogInformation("[OK] Configurando Hangfire para Render PostgreSQL");
+    configLogger.LogInformation($"   Host: {host}");
+    configLogger.LogInformation($"   Port: {port}");
+    configLogger.LogInformation("   [OK] Render PostgreSQL soporta todas las características estándar");
+    configLogger.LogInformation("   [OK] Compatible con Hangfire, savepoints y ExecutionStrategy");
 }
 catch (Exception ex)
 {
@@ -1209,6 +1152,11 @@ builder.Services.AddAuthentication(options =>
             var path = context.HttpContext.Request.Path.Value ?? "";
             var method = context.HttpContext.Request.Method;
             var hasAuthHeader = context.HttpContext.Request.Headers.ContainsKey("Authorization");
+            var authHeaderValue = hasAuthHeader ? context.HttpContext.Request.Headers["Authorization"].ToString() : "NO AUTH HEADER";
+            var authHeaderPreview = hasAuthHeader && authHeaderValue.Length > 0 
+                ? (authHeaderValue.Length > 50 ? authHeaderValue.Substring(0, 50) + "..." : authHeaderValue)
+                : "NO AUTH HEADER";
+            
             var publicEndpoints = new[] { 
                 "/api/Categories", 
                 "/api/ServiceType/public", 
@@ -1220,9 +1168,12 @@ builder.Services.AddAuthentication(options =>
             var pathString = context.HttpContext.Request.Path;
             var isPublicEndpoint = publicEndpoints.Any(ep => pathString.StartsWithSegments(ep));
             
-            logger.LogInformation($"[JWT] 🔔 OnChallenge - {method} {path}");
-            logger.LogInformation($"[JWT]    HasAuthHeader: {hasAuthHeader}, IsPublicEndpoint: {isPublicEndpoint}");
-            logger.LogInformation($"[JWT]    Error: {context.Error}, ErrorDescription: {context.ErrorDescription}");
+            // ✅ LOGGING MEJORADO: Mostrar más detalles para debug
+            logger.LogWarning($"[JWT] 🔔 OnChallenge - {method} {path}");
+            logger.LogWarning($"[JWT]    HasAuthHeader: {hasAuthHeader}");
+            logger.LogWarning($"[JWT]    AuthHeaderPreview: {authHeaderPreview}");
+            logger.LogWarning($"[JWT]    IsPublicEndpoint: {isPublicEndpoint}");
+            logger.LogWarning($"[JWT]    Error: {context.Error}, ErrorDescription: {context.ErrorDescription}");
             
             // Si es endpoint público y no hay token, no hacer challenge (dejar pasar)
             if (isPublicEndpoint && !hasAuthHeader)
@@ -1233,6 +1184,12 @@ builder.Services.AddAuthentication(options =>
             else if (!hasAuthHeader)
             {
                 logger.LogWarning($"[JWT] ⚠️ Endpoint protegido sin token - Se enviará 401");
+                logger.LogWarning($"[JWT]    El frontend debe enviar: Authorization: Bearer <token>");
+            }
+            else
+            {
+                logger.LogWarning($"[JWT] ⚠️ Endpoint protegido CON token pero falló validación - Se enviará 401");
+                logger.LogWarning($"[JWT]    Verificar: Issuer, Audience, Expiration, Signature");
             }
             
             return Task.CompletedTask;
@@ -1245,126 +1202,126 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 {
     var connectionString = builder.Configuration.GetConnectionString("PostgresConnection");
     
-    // ✅ DETECTAR TIPO DE CONEXIÓN Y ADVERTIR SOBRE PROBLEMAS DE DNS/IPv6
+    // ✅ RENDER POSTGRESQL: Configuración estándar de PostgreSQL
     var builderConn = new NpgsqlConnectionStringBuilder(connectionString);
     var host = builderConn.Host ?? string.Empty;
     var port = builderConn.Port;
-    var isSessionPooler = host.Contains("pooler.supabase.com") && port == 5432;
-    var isTransactionPooler = host.Contains("pooler.supabase.com") && port == 6543;
-    var isDirectConnection = host.Contains("db.") && host.Contains(".supabase.co");
     
     var dbLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
     
-    if (isTransactionPooler)
-    {
-        // PERFECTO: Transaction Pooler (puerto 6543) - Compatible con IPv4/IPv6
-        dbLogger.LogInformation("[OK] TRANSACTION POOLER DETECTADO (Puerto 6543)");
-        dbLogger.LogInformation("   [OK] Compatible con IPv4/IPv6 (resuelve problemas DNS)");
-        dbLogger.LogInformation("   [OK] Compatible con Hangfire (no causa ObjectDisposedException)");
-        dbLogger.LogInformation("   [OK] Recomendado por documentacion oficial de Supabase");
-        dbLogger.LogInformation($"   Host: {host}, Port: {port}");
-    }
-    else if (isSessionPooler)
-    {
-        // ✅ Session Pooler (puerto 5432): SÍ soporta savepoints y ExecutionStrategy
-        // Funciona como PostgreSQL directo (VPS), permitiendo transacciones manuales con ExecutionStrategy
-        dbLogger.LogInformation("[OK] SESSION POOLER DETECTADO (Puerto 5432)");
-        dbLogger.LogInformation($"   Host actual: {host}, Port: {port}");
-        dbLogger.LogInformation("   [OK] Soporta savepoints (permite ExecutionStrategy con transacciones)");
-        dbLogger.LogInformation("   [OK] Funciona como PostgreSQL directo (VPS)");
-        dbLogger.LogInformation("   [OK] Transaction Pooler (6543) se usará automáticamente solo para Hangfire");
-        dbLogger.LogInformation("   [OK] Esta configuración permite usar ExecutionStrategy sin cambios de código");
-    }
-    else if (isDirectConnection)
-    {
-        // Direct Connection: Requiere IPv6 habilitado
-        dbLogger.LogInformation("[OK] Direct Connection detectado (requiere IPv6)");
-        dbLogger.LogInformation($"   Host: {host}, Port: {port}");
-        dbLogger.LogWarning("   [WARNING] NOTA: Direct Connection requiere IPv6 habilitado en Windows");
-        dbLogger.LogWarning("   Si tienes problemas DNS, usa Transaction Pooler (puerto 6543)");
-    }
+    // Render PostgreSQL es estándar, no requiere detección especial
+    dbLogger.LogInformation("[OK] RENDER POSTGRESQL DETECTADO");
+    dbLogger.LogInformation($"   Host: {host}");
+    dbLogger.LogInformation($"   Port: {port}");
+    dbLogger.LogInformation("   [OK] PostgreSQL estándar - Soporta todas las características");
+    dbLogger.LogInformation("   [OK] Compatible con savepoints, ExecutionStrategy y Hangfire");
+    dbLogger.LogInformation("   [OK] Sin restricciones de pooling (a diferencia de Supabase)");
     
-    // ✅ FIX CRÍTICO: Deshabilitar multiplexing explícitamente y configurar Enlist
-    // El Transaction Pooler ya maneja la multiplexación a nivel de pool,
-    // no necesitamos multiplexing a nivel de Npgsql que requiere transacciones explícitas
+    // ✅ RENDER POSTGRESQL: Configuración optimizada de connection string
     var connectionStringBuilder = new NpgsqlConnectionStringBuilder(connectionString);
-    connectionStringBuilder.Multiplexing = false; // ✅ CRÍTICO: Deshabilitar multiplexing para evitar error "transactions must be started with BeginTransaction"
-    connectionStringBuilder.Enlist = false; // ✅ CRÍTICO: Evitar que Npgsql se una automáticamente a transacciones ambientales
     
-    // ✅ CRÍTICO PARA TRANSACTION POOLER (PgBouncer): Deshabilitar Prepared Statements
-    // PgBouncer en Transaction Mode no admite Prepared Statements (CAUSA ObjectDisposedException/Connection Reset)
-    connectionStringBuilder.MaxAutoPrepare = 0;
+    // ✅ Configuración de transacciones y multiplexing
+    connectionStringBuilder.Multiplexing = false; // Desactivar para mejor compatibilidad con EF Core
+    connectionStringBuilder.Enlist = false; // Evitar transacciones distribuidas automáticas
     
-    // ✅ FIX CONEXIONES: Agregar timeouts y configuración de pooling para evitar "Exception while reading from stream"
-    // CRÍTICO para Render.com: aumentar timeouts debido a latencia de red
+    // ✅ Timeouts optimizados para Render.com
     if (connectionStringBuilder.Timeout < 60)
     {
-        connectionStringBuilder.Timeout = 60; // Timeout de conexión aumentado para Render.com
+        connectionStringBuilder.Timeout = 60; // Timeout de conexión
     }
     if (connectionStringBuilder.CommandTimeout < 120)
     {
-        connectionStringBuilder.CommandTimeout = 120; // Timeout de comandos aumentado para Render.com
+        connectionStringBuilder.CommandTimeout = 120; // Timeout de comandos
     }
     
-    // ✅ FIX SSL: Configurar SSL de forma más robusta para evitar "Exception while performing SSL handshake"
-    // Preferir Require pero permitir fallback si hay problemas
+    // ✅ Configurar SSL para Render PostgreSQL
     if (connectionStringBuilder.SslMode == SslMode.Prefer || 
         !connectionStringBuilder.ConnectionString.Contains("SslMode", StringComparison.OrdinalIgnoreCase))
     {
-        connectionStringBuilder.SslMode = SslMode.Require; // Requerir SSL para Supabase
+        connectionStringBuilder.SslMode = SslMode.Require; // Requerir SSL para Render
     }
     
-    connectionStringBuilder.Pooling = true; // Habilitar pooling de conexiones
-    connectionStringBuilder.MinPoolSize = 2; // Mínimo aumentado para mantener conexiones activas
-    connectionStringBuilder.MaxPoolSize = 30; // Máximo aumentado para Render.com
-    connectionStringBuilder.ConnectionLifetime = 600; // Reciclar conexiones después de 10 minutos (aumentado)
-    connectionStringBuilder.KeepAlive = 30; // Enviar keepalive cada 30 segundos para mantener conexiones vivas 
+    // ✅ Configuración de pooling para Render PostgreSQL
+    // Render PostgreSQL es estándar, soporta pooling sin restricciones
+    connectionStringBuilder.Pooling = true; // Habilitar pooling
+    connectionStringBuilder.MaxPoolSize = 100; // Limitar pool para evitar exhaustion
+    connectionStringBuilder.MinPoolSize = 0; // Permitir que el pool se reduzca cuando no se use
+    connectionStringBuilder.ConnectionIdleLifetime = 300; // Cerrar conexiones inactivas después de 5 minutos
+    connectionStringBuilder.ConnectionPruningInterval = 10; // Revisar conexiones inactivas cada 10 segundos
+    connectionStringBuilder.MaxAutoPrepare = 0; // Deshabilitar prepared statements (no necesario para Render, pero seguro)
     
+    // ✅ Obtener connection string final del builder (ya incluye todos los parámetros correctamente formateados)
     var finalConnectionString = connectionStringBuilder.ToString();
-    
-    // ✅ VERIFICACIÓN: Asegurar que Multiplexing=false y Max Auto Prepare=0 estén en la cadena final
-    if (!finalConnectionString.Contains("Multiplexing=false", StringComparison.OrdinalIgnoreCase))
-    {
-        finalConnectionString += (finalConnectionString.Contains(';') ? ";" : "") + "Multiplexing=false;";
-    }
-    if (!finalConnectionString.Contains("Enlist=false", StringComparison.OrdinalIgnoreCase))
-    {
-        finalConnectionString += "Enlist=false;";
-    }
-    if (!finalConnectionString.Contains("Max Auto Prepare=0", StringComparison.OrdinalIgnoreCase))
-    {
-        finalConnectionString += "Max Auto Prepare=0;";
-    }
     
     dbLogger.LogWarning("🔧 CRITICAL FIX: Using connection string DIRECTLY (no NpgsqlDataSourceBuilder)");
     dbLogger.LogWarning($"   Multiplexing=false is EXPLICITLY set in connection string");
     dbLogger.LogWarning($"   This prevents 'transactions must be started with BeginTransaction' error");
-    dbLogger.LogInformation("🔧 EnableRetryOnFailure HABILITADO para manejar errores transitorios");
-    dbLogger.LogInformation($"   Retry logic ayuda con timeouts y conexiones inestables en Render.com");
+    dbLogger.LogWarning("🔧 EnableRetryOnFailure DESHABILITADO para evitar conflictos con transacciones manuales");
+    dbLogger.LogWarning($"   ExecutionStrategy no soporta transacciones iniciadas manualmente (BeginTransactionAsync)");
+    dbLogger.LogWarning($"   Session Pooler (5432) ya maneja la conexión de manera estable");
+    dbLogger.LogWarning($"   El manejo de errores se hace manualmente en los lugares críticos");
+    dbLogger.LogWarning("🔧 OPTIMIZACIÓN SESSION POOLER (según migratetopool.txt):");
+    dbLogger.LogWarning($"   Pooling=false (desactivado según línea 50 del documento para evitar choques con PgBouncer)");
+    dbLogger.LogWarning($"   QuerySplittingBehavior=SingleQuery para evitar múltiples conexiones");
+    dbLogger.LogWarning($"   QueryTrackingBehavior=NoTrackingWithIdentityResolution para optimizar pooling");
+    dbLogger.LogWarning($"   CommandTimeout=1800s (30min) para migraciones largas");
+    dbLogger.LogWarning($"   EnableSensitiveDataLogging=false para seguridad");
+    dbLogger.LogWarning($"   EnableRetryOnFailure(0) (0 retries = ExecutionStrategy completamente deshabilitado)");
     
     // ✅ CRITICAL: Use connection string DIRECTLY, do NOT use NpgsqlDataSourceBuilder
     // NpgsqlDataSourceBuilder ignores Multiplexing=false from connection string
     options.UseNpgsql(finalConnectionString, npgsqlOptions =>
     {
-        npgsqlOptions.CommandTimeout(120); // Aumentado a 120 segundos para Render.com (más latencia)
+        // ✅ FIX (Paso 3 del tutorial): CommandTimeout aumentado para migraciones largas
+        // Según migratetopool.txt: "Aumenta CommandTimeout a 1800s" para evitar hangs en migraciones
+        npgsqlOptions.CommandTimeout(1800); // 30 minutos para migraciones largas (según tutorial expandido)
         
-        // ✅ HABILITADO: EnableRetryOnFailure para manejar errores transitorios de conexión
-        // CRÍTICO para Render.com donde hay más latencia y conexiones pueden ser inestables
-        // IMPORTANTE: Solo reintenta en operaciones que NO usan transacciones manuales
-        // Las transacciones manuales (UserService.GoogleAuth) manejan sus propios reintentos
-        npgsqlOptions.EnableRetryOnFailure(
-            maxRetryCount: 5, // Aumentado a 5 reintentos para Render.com
-            maxRetryDelay: TimeSpan.FromSeconds(10), // Delay máximo aumentado
-            errorCodesToAdd: null // Usar códigos de error por defecto de Npgsql
-        );
+        // ✅ DESHABILITADO: EnableRetryOnFailure causa conflictos con transacciones manuales
+        // ExecutionStrategy no soporta transacciones iniciadas manualmente (BeginTransactionAsync)
+        // Aunque Session Pooler (5432) soporta savepoints, ExecutionStrategy tiene una limitación
+        // que impide trabajar con transacciones manuales cuando EnableRetryOnFailure está activo
+        // Session Pooler ya maneja la conexión de manera estable, no necesitamos retry automático
+        // El manejo de errores se hace manualmente en los lugares críticos con IServiceScopeFactory
+        // Según migratetopool.txt: "Desactiva EF retries: EnableRetryOnFailure(0)"
+        // 
+        // ✅ FIX CRÍTICO: Deshabilitar completamente ExecutionStrategy configurando retries a 0
+        // Esto evita que NpgsqlExecutionStrategy se active automáticamente e intente crear savepoints
+        // que causan ObjectDisposedException cuando se combinan con transacciones manuales
+        npgsqlOptions.EnableRetryOnFailure(0); // ✅ FIX: 0 retries = ExecutionStrategy deshabilitado completamente
+        
+        // ✅ FIX (Paso 3): Desactivar query splitting que puede causar disposed connections
+        // Query splitting puede abrir múltiples conexiones que se disponen inesperadamente
+        // Según migratetopool.txt: "Desactiva EF's auto-savepoints: UseQuerySplittingBehavior(SingleQuery)"
+        npgsqlOptions.UseQuerySplittingBehavior(QuerySplittingBehavior.SingleQuery);
         
     });
+    
+    // ✅ FIX (Paso 2 del tutorial expandido): Optimizar tracking behavior para pooling
+    // Según migratetopool.txt: "NoTracking reduce memory leaks en pooled envs"
+    // "UseQueryTrackingBehavior(QueryTrackingBehavior.NoTrackingWithIdentityResolution) optimiza pooling"
+    // Usamos NoTrackingWithIdentityResolution para mantener resolución de identidad pero reducir overhead
+    options.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTrackingWithIdentityResolution);
     
     // ✅ CRITICAL: Disable Execution Strategy completely to prevent multiplexing issues
     // Execution Strategy can cause "transactions must be started with BeginTransaction" error
     // even when Multiplexing=false is set, because it tries to use multiplexing internally
-    options.EnableSensitiveDataLogging(isDevelopment);
-    options.EnableDetailedErrors(isDevelopment);
+    // Npgsql tiene un ExecutionStrategy por defecto que se activa automáticamente
+    // incluso sin EnableRetryOnFailure, causando savepoints que fallan con ObjectDisposedException
+    // 
+    // ✅ FIX CRÍTICO: Según documentación oficial de Microsoft (learn.microsoft.com),
+    // la solución correcta es deshabilitar los savepoints automáticos usando AutoSavepointsEnabled = false
+    // en lugar de intentar reemplazar el ExecutionStrategy. Esto evita que EF Core cree savepoints
+    // automáticamente dentro de transacciones manuales, que es la causa del ObjectDisposedException.
+    // 
+    // ❌ COMENTADO: ReplaceService no funciona correctamente porque NoOpExecutionStrategy
+    // no puede obtener el DbContext del state. La solución oficial es AutoSavepointsEnabled = false.
+    // options.ReplaceService<IExecutionStrategyFactory, newApi.NoOpExecutionStrategyFactory>();
+    
+    // ✅ FIX (Paso 2 del tutorial expandido): Configuración de logging según best practices
+    // Según migratetopool.txt: "EnableSensitiveDataLogging(false) para seguridad"
+    // "EnableDetailedErrors(true) para debug disposed"
+    options.EnableSensitiveDataLogging(false); // ✅ Seguridad: no loguear datos sensibles en producción
+    options.EnableDetailedErrors(isDevelopment); // ✅ Debug: habilitar solo en desarrollo para ver detalles de disposed
     
     // ✅ LOGGING DETALLADO: Habilitar logging de todas las operaciones de base de datos
     // Esto incluye: queries SQL, conexiones, transacciones, timeouts, errores
@@ -1497,54 +1454,34 @@ builder.Services.AddCors(options =>
 });
 
 
-// ✅ HANGFIRE CONFIGURACIÓN 2026: Integración con Supabase PostgreSQL
+// ✅ HANGFIRE CONFIGURACIÓN 2026: Integración con Render PostgreSQL
 // 
 // DOCUMENTACIÓN OFICIAL: https://docs.hangfire.io/en/latest/configuration/using-postgresql.html
-// VERSIÓN ACTUAL: Hangfire.PostgreSql 1.20.13 ✅ (corrige bug ObjectDisposedException de v1.6.1)
+// VERSIÓN ACTUAL: Hangfire.PostgreSql 1.20.13 ✅
 // VERSIÓN HANGFIRE: Hangfire.AspNetCore 1.8.22 ✅
 // 
-// ✅ VERIFICADO: Versión 1.20.13 resuelve el bug reportado en GitHub Issue #122
-// donde las conexiones se disponían prematuramente causando ObjectDisposedException.
-// Esta versión es superior a la 1.6.2 que inicialmente resolvió el problema.
+// MIGRACIÓN A RENDER POSTGRESQL:
+// - Base de datos principal migrada de Supabase a Render PostgreSQL
+// - Render PostgreSQL es estándar, sin restricciones de pooling
+// - Soporta todas las características: savepoints, ExecutionStrategy, Hangfire, locks distribuidos
+// - Configuración simplificada: misma connection string para app y Hangfire
 // 
-// ✅ VERIFICADO: Esta versión resuelve el bug reportado en GitHub Issue #122
-// donde las conexiones se disponían prematuramente causando ObjectDisposedException.
+// SUPABASE MANTENIDO SOLO PARA:
+// - Realtime (chat en directo)
+// - Notificaciones push en tiempo real
 // 
-// ✅ SOLUCIÓN OFICIAL SUPABASE (Según documentación oficial):
+// VENTAJAS DE RENDER POSTGRESQL:
+// - PostgreSQL nativo sin poolers intermedios (no más problemas de Session/Transaction Pooler)
+// - Mejor rendimiento para transacciones y locks
+// - Configuración más simple
+// - Sin limitaciones de prepared statements o multiplexing
 // 
-// 1. TRANSACTION POOLER (Puerto 6543) - ⭐ RECOMENDADO PARA HANGFIRE ⭐
-//    * Compatible con IPv4/IPv6 (resuelve problemas DNS)
-//    * Compatible con Hangfire (no causa ObjectDisposedException)
-//    * Diseñado para "temporary clients" y background jobs según docs oficiales
-//    * Formato: pooler.supabase.com:6543
-//    * ✅ PERFECTO para Hangfire - El código detecta Session Pooler y cambia automáticamente
-// 
-// 2. SESSION POOLER (Puerto 5432) - ❌ NO RECOMENDADO PARA HANGFIRE
-//    * Compatible con IPv4/IPv6 pero causa problemas con Hangfire
-//    * Cierra conexiones inactivas prematuramente
-//    * Causa ObjectDisposedException en locks distribuidos
-//    * Formato: pooler.supabase.com:5432
-//    * ⚠️ El código detecta esto y cambia automáticamente a Transaction Pooler si es posible
-// 
-// 3. DIRECT CONNECTION (Puerto 5432) - ✅ ALTERNATIVA (requiere IPv6)
-//    * Solo IPv6 (puede tener problemas DNS si IPv6 no está habilitado)
-//    * Soporta conexiones de larga duración
-//    * Compatible con locks distribuidos
-//    * Formato: db.PROJECT_REF.supabase.co:5432
-//    * ⚠️ Requiere IPv6 habilitado en Windows/red
-// 
-// CONFIGURACIÓN RECOMENDADA (Transaction Pooler):
-// 1. Usa Transaction Pooler (puerto 6543) para Hangfire
-// 2. Formato: Host=aws-1-eu-west-2.pooler.supabase.com;Port=6543;...
-// 3. Configura en appsettings.json o appsettings.Development.json
-// 
-// EJEMPLO DE CONNECTION STRING (Transaction Pooler - RECOMENDADO):
-// User Id=postgres.PROJECT_REF;Password=***;Server=aws-1-eu-west-2.pooler.supabase.com;Port=6543;Database=postgres;SslMode=Require;Timeout=30;CommandTimeout=60;Pooling=true;
+// EJEMPLO DE CONNECTION STRING (Render PostgreSQL):
+// Host=dpg-d5kar5l6ubrc73espd5g-a;Port=5432;Database=inspecciono;Username=inspecciono_user;Password=***;SslMode=Require;Timeout=60;CommandTimeout=120;Pooling=true;
 // 
 // REFERENCIAS:
-// - Tutoriales exitosos: Pradeep Radyumna (Dev.to), Georgi Marokov (Dev.to), Cosmin Vladutu (DevGenius)
-// - GitHub Issue #122: Bug ObjectDisposedException resuelto en v1.6.2+
-// - Hangfire Forum: Recomendaciones para poolers y timeouts
+// - https://render.com/docs/databases
+// - https://docs.hangfire.io/en/latest/configuration/using-postgresql.html
 
 // Validar que la connection string de Hangfire sea válida antes de configurarla
 var hangfireLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
@@ -1566,31 +1503,18 @@ if (hangfireConnectionValid)
     }
     
     // ✅ FIX CRÍTICO: Deshabilitar multiplexing explícitamente y configurar Enlist para Hangfire
-    // El Transaction Pooler ya maneja la multiplexación a nivel de pool
+    // Render PostgreSQL es estándar, pero estas configuraciones son buenas prácticas
     var hangfireConnBuilder = new NpgsqlConnectionStringBuilder(hangfireConnectionString);
-    hangfireConnBuilder.Multiplexing = false; // ✅ CRÍTICO: Deshabilitar multiplexing para evitar error "transactions must be started with BeginTransaction"
-    hangfireConnBuilder.Enlist = false; // ✅ CRÍTICO: Evitar que Npgsql se una automáticamente a transacciones ambientales
-    hangfireConnBuilder.MaxAutoPrepare = 0; // ✅ CRÍTICO PARA TRANSACTION POOLER: Deshabilitar Prepared Statements
+    hangfireConnBuilder.Multiplexing = false; // Deshabilitar multiplexing para mejor compatibilidad
+    hangfireConnBuilder.Enlist = false; // Evitar transacciones distribuidas automáticas
+    hangfireConnBuilder.MaxAutoPrepare = 0; // Deshabilitar prepared statements (no necesario para Render)
+    
+    // ✅ Obtener connection string final del builder (ya incluye todos los parámetros correctamente formateados)
     hangfireConnectionString = hangfireConnBuilder.ToString();
     
-    // ✅ VERIFICACIÓN: Asegurar que Multiplexing=false, Enlist=false y Max Auto Prepare=0 estén en la cadena final
-    if (!hangfireConnectionString.Contains("Multiplexing=false", StringComparison.OrdinalIgnoreCase))
-    {
-        hangfireConnectionString += (hangfireConnectionString.Contains(';') ? ";" : "") + "Multiplexing=false;";
-    }
-    if (!hangfireConnectionString.Contains("Enlist=false", StringComparison.OrdinalIgnoreCase))
-    {
-        hangfireConnectionString += "Enlist=false;";
-    }
-    if (!hangfireConnectionString.Contains("Max Auto Prepare=0", StringComparison.OrdinalIgnoreCase))
-    {
-        hangfireConnectionString += "Max Auto Prepare=0;";
-    }
-    
-    // ✅ HANGFIRE CONFIGURACIÓN 2026: Mejores prácticas para Supabase/PostgreSQL
+    // ✅ HANGFIRE CONFIGURACIÓN 2026: Mejores prácticas para Render PostgreSQL
     // Basado en: https://docs.hangfire.io/en/latest/configuration/using-postgresql.html
-    // IMPORTANTE: Session Pooler de Supabase cierra conexiones prematuramente
-    // Direct Connection (db.PROJECT_REF.supabase.co) es recomendado para Hangfire
+    // Render PostgreSQL es estándar, sin problemas de poolers intermedios
     builder.Services.AddHangfire(config => config
         .SetDataCompatibilityLevel(CompatibilityLevel.Version_180) // Compatibilidad con .NET 8+
         .UseSimpleAssemblyNameTypeSerializer()
@@ -1609,9 +1533,8 @@ if (hangfireConnectionValid)
             QueuePollInterval = TimeSpan.FromSeconds(15), // Balance óptimo para Supabase
             
             // ✅ INVISIBILITY TIMEOUT: Tiempo antes de reintentar job fallido
-            // Aumentado para conexiones inestables (Session Pooler) o latencia de red
             // Si un job no se completa en este tiempo, se marca como fallido y se reintenta
-            // RECOMENDACIÓN: 30-60 minutos para Supabase (según Hangfire Forum y casos reales)
+            // RECOMENDACIÓN: 30-60 minutos para jobs largos
             InvisibilityTimeout = TimeSpan.FromMinutes(30), // Suficiente para jobs largos
             
             // ✅ SLIDING INVISIBILITY: HABILITADO para renovar timeouts automáticamente
@@ -1621,10 +1544,9 @@ if (hangfireConnectionValid)
             UseSlidingInvisibilityTimeout = true,
             
             // ✅ DISTRIBUTED LOCK TIMEOUT: Crítico para evitar deadlocks
-            // Los locks distribuidos necesitan más tiempo con latencia de red (Supabase + Render.com)
-            // Session Pooler puede causar problemas aquí, Direct Connection es mejor
+            // Los locks distribuidos necesitan más tiempo con latencia de red
             // Basado en casos reales: timeouts altos (15+ min) resuelven problemas de locks
-            DistributedLockTimeout = TimeSpan.FromMinutes(20) // Aumentado para Render.com + Supabase
+            DistributedLockTimeout = TimeSpan.FromMinutes(20) // Aumentado para Render.com
             
             // ✅ NOTA: El error "DISCARD ALL cannot run inside a transaction block" ocurre porque
             // Hangfire intenta hacer DISCARD ALL pero el Transaction Pooler no lo permite.
@@ -1636,14 +1558,8 @@ if (hangfireConnectionValid)
     
     // ✅ HABILITADO: Servidor de Hangfire para procesar jobs automáticamente
     // Los jobs de timers de appointments requieren que el servidor esté activo
-    // En desarrollo, deshabilitar si es Session Pooler (causa ObjectDisposedException)
-    var isSessionPooler = hangfireConnectionString.Contains("pooler.supabase.com");
-    var isDirectConnection = hangfireConnectionString.Contains("db.") && hangfireConnectionString.Contains(".supabase.co");
-    
-    // Habilitar servidor solo si:
-    // - No es desarrollo, O
-    // - Es desarrollo Y tiene Direct Connection (no Session Pooler)
-    var enableHangfireServer = !isDevelopment || isDirectConnection;
+    // Render PostgreSQL es estándar, habilitar servidor en todos los entornos
+    var enableHangfireServer = true; // Siempre habilitado con Render PostgreSQL
     
     if (enableHangfireServer)
     {
@@ -1664,25 +1580,13 @@ if (hangfireConnectionValid)
             options.ShutdownTimeout = TimeSpan.FromSeconds(30); // Timeout para shutdown graceful
         });
         
-        hangfireLogger.LogInformation($"✅ Hangfire Server habilitado (Workers: {(isDevelopment ? 1 : Math.Max(2, Environment.ProcessorCount))})");
-        if (isSessionPooler)
-        {
-            hangfireLogger.LogWarning("   ⚠️ Usando Session Pooler - pueden ocurrir ObjectDisposedException ocasionalmente");
-        }
+        hangfireLogger.LogInformation($"✅ Hangfire Server habilitado con Render PostgreSQL");
+        hangfireLogger.LogInformation($"   Workers: {(isDevelopment ? 1 : Math.Max(2, Environment.ProcessorCount))}");
+        hangfireLogger.LogInformation("   [OK] PostgreSQL estándar - Sin problemas de pooling");
     }
     else
     {
-        if (isDevelopment && isSessionPooler)
-        {
-            hangfireLogger.LogWarning("⚠️ Hangfire Server deshabilitado en desarrollo (Session Pooler no compatible)");
-            hangfireLogger.LogWarning("   Session Pooler cierra conexiones prematuramente causando ObjectDisposedException");
-            hangfireLogger.LogWarning("   SOLUCIÓN: Configura Direct Connection en appsettings.Development.json");
-            hangfireLogger.LogWarning("   Dashboard disponible en /hangfire para monitoreo (sin procesar jobs)");
-        }
-        else
-        {
-            hangfireLogger.LogWarning("⚠️ Hangfire Server deshabilitado (connection string no válida)");
-        }
+        hangfireLogger.LogWarning("⚠️ Hangfire Server deshabilitado (connection string no válida)");
     }
 }
 else

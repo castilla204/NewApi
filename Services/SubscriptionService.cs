@@ -153,6 +153,8 @@ namespace newApi.Services
 
                 // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
                 // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+                // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
+                _context.Database.AutoSavepointsEnabled = false;
                 using var transaction = await _context.Database.BeginTransactionAsync();
                 try
                 {

@@ -51,9 +51,10 @@ namespace newApi.Services
                 ?? Environment.GetEnvironmentVariable("SUPABASE_URL")
                 ?? "https://rveqsehzlvbttlpmsbmi.supabase.co";
             
-            _supabaseServiceKey = configuration["Supabase:ServiceKey"] 
+            _supabaseServiceKey = configuration["Supabase:ServiceRoleKey"] 
+                ?? configuration["Supabase:ServiceKey"] // Mantener compatibilidad
                 ?? Environment.GetEnvironmentVariable("SUPABASE_SERVICE_KEY")
-                ?? throw new InvalidOperationException("Supabase Service Key not configured");
+                ?? throw new InvalidOperationException("Supabase Service Role Key not configured. Configure Supabase:ServiceRoleKey in appsettings");
             
             _httpClient.DefaultRequestHeaders.Authorization = 
                 new AuthenticationHeaderValue("Bearer", _supabaseServiceKey);

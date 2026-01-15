@@ -237,9 +237,24 @@ namespace newApi.Services
             catch (Exception ex)
 
             {
+                // ✅ LOG: Error al obtener cita por ID
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener cita por ID",
+                    details: $"Error al obtener cita con Id {id}. Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "AppointmentService.GetAppointmentByIdAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: id,
+                    additionalData: new { 
+                        AppointmentId = id,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
 
                 throw;
-
             }
 
         }
@@ -289,9 +304,24 @@ namespace newApi.Services
             catch (Exception ex)
 
             {
+                // ✅ LOG: Error al obtener cita por SearchHireId
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener cita por SearchHireId",
+                    details: $"Error al obtener cita para SearchHire {searchHireId}. Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "AppointmentService.GetAppointmentBySearchHireIdAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
 
                 throw;
-
             }
 
         }
@@ -339,9 +369,24 @@ namespace newApi.Services
             catch (Exception ex)
 
             {
+                // ✅ LOG: Error al obtener citas del usuario
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener citas del usuario",
+                    details: $"Error al obtener citas para usuario {userId}. Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "AppointmentService.GetUserAppointmentsAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        UserId = userId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
 
                 throw;
-
             }
 
         }
@@ -753,17 +798,33 @@ namespace newApi.Services
 
                 }
 
-                catch
+                catch (Exception innerEx)
 
                 {
 
                     // Rollback en caso de error
-
                     try
                     {
                         await transaction.RollbackAsync();
                     }
                     catch { }
+
+                    // ✅ LOG: Error en transacción al crear cita
+                    await _loggingService.LogErrorAsync(
+                        message: "Error en transacción al crear cita",
+                        details: $"Error al crear cita para SearchHire {dto.SearchHireId} dentro de la transacción. Error: {innerEx.GetType().Name} - {innerEx.Message}, StackTrace: {innerEx.StackTrace}",
+                        userId: null,
+                        source: "AppointmentService.CreateAppointmentAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: null,
+                        additionalData: new { 
+                            SearchHireId = dto.SearchHireId,
+                            ErrorType = innerEx.GetType().Name,
+                            ErrorMessage = innerEx.Message,
+                            StackTrace = innerEx.StackTrace,
+                            InnerException = innerEx.InnerException?.Message
+                        }
+                    );
 
                     throw;
 
@@ -774,9 +835,27 @@ namespace newApi.Services
             catch (Exception ex)
 
             {
+                // ✅ LOG: Error general al crear cita
+                await _loggingService.LogErrorAsync(
+                    message: "Error al crear cita",
+                    details: $"Error general al crear cita para SearchHire {dto.SearchHireId}. Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "AppointmentService.CreateAppointmentAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        SearchHireId = dto.SearchHireId,
+                        ProposedDate = dto.ProposedDate,
+                        ProposedTime = dto.ProposedTime,
+                        Location = dto.Location,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
 
                 throw;
-
             }
 
         }
@@ -880,6 +959,7 @@ namespace newApi.Services
 
 
                             // Crear la cita dentro de la transacción
+                            // ✅ Crear Appointment sin fecha/hora/ubicación - se asignarán cuando el cliente proponga
 
                     appointment = new Appointment
 
@@ -888,6 +968,8 @@ namespace newApi.Services
                         SearchHireId = searchHireId,
 
                         StatusId = awaitingStatusId,
+
+                        // ProposedDate, ProposedTime, Location son nullable - se asignarán en ProposeAppointment
 
                         CreatedAt = DateTime.UtcNow,
 
@@ -1198,37 +1280,48 @@ namespace newApi.Services
                 // ✅ Notificar al experto sobre la nueva propuesta de cita
                 if (updatedAppointment.SearchHire?.ExpertId.HasValue == true && updatedAppointment.SearchHire.ExpertId.Value > 0)
                 {
-                    var appointmentDateTime = updatedAppointment.ProposedDate.Date + updatedAppointment.ProposedTime;
-                    var formattedDate = appointmentDateTime.ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture);
-                    
-                    await _loggingService.LogInfoAsync(
-                        message: "Nueva propuesta de cita recibida",
-                        details: $"El cliente ha propuesto una cita para el {formattedDate} en {updatedAppointment.Location}. Tienes 24 horas para aceptar o rechazar.",
-                        userId: updatedAppointment.SearchHire.ExpertId.Value,
-                        source: "AppointmentService.ProposeAppointmentAsync",
-                        relatedEntityType: "Appointment",
-                        relatedEntityId: updatedAppointment.Id,
-                        notifyUser: false // Desactivar notificación genérica
-                    );
-
-                    // ✅ EMAIL: Notificar al experto de la nueva propuesta
-                    if (updatedAppointment.SearchHire.Expert != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Expert.Email))
+                    if (updatedAppointment.ProposedDate.HasValue && updatedAppointment.ProposedTime.HasValue)
                     {
-                        await _notificationService.SendGeneralNotificationEmailAsync(
-                            updatedAppointment.SearchHire.Expert.Email,
-                            updatedAppointment.SearchHire.Expert.Name,
-                            "📅 Nueva Propuesta de Cita",
-                            $"El cliente ha propuesto una cita para el <strong>{formattedDate}</strong> en <strong>{updatedAppointment.Location}</strong>.<br><br>Tienes 24 horas para aceptar o rechazar esta propuesta.",
-                            "Ver Propuesta",
-                            "https://www.inspecciono.com/appointments"
+                        var appointmentDateTime = updatedAppointment.ProposedDate.Value.Date + updatedAppointment.ProposedTime.Value;
+                        var formattedDate = appointmentDateTime.ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture);
+                        var locationText = !string.IsNullOrEmpty(updatedAppointment.Location) ? updatedAppointment.Location : "ubicación pendiente";
+                        
+                        await _loggingService.LogInfoAsync(
+                            message: "Nueva propuesta de cita recibida",
+                            details: $"El cliente ha propuesto una cita para el {formattedDate} en {locationText}. Tienes 24 horas para aceptar o rechazar.",
+                            userId: updatedAppointment.SearchHire.ExpertId.Value,
+                            source: "AppointmentService.ProposeAppointmentAsync",
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: updatedAppointment.Id,
+                            notifyUser: false // Desactivar notificación genérica
                         );
+
+                        // ✅ EMAIL: Notificar al experto de la nueva propuesta
+                        if (updatedAppointment.SearchHire.Expert != null && !string.IsNullOrEmpty(updatedAppointment.SearchHire.Expert.Email))
+                        {
+                            await _notificationService.SendGeneralNotificationEmailAsync(
+                                updatedAppointment.SearchHire.Expert.Email,
+                                updatedAppointment.SearchHire.Expert.Name,
+                                "📅 Nueva Propuesta de Cita",
+                                $"El cliente ha propuesto una cita para el <strong>{formattedDate}</strong> en <strong>{locationText}</strong>.<br><br>Tienes 24 horas para aceptar o rechazar esta propuesta.",
+                                "Ver Propuesta",
+                                "https://www.inspecciono.com/appointments"
+                            );
+                        }
                     }
                 }
 
                 // ✅ Notificar al cliente confirmando el envío de la propuesta (Confirmación para el remitente)
+                var dateText = updatedAppointment.ProposedDate.HasValue 
+                    ? updatedAppointment.ProposedDate.Value.ToString("dd/MM/yyyy") 
+                    : "fecha pendiente";
+                var timeText = updatedAppointment.ProposedTime.HasValue 
+                    ? updatedAppointment.ProposedTime.Value.ToString(@"hh\:mm") 
+                    : "hora pendiente";
+                
                 await _loggingService.LogInfoAsync(
                     message: "Propuesta de cita enviada correctamente",
-                    details: $"Has propuesto una cita para el {updatedAppointment.ProposedDate:dd/MM/yyyy} a las {updatedAppointment.ProposedTime:hh\\:mm}. El experto tiene 24 horas para responder. Si no responde, la cita se cancelará y recibirás un reembolso completo.",
+                    details: $"Has propuesto una cita para el {dateText} a las {timeText}. El experto tiene 24 horas para responder. Si no responde, la cita se cancelará y recibirás un reembolso completo.",
                     userId: userId,
                     source: "AppointmentService.ProposeAppointmentAsync",
                     relatedEntityType: "Appointment",
@@ -1477,11 +1570,13 @@ namespace newApi.Services
                             await _context.SaveChangesAsync();
 
                             // ✅ Programar job para cambiar a awaiting_report 3 horas después de la hora de la cita
-                            var appointmentDateTime = appointment.ProposedDate.Date + appointment.ProposedTime;
-                            var timeUntil3HoursAfter = appointmentDateTime.AddHours(3) - DateTime.UtcNow;
-                            
-                            if (timeUntil3HoursAfter.TotalSeconds > 0) // Solo programar si aún no han pasado las 3 horas
+                            if (appointment.ProposedDate.HasValue && appointment.ProposedTime.HasValue)
                             {
+                                var appointmentDateTime = appointment.ProposedDate.Value.Date + appointment.ProposedTime.Value;
+                                var timeUntil3HoursAfter = appointmentDateTime.AddHours(3) - DateTime.UtcNow;
+                                
+                                if (timeUntil3HoursAfter.TotalSeconds > 0) // Solo programar si aún no han pasado las 3 horas
+                                {
                                 // Crear timer para la transición a awaiting_report (3 horas después de la cita)
                                 var awaitingReportTransitionTimer = new AppointmentTimer
                                 {
@@ -1505,6 +1600,7 @@ namespace newApi.Services
                                 // Guardar el JobId en el timer
                                 awaitingReportTransitionTimer.HangfireJobId = jobId;
                                 await _context.SaveChangesAsync();
+                                }
                             }
 
                             // ✅ LOG: Antes del commit
@@ -1633,10 +1729,11 @@ namespace newApi.Services
                     );
 
                     // ✅ Notificar al cliente que la cita fue confirmada por el experto
-                    if (updatedAppointment.SearchHire?.ClientId != null)
+                    if (updatedAppointment.SearchHire?.ClientId != null
+                        && updatedAppointment.ProposedDate.HasValue && updatedAppointment.ProposedTime.HasValue)
                     {
                         // Formatear fecha y hora correctamente (combinar Date + TimeSpan para obtener DateTime)
-                        var appointmentDateTime = updatedAppointment.ProposedDate.Date + updatedAppointment.ProposedTime;
+                        var appointmentDateTime = updatedAppointment.ProposedDate.Value.Date + updatedAppointment.ProposedTime.Value;
                         var formattedDateTime = appointmentDateTime.ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture);
                         
                         // ✅ LOG: Enviando notificación al cliente
@@ -1686,9 +1783,10 @@ namespace newApi.Services
                     }
 
                     // ✅ Notificar al experto confirmando la cita (Confirmación para el remitente)
-                    if (updatedAppointment.SearchHire?.ExpertId.HasValue == true && updatedAppointment.SearchHire.ExpertId.Value > 0)
+                    if (updatedAppointment.SearchHire?.ExpertId.HasValue == true && updatedAppointment.SearchHire.ExpertId.Value > 0
+                        && updatedAppointment.ProposedDate.HasValue && updatedAppointment.ProposedTime.HasValue)
                     {
-                        var appointmentDateTime = updatedAppointment.ProposedDate.Date + updatedAppointment.ProposedTime;
+                        var appointmentDateTime = updatedAppointment.ProposedDate.Value.Date + updatedAppointment.ProposedTime.Value;
                         var formattedDate = appointmentDateTime.ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture);
                         
                         await _loggingService.LogInfoAsync(
@@ -2800,10 +2898,11 @@ namespace newApi.Services
                         // Solo aplicar si la cita está confirmada (appointment_confirmed)
                         if (currentStatus == "appointment_confirmed")
                         {
-                            // Verificar que la fecha propuesta sea válida (no sea DateTime.MinValue o default)
-                            if (appointment.ProposedDate != default(DateTime) && appointment.ProposedDate > DateTime.MinValue)
+                            // Verificar que la fecha propuesta sea válida (no sea null, DateTime.MinValue o default)
+                            if (appointment.ProposedDate.HasValue && appointment.ProposedTime.HasValue &&
+                                appointment.ProposedDate.Value != default(DateTime) && appointment.ProposedDate.Value > DateTime.MinValue)
                             {
-                                var appointmentDateTime = appointment.ProposedDate.Date + appointment.ProposedTime;
+                                var appointmentDateTime = appointment.ProposedDate.Value.Date + appointment.ProposedTime.Value;
                                 var timeUntilAppointment = appointmentDateTime - DateTime.UtcNow;
                                 
                                 if (timeUntilAppointment.TotalHours < 12)
@@ -3264,7 +3363,7 @@ namespace newApi.Services
                             actorEmail,
                             actorName ?? "Usuario",
                             "Cita Cancelada",
-                            $"Has cancelado la cita del {appointment.ProposedDate:dd/MM/yyyy}. {refundInfo}",
+                            $"Has cancelado la cita del {(appointment.ProposedDate?.ToString("dd/MM/yyyy") ?? "fecha no especificada")}. {refundInfo}",
                             "Ver Estado",
                             "https://www.inspecciono.com/appointments"
                         );
@@ -3282,7 +3381,7 @@ namespace newApi.Services
                             otherPartyEmail,
                             otherPartyName ?? "Usuario",
                             "⚠️ Cita Cancelada",
-                            $"La cita programada para el {appointment.ProposedDate:dd/MM/yyyy} ha sido cancelada por {cancelledBy}.",
+                            $"La cita programada para el {(appointment.ProposedDate?.ToString("dd/MM/yyyy") ?? "fecha no especificada")} ha sido cancelada por {cancelledBy}.",
                             "Ver Detalles",
                             "https://www.inspecciono.com/appointments"
                         );
@@ -3330,7 +3429,7 @@ namespace newApi.Services
                             actorEmail,
                             actorName ?? "Usuario",
                             "Cita Cancelada",
-                            $"Has cancelado la cita del {appointment.ProposedDate:dd/MM/yyyy}. {refundInfo}",
+                            $"Has cancelado la cita del {(appointment.ProposedDate?.ToString("dd/MM/yyyy") ?? "fecha no especificada")}. {refundInfo}",
                             "Ver Estado",
                             "https://www.inspecciono.com/appointments"
                         );
@@ -3348,7 +3447,7 @@ namespace newApi.Services
                             otherPartyEmail,
                             otherPartyName ?? "Usuario",
                             "⚠️ Cita Cancelada",
-                            $"La cita programada para el {appointment.ProposedDate:dd/MM/yyyy} ha sido cancelada por {cancelledBy}.",
+                            $"La cita programada para el {(appointment.ProposedDate?.ToString("dd/MM/yyyy") ?? "fecha no especificada")} ha sido cancelada por {cancelledBy}.",
                             "Ver Detalles",
                             "https://www.inspecciono.com/appointments"
                         );
@@ -4195,7 +4294,8 @@ namespace newApi.Services
 
                 confirmedAppointments = confirmedAppointments
 
-                    .Where(a => a.ProposedDate.Add(a.ProposedTime) <= cutoffTime)
+                    .Where(a => a.ProposedDate.HasValue && a.ProposedTime.HasValue && 
+                                a.ProposedDate.Value.Add(a.ProposedTime.Value) <= cutoffTime)
 
                     .ToList();
 
@@ -7088,7 +7188,8 @@ namespace newApi.Services
             TimeSpan? proposedTimeLocal = null;
             
             // Solo convertir si hay fecha/hora propuesta
-            if (appointment.ProposedDate != default && appointment.ProposedTime != default)
+            if (appointment.ProposedDate.HasValue && appointment.ProposedTime.HasValue
+                && appointment.ProposedDate.Value != default(DateTime) && appointment.ProposedTime.Value != default(TimeSpan))
             {
                 // Asegurar que SearchHire y sus relaciones estén cargadas
                 if (appointment.SearchHire != null)
@@ -7116,15 +7217,18 @@ namespace newApi.Services
                 );
                 
                 // Construir DateTime UTC desde fecha y hora guardadas
-                var proposedDateTimeUtc = DateTime.SpecifyKind(
-                    appointment.ProposedDate.Date + appointment.ProposedTime,
-                    DateTimeKind.Utc
-                );
-                
-                // Convertir de UTC a hora local
-                var proposedDateTimeLocal = _timezoneService.ConvertFromUtc(proposedDateTimeUtc, expertTimezone);
-                proposedDateLocal = proposedDateTimeLocal.Date;
-                proposedTimeLocal = proposedDateTimeLocal.TimeOfDay;
+                if (appointment.ProposedDate.HasValue && appointment.ProposedTime.HasValue)
+                {
+                    var proposedDateTimeUtc = DateTime.SpecifyKind(
+                        appointment.ProposedDate.Value.Date + appointment.ProposedTime.Value,
+                        DateTimeKind.Utc
+                    );
+                    
+                    // Convertir de UTC a hora local
+                    var proposedDateTimeLocal = _timezoneService.ConvertFromUtc(proposedDateTimeUtc, expertTimezone);
+                    proposedDateLocal = proposedDateTimeLocal.Date;
+                    proposedTimeLocal = proposedDateTimeLocal.TimeOfDay;
+                }
             }
 
             return new AppointmentDto
@@ -7137,9 +7241,9 @@ namespace newApi.Services
 
                 Status = appointment.Status?.StatusValue ?? string.Empty,
 
-                ProposedDate = appointment.ProposedDate, // UTC (guardada en BD)
+                ProposedDate = appointment.ProposedDate, // ✅ Nullable: UTC (guardada en BD)
 
-                ProposedTime = appointment.ProposedTime, // UTC (guardada en BD)
+                ProposedTime = appointment.ProposedTime, // ✅ Nullable: UTC (guardada en BD)
                 
                 // ✅ INTERNACIONALIZACIÓN: Fecha/hora en hora local para el frontend
                 ProposedDateLocal = proposedDateLocal,

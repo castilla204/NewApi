@@ -3577,10 +3577,12 @@ namespace newApi.Controllers
                         
                         if (awaitingStatus != null)
                         {
+                            // ✅ Crear Appointment sin fecha/hora/ubicación - se asignarán cuando el cliente proponga
                             var appointment = new Appointment
                             {
                                 SearchHireId = searchHireId, // ✅ FIX: Usar searchHireId guardado
                                 StatusId = awaitingStatus.Id,
+                                // ProposedDate, ProposedTime, Location son nullable - se asignarán en ProposeAppointment
                                 CreatedAt = DateTime.UtcNow,
                                 UpdatedAt = DateTime.UtcNow
                             };
@@ -3603,14 +3605,48 @@ namespace newApi.Controllers
                             await _context.SaveChangesAsync();
 
                             // Programar scheduled job para cuando expire el timer (24 horas)
-                            var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                                service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
-                                proposalTimer.EndTime - DateTime.UtcNow
-                            );
+                            try
+                            {
+                                var jobId = BackgroundJob.Schedule<IAppointmentService>(
+                                    service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
+                                    proposalTimer.EndTime - DateTime.UtcNow
+                                );
 
-                            // Guardar el JobId en el timer
-                            proposalTimer.HangfireJobId = jobId;
-                            await _context.SaveChangesAsync();
+                                // Guardar el JobId en el timer
+                                proposalTimer.HangfireJobId = jobId;
+                                await _context.SaveChangesAsync();
+
+                                await _loggingService.LogInfoAsync(
+                                    message: "Hangfire job programado exitosamente para timer de appointment",
+                                    details: $"Timer {proposalTimer.Id} para Appointment {appointment.Id} programado. JobId: {jobId}, EndTime: {proposalTimer.EndTime}",
+                                    userId: userId,
+                                    source: "SubscriptionController.HandlePendingHireCompleted",
+                                    relatedEntityType: "AppointmentTimer",
+                                    relatedEntityId: proposalTimer.Id
+                                );
+                            }
+                            catch (Exception hangfireEx)
+                            {
+                                // ✅ LOG: Error al programar job de Hangfire (no crítico, el timer se creó)
+                                await _loggingService.LogWarningAsync(
+                                    message: "Failed to schedule Hangfire job for appointment timer",
+                                    details: $"Timer {proposalTimer.Id} created successfully but Hangfire job scheduling failed. Error: {hangfireEx.Message}, StackTrace: {hangfireEx.StackTrace}",
+                                    userId: userId,
+                                    source: "SubscriptionController.HandlePendingHireCompleted",
+                                    relatedEntityType: "AppointmentTimer",
+                                    relatedEntityId: proposalTimer.Id,
+                                    additionalData: new { 
+                                        TimerId = proposalTimer.Id,
+                                        AppointmentId = appointment.Id,
+                                        SearchHireId = searchHireId,
+                                        Exception = hangfireEx.Message,
+                                        ErrorType = hangfireEx.GetType().Name,
+                                        StackTrace = hangfireEx.StackTrace,
+                                        InnerException = hangfireEx.InnerException?.Message
+                                    }
+                                );
+                                // Continuar sin el job de Hangfire - el timer se creó correctamente
+                            }
                         }
                     }
                 }
@@ -3651,9 +3687,40 @@ namespace newApi.Controllers
                 // ✅ Enviar factura por email al cliente (en segundo plano con Hangfire)
                 if (!string.IsNullOrEmpty(user.Email))
                 {
-                    Hangfire.BackgroundJob.Enqueue<IInvoiceService>(service => 
-                        service.SendInvoiceByEmailBackgroundJob(searchHireId, user.Email)); // ✅ FIX: Usar searchHireId guardado
-                    Console.WriteLine($"[SUBSCRIPTION CONTROLLER] [INVOICE] Factura encolada para envío. SearchHireId: {searchHireId}, Email: {user.Email}"); // ✅ FIX: Usar searchHireId guardado
+                    try
+                    {
+                        Hangfire.BackgroundJob.Enqueue<IInvoiceService>(service =>
+                            service.SendInvoiceByEmailBackgroundJob(searchHireId, user.Email)); // ✅ FIX: Usar searchHireId guardado
+                        
+                        await _loggingService.LogInfoAsync(
+                            message: "Factura encolada para envío por email",
+                            details: $"Factura para SearchHire {searchHireId} encolada en Hangfire para envío a {user.Email}",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId
+                        );
+                    }
+                    catch (Exception invoiceEx)
+                    {
+                        // ✅ LOG: Error al encolar email de factura (no crítico, la contratación se completó)
+                        await _loggingService.LogWarningAsync(
+                            message: "Failed to enqueue invoice email job",
+                            details: $"Hangfire job enqueue failed for SearchHire {searchHireId}. Error: {invoiceEx.Message}. The hire was completed successfully, but the invoice email will not be sent automatically.",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId,
+                            additionalData: new { 
+                                SearchHireId = searchHireId,
+                                Email = user.Email,
+                                Exception = invoiceEx.Message,
+                                ErrorType = invoiceEx.GetType().Name,
+                                StackTrace = invoiceEx.StackTrace,
+                                InnerException = invoiceEx.InnerException?.Message
+                            }
+                        );
+                    }
                 }
 
                 // ✅ Notificar al experto sobre la nueva contratación
@@ -4257,9 +4324,40 @@ namespace newApi.Controllers
                 try
                 {
                     session = await stripeService.CreateAsync(options);
+                    
+                    await _loggingService.LogInfoAsync(
+                        message: "Sesión de pago Stripe creada exitosamente",
+                        details: $"SessionId: {session.Id}, ServiceId: {request.SearchServiceId}, Amount: {service.Price}€, UserId: {userId}",
+                        userId: userId,
+                        source: "SubscriptionController.HireService",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: null,
+                        additionalData: new { 
+                            SessionId = session.Id,
+                            ServiceId = request.SearchServiceId,
+                            SearchId = request.SearchId,
+                            Amount = service.Price
+                        }
+                    );
                 }
                 catch (StripeException ex)
                 {
+                    await _loggingService.LogErrorAsync(
+                        message: "Error al crear sesión de pago Stripe",
+                        details: $"StripeException al crear checkout session. ServiceId: {request.SearchServiceId}, UserId: {userId}, Error: {ex.Message}, StripeError: {ex.StripeError?.Message}",
+                        userId: userId,
+                        source: "SubscriptionController.HireService",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: null,
+                        additionalData: new { 
+                            ServiceId = request.SearchServiceId,
+                            SearchId = request.SearchId,
+                            StripeErrorType = ex.StripeError?.Type,
+                            StripeErrorCode = ex.StripeError?.Code,
+                            StripeErrorMessage = ex.StripeError?.Message
+                        }
+                    );
+
                     return StatusCode(500, new { message = "Failed to create payment session" });
                 }
 
@@ -4267,6 +4365,30 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                int? userId = null;
+                if (int.TryParse(userIdClaim, out int parsedUserId))
+                {
+                    userId = parsedUserId;
+                }
+
+                await _loggingService.LogErrorAsync(
+                    message: "Error al contratar servicio",
+                    details: $"Error en HireService. ServiceId: {request?.SearchServiceId}, SearchId: {request?.SearchId}, UserId: {userId}, Error: {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "SubscriptionController.HireService",
+                    relatedEntityType: "SearchService",
+                    relatedEntityId: request?.SearchServiceId,
+                    additionalData: new { 
+                        ServiceId = request?.SearchServiceId,
+                        SearchId = request?.SearchId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = "Failed to hire service" });
             }
         }

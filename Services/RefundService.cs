@@ -44,32 +44,52 @@ namespace newApi.Services
             try
             {
                 // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
-                // Abrir transacción temporal solo para el bloqueo FOR UPDATE
+                // Verificar si ya hay una transacción activa (ej: desde AppointmentService)
                 // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
                 _context.Database.AutoSavepointsEnabled = false;
+                var existingLockTransaction = _context.Database.CurrentTransaction;
                 SearchHire? searchHire = null;
-                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
+                
+                // Si ya hay una transacción activa, usarla (no crear nueva ni hacer commit)
+                if (existingLockTransaction != null)
                 {
-                    try
+                    // Usar la transacción existente para el FOR UPDATE
+                    searchHire = await _context.SearchHires
+                        .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {searchHireId} FOR UPDATE")
+                        .Include(sh => sh.Status)
+                        .Include(sh => sh.Client)
+                        .Include(sh => sh.Expert)
+                            .ThenInclude(e => e.ExpertProfile)
+                        .Include(sh => sh.SearchService)
+                            .ThenInclude(ss => ss.ServiceType)
+                        .FirstOrDefaultAsync();
+                }
+                else
+                {
+                    // Si no hay transacción activa, crear una temporal solo para el bloqueo FOR UPDATE
+                    await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
                     {
-                        // Bloqueo a nivel de fila para consistencia
-                        searchHire = await _context.SearchHires
-                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {searchHireId} FOR UPDATE")
-                            .Include(sh => sh.Status)
-                            .Include(sh => sh.Client)
-                            .Include(sh => sh.Expert)
-                                .ThenInclude(e => e.ExpertProfile)
-                            .Include(sh => sh.SearchService)
-                                .ThenInclude(ss => ss.ServiceType)
-                            .FirstOrDefaultAsync();
-                        
-                        // Commit inmediato para liberar el lock (el bloqueo se mantiene hasta el commit)
-                        await lockTransaction.CommitAsync();
-                    }
-                    catch
-                    {
-                        try { await lockTransaction.RollbackAsync(); } catch { }
-                        throw;
+                        try
+                        {
+                            // Bloqueo a nivel de fila para consistencia
+                            searchHire = await _context.SearchHires
+                                .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {searchHireId} FOR UPDATE")
+                                .Include(sh => sh.Status)
+                                .Include(sh => sh.Client)
+                                .Include(sh => sh.Expert)
+                                    .ThenInclude(e => e.ExpertProfile)
+                                .Include(sh => sh.SearchService)
+                                    .ThenInclude(ss => ss.ServiceType)
+                                .FirstOrDefaultAsync();
+                            
+                            // Commit inmediato para liberar el lock (el bloqueo se mantiene hasta el commit)
+                            await lockTransaction.CommitAsync();
+                        }
+                        catch
+                        {
+                            try { await lockTransaction.RollbackAsync(); } catch { }
+                            throw;
+                        }
                     }
                 }
 
@@ -561,12 +581,12 @@ namespace newApi.Services
                 if (updateState)
                 {
                     // ✅ CORRECCIÓN: Verificar si ya hay una transacción activa (ej: desde AccountDeletionService)
-                    var existingTransaction = _context.Database.CurrentTransaction;
+                    var existingStateTransaction = _context.Database.CurrentTransaction;
                     bool stateUpdateSuccess = false;
                     
                     // ✅ Si no hay transacción existente, crear una nueva
                     // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
-                    if (existingTransaction == null)
+                    if (existingStateTransaction == null)
                     {
                         // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
                         _context.Database.AutoSavepointsEnabled = false;

@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Stripe;
 using Review = newApi.DataLayer.Models.PostGresModels.Review;
 using Dispute = newApi.DataLayer.Models.PostGresModels.Dispute;
@@ -525,12 +525,9 @@ namespace newApi.DataLayer.Models
             {
                 entity.HasKey(e => e.Id);
                 entity.Property(e => e.Location)
-                    .IsRequired()
-                    .HasMaxLength(500);
-                entity.Property(e => e.ProposedDate)
-                    .IsRequired();
-                entity.Property(e => e.ProposedTime)
-                    .IsRequired();
+                    .HasMaxLength(500); // ✅ Nullable: Se asigna cuando el cliente propone la cita
+                entity.Property(e => e.ProposedDate); // ✅ Nullable: Se asigna cuando el cliente propone la cita
+                entity.Property(e => e.ProposedTime); // ✅ Nullable: Se asigna cuando el cliente propone la cita
                 entity.Property(e => e.RejectionCount)
                     .HasDefaultValue(0);
                 entity.Property(e => e.ClientCancellationCount)

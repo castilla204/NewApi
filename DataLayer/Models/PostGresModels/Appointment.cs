@@ -10,9 +10,9 @@ namespace newApi.DataLayer.Models.PostGresModels
         public int Id { get; set; }
         public int SearchHireId { get; set; }
         public int StatusId { get; set; } // Referencia a SystemStatus
-        public DateTime ProposedDate { get; set; }
-        public TimeSpan ProposedTime { get; set; }
-        public string Location { get; set; } = string.Empty;
+        public DateTime? ProposedDate { get; set; } // ✅ Nullable: Se asigna cuando el cliente propone la cita
+        public TimeSpan? ProposedTime { get; set; } // ✅ Nullable: Se asigna cuando el cliente propone la cita
+        public string? Location { get; set; } // ✅ Nullable: Se asigna cuando el cliente propone la cita
         public decimal? Latitude { get; set; }
         public decimal? Longitude { get; set; }
         

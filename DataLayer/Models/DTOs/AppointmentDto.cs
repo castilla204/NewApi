@@ -10,8 +10,8 @@ namespace newApi.DataLayer.Models.DTOs
         public int Id { get; set; }
         public int SearchHireId { get; set; }
         public string Status { get; set; } = string.Empty;
-        public DateTime ProposedDate { get; set; } // Fecha en UTC (guardada en BD)
-        public TimeSpan ProposedTime { get; set; } // Hora en UTC (guardada en BD)
+        public DateTime? ProposedDate { get; set; } // ✅ Nullable: Fecha en UTC (guardada en BD) - se asigna cuando el cliente propone
+        public TimeSpan? ProposedTime { get; set; } // ✅ Nullable: Hora en UTC (guardada en BD) - se asigna cuando el cliente propone
         
         // ✅ NUEVOS CAMPOS: Fecha/hora en hora local para el frontend
         /// <summary>
@@ -33,7 +33,7 @@ namespace newApi.DataLayer.Models.DTOs
         /// País del experto al momento de la contratación (ISO 3166-1 alpha-2, ej: "ES", "MX")
         /// </summary>
         public string? Country { get; set; }
-        public string Location { get; set; } = string.Empty;
+        public string? Location { get; set; } // ✅ Nullable: Se asigna cuando el cliente propone la cita
         public decimal? Latitude { get; set; }
         public decimal? Longitude { get; set; }
         

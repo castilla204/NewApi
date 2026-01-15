@@ -240,10 +240,12 @@ namespace newApi.Controllers
                         
                         if (awaitingStatus != null)
                         {
+                            // ✅ Crear Appointment sin fecha/hora/ubicación - se asignarán cuando el cliente proponga
                             var appointment = new Appointment
                             {
                                 SearchHireId = searchHire.Id,
                                 StatusId = awaitingStatus.Id,
+                                // ProposedDate, ProposedTime, Location son nullable - se asignarán en ProposeAppointment
                                 CreatedAt = DateTime.UtcNow,
                                 UpdatedAt = DateTime.UtcNow
                             };
@@ -266,14 +268,48 @@ namespace newApi.Controllers
                             await _context.SaveChangesAsync();
 
                             // Programar scheduled job para cuando expire el timer (24 horas)
-                            var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                                service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
-                                proposalTimer.EndTime - DateTime.UtcNow
-                            );
+                            try
+                            {
+                                var jobId = BackgroundJob.Schedule<IAppointmentService>(
+                                    service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
+                                    proposalTimer.EndTime - DateTime.UtcNow
+                                );
 
-                            // Guardar el JobId en el timer
-                            proposalTimer.HangfireJobId = jobId;
-                            await _context.SaveChangesAsync();
+                                // Guardar el JobId en el timer
+                                proposalTimer.HangfireJobId = jobId;
+                                await _context.SaveChangesAsync();
+
+                                await _loggingService.LogInfoAsync(
+                                    message: "Hangfire job programado exitosamente para timer de appointment",
+                                    details: $"Timer {proposalTimer.Id} para Appointment {appointment.Id} programado. JobId: {jobId}, EndTime: {proposalTimer.EndTime}",
+                                    userId: searchHire.ClientId,
+                                    source: "SearchHireController.CreateSearchHire",
+                                    relatedEntityType: "AppointmentTimer",
+                                    relatedEntityId: proposalTimer.Id
+                                );
+                            }
+                            catch (Exception hangfireEx)
+                            {
+                                // ✅ LOG: Error al programar job de Hangfire (no crítico, el timer se creó)
+                                await _loggingService.LogWarningAsync(
+                                    message: "Failed to schedule Hangfire job for appointment timer",
+                                    details: $"Timer {proposalTimer.Id} created successfully but Hangfire job scheduling failed. Error: {hangfireEx.Message}, StackTrace: {hangfireEx.StackTrace}",
+                                    userId: searchHire.ClientId,
+                                    source: "SearchHireController.CreateSearchHire",
+                                    relatedEntityType: "AppointmentTimer",
+                                    relatedEntityId: proposalTimer.Id,
+                                    additionalData: new { 
+                                        TimerId = proposalTimer.Id,
+                                        AppointmentId = appointment.Id,
+                                        SearchHireId = searchHire.Id,
+                                        Exception = hangfireEx.Message,
+                                        ErrorType = hangfireEx.GetType().Name,
+                                        StackTrace = hangfireEx.StackTrace,
+                                        InnerException = hangfireEx.InnerException?.Message
+                                    }
+                                );
+                                // Continuar sin el job de Hangfire - el timer se creó correctamente
+                            }
                         }
                     }
                 }
@@ -317,9 +353,40 @@ namespace newApi.Controllers
                     // ✅ Enviar factura por email al cliente (en segundo plano con Hangfire)
                     if (!string.IsNullOrEmpty(client.Email))
                     {
-                        Hangfire.BackgroundJob.Enqueue<IInvoiceService>(service => 
-                            service.SendInvoiceByEmailBackgroundJob(searchHire.Id, client.Email));
-                        Console.WriteLine($"[SEARCH HIRE CONTROLLER] [INVOICE] Factura encolada para envío. SearchHireId: {searchHire.Id}, Email: {client.Email}");
+                        try
+                        {
+                            Hangfire.BackgroundJob.Enqueue<IInvoiceService>(service => 
+                                service.SendInvoiceByEmailBackgroundJob(searchHire.Id, client.Email));
+                            
+                            await _loggingService.LogInfoAsync(
+                                message: "Factura encolada para envío por email",
+                                details: $"Factura para SearchHire {searchHire.Id} encolada en Hangfire para envío a {client.Email}",
+                                userId: searchHire.ClientId,
+                                source: "SearchHireController.CreateSearchHire",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHire.Id
+                            );
+                        }
+                        catch (Exception invoiceEx)
+                        {
+                            // ✅ LOG: Error al encolar email de factura (no crítico, la contratación se creó)
+                            await _loggingService.LogWarningAsync(
+                                message: "Failed to enqueue invoice email job",
+                                details: $"Hangfire job enqueue failed for SearchHire {searchHire.Id}. Error: {invoiceEx.Message}. The hire was created successfully, but the invoice email will not be sent automatically.",
+                                userId: searchHire.ClientId,
+                                source: "SearchHireController.CreateSearchHire",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHire.Id,
+                                additionalData: new { 
+                                    SearchHireId = searchHire.Id,
+                                    Email = client.Email,
+                                    Exception = invoiceEx.Message,
+                                    ErrorType = invoiceEx.GetType().Name,
+                                    StackTrace = invoiceEx.StackTrace,
+                                    InnerException = invoiceEx.InnerException?.Message
+                                }
+                            );
+                        }
                     }
                 }
 
@@ -337,10 +404,43 @@ namespace newApi.Controllers
                     );
                 }
 
+                await _loggingService.LogInfoAsync(
+                    message: "Contratación creada exitosamente",
+                    details: $"SearchHire {searchHire.Id} creada para Search {dto.SearchId}, Cliente {userId}, Experto {dto.ExpertId}",
+                    userId: userId,
+                    source: "SearchHireController.CreateSearchHire",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHire.Id
+                );
+
                 return CreatedAtAction(nameof(GetSearchHire), new { id = searchHire.Id }, searchHire);
             }
             catch (Exception ex)
             {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                int? userId = null;
+                if (int.TryParse(userIdClaim, out int parsedUserId))
+                {
+                    userId = parsedUserId;
+                }
+
+                await _loggingService.LogErrorAsync(
+                    message: "Error al crear contratación",
+                    details: $"Error creando SearchHire. SearchId: {dto?.SearchId}, ExpertId: {dto?.ExpertId}, Error: {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "SearchHireController.CreateSearchHire",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        SearchId = dto?.SearchId,
+                        ExpertId = dto?.ExpertId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = "Failed to create search hire" });
             }
         }
@@ -563,9 +663,9 @@ namespace newApi.Controllers
                         Id = searchHire.Appointment.Id,
                         SearchHireId = searchHire.Appointment.SearchHireId,
                         Status = searchHire.Appointment.Status?.StatusValue ?? string.Empty,
-                        ProposedDate = searchHire.Appointment.ProposedDate,
-                        ProposedTime = searchHire.Appointment.ProposedTime,
-                        Location = searchHire.Appointment.Location,
+                        ProposedDate = searchHire.Appointment.ProposedDate, // ✅ Nullable
+                        ProposedTime = searchHire.Appointment.ProposedTime, // ✅ Nullable
+                        Location = searchHire.Appointment.Location, // ✅ Nullable
                         Latitude = searchHire.Appointment.Latitude,
                         Longitude = searchHire.Appointment.Longitude,
                         DoorNumber = searchHire.Appointment.DoorNumber,

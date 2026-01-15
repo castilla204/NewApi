@@ -454,19 +454,89 @@ namespace newApi.Controllers
                     var serviceStripe = new SessionService();
                     var session = await serviceStripe.CreateAsync(options);
 
+                    await _loggingService.LogInfoAsync(
+                        message: "Sesión de pago Stripe creada exitosamente para búsqueda con contratación",
+                        details: $"SessionId: {session.Id}, ServiceId: {service.Id}, ExpertId: {service.ExpertProfile?.UserId}, UserId: {userId}",
+                        userId: userId,
+                        source: "SearchController.CreateSearchWithHire",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: null,
+                        additionalData: new { 
+                            SessionId = session.Id,
+                            ServiceId = service.Id,
+                            ExpertId = service.ExpertProfile?.UserId
+                        }
+                    );
+
                     return Ok(new { url = session.Url });
                 }
                 catch (StripeException ex)
                 {
+                    await _loggingService.LogErrorAsync(
+                        message: "Error Stripe al crear búsqueda con contratación",
+                        details: $"StripeException al crear checkout session. ServiceId: {service?.Id}, ExpertId: {service?.ExpertProfile?.UserId}, UserId: {userId}, Error: {ex.Message}, StripeError: {ex.StripeError?.Message}",
+                        userId: userId,
+                        source: "SearchController.CreateSearchWithHire",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: null,
+                        additionalData: new { 
+                            ServiceId = service?.Id,
+                            ExpertId = service?.ExpertProfile?.UserId,
+                            StripeErrorType = ex.StripeError?.Type,
+                            StripeErrorCode = ex.StripeError?.Code,
+                            StripeErrorMessage = ex.StripeError?.Message
+                        }
+                    );
+
                     return StatusCode(500, new { message = ex.Message });
                 }
                 catch (Exception ex)
                 {
+                    await _loggingService.LogErrorAsync(
+                        message: "Error al crear búsqueda con contratación",
+                        details: $"Error en CreateSearchWithHire. ServiceId: {service?.Id}, ExpertId: {service?.ExpertProfile?.UserId}, UserId: {userId}, Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                        userId: userId,
+                        source: "SearchController.CreateSearchWithHire",
+                        relatedEntityType: "Search",
+                        relatedEntityId: null,
+                        additionalData: new { 
+                            ServiceId = service?.Id,
+                            ExpertId = service?.ExpertProfile?.UserId,
+                            ErrorType = ex.GetType().Name,
+                            ErrorMessage = ex.Message,
+                            StackTrace = ex.StackTrace,
+                            InnerException = ex.InnerException?.Message
+                        }
+                    );
+
                     return StatusCode(500, new { message = ex.Message });
                 }
             }
             catch (Exception ex)
             {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                int? userId = null;
+                if (int.TryParse(userIdClaim, out int parsedUserId))
+                {
+                    userId = parsedUserId;
+                }
+
+                await _loggingService.LogErrorAsync(
+                    message: "Error general al crear búsqueda con contratación",
+                    details: $"Error general en CreateSearchWithHire. UserId: {userId}, ServiceId: {request?.SearchDto?.ServiceId}, Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "SearchController.CreateSearchWithHire",
+                    relatedEntityType: "Search",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        ServiceId = request?.SearchDto?.ServiceId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -476,6 +546,12 @@ namespace newApi.Controllers
         {
             try
             {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
                 if (!_authService.IsAdmin(User))
                 {
                     return Unauthorized(new { message = "Admin access required" });
@@ -490,10 +566,42 @@ namespace newApi.Controllers
                 search.IsRevised = true;
                 await _context.SaveChangesAsync();
 
+                await _loggingService.LogInfoAsync(
+                    message: "Búsqueda marcada como revisada",
+                    details: $"Search {searchId} marcada como revisada por usuario {userId}",
+                    userId: userId,
+                    source: "SearchController.MarkAsRevised",
+                    relatedEntityType: "Search",
+                    relatedEntityId: searchId
+                );
+
                 return Ok(new { message = "Search marked as revised" });
             }
             catch (Exception ex)
             {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                int? userId = null;
+                if (int.TryParse(userIdClaim, out int parsedUserId))
+                {
+                    userId = parsedUserId;
+                }
+
+                await _loggingService.LogErrorAsync(
+                    message: "Error al marcar búsqueda como revisada",
+                    details: $"Error marcando Search {searchId} como revisada. UserId: {userId}, Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "SearchController.MarkSearchAsRevised",
+                    relatedEntityType: "Search",
+                    relatedEntityId: searchId,
+                    additionalData: new { 
+                        SearchId = searchId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -554,10 +662,44 @@ namespace newApi.Controllers
                 await _context.Searches.AddAsync(search);
                 await _context.SaveChangesAsync();
 
+                await _loggingService.LogInfoAsync(
+                    message: "Búsqueda creada exitosamente",
+                    details: $"Search {search.Id} creada por usuario {userId}. Title: {searchDto.Title}, Frequency: {searchDto.Frequency}",
+                    userId: userId,
+                    source: "SearchController.CreateSearch",
+                    relatedEntityType: "Search",
+                    relatedEntityId: search.Id
+                );
+
                 return Ok(new { search.Id });
             }
             catch (Exception ex)
             {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                int? userId = null;
+                if (int.TryParse(userIdClaim, out int parsedUserId))
+                {
+                    userId = parsedUserId;
+                }
+
+                await _loggingService.LogErrorAsync(
+                    message: "Error al crear búsqueda",
+                    details: $"Error creando búsqueda. UserId: {userId}, Title: {searchDto?.Title}, Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "SearchController.CreateSearch",
+                    relatedEntityType: "Search",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        Title = searchDto?.Title,
+                        Description = searchDto?.Description,
+                        Frequency = searchDto?.Frequency,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -739,10 +881,43 @@ namespace newApi.Controllers
                     Stats = userStats
                 };
 
+                await _loggingService.LogInfoAsync(
+                    message: "Lista de búsquedas del usuario obtenida exitosamente",
+                    details: $"Usuario {userId} obtuvo {searchDtos.Count} búsquedas (página {request.Page}). Total: {totalCount}",
+                    userId: userId,
+                    source: "SearchController.GetUserSearches",
+                    relatedEntityType: "Search",
+                    relatedEntityId: null
+                );
+
                 return Ok(response);
             }
             catch (Exception ex)
             {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                int? userId = null;
+                if (int.TryParse(userIdClaim, out int parsedUserId))
+                {
+                    userId = parsedUserId;
+                }
+
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener lista de búsquedas del usuario",
+                    details: $"Error obteniendo búsquedas para usuario {userId}. Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "SearchController.GetUserSearches",
+                    relatedEntityType: "Search",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        Page = request?.Page,
+                        PageSize = request?.PageSize,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -819,10 +994,42 @@ namespace newApi.Controllers
                 search.IsActive = !search.IsActive;
                 await _context.SaveChangesAsync();
 
+                await _loggingService.LogInfoAsync(
+                    message: "Estado de búsqueda actualizado",
+                    details: $"Search {searchId} estado cambiado a IsActive={search.IsActive} por usuario {userId}",
+                    userId: userId,
+                    source: "SearchController.ToggleSearchActive",
+                    relatedEntityType: "Search",
+                    relatedEntityId: searchId
+                );
+
                 return Ok(new { isActive = search.IsActive });
             }
             catch (Exception ex)
             {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                int? userId = null;
+                if (int.TryParse(userIdClaim, out int parsedUserId))
+                {
+                    userId = parsedUserId;
+                }
+
+                await _loggingService.LogErrorAsync(
+                    message: "Error al cambiar estado de búsqueda",
+                    details: $"Error cambiando estado de Search {searchId}. UserId: {userId}, Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "SearchController.ToggleSearchActive",
+                    relatedEntityType: "Search",
+                    relatedEntityId: searchId,
+                    additionalData: new { 
+                        SearchId = searchId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -859,10 +1066,42 @@ namespace newApi.Controllers
 
                 await _context.SaveChangesAsync();
 
+                await _loggingService.LogInfoAsync(
+                    message: "Búsqueda actualizada exitosamente",
+                    details: $"Search {searchId} actualizada por usuario {userId}",
+                    userId: userId,
+                    source: "SearchController.UpdateSearch",
+                    relatedEntityType: "Search",
+                    relatedEntityId: searchId
+                );
+
                 return Ok(new { message = "Search updated successfully" });
             }
             catch (Exception ex)
             {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                int? userId = null;
+                if (int.TryParse(userIdClaim, out int parsedUserId))
+                {
+                    userId = parsedUserId;
+                }
+
+                await _loggingService.LogErrorAsync(
+                    message: "Error al actualizar búsqueda",
+                    details: $"Error actualizando Search {searchId}. UserId: {userId}, Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "SearchController.UpdateSearch",
+                    relatedEntityType: "Search",
+                    relatedEntityId: searchId,
+                    additionalData: new { 
+                        SearchId = searchId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -1004,10 +1243,42 @@ namespace newApi.Controllers
                     }
                 }
 
+                await _loggingService.LogInfoAsync(
+                    message: "Búsqueda obtenida exitosamente",
+                    details: $"Search {searchId} obtenida por usuario {userId}",
+                    userId: userId,
+                    source: "SearchController.GetSearch",
+                    relatedEntityType: "Search",
+                    relatedEntityId: searchId
+                );
+
                 return Ok(searchDto);
             }
             catch (Exception ex)
             {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                int? userId = null;
+                if (int.TryParse(userIdClaim, out int parsedUserId))
+                {
+                    userId = parsedUserId;
+                }
+
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener búsqueda",
+                    details: $"Error obteniendo Search {searchId}. UserId: {userId}, Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "SearchController.GetSearch",
+                    relatedEntityType: "Search",
+                    relatedEntityId: searchId,
+                    additionalData: new { 
+                        SearchId = searchId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = ex.Message });
             }
         }
@@ -1357,10 +1628,42 @@ namespace newApi.Controllers
                     ExpertProfile = expertProfileDto // ✅ NUEVO: Perfil completo del experto con horarios
                 };
 
+                await _loggingService.LogInfoAsync(
+                    message: "Detalles completos de búsqueda obtenidos exitosamente",
+                    details: $"Search {searchId} detalles completos obtenidos por usuario {userId}",
+                    userId: userId,
+                    source: "SearchController.GetSearchDetailsComplete",
+                    relatedEntityType: "Search",
+                    relatedEntityId: searchId
+                );
+
                 return Ok(searchDetailsComplete);
             }
             catch (Exception ex)
             {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                int? userId = null;
+                if (int.TryParse(userIdClaim, out int parsedUserId))
+                {
+                    userId = parsedUserId;
+                }
+
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener detalles completos de búsqueda",
+                    details: $"Error obteniendo detalles completos de Search {searchId}. UserId: {userId}, Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "SearchController.GetSearchDetailsComplete",
+                    relatedEntityType: "Search",
+                    relatedEntityId: searchId,
+                    additionalData: new { 
+                        SearchId = searchId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }

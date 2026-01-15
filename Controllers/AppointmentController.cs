@@ -24,6 +24,7 @@ namespace newApi.Controllers
         private readonly StorageClient _storageClient;
         private readonly IConfiguration _configuration;
         private readonly ISignedUrlService _signedUrlService;
+        private readonly ILoggingService _loggingService;
 
         public AppointmentController(
             IAppointmentService appointmentService, 
@@ -32,7 +33,8 @@ namespace newApi.Controllers
             SystemStatusService systemStatusService,
             StorageClient storageClient,
             IConfiguration configuration,
-            ISignedUrlService signedUrlService)
+            ISignedUrlService signedUrlService,
+            ILoggingService loggingService)
         {
             _appointmentService = appointmentService;
             _authService = authService;
@@ -41,6 +43,7 @@ namespace newApi.Controllers
             _storageClient = storageClient;
             _configuration = configuration;
             _signedUrlService = signedUrlService;
+            _loggingService = loggingService;
         }
 
         /// <summary>
@@ -191,11 +194,42 @@ namespace newApi.Controllers
         {
             try
             {
+                var userId = GetCurrentUserId();
                 var appointment = await _appointmentService.CreateAppointmentAsync(dto);
+                
+                await _loggingService.LogInfoAsync(
+                    message: "Cita creada exitosamente",
+                    details: $"Appointment {appointment.Id} creada para SearchHire {dto.SearchHireId}",
+                    userId: userId,
+                    source: "AppointmentController.CreateAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointment.Id
+                );
+
                 return CreatedAtAction(nameof(GetAppointment), new { id = appointment.Id }, appointment);
             }
             catch (Exception ex)
             {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogErrorAsync(
+                    message: "Error al crear cita",
+                    details: $"Error creando cita para SearchHire {dto?.SearchHireId}. Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "AppointmentController.CreateAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        SearchHireId = dto?.SearchHireId,
+                        ProposedDate = dto?.ProposedDate,
+                        ProposedTime = dto?.ProposedTime,
+                        Location = dto?.Location,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -210,18 +244,68 @@ namespace newApi.Controllers
             {
                 var userId = GetCurrentUserId();
                 var appointment = await _appointmentService.ProposeAppointmentAsync(searchHireId, dto, userId);
+                
+                await _loggingService.LogInfoAsync(
+                    message: "Propuesta de cita enviada exitosamente",
+                    details: $"Propuesta de cita para SearchHire {searchHireId} enviada por usuario {userId}",
+                    userId: userId,
+                    source: "AppointmentController.ProposeAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointment.Id
+                );
+
                 return Ok(appointment);
             }
-            catch (UnauthorizedAccessException)
+            catch (UnauthorizedAccessException ex)
             {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogWarningAsync(
+                    message: "Intento no autorizado de proponer cita",
+                    details: $"Usuario {userId} intentó proponer cita para SearchHire {searchHireId} sin autorización. Error: {ex.Message}",
+                    userId: userId,
+                    source: "AppointmentController.ProposeAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: null
+                );
+
                 return Unauthorized(new { message = "Only the client can propose appointments" });
             }
             catch (InvalidOperationException ex)
             {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogWarningAsync(
+                    message: "Operación inválida al proponer cita",
+                    details: $"Usuario {userId} intentó proponer cita para SearchHire {searchHireId} con operación inválida. Error: {ex.Message}",
+                    userId: userId,
+                    source: "AppointmentController.ProposeAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: null
+                );
+
                 return BadRequest(new { message = ex.Message });
             }
             catch (Exception ex)
             {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogErrorAsync(
+                    message: "Error al proponer cita",
+                    details: $"Error proponiendo cita para SearchHire {searchHireId}, Usuario {userId}. Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "AppointmentController.ProposeAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        ProposedDate = dto?.ProposedDate,
+                        ProposedTime = dto?.ProposedTime,
+                        Location = dto?.Location,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -236,18 +320,65 @@ namespace newApi.Controllers
             {
                 var userId = GetCurrentUserId();
                 var appointment = await _appointmentService.ConfirmAppointmentAsync(dto, userId);
+                
+                await _loggingService.LogInfoAsync(
+                    message: "Cita confirmada exitosamente",
+                    details: $"Appointment {dto.AppointmentId} confirmada por usuario {userId}",
+                    userId: userId,
+                    source: "AppointmentController.ConfirmAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId
+                );
+
                 return Ok(appointment);
             }
-            catch (UnauthorizedAccessException)
+            catch (UnauthorizedAccessException ex)
             {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogWarningAsync(
+                    message: "Intento no autorizado de confirmar cita",
+                    details: $"Usuario {userId} intentó confirmar cita {dto.AppointmentId} sin autorización. Error: {ex.Message}",
+                    userId: userId,
+                    source: "AppointmentController.ConfirmAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId
+                );
+
                 return Unauthorized(new { message = "Only the expert can confirm appointments" });
             }
             catch (InvalidOperationException ex)
             {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogWarningAsync(
+                    message: "Operación inválida al confirmar cita",
+                    details: $"Usuario {userId} intentó confirmar cita {dto.AppointmentId} con operación inválida. Error: {ex.Message}",
+                    userId: userId,
+                    source: "AppointmentController.ConfirmAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId
+                );
+
                 return BadRequest(new { message = ex.Message });
             }
             catch (Exception ex)
             {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogErrorAsync(
+                    message: "Error al confirmar cita",
+                    details: $"Error confirmando cita {dto.AppointmentId}, Usuario {userId}. Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "AppointmentController.ConfirmAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId,
+                    additionalData: new { 
+                        AppointmentId = dto.AppointmentId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -262,18 +393,65 @@ namespace newApi.Controllers
             {
                 var userId = GetCurrentUserId();
                 var appointment = await _appointmentService.RejectAppointmentAsync(dto, userId);
+                
+                await _loggingService.LogInfoAsync(
+                    message: "Cita rechazada exitosamente",
+                    details: $"Appointment {dto.AppointmentId} rechazada por usuario {userId}",
+                    userId: userId,
+                    source: "AppointmentController.RejectAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId
+                );
+
                 return Ok(appointment);
             }
-            catch (UnauthorizedAccessException)
+            catch (UnauthorizedAccessException ex)
             {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogWarningAsync(
+                    message: "Intento no autorizado de rechazar cita",
+                    details: $"Usuario {userId} intentó rechazar cita {dto.AppointmentId} sin autorización. Error: {ex.Message}",
+                    userId: userId,
+                    source: "AppointmentController.RejectAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId
+                );
+
                 return Unauthorized(new { message = "Only the expert can reject appointments" });
             }
             catch (InvalidOperationException ex)
             {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogWarningAsync(
+                    message: "Operación inválida al rechazar cita",
+                    details: $"Usuario {userId} intentó rechazar cita {dto.AppointmentId} con operación inválida. Error: {ex.Message}",
+                    userId: userId,
+                    source: "AppointmentController.RejectAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId
+                );
+
                 return BadRequest(new { message = ex.Message });
             }
             catch (Exception ex)
             {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogErrorAsync(
+                    message: "Error al rechazar cita",
+                    details: $"Error rechazando cita {dto.AppointmentId}, Usuario {userId}. Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "AppointmentController.RejectAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId,
+                    additionalData: new { 
+                        AppointmentId = dto.AppointmentId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
@@ -288,18 +466,65 @@ namespace newApi.Controllers
             {
                 var userId = GetCurrentUserId();
                 var appointment = await _appointmentService.CancelAppointmentAsync(dto, userId);
+                
+                await _loggingService.LogInfoAsync(
+                    message: "Cita cancelada exitosamente",
+                    details: $"Appointment {dto.AppointmentId} cancelada por usuario {userId}",
+                    userId: userId,
+                    source: "AppointmentController.CancelAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId
+                );
+
                 return Ok(appointment);
             }
-            catch (UnauthorizedAccessException)
+            catch (UnauthorizedAccessException ex)
             {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogWarningAsync(
+                    message: "Intento no autorizado de cancelar cita",
+                    details: $"Usuario {userId} intentó cancelar cita {dto.AppointmentId} sin autorización. Error: {ex.Message}",
+                    userId: userId,
+                    source: "AppointmentController.CancelAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId
+                );
+
                 return Unauthorized(new { message = "Only the client or expert can cancel appointments" });
             }
             catch (InvalidOperationException ex)
             {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogWarningAsync(
+                    message: "Operación inválida al cancelar cita",
+                    details: $"Usuario {userId} intentó cancelar cita {dto.AppointmentId} con operación inválida. Error: {ex.Message}",
+                    userId: userId,
+                    source: "AppointmentController.CancelAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId
+                );
+
                 return BadRequest(new { message = ex.Message });
             }
             catch (Exception ex)
             {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogErrorAsync(
+                    message: "Error al cancelar cita",
+                    details: $"Error cancelando cita {dto.AppointmentId}, Usuario {userId}. Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "AppointmentController.CancelAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId,
+                    additionalData: new { 
+                        AppointmentId = dto.AppointmentId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
+
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }

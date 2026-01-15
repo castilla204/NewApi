@@ -100,7 +100,7 @@ var versionLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Prog
 var buildDate = System.IO.File.GetLastWriteTime(System.Reflection.Assembly.GetExecutingAssembly().Location);
 var assemblyVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "Unknown";
 versionLogger.LogInformation("═══════════════════════════════════════════════════════════");
-versionLogger.LogInformation("🚀 INICIANDO APLICACIÓN - NUEVA VERSIÓN CON TRANSACTION POOLER");
+versionLogger.LogInformation("🚀 INICIANDO APLICACIÓN - RENDER POSTGRESQL");
 versionLogger.LogInformation("═══════════════════════════════════════════════════════════");
 versionLogger.LogInformation($"   Versión: {assemblyVersion}");
 versionLogger.LogInformation($"   Build Date: {buildDate:yyyy-MM-dd HH:mm:ss}");
@@ -761,19 +761,10 @@ if (!string.IsNullOrEmpty(connectionString))
     configLogger.LogInformation($"✅ Connection string detectada:");
     configLogger.LogInformation($"   Origen: {connectionStringSource}");
     configLogger.LogInformation($"   Host: {dbHost}");
-    configLogger.LogInformation($"   Port: {dbPort} {(dbPort == "5432" ? "✅ (Session Pooler - CORRECTO para ExecutionStrategy)" : dbPort == "6543" ? "⚠️ (Transaction Pooler - NO soporta savepoints)" : "")}");
+    configLogger.LogInformation($"   Port: {dbPort}");
     configLogger.LogInformation($"   Database: {dbName}");
     configLogger.LogInformation($"   Username: {dbUsername}");
     configLogger.LogInformation($"   Entorno: {(isDevelopment ? "Development" : "Production")}");
-    
-    if (dbPort == "6543")
-    {
-        configLogger.LogWarning("⚠️ ADVERTENCIA: Puerto 6543 detectado (Transaction Pooler)");
-        configLogger.LogWarning("   Transaction Pooler NO soporta savepoints");
-        configLogger.LogWarning("   Esto puede causar errores con ExecutionStrategy y transacciones manuales");
-        configLogger.LogWarning("   RECOMENDACIÓN: Usar Session Pooler (Puerto 5432) para la aplicación principal");
-        configLogger.LogWarning("   Hangfire se cambiará automáticamente a Transaction Pooler (6543)");
-    }
 }
 
 
@@ -1215,7 +1206,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     dbLogger.LogInformation($"   Port: {port}");
     dbLogger.LogInformation("   [OK] PostgreSQL estándar - Soporta todas las características");
     dbLogger.LogInformation("   [OK] Compatible con savepoints, ExecutionStrategy y Hangfire");
-    dbLogger.LogInformation("   [OK] Sin restricciones de pooling (a diferencia de Supabase)");
+    dbLogger.LogInformation("   [OK] PostgreSQL estándar sin poolers intermedios");
     
     // ✅ RENDER POSTGRESQL: Configuración optimizada de connection string
     var connectionStringBuilder = new NpgsqlConnectionStringBuilder(connectionString);
@@ -1253,20 +1244,12 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     // ✅ Obtener connection string final del builder (ya incluye todos los parámetros correctamente formateados)
     var finalConnectionString = connectionStringBuilder.ToString();
     
-    dbLogger.LogWarning("🔧 CRITICAL FIX: Using connection string DIRECTLY (no NpgsqlDataSourceBuilder)");
-    dbLogger.LogWarning($"   Multiplexing=false is EXPLICITLY set in connection string");
-    dbLogger.LogWarning($"   This prevents 'transactions must be started with BeginTransaction' error");
-    dbLogger.LogWarning("🔧 EnableRetryOnFailure DESHABILITADO para evitar conflictos con transacciones manuales");
-    dbLogger.LogWarning($"   ExecutionStrategy no soporta transacciones iniciadas manualmente (BeginTransactionAsync)");
-    dbLogger.LogWarning($"   Session Pooler (5432) ya maneja la conexión de manera estable");
-    dbLogger.LogWarning($"   El manejo de errores se hace manualmente en los lugares críticos");
-    dbLogger.LogWarning("🔧 OPTIMIZACIÓN SESSION POOLER (según migratetopool.txt):");
-    dbLogger.LogWarning($"   Pooling=false (desactivado según línea 50 del documento para evitar choques con PgBouncer)");
-    dbLogger.LogWarning($"   QuerySplittingBehavior=SingleQuery para evitar múltiples conexiones");
-    dbLogger.LogWarning($"   QueryTrackingBehavior=NoTrackingWithIdentityResolution para optimizar pooling");
-    dbLogger.LogWarning($"   CommandTimeout=1800s (30min) para migraciones largas");
-    dbLogger.LogWarning($"   EnableSensitiveDataLogging=false para seguridad");
-    dbLogger.LogWarning($"   EnableRetryOnFailure(0) (0 retries = ExecutionStrategy completamente deshabilitado)");
+    dbLogger.LogInformation("✅ Configuración de EF Core para Render PostgreSQL:");
+    dbLogger.LogInformation($"   Multiplexing=false (mejor compatibilidad con transacciones)");
+    dbLogger.LogInformation($"   EnableRetryOnFailure(0) (deshabilitado para evitar conflictos con transacciones manuales)");
+    dbLogger.LogInformation($"   QuerySplittingBehavior=SingleQuery (evita múltiples conexiones)");
+    dbLogger.LogInformation($"   QueryTrackingBehavior=NoTrackingWithIdentityResolution (optimiza rendimiento)");
+    dbLogger.LogInformation($"   CommandTimeout=1800s (30min para migraciones largas)");
     
     // ✅ CRITICAL: Use connection string DIRECTLY, do NOT use NpgsqlDataSourceBuilder
     // NpgsqlDataSourceBuilder ignores Multiplexing=false from connection string
@@ -1278,11 +1261,9 @@ builder.Services.AddDbContext<AppDbContext>(options =>
         
         // ✅ DESHABILITADO: EnableRetryOnFailure causa conflictos con transacciones manuales
         // ExecutionStrategy no soporta transacciones iniciadas manualmente (BeginTransactionAsync)
-        // Aunque Session Pooler (5432) soporta savepoints, ExecutionStrategy tiene una limitación
-        // que impide trabajar con transacciones manuales cuando EnableRetryOnFailure está activo
-        // Session Pooler ya maneja la conexión de manera estable, no necesitamos retry automático
+        // Render PostgreSQL es estándar, pero EF Core ExecutionStrategy tiene limitaciones
+        // que impiden trabajar con transacciones manuales cuando EnableRetryOnFailure está activo
         // El manejo de errores se hace manualmente en los lugares críticos con IServiceScopeFactory
-        // Según migratetopool.txt: "Desactiva EF retries: EnableRetryOnFailure(0)"
         // 
         // ✅ FIX CRÍTICO: Deshabilitar completamente ExecutionStrategy configurando retries a 0
         // Esto evita que NpgsqlExecutionStrategy se active automáticamente e intente crear savepoints
@@ -1530,7 +1511,7 @@ if (hangfireConnectionValid)
             // ✅ POLLING: Intervalo optimizado para balance entre latencia y carga
             // Intervalos más cortos = menor latencia pero mayor carga en DB
             // Intervalos más largos = menor carga pero mayor latencia en procesamiento
-            QueuePollInterval = TimeSpan.FromSeconds(15), // Balance óptimo para Supabase
+            QueuePollInterval = TimeSpan.FromSeconds(15), // Balance óptimo para Render PostgreSQL
             
             // ✅ INVISIBILITY TIMEOUT: Tiempo antes de reintentar job fallido
             // Si un job no se completa en este tiempo, se marca como fallido y se reintenta
@@ -1539,19 +1520,13 @@ if (hangfireConnectionValid)
             
             // ✅ SLIDING INVISIBILITY: HABILITADO para renovar timeouts automáticamente
             // Reduce disposiciones al extender el timeout mientras el job está procesando
-            // IMPORTANTE: Esto ayuda a evitar ObjectDisposedException con Session Pooler
-            // Basado en recomendaciones de Hangfire Forum y casos exitosos (Pradeep, Georgi, etc.)
+            // Basado en recomendaciones de Hangfire Forum y casos exitosos
             UseSlidingInvisibilityTimeout = true,
-            
+
             // ✅ DISTRIBUTED LOCK TIMEOUT: Crítico para evitar deadlocks
             // Los locks distribuidos necesitan más tiempo con latencia de red
             // Basado en casos reales: timeouts altos (15+ min) resuelven problemas de locks
             DistributedLockTimeout = TimeSpan.FromMinutes(20) // Aumentado para Render.com
-            
-            // ✅ NOTA: El error "DISCARD ALL cannot run inside a transaction block" ocurre porque
-            // Hangfire intenta hacer DISCARD ALL pero el Transaction Pooler no lo permite.
-            // Esto es un problema conocido de Hangfire con Transaction Pooler.
-            // Solución temporal: Los timeouts aumentados y reintentos ayudan a mitigar el problema.
         })
         .UseDefaultTypeResolver()
         .UseDefaultTypeSerializer());
@@ -1582,7 +1557,7 @@ if (hangfireConnectionValid)
         
         hangfireLogger.LogInformation($"✅ Hangfire Server habilitado con Render PostgreSQL");
         hangfireLogger.LogInformation($"   Workers: {(isDevelopment ? 1 : Math.Max(2, Environment.ProcessorCount))}");
-        hangfireLogger.LogInformation("   [OK] PostgreSQL estándar - Sin problemas de pooling");
+        hangfireLogger.LogInformation("   [OK] PostgreSQL estándar - Sin restricciones de poolers");
     }
     else
     {

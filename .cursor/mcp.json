@@ -18,7 +18,7 @@
       "disabled": false,
       "alwaysAllow": [],
       "env": {
-        "POSTGRES_CONNECTION_STRING": "postgresql://inspecciono_user:nRtnnNtagS7jPmaYVxz18BF0wtwkj4gF@dpg-d5kar5l6ubrc73espd5g-a.frankfurt-postgres.render.com:5432/inspecciono",
+        "POSTGRES_CONNECTION_STRING": "postgresql://inspecciono_user:nRtnnNtagS7jPmaYVxz18BF0wtwkj4gF@dpg-d5kar5l6ubrc73espd5g-a.frankfurt-postgres.render.com:5432/inspecciono?sslmode=require",
         "PGPASSWORD": "nRtnnNtagS7jPmaYVxz18BF0wtwkj4gF",
         "DANGEROUSLY_ALLOW_WRITE_OPS": "true"
       }

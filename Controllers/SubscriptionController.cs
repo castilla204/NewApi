@@ -6,7 +6,6 @@ using Stripe;
 using Stripe.Checkout;
 using System;
 using System.Collections.Generic;
-using System.Data;
 using System.IO;
 using System.Linq;
 using System.Security.Claims;
@@ -84,53 +83,18 @@ namespace newApi.Controllers
             }
         }
 
-        private void LogConsoleDebug(string message, string? details = null, int? userId = null, object? additionalData = null)
-        {
-            _loggingService.LogDebugAsync(
-                message: message,
-                details: details,
-                userId: userId,
-                source: "SubscriptionController",
-                additionalData: additionalData
-            ).GetAwaiter().GetResult();
-        }
-
-        private void LogConsoleError(string message, string? details = null, int? userId = null, object? additionalData = null)
-        {
-            _loggingService.LogErrorAsync(
-                message: message,
-                details: details,
-                userId: userId,
-                source: "SubscriptionController",
-                additionalData: additionalData
-            ).GetAwaiter().GetResult();
-        }
-
         /// <summary>
         /// Helper method to get StatusId from StatusValue
         /// </summary>
         private async Task<int> GetStatusIdByValueAsync(string statusValue)
         {
-            // ✅ FIX: AsNoTracking evita que EF Core intente usar ExecutionStrategy
             var systemStatus = await _context.SystemStatuses
-                .AsNoTracking()
                 .FirstOrDefaultAsync(s => s.StatusValue == statusValue && s.StatusType == "SearchHireStatus");
             
             if (systemStatus == null)
             {
-                // ✅ FIX: Default to "pending" (ID = 2 según la base de datos)
-                // Si no se encuentra, intentar buscar "pending" directamente
-                var pendingStatus = await _context.SystemStatuses
-                    .AsNoTracking()
-                    .FirstOrDefaultAsync(s => s.StatusValue == "pending" && s.StatusType == "SearchHireStatus");
-                
-                if (pendingStatus != null)
-                {
-                    return pendingStatus.Id; // Retornar el ID real de "pending" (normalmente 2)
-                }
-                
-                // Último recurso: retornar 2 (el ID real de "pending" en la BD)
-                return 2;
+                // Default to "pending" (ID = 1)
+                return 1;
             }
             
             return systemStatus.Id;
@@ -739,14 +703,6 @@ namespace newApi.Controllers
                 try
                 {
                     await _context.SaveChangesAsync();
-                    await _loggingService.LogInfoAsync(
-                        message: "Expert profile status updated successfully",
-                        details: $"Expert profile status set to Pending. UserId: {userId}",
-                        userId: userId,
-                        source: "SubscriptionController.CreateExpertOnboarding",
-                        relatedEntityType: "ExpertProfile",
-                        relatedEntityId: expertProfile.Id
-                    );
                 }
                 catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
                 {
@@ -823,21 +779,13 @@ namespace newApi.Controllers
 
                 // ✅ FIX CRÍTICO: NO usar transacciones manuales con ExecutionStrategy habilitado
                 // Guardar primero el estado antes de crear el link (sin transacción para evitar conflicto con ExecutionStrategy)
-                    expertProfile.PendingStripeAccountId = account.Id;
-                    expertProfile.OnboardingCompleted = false;
-                        expertProfile.StripeStatus = StripeStatus.Pending;
+                expertProfile.PendingStripeAccountId = account.Id;
+                expertProfile.OnboardingCompleted = false;
+                expertProfile.StripeStatus = StripeStatus.Pending;
                 
                 try
                 {
                     await _context.SaveChangesAsync();
-                    await _loggingService.LogInfoAsync(
-                        message: "Stripe account ID saved successfully",
-                        details: $"PendingStripeAccountId saved. UserId: {userId}, AccountId: {account.Id}",
-                        userId: userId,
-                        source: "SubscriptionController.CreateExpertOnboarding",
-                        relatedEntityType: "ExpertProfile",
-                        relatedEntityId: expertProfile.Id
-                    );
                 }
                 catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
                 {
@@ -891,31 +839,31 @@ namespace newApi.Controllers
                 }
                 
                 // Crear el link de onboarding después de guardar
-                    var linkOptions = new AccountLinkCreateOptions
-                    {
-                        Account = account.Id,
-                        RefreshUrl = "https://inspecciono.com/refresh-onboarding",
-                        ReturnUrl = "https://inspecciono.com/complete-onboarding",
-                        Type = "account_onboarding",
-                        Collect = "eventually_due"
-                    };
+                var linkOptions = new AccountLinkCreateOptions
+                {
+                    Account = account.Id,
+                    RefreshUrl = "https://inspecciono.com/refresh-onboarding",
+                    ReturnUrl = "https://inspecciono.com/complete-onboarding",
+                    Type = "account_onboarding",
+                    Collect = "eventually_due"
+                };
 
-                    var linkService = new AccountLinkService();
-                    AccountLink accountLink;
-                    try
-                    {
-                        accountLink = await linkService.CreateAsync(linkOptions);
+                var linkService = new AccountLinkService();
+                AccountLink accountLink;
+                try
+                {
+                    accountLink = await linkService.CreateAsync(linkOptions);
                     return Ok(new { url = accountLink.Url });
-                    }
-                    catch (StripeException ex)
-                    {
+                }
+                catch (StripeException ex)
+                {
                     // Si falla crear el link, el estado ya está guardado, pero eso está bien
                     // El usuario puede intentar de nuevo y se creará un nuevo link
                     return StatusCode(500, new { message = "Failed to create onboarding link", error = ex.Message });
                 }
-                }
-                catch (Exception ex)
-                {
+            }
+            catch (Exception ex)
+            {
                 // ✅ LOG: Error general
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 int.TryParse(userIdClaim, out int userId);
@@ -1412,8 +1360,8 @@ namespace newApi.Controllers
                     try
                     {
                         user = await _context.Users
-                    .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
-                    .FirstOrDefaultAsync();
+                            .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
+                            .FirstOrDefaultAsync();
                         
                         await lockTransaction.CommitAsync();
                     }
@@ -1588,8 +1536,8 @@ namespace newApi.Controllers
                     try
                     {
                         user = await _context.Users
-                    .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
-                    .FirstOrDefaultAsync();
+                            .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
+                            .FirstOrDefaultAsync();
                         
                         await lockTransaction.CommitAsync();
                     }
@@ -1751,13 +1699,16 @@ namespace newApi.Controllers
         {
             // ✅ LOG DIAGNÓSTICO: Inicio del webhook
             var webhookStartTime = DateTime.UtcNow;
+            var originalColor = Console.ForegroundColor;
             try
             {
+                Console.ForegroundColor = ConsoleColor.Cyan;
                 var separator = new string('=', 80);
-                LogConsoleDebug($"\n{separator}");
-                LogConsoleDebug($"📥 [WEBHOOK] Iniciando procesamiento de webhook Connect");
-                LogConsoleDebug($"{separator}");
-                LogConsoleDebug($"Timestamp: {webhookStartTime:yyyy-MM-dd HH:mm:ss.fff}");
+                Console.WriteLine($"\n{separator}");
+                Console.WriteLine($"📥 [WEBHOOK] Iniciando procesamiento de webhook Connect");
+                Console.WriteLine($"{separator}");
+                Console.WriteLine($"Timestamp: {webhookStartTime:yyyy-MM-dd HH:mm:ss.fff}");
+                Console.ForegroundColor = originalColor;
             }
             catch { }
             
@@ -1866,29 +1817,32 @@ namespace newApi.Controllers
                         
                         // ✅ Mostrar en consola para visibilidad inmediata (en amarillo porque es warning)
                         var separatorApiVersionConnect3 = new string('=', 80);
+                        var originalColorApiVersionConnect3 = Console.ForegroundColor;
                         try
                         {
-                            LogConsoleDebug($"\n{separatorApiVersionConnect3}");
-                            LogConsoleDebug($"⚠️ [STRIPE WEBHOOK] API Version Mismatch");
-                            LogConsoleDebug($"{separatorApiVersionConnect3}");
-                            LogConsoleDebug($"Received: {stripeEvent.ApiVersion}");
-                            LogConsoleDebug($"Expected: {expectedVersion}");
-                            LogConsoleDebug($"Event Type: {stripeEvent.Type}");
-                            LogConsoleDebug($"Event ID: {stripeEvent.Id}");
-                            LogConsoleDebug($"Recommendation: Update webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}'");
-                            LogConsoleDebug($"{separatorApiVersionConnect3}\n");
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine($"\n{separatorApiVersionConnect3}");
+                            Console.WriteLine($"⚠️ [STRIPE WEBHOOK] API Version Mismatch");
+                            Console.WriteLine($"{separatorApiVersionConnect3}");
+                            Console.WriteLine($"Received: {stripeEvent.ApiVersion}");
+                            Console.WriteLine($"Expected: {expectedVersion}");
+                            Console.WriteLine($"Event Type: {stripeEvent.Type}");
+                            Console.WriteLine($"Event ID: {stripeEvent.Id}");
+                            Console.WriteLine($"Recommendation: Update webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}'");
+                            Console.WriteLine($"{separatorApiVersionConnect3}\n");
+                            Console.ForegroundColor = originalColorApiVersionConnect3;
                         }
                         catch
                         {
-                            LogConsoleDebug($"\n{separatorApiVersionConnect3}");
-                            LogConsoleDebug($"⚠️ [STRIPE WEBHOOK] API Version Mismatch");
-                            LogConsoleDebug($"{separatorApiVersionConnect3}");
-                            LogConsoleDebug($"Received: {stripeEvent.ApiVersion}");
-                            LogConsoleDebug($"Expected: {expectedVersion}");
-                            LogConsoleDebug($"Event Type: {stripeEvent.Type}");
-                            LogConsoleDebug($"Event ID: {stripeEvent.Id}");
-                            LogConsoleDebug($"Recommendation: Update webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}'");
-                            LogConsoleDebug($"{separatorApiVersionConnect3}\n");
+                            Console.WriteLine($"\n{separatorApiVersionConnect3}");
+                            Console.WriteLine($"⚠️ [STRIPE WEBHOOK] API Version Mismatch");
+                            Console.WriteLine($"{separatorApiVersionConnect3}");
+                            Console.WriteLine($"Received: {stripeEvent.ApiVersion}");
+                            Console.WriteLine($"Expected: {expectedVersion}");
+                            Console.WriteLine($"Event Type: {stripeEvent.Type}");
+                            Console.WriteLine($"Event ID: {stripeEvent.Id}");
+                            Console.WriteLine($"Recommendation: Update webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}'");
+                            Console.WriteLine($"{separatorApiVersionConnect3}\n");
                         }
                         
                         await _loggingService.LogWarningAsync(
@@ -1913,21 +1867,24 @@ namespace newApi.Controllers
                 }
 
                 // ✅ LOG DIAGNÓSTICO: Evento recibido
+                var originalColor1 = Console.ForegroundColor;
                 try
                 {
+                    Console.ForegroundColor = ConsoleColor.Cyan;
                     var separator1 = new string('=', 80);
-                    LogConsoleDebug($"\n{separator1}");
-                    LogConsoleDebug($"📨 [WEBHOOK] Evento recibido");
-                    LogConsoleDebug($"{separator1}");
-                    LogConsoleDebug($"EventId: {stripeEvent.Id}");
-                    LogConsoleDebug($"EventType: {stripeEvent.Type}");
-                    LogConsoleDebug($"AccountId: {stripeEvent.Account ?? "N/A"}");
-                    LogConsoleDebug($"ApiVersion: {stripeEvent.ApiVersion ?? "N/A"}");
-                    LogConsoleDebug($"Created: {stripeEvent.Created:yyyy-MM-dd HH:mm:ss}");
-                    LogConsoleDebug($"{separator1}\n");
+                    Console.WriteLine($"\n{separator1}");
+                    Console.WriteLine($"📨 [WEBHOOK] Evento recibido");
+                    Console.WriteLine($"{separator1}");
+                    Console.WriteLine($"EventId: {stripeEvent.Id}");
+                    Console.WriteLine($"EventType: {stripeEvent.Type}");
+                    Console.WriteLine($"AccountId: {stripeEvent.Account ?? "N/A"}");
+                    Console.WriteLine($"ApiVersion: {stripeEvent.ApiVersion ?? "N/A"}");
+                    Console.WriteLine($"Created: {stripeEvent.Created:yyyy-MM-dd HH:mm:ss}");
+                    Console.WriteLine($"{separator1}\n");
+                    Console.ForegroundColor = originalColor1;
                 }
                 catch { }
-
+                
                 // ✅ CORRECCIÓN CRÍTICA: Marcar idempotencia ANTES de procesar (Stripe Best Practices)
                 // Esto previene procesamiento duplicado si hay error durante el procesamiento
                 await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account, null, "Processing");
@@ -2001,8 +1958,6 @@ namespace newApi.Controllers
                         {
                             // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
                             // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
-                            // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
-                            _context.Database.AutoSavepointsEnabled = false;
                             await using var deauthTransaction = await _context.Database.BeginTransactionAsync();
                             try
                             {
@@ -2062,14 +2017,17 @@ namespace newApi.Controllers
 
                     case "account.updated":
                         // ✅ LOG DIAGNÓSTICO: Inicio de procesamiento account.updated
+                        var originalColor2 = Console.ForegroundColor;
                         try
                         {
+                            Console.ForegroundColor = ConsoleColor.Yellow;
                             var separator2 = new string('=', 80);
-                            LogConsoleDebug($"\n{separator2}");
-                            LogConsoleDebug($"🔄 [WEBHOOK] Procesando account.updated");
-                            LogConsoleDebug($"{separator2}");
-                            LogConsoleDebug($"EventId: {stripeEvent.Id}");
-                            LogConsoleDebug($"Timestamp: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                            Console.WriteLine($"\n{separator2}");
+                            Console.WriteLine($"🔄 [WEBHOOK] Procesando account.updated");
+                            Console.WriteLine($"{separator2}");
+                            Console.WriteLine($"EventId: {stripeEvent.Id}");
+                            Console.WriteLine($"Timestamp: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                            Console.ForegroundColor = originalColor2;
                         }
                         catch { }
                         
@@ -2088,11 +2046,13 @@ namespace newApi.Controllers
                         // ✅ LOG DIAGNÓSTICO: Account recibido
                         try
                         {
-                            LogConsoleDebug($"AccountId: {account.Id}");
-                            LogConsoleDebug($"ChargesEnabled: {account.ChargesEnabled}");
-                            LogConsoleDebug($"PayoutsEnabled: {account.PayoutsEnabled}");
-                            LogConsoleDebug($"DetailsSubmitted: {account.DetailsSubmitted}");
-                            LogConsoleDebug($"TosAcceptance: {(account.TosAcceptance?.Date != null ? "Accepted" : "Not accepted")}");
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine($"AccountId: {account.Id}");
+                            Console.WriteLine($"ChargesEnabled: {account.ChargesEnabled}");
+                            Console.WriteLine($"PayoutsEnabled: {account.PayoutsEnabled}");
+                            Console.WriteLine($"DetailsSubmitted: {account.DetailsSubmitted}");
+                            Console.WriteLine($"TosAcceptance: {(account.TosAcceptance?.Date != null ? "Accepted" : "Not accepted")}");
+                            Console.ForegroundColor = originalColor2;
                         }
                         catch { }
 
@@ -2103,7 +2063,9 @@ namespace newApi.Controllers
                             // ✅ LOG DIAGNÓSTICO: Evento ya procesado
                             try
                             {
-                                LogConsoleDebug($"✅ Evento ya procesado anteriormente: {eventIdToCheck}");
+                                Console.ForegroundColor = ConsoleColor.Green;
+                                Console.WriteLine($"✅ Evento ya procesado anteriormente: {eventIdToCheck}");
+                                Console.ForegroundColor = originalColor2;
                             }
                             catch { }
                             break;
@@ -2128,11 +2090,13 @@ namespace newApi.Controllers
                         // ✅ LOG DIAGNÓSTICO: Profile encontrado
                         try
                         {
-                            LogConsoleDebug($"ExpertProfile encontrado:");
-                            LogConsoleDebug($"  ProfileId: {profileToUpdate.Id}");
-                            LogConsoleDebug($"  UserId: {profileToUpdate.UserId}");
-                            LogConsoleDebug($"  Estado actual: {profileToUpdate.StripeStatus}");
-                            LogConsoleDebug($"  OnboardingCompleted: {profileToUpdate.OnboardingCompleted}");
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine($"ExpertProfile encontrado:");
+                            Console.WriteLine($"  ProfileId: {profileToUpdate.Id}");
+                            Console.WriteLine($"  UserId: {profileToUpdate.UserId}");
+                            Console.WriteLine($"  Estado actual: {profileToUpdate.StripeStatus}");
+                            Console.WriteLine($"  OnboardingCompleted: {profileToUpdate.OnboardingCompleted}");
+                            Console.ForegroundColor = originalColor2;
                         }
                         catch { }
 
@@ -2143,29 +2107,35 @@ namespace newApi.Controllers
                                 // ✅ LOG DIAGNÓSTICO: Evaluando estado
                                 try
                                 {
-                                    LogConsoleDebug($"Evaluando estado de Stripe account...");
+                                    Console.ForegroundColor = ConsoleColor.Yellow;
+                                    Console.WriteLine($"Evaluando estado de Stripe account...");
+                                    Console.ForegroundColor = originalColor2;
                                 }
                                 catch { }
                                 
-                                    var state = EvaluateStripeAccount(account);
+                                var state = EvaluateStripeAccount(account);
                                 
                                 // ✅ LOG DIAGNÓSTICO: Estado evaluado
                                 try
                                 {
-                                    LogConsoleDebug($"Estado evaluado:");
-                                    LogConsoleDebug($"  Estado anterior: {currentPreviousStatus}");
-                                    LogConsoleDebug($"  Estado nuevo: {state.Status}");
-                                    LogConsoleDebug($"  OnboardingCompleted: {state.OnboardingCompleted}");
-                                    LogConsoleDebug($"  Cambio de estado: {currentPreviousStatus != state.Status}");
+                                    Console.ForegroundColor = ConsoleColor.Cyan;
+                                    Console.WriteLine($"Estado evaluado:");
+                                    Console.WriteLine($"  Estado anterior: {currentPreviousStatus}");
+                                    Console.WriteLine($"  Estado nuevo: {state.Status}");
+                                    Console.WriteLine($"  OnboardingCompleted: {state.OnboardingCompleted}");
+                                    Console.WriteLine($"  Cambio de estado: {currentPreviousStatus != state.Status}");
+                                    Console.ForegroundColor = originalColor2;
                                 }
                                 catch { }
 
-                                    ApplyStripeAccountState(profileToUpdate, state, account.Id);
+                                ApplyStripeAccountState(profileToUpdate, state, account.Id);
 
                                 // ✅ LOG DIAGNÓSTICO: Guardando cambios
                                 try
                                 {
-                                    LogConsoleDebug($"Guardando cambios en base de datos...");
+                                    Console.ForegroundColor = ConsoleColor.Yellow;
+                                    Console.WriteLine($"Guardando cambios en base de datos...");
+                                    Console.ForegroundColor = originalColor2;
                                 }
                                 catch { }
                                 
@@ -2251,38 +2221,43 @@ namespace newApi.Controllers
                                 // ✅ LOG DIAGNÓSTICO: Cambios guardados exitosamente
                                 try
                                 {
-                                    LogConsoleDebug($"✅ Cambios guardados exitosamente");
-                                    LogConsoleDebug($"  StripeStatus: {profileToUpdate.StripeStatus}");
-                                    LogConsoleDebug($"  OnboardingCompleted: {profileToUpdate.OnboardingCompleted}");
+                                    Console.ForegroundColor = ConsoleColor.Green;
+                                    Console.WriteLine($"✅ Cambios guardados exitosamente");
+                                    Console.WriteLine($"  StripeStatus: {profileToUpdate.StripeStatus}");
+                                    Console.WriteLine($"  OnboardingCompleted: {profileToUpdate.OnboardingCompleted}");
+                                    Console.ForegroundColor = originalColor2;
                                 }
                                 catch { }
                                 
                                 if (currentPreviousStatus != state.Status)
-                                    {
-                                        await NotifyStripeStatusTransitionAsync(
-                                            profileToUpdate,
-                                        currentPreviousStatus,
-                                            state,
-                                            "SubscriptionController.account.updated");
-                                    }
-
-                                    await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, profileToUpdate.UserId);
-                                }
-                                catch (Exception ex)
                                 {
+                                    await NotifyStripeStatusTransitionAsync(
+                                        profileToUpdate,
+                                        currentPreviousStatus,
+                                        state,
+                                        "SubscriptionController.account.updated");
+                                }
+                                
+                                await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, profileToUpdate.UserId);
+                        }
+                        catch (Exception ex)
+                        {
                             // ✅ LOG ERROR: Excepción general
+                            var originalColor5 = Console.ForegroundColor;
                             try
                             {
+                                Console.ForegroundColor = ConsoleColor.Red;
                                 var separator5 = new string('=', 80);
-                                LogConsoleError($"\n{separator5}");
-                                LogConsoleError($"🔴 [WEBHOOK ERROR] Excepción general en account.updated");
-                                LogConsoleError($"{separator5}");
-                                LogConsoleError($"EventId: {eventIdToCheck}");
-                                LogConsoleError($"AccountId: {account.Id}");
-                                LogConsoleError($"Error Type: {ex.GetType().Name}");
-                                LogConsoleError($"Error Message: {ex.Message}");
-                                LogConsoleError($"Stack Trace: {ex.StackTrace}");
-                                LogConsoleError($"{separator5}\n");
+                                Console.Error.WriteLine($"\n{separator5}");
+                                Console.Error.WriteLine($"🔴 [WEBHOOK ERROR] Excepción general en account.updated");
+                                Console.Error.WriteLine($"{separator5}");
+                                Console.Error.WriteLine($"EventId: {eventIdToCheck}");
+                                Console.Error.WriteLine($"AccountId: {account.Id}");
+                                Console.Error.WriteLine($"Error Type: {ex.GetType().Name}");
+                                Console.Error.WriteLine($"Error Message: {ex.Message}");
+                                Console.Error.WriteLine($"Stack Trace: {ex.StackTrace}");
+                                Console.Error.WriteLine($"{separator5}\n");
+                                Console.ForegroundColor = originalColor5;
                             }
                             catch { }
                             
@@ -2322,8 +2297,6 @@ namespace newApi.Controllers
                             {
                                 // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
                                 // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
-                                // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
-                                _context.Database.AutoSavepointsEnabled = false;
                                 await using var transferFailedTransaction = await _context.Database.BeginTransactionAsync();
                                 try
                                 {
@@ -2425,7 +2398,7 @@ namespace newApi.Controllers
                                     try
                                     {
                                         await transferFailedTransaction.RollbackAsync();
-                                }
+                                    }
                                     catch { }
                                     throw;
                                 }
@@ -2451,18 +2424,21 @@ namespace newApi.Controllers
                 // ✅ LOG DIAGNÓSTICO: Webhook Connect completado exitosamente
                 var webhookEndTime = DateTime.UtcNow;
                 var webhookDuration = (webhookEndTime - webhookStartTime).TotalMilliseconds;
+                var originalColorGen2 = Console.ForegroundColor;
                 try
                 {
+                    Console.ForegroundColor = ConsoleColor.Green;
                     var separatorGen2 = new string('=', 80);
-                    LogConsoleDebug($"\n{separatorGen2}");
-                    LogConsoleDebug($"✅ [WEBHOOK] Webhook Connect procesado exitosamente");
-                    LogConsoleDebug($"{separatorGen2}");
-                    LogConsoleDebug($"EventId: {currentEventId ?? "N/A"}");
-                    LogConsoleDebug($"EventType: {currentEventType ?? "N/A"}");
-                    LogConsoleDebug($"AccountId: {currentAccountId ?? "N/A"}");
-                    LogConsoleDebug($"Duración total: {webhookDuration:F2}ms");
-                    LogConsoleDebug($"Timestamp: {webhookEndTime:yyyy-MM-dd HH:mm:ss.fff}");
-                    LogConsoleDebug($"{separatorGen2}\n");
+                    Console.WriteLine($"\n{separatorGen2}");
+                    Console.WriteLine($"✅ [WEBHOOK] Webhook Connect procesado exitosamente");
+                    Console.WriteLine($"{separatorGen2}");
+                    Console.WriteLine($"EventId: {currentEventId ?? "N/A"}");
+                    Console.WriteLine($"EventType: {currentEventType ?? "N/A"}");
+                    Console.WriteLine($"AccountId: {currentAccountId ?? "N/A"}");
+                    Console.WriteLine($"Duración total: {webhookDuration:F2}ms");
+                    Console.WriteLine($"Timestamp: {webhookEndTime:yyyy-MM-dd HH:mm:ss.fff}");
+                    Console.WriteLine($"{separatorGen2}\n");
+                    Console.ForegroundColor = originalColorGen2;
                 }
                 catch { }
                 
@@ -2471,18 +2447,21 @@ namespace newApi.Controllers
             catch (StripeException e)
             {
                 // ✅ LOG ERROR: StripeException en consola en rojo
+                var originalColor7 = Console.ForegroundColor;
                 try
                 {
+                    Console.ForegroundColor = ConsoleColor.Red;
                     var separator7 = new string('=', 80);
-                    LogConsoleError($"\n{separator7}");
-                    LogConsoleError($"🔴 [WEBHOOK ERROR] StripeException");
-                    LogConsoleError($"{separator7}");
-                    LogConsoleError($"Error Type: {e.GetType().Name}");
-                    LogConsoleError($"Error Message: {e.Message}");
-                    LogConsoleError($"StripeError Type: {e.StripeError?.Type ?? "N/A"}");
-                    LogConsoleError($"StripeError Code: {e.StripeError?.Code ?? "N/A"}");
-                    LogConsoleError($"Timestamp: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
-                    LogConsoleError($"{separator7}\n");
+                    Console.Error.WriteLine($"\n{separator7}");
+                    Console.Error.WriteLine($"🔴 [WEBHOOK ERROR] StripeException");
+                    Console.Error.WriteLine($"{separator7}");
+                    Console.Error.WriteLine($"Error Type: {e.GetType().Name}");
+                    Console.Error.WriteLine($"Error Message: {e.Message}");
+                    Console.Error.WriteLine($"StripeError Type: {e.StripeError?.Type ?? "N/A"}");
+                    Console.Error.WriteLine($"StripeError Code: {e.StripeError?.Code ?? "N/A"}");
+                    Console.Error.WriteLine($"Timestamp: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    Console.Error.WriteLine($"{separator7}\n");
+                    Console.ForegroundColor = originalColor7;
                 }
                 catch { }
                 
@@ -2535,19 +2514,22 @@ namespace newApi.Controllers
             catch (Exception e)
             {
                 // ✅ LOG ERROR: Excepción general en consola en rojo
+                var originalColor8 = Console.ForegroundColor;
                 try
                 {
+                    Console.ForegroundColor = ConsoleColor.Red;
                     var separator8 = new string('=', 80);
-                    LogConsoleError($"\n{separator8}");
-                    LogConsoleError($"🔴 [WEBHOOK ERROR] Excepción general");
-                    LogConsoleError($"{separator8}");
-                    LogConsoleError($"Error Type: {e.GetType().Name}");
-                    LogConsoleError($"Error Message: {e.Message}");
-                    LogConsoleError($"Stack Trace: {e.StackTrace}");
-                    LogConsoleError($"Inner Exception: {e.InnerException?.Message ?? "None"}");
-                    LogConsoleError($"Timestamp: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
-                    LogConsoleError($"Duración total: {(DateTime.UtcNow - webhookStartTime).TotalMilliseconds:F2}ms");
-                    LogConsoleError($"{separator8}\n");
+                    Console.Error.WriteLine($"\n{separator8}");
+                    Console.Error.WriteLine($"🔴 [WEBHOOK ERROR] Excepción general");
+                    Console.Error.WriteLine($"{separator8}");
+                    Console.Error.WriteLine($"Error Type: {e.GetType().Name}");
+                    Console.Error.WriteLine($"Error Message: {e.Message}");
+                    Console.Error.WriteLine($"Stack Trace: {e.StackTrace}");
+                    Console.Error.WriteLine($"Inner Exception: {e.InnerException?.Message ?? "None"}");
+                    Console.Error.WriteLine($"Timestamp: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                    Console.Error.WriteLine($"Duración total: {(DateTime.UtcNow - webhookStartTime).TotalMilliseconds:F2}ms");
+                    Console.Error.WriteLine($"{separator8}\n");
+                    Console.ForegroundColor = originalColor8;
                 }
                 catch { }
                 
@@ -2587,13 +2569,16 @@ namespace newApi.Controllers
         {
             // ✅ LOG DIAGNÓSTICO: Inicio del webhook general
             var webhookGeneralStartTime = DateTime.UtcNow;
+            var originalColorGen1 = Console.ForegroundColor;
             try
             {
+                Console.ForegroundColor = ConsoleColor.Cyan;
                 var separatorGen1 = new string('=', 80);
-                LogConsoleDebug($"\n{separatorGen1}");
-                LogConsoleDebug($"📥 [WEBHOOK GENERAL] Iniciando procesamiento de webhook general");
-                LogConsoleDebug($"{separatorGen1}");
-                LogConsoleDebug($"Timestamp: {webhookGeneralStartTime:yyyy-MM-dd HH:mm:ss.fff}");
+                Console.WriteLine($"\n{separatorGen1}");
+                Console.WriteLine($"📥 [WEBHOOK GENERAL] Iniciando procesamiento de webhook general");
+                Console.WriteLine($"{separatorGen1}");
+                Console.WriteLine($"Timestamp: {webhookGeneralStartTime:yyyy-MM-dd HH:mm:ss.fff}");
+                Console.ForegroundColor = originalColorGen1;
             }
             catch { }
             
@@ -2646,29 +2631,32 @@ namespace newApi.Controllers
                         
                         // ✅ Mostrar en consola para visibilidad inmediata (en amarillo porque es warning)
                         var separator = new string('=', 80);
+                        var originalColor = Console.ForegroundColor;
                         try
                         {
-                            LogConsoleDebug($"\n{separator}");
-                            LogConsoleDebug($"⚠️ [STRIPE WEBHOOK] API Version Mismatch");
-                            LogConsoleDebug($"{separator}");
-                            LogConsoleDebug($"Received: {stripeEvent.ApiVersion}");
-                            LogConsoleDebug($"Expected: {expectedVersion}");
-                            LogConsoleDebug($"Event Type: {stripeEvent.Type}");
-                            LogConsoleDebug($"Event ID: {stripeEvent.Id}");
-                            LogConsoleDebug($"Recommendation: Update webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}'");
-                            LogConsoleDebug($"{separator}\n");
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine($"\n{separator}");
+                            Console.WriteLine($"⚠️ [STRIPE WEBHOOK] API Version Mismatch");
+                            Console.WriteLine($"{separator}");
+                            Console.WriteLine($"Received: {stripeEvent.ApiVersion}");
+                            Console.WriteLine($"Expected: {expectedVersion}");
+                            Console.WriteLine($"Event Type: {stripeEvent.Type}");
+                            Console.WriteLine($"Event ID: {stripeEvent.Id}");
+                            Console.WriteLine($"Recommendation: Update webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}'");
+                            Console.WriteLine($"{separator}\n");
+                            Console.ForegroundColor = originalColor;
                         }
                         catch
                         {
-                            LogConsoleDebug($"\n{separator}");
-                            LogConsoleDebug($"⚠️ [STRIPE WEBHOOK] API Version Mismatch");
-                            LogConsoleDebug($"{separator}");
-                            LogConsoleDebug($"Received: {stripeEvent.ApiVersion}");
-                            LogConsoleDebug($"Expected: {expectedVersion}");
-                            LogConsoleDebug($"Event Type: {stripeEvent.Type}");
-                            LogConsoleDebug($"Event ID: {stripeEvent.Id}");
-                            LogConsoleDebug($"Recommendation: Update webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}'");
-                            LogConsoleDebug($"{separator}\n");
+                            Console.WriteLine($"\n{separator}");
+                            Console.WriteLine($"⚠️ [STRIPE WEBHOOK] API Version Mismatch");
+                            Console.WriteLine($"{separator}");
+                            Console.WriteLine($"Received: {stripeEvent.ApiVersion}");
+                            Console.WriteLine($"Expected: {expectedVersion}");
+                            Console.WriteLine($"Event Type: {stripeEvent.Type}");
+                            Console.WriteLine($"Event ID: {stripeEvent.Id}");
+                            Console.WriteLine($"Recommendation: Update webhook endpoint in Stripe Dashboard to use API version '{expectedVersion}'");
+                            Console.WriteLine($"{separator}\n");
                         }
                         
                         await _loggingService.LogWarningAsync(
@@ -2836,18 +2824,21 @@ namespace newApi.Controllers
                 // ✅ LOG DIAGNÓSTICO: Webhook general completado exitosamente
                 var webhookGeneralEndTimeFinal = DateTime.UtcNow;
                 var webhookGeneralDurationFinal = (webhookGeneralEndTimeFinal - webhookGeneralStartTime).TotalMilliseconds;
+                var originalColorGenFinal = Console.ForegroundColor;
                 try
                 {
+                    Console.ForegroundColor = ConsoleColor.Green;
                     var separatorGenFinal = new string('=', 80);
-                    LogConsoleDebug($"\n{separatorGenFinal}");
-                    LogConsoleDebug($"✅ [WEBHOOK GENERAL] Webhook general procesado exitosamente");
-                    LogConsoleDebug($"{separatorGenFinal}");
-                    LogConsoleDebug($"EventId: {currentEventId ?? "N/A"}");
-                    LogConsoleDebug($"EventType: {currentEventType ?? "N/A"}");
-                    LogConsoleDebug($"AccountId: {currentAccountId ?? "N/A"}");
-                    LogConsoleDebug($"Duración total: {webhookGeneralDurationFinal:F2}ms");
-                    LogConsoleDebug($"Timestamp: {webhookGeneralEndTimeFinal:yyyy-MM-dd HH:mm:ss.fff}");
-                    LogConsoleDebug($"{separatorGenFinal}\n");
+                    Console.WriteLine($"\n{separatorGenFinal}");
+                    Console.WriteLine($"✅ [WEBHOOK GENERAL] Webhook general procesado exitosamente");
+                    Console.WriteLine($"{separatorGenFinal}");
+                    Console.WriteLine($"EventId: {currentEventId ?? "N/A"}");
+                    Console.WriteLine($"EventType: {currentEventType ?? "N/A"}");
+                    Console.WriteLine($"AccountId: {currentAccountId ?? "N/A"}");
+                    Console.WriteLine($"Duración total: {webhookGeneralDurationFinal:F2}ms");
+                    Console.WriteLine($"Timestamp: {webhookGeneralEndTimeFinal:yyyy-MM-dd HH:mm:ss.fff}");
+                    Console.WriteLine($"{separatorGenFinal}\n");
+                    Console.ForegroundColor = originalColorGenFinal;
                 }
                 catch { }
                 
@@ -2903,24 +2894,7 @@ namespace newApi.Controllers
             }
             catch (Exception e)
             {
-                // ✅ FIX: Loguear error en consola PRIMERO (siempre funciona)
-                try
-                {
-                    var separator = new string('=', 80);
-                    LogConsoleDebug($"\n{separator}");
-                    LogConsoleDebug($"❌ [CRITICAL] General webhook error");
-                    LogConsoleDebug($"{separator}");
-                    LogConsoleDebug($"Exception: {e.GetType().Name}");
-                    LogConsoleDebug($"Message: {e.Message}");
-                    LogConsoleDebug($"Stack Trace: {e.StackTrace}");
-                    LogConsoleDebug($"{separator}\n");
-                }
-                catch { }
-
                 // 🚨 LOG CRÍTICO: Error general en webhook general (puede afectar dinero)
-                // ✅ FIX: Envolver en try-catch para que el logging no falle toda la operación
-                try
-                {
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: General webhook error",
                     details: $"General exception in general webhook handler: {e.Message}",
@@ -2933,20 +2907,7 @@ namespace newApi.Controllers
                         Payload = json?.Substring(0, Math.Min(500, json?.Length ?? 0))
                     }
                 );
-                }
-                catch (Exception logEx)
-                {
-                    // ✅ FIX: Si el logging falla, solo loguear en consola
-                    try
-                    {
-                        LogConsoleDebug($"\n❌ [ERROR] Failed to log webhook error to database: {logEx.Message}\n");
-                    }
-                    catch { }
-                }
-
                 if (eventMarkedProcessing && currentEventId != null)
-                {
-                    try
                 {
                     await MarkEventAsProcessedAsync(
                         currentEventId,
@@ -2956,257 +2917,14 @@ namespace newApi.Controllers
                         "Failed",
                         e.Message);
                     eventMarkedProcessing = false;
-                    }
-                    catch
-                    {
-                        // ✅ FIX: Si marcar evento como procesado falla, solo loguear en consola
-                        try
-                        {
-                            LogConsoleDebug($"\n⚠️ [WARNING] Failed to mark event as processed: {currentEventId}\n");
-                        }
-                        catch { }
-                    }
                 }
                 return StatusCode(500, new { error = "Internal server error" });
             }
         }
 
-        /// <summary>
-        /// ✅ FIX CRÍTICO: Asegura que la conexión de base de datos esté abierta y disponible antes de operaciones críticas.
-        /// Con Supabase/PgBouncer, las conexiones pueden disponerse inesperadamente durante transacciones.
-        /// Este método valida y restaura la conexión si es necesario.
-        /// </summary>
-        private async Task EnsureConnectionOpenAsync(AppDbContext context, string stage, int userId, int serviceId, string? sessionId)
+        private async Task HandlePendingHireCompleted(int userId, decimal amount, int serviceId, Dictionary<string, string> metadata, Session session)
         {
-            try
-            {
-                var connection = context.Database.GetDbConnection();
-                
-                // Verificar si la conexión está disponible y abierta
-                if (connection == null)
-                {
-                    throw new InvalidOperationException($"Connection is null at stage: {stage}");
-                }
-                
-                // Verificar el estado de la conexión
-                if (connection.State == System.Data.ConnectionState.Broken)
-                {
-                    // Si está rota, cerrarla y abrirla nuevamente
-                    try
-                    {
-                        await context.Database.CloseConnectionAsync();
-                    }
-                    catch { }
-                    await context.Database.OpenConnectionAsync();
-                }
-                else if (connection.State == System.Data.ConnectionState.Closed)
-                {
-                    // Si está cerrada, abrirla
-                    await context.Database.OpenConnectionAsync();
-                }
-                else if (connection.State != System.Data.ConnectionState.Open)
-                {
-                    // Si está en cualquier otro estado, intentar abrirla
-                    await context.Database.OpenConnectionAsync();
-                }
-                
-                // ✅ Verificación final: Asegurar que la conexión esté realmente abierta
-                if (context.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
-                {
-                    throw new InvalidOperationException($"Failed to open connection at stage: {stage}. Connection state: {context.Database.GetDbConnection().State}");
-                }
-            }
-            catch (ObjectDisposedException disposedEx)
-            {
-                // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar crear una nueva conexión
-                try
-                {
-                    await context.Database.CloseConnectionAsync();
-                }
-                catch { }
-                
-                try
-                {
-                    await context.Database.OpenConnectionAsync();
-                }
-                catch (Exception reopenEx)
-                {
-                    // Si no podemos reabrir la conexión, loguear y lanzar excepción
-                    await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: Failed to reopen disposed connection",
-                        details: $"Stage: {stage}. UserId: {userId}, ServiceId: {serviceId}, SessionId: {sessionId}. " +
-                                $"Original error: {disposedEx.Message}. Reopen error: {reopenEx.Message}",
-                        userId: userId,
-                        source: "SubscriptionController.EnsureConnectionOpenAsync",
-                        relatedEntityType: "Payment",
-                        relatedEntityId: serviceId,
-                        additionalData: new { 
-                            Stage = stage, 
-                            OriginalError = disposedEx.Message,
-                            ReopenError = reopenEx.Message
-                        }
-                    );
-                    throw new ObjectDisposedException($"Connection disposed at stage: {stage}. Failed to reopen.", disposedEx);
-                }
-            }
-            catch (Exception ex)
-            {
-                // Loguear cualquier otro error y relanzar
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Failed to ensure connection is open",
-                    details: $"Stage: {stage}. UserId: {userId}, ServiceId: {serviceId}, SessionId: {sessionId}. Error: {ex.Message}",
-                    userId: userId,
-                    source: "SubscriptionController.EnsureConnectionOpenAsync",
-                    relatedEntityType: "Payment",
-                    relatedEntityId: serviceId,
-                    additionalData: new { Stage = stage, Exception = ex.Message }
-                );
-                throw;
-            }
-        }
-
-        private async Task HandlePendingHireCompleted(int userId, decimal amount, int serviceId, Dictionary<string, string> metadata, Session? session)
-        {
-            try
-            {
-                await HandlePendingHireCompletedInternal(_context, userId, amount, serviceId, metadata, session, isRetry: false);
-            }
-            catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
-            {
-                await RetryHandlePendingHireCompleted(userId, amount, serviceId, metadata, session, dbEx);
-            }
-            catch (ObjectDisposedException disposedEx)
-            {
-                await RetryHandlePendingHireCompleted(userId, amount, serviceId, metadata, session, disposedEx);
-            }
-        }
-
-        private async Task RetryHandlePendingHireCompleted(int userId, decimal amount, int serviceId, Dictionary<string, string> metadata, Session? session, Exception ex)
-        {
-            try
-            {
-                await _loggingService.LogWarningAsync(
-                    message: "Retrying HandlePendingHireCompleted due to disposed connection",
-                    details: $"Retrying pending hire processing after ObjectDisposedException. UserId: {userId}, ServiceId: {serviceId}, SessionId: {session?.Id}. Error: {ex.Message}",
-                    userId: userId,
-                    source: "SubscriptionController.HandlePendingHireCompleted",
-                    relatedEntityType: "Payment",
-                    relatedEntityId: serviceId
-                );
-            }
-            catch
-            {
-                // ✅ Si el logging falla, continuar con el retry
-            }
-
-            // ✅ FIX (Paso 3): Limitar retries a 2-3 según recomendación del documento
-            const int maxAttempts = 3; // ✅ Aumentado a 3 según best practices
-            for (var attempt = 1; attempt <= maxAttempts; attempt++)
-            {
-                try
-                {
-                    // ✅ FIX (Paso 2): Crear DbContext completamente nuevo en cada retry
-                    // Usar 'using' para forzar dispose/close y evitar conexiones stale
-                    using var recoveryScope = _serviceScopeFactory.CreateScope();
-                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-
-                    // ✅ FIX: Asegurar que el contexto esté limpio antes de usar
-                    // Esto evita problemas con conexiones disposed del intento anterior
-                    recoveryContext.ChangeTracker.Clear();
-                    
-                    // ✅ EF Core abrirá la conexión automáticamente cuando se inicia la transacción
-                    // No es necesario abrir manualmente - esto puede causar problemas con el pool
-                    await HandlePendingHireCompletedInternal(recoveryContext, userId, amount, serviceId, metadata, session, isRetry: true);
-                    return;
-                }
-                catch (Exception retryEx)
-                {
-                    try
-                    {
-                        await _loggingService.LogErrorAsync(
-                            message: "Retry attempt failed in HandlePendingHireCompleted",
-                            details: $"Retry attempt {attempt}/{maxAttempts} failed. UserId: {userId}, ServiceId: {serviceId}, SessionId: {session?.Id}. Error: {retryEx.Message}",
-                            userId: userId,
-                            source: "SubscriptionController.HandlePendingHireCompleted",
-                            relatedEntityType: "Payment",
-                            relatedEntityId: serviceId,
-                            additionalData: new { OriginalError = ex.Message, RetryError = retryEx.Message, Attempt = attempt }
-                        );
-                    }
-                    catch
-                    {
-                        // ✅ Si el logging falla, continuar
-                    }
-
-                    if (attempt < maxAttempts)
-                    {
-                        // ✅ FIX (Paso 3): Aumentar delay entre retries para dar tiempo al pool
-                        // Delay exponencial: 500ms, 1000ms, 2000ms
-                        await Task.Delay(500 * (int)Math.Pow(2, attempt - 1));
-                        continue;
-                    }
-
-                    await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: Retry failed in HandlePendingHireCompleted",
-                        details: $"Retry failed after disposed connection. UserId: {userId}, ServiceId: {serviceId}, SessionId: {session?.Id}. Error: {retryEx.Message}",
-                        userId: userId,
-                        source: "SubscriptionController.HandlePendingHireCompleted",
-                        relatedEntityType: "Payment",
-                        relatedEntityId: serviceId,
-                        additionalData: new { OriginalError = ex.Message, RetryError = retryEx.Message }
-                    );
-                    throw;
-                }
-            }
-        }
-
-        private async Task HandlePendingHireCompletedInternal(AppDbContext dbContext, int userId, decimal amount, int serviceId, Dictionary<string, string> metadata, Session? session, bool isRetry)
-        {
-            var _context = dbContext;
-            var currentStage = "start";
-
-            // ✅ FIX: Declarar variables ANTES del try externo para que estén disponibles en el catch
-            SearchHire? searchHire = null;
-            int searchHireId = 0;
-            Search? search = null;
-            SearchParameter? searchParameter = null;
-
-            // ✅ FIX CRÍTICO: Abrir la conexión EXPLÍCITAMENTE al inicio y mantenerla abierta
-            // Esto evita race conditions con ManualResetEventSlim en operaciones async secuenciales
-            // Según research: múltiples SaveChangesAsync secuenciales causan disposed connection
-            // porque la conexión se reutiliza antes de que termine la operación anterior
-            // Fuentes: 
-            // - https://www.linkedin.com/posts/efimk_received-backend-message-readyforquery-while-activity-7332703195531460608-jXBv
-            // - https://learn.microsoft.com/en-us/ef/ef6/fundamentals/connection-management
-            var connectionWasOpen = _context.Database.GetDbConnection().State == System.Data.ConnectionState.Open;
-            if (!connectionWasOpen)
-            {
-                await _context.Database.OpenConnectionAsync();
-            }
-
-            try
-            {
-                if (isRetry)
-            {
-                try
-                {
-                    await _loggingService.LogWarningAsync(
-                        message: "HandlePendingHireCompleted retry started",
-                        details: $"Retrying pending hire processing. UserId: {userId}, ServiceId: {serviceId}, SessionId: {session?.Id}",
-                        userId: userId,
-                        source: "SubscriptionController.HandlePendingHireCompleted",
-                        relatedEntityType: "Payment",
-                        relatedEntityId: serviceId
-                    );
-                }
-                catch
-                {
-                    // ✅ Si el logging falla, continuar
-                }
-            }
-
             // ✅ VALIDACIÓN: Verificar que session y PaymentIntentId no sean null
-            currentStage = "validate-session";
             if (session == null)
             {
                 // ✅ No lanzar excepción aquí - retornar silenciosamente para no fallar el webhook
@@ -3237,49 +2955,32 @@ namespace newApi.Controllers
                 );
                 return;
             }
-
-            // ✅ IDEMPOTENCIA: Si ya existe una transacción con este PaymentIntent, no re-procesar
-            currentStage = "idempotency-check";
-            var existingPayment = await _context.FinancialTransactions
-                .AsNoTracking()
-                .FirstOrDefaultAsync(ft => ft.StripePaymentIntentId == session.PaymentIntentId);
-            if (existingPayment != null)
+            // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
+            // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
+            User? user = null;
+            await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
             {
                 try
                 {
-                    await _loggingService.LogInfoAsync(
-                        message: "Payment already processed - skipping",
-                        details: $"PaymentIntent {session.PaymentIntentId} already processed. Skipping pending hire creation.",
-                        userId: userId,
-                        source: "SubscriptionController.HandlePendingHireCompleted",
-                        relatedEntityType: "Payment",
-                        relatedEntityId: serviceId
-                    );
+                    user = await _context.Users
+                        .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
+                        .FirstOrDefaultAsync();
+                    
+                    await lockTransaction.CommitAsync();
                 }
                 catch
                 {
-                    // ✅ Si el logging falla, continuar silenciosamente
+                    try { await lockTransaction.RollbackAsync(); } catch { }
+                    throw;
                 }
-                return;
             }
-            // ✅ FIX CRÍTICO: Obtener usuario ANTES de la transacción para evitar ExecutionStrategy
-            // El FOR UPDATE no es crítico aquí, solo necesitamos obtener el usuario
-            // Si realmente necesitamos FOR UPDATE, podemos hacerlo después con una query directa
-            currentStage = "load-user";
-            var user = await _context.Users
-                .AsNoTracking() // ✅ FIX: AsNoTracking evita que EF Core intente usar ExecutionStrategy
-                .FirstOrDefaultAsync(u => u.Id == userId);
             
             if (user == null)
             {
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
             }
 
-            // ✅ FIX: Usar FirstOrDefaultAsync con AsNoTracking para evitar ExecutionStrategy
-            currentStage = "load-service";
-            var service = await _context.SearchServices
-                .AsNoTracking()
-                .FirstOrDefaultAsync(s => s.Id == serviceId);
+            var service = await _context.SearchServices.FindAsync(serviceId);
             if (service == null)
             {
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
@@ -3292,7 +2993,6 @@ namespace newApi.Controllers
 
             CreateSearchDto searchDto;
             CreateSearchParameterDto parameterDto;
-            currentStage = "deserialize-metadata";
             try
             {
                 searchDto = JsonSerializer.Deserialize<CreateSearchDto>(searchDataJson);
@@ -3300,15 +3000,6 @@ namespace newApi.Controllers
             }
             catch (JsonException ex)
             {
-                await _loggingService.LogErrorAsync(
-                    message: "Failed to deserialize search metadata in HandlePendingHireCompleted",
-                    details: $"UserId: {userId}, ServiceId: {serviceId}, SessionId: {session.Id}. Error: {ex.Message}",
-                    userId: userId,
-                    source: "SubscriptionController.HandlePendingHireCompleted",
-                    relatedEntityType: "Payment",
-                    relatedEntityId: serviceId,
-                    additionalData: new { Stage = currentStage, Exception = ex.Message }
-                );
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
             }
 
@@ -3317,11 +3008,7 @@ namespace newApi.Controllers
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
             }
 
-            // ✅ FIX: AsNoTracking evita que EF Core intente usar ExecutionStrategy
-            currentStage = "load-active-search-count";
-            var activeSearchCount = await _context.Searches
-                .AsNoTracking()
-                .CountAsync(s => s.UserId == userId && s.IsActive);
+            var activeSearchCount = await _context.Searches.CountAsync(s => s.UserId == userId && s.IsActive);
             var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
 
             //PARA MANEJAR SUSCRIPCIONES
@@ -3345,41 +3032,10 @@ namespace newApi.Controllers
             */
 
             // ✅ FIX CRÍTICO: Obtener StatusId ANTES de iniciar la transacción para evitar conflictos con ExecutionStrategy
-            currentStage = "load-pending-status";
             var pendingStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Pending.ToStringValue());
-            
-            // ✅ VALIDACIÓN CRÍTICA: Verificar que el StatusId sea válido
-            if (pendingStatusId <= 0)
-            {
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Invalid pendingStatusId in HandlePendingHireCompleted",
-                    details: $"pendingStatusId is {pendingStatusId} which is invalid. Expected a positive integer. UserId: {userId}, ServiceId: {serviceId}",
-                    userId: userId,
-                    source: "SubscriptionController.HandlePendingHireCompleted",
-                    relatedEntityType: "Payment",
-                    relatedEntityId: serviceId,
-                    additionalData: new { 
-                        PendingStatusId = pendingStatusId,
-                        ServiceId = serviceId,
-                        SessionId = session?.Id
-                    }
-                );
-                throw new InvalidOperationException($"Invalid pendingStatusId: {pendingStatusId}. Cannot proceed with SearchHire creation.");
-            }
-            
-            // ✅ LOGGING: Confirmar StatusId obtenido
-            await _loggingService.LogInfoAsync(
-                message: "Pending StatusId loaded",
-                details: $"Successfully loaded pendingStatusId: {pendingStatusId} for SearchHireStatus.Pending",
-                userId: userId,
-                source: "SubscriptionController.HandlePendingHireCompleted",
-                relatedEntityType: "Payment",
-                relatedEntityId: serviceId
-            );
             
             // ✅ FIX CRÍTICO: Obtener TODAS las queries ANTES de iniciar la transacción para evitar ExecutionStrategy
             // Estas queries activan ExecutionStrategy automáticamente si están dentro de una transacción
-            currentStage = "load-expert-profile";
             var expertProfile = await _context.ExpertProfiles
                 .AsNoTracking() // ✅ FIX: AsNoTracking evita que EF Core intente usar ExecutionStrategy
                 .FirstOrDefaultAsync(z => z.Id == service.ExpertProfileId);
@@ -3394,7 +3050,6 @@ namespace newApi.Controllers
 
             // Obtener la disponibilidad actual del experto al momento de la contratación
             int? currentAvailabilityId = null;
-            currentStage = "load-availability";
             if (expertProfile != null)
             {
                 var currentAvailability = await _context.ExpertAvailabilities
@@ -3412,7 +3067,6 @@ namespace newApi.Controllers
 
             // ✅ FIX CRÍTICO: Obtener platforms ANTES de iniciar la transacción
             List<Platform> platforms = new List<Platform>();
-            currentStage = "load-platforms";
             if (parameterDto.PlatformIds != null && parameterDto.PlatformIds.Any())
             {
                 platforms = await _context.Platforms
@@ -3425,18 +3079,66 @@ namespace newApi.Controllers
                 }
             }
             
-            // ✅ FIX CRÍTICO: NO usar transacciones manuales (BeginTransactionAsync) - causa problemas con PgBouncer
-            // Usar el mismo patrón que GoogleAuth: SaveChanges directo sin transacciones manuales
-            // La idempotencia ya está garantizada por la verificación de PaymentIntentId al inicio
-            currentStage = "create-search";
-            
+            // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
+            // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            SearchHire? searchHire = null;
+            int searchHireId = 0; // ✅ FIX: Declarar searchHireId antes del try para que esté disponible en catch
             try
             {
-                // ✅ REMOVED: Balance system eliminated - all payments are direct Stripe
-                // ✅ REMOVED: Empty SaveChangesAsync() that was causing ExecutionStrategy conflicts
+                    // ✅ REMOVED: Balance system eliminated - all payments are direct Stripe
+                
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear la búsqueda en el nuevo contexto si es necesario
+                    // Por ahora, solo loguear el error
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Connection disposed in HandlePendingHireCompleted - initial SaveChanges",
+                        details: $"Connection disposed while saving initial changes. UserId: {userId}, ServiceId: {serviceId}",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: serviceId
+                    );
+                    return; // Salir si no se puede recuperar
+                }
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Connection disposed in HandlePendingHireCompleted - initial SaveChanges",
+                        details: $"Connection disposed while saving initial changes. UserId: {userId}, ServiceId: {serviceId}",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: serviceId
+                    );
+                    return; // Salir si no se puede recuperar
+                }
 
                 // Create search
-                search = new Search
+                var search = new Search
                 {
                     UserId = userId,
                     Frequency = searchDto.Frequency,
@@ -3447,12 +3149,68 @@ namespace newApi.Controllers
                     StartDate = searchDto.StartDate,
                     CreatedAt = DateTime.UtcNow
                 };
-                _context.Searches.Add(search);
-                await _context.SaveChangesAsync(); // ✅ SIN TRANSACCIÓN - como GoogleAuth
+                await _context.Searches.AddAsync(search);
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear la búsqueda en el nuevo contexto
+                    var recoverySearch = new Search
+                    {
+                        UserId = userId,
+                        Frequency = searchDto.Frequency,
+                        Title = searchDto.Title,
+                        Description = searchDto.Description,
+                        IsActive = searchDto.IsActive,
+                        NextExecution = DateTime.UtcNow,
+                        StartDate = searchDto.StartDate,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    recoveryContext.Searches.Add(recoverySearch);
+                    await recoveryContext.SaveChangesAsync();
+                    search = recoverySearch; // Actualizar referencia
+                }
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear la búsqueda en el nuevo contexto
+                    var recoverySearch = new Search
+                    {
+                        UserId = userId,
+                        Frequency = searchDto.Frequency,
+                        Title = searchDto.Title,
+                        Description = searchDto.Description,
+                        IsActive = searchDto.IsActive,
+                        NextExecution = DateTime.UtcNow,
+                        StartDate = searchDto.StartDate,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    recoveryContext.Searches.Add(recoverySearch);
+                    await recoveryContext.SaveChangesAsync();
+                    search = recoverySearch; // Actualizar referencia
+                }
 
-                currentStage = "create-search-parameter";
                 // Create search parameters
-                searchParameter = new SearchParameter
+                var searchParameter = new SearchParameter
                 {
                     Keywords = parameterDto.Keywords,
                     UserSearch = parameterDto.UserSearch,
@@ -3470,10 +3228,80 @@ namespace newApi.Controllers
                     ServiceTypeId = parameterDto.ServiceTypeId,
                     SearchId = search.Id
                 };
-                _context.SearchParameters.Add(searchParameter);
-                await _context.SaveChangesAsync(); // ✅ SIN TRANSACCIÓN - como GoogleAuth
+                await _context.SearchParameters.AddAsync(searchParameter);
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear el parámetro de búsqueda en el nuevo contexto
+                    var recoverySearchParameter = new SearchParameter
+                    {
+                        Keywords = parameterDto.Keywords,
+                        UserSearch = parameterDto.UserSearch,
+                        Latitude = parameterDto.Latitude,
+                        Longitude = parameterDto.Longitude,
+                        LocationName = parameterDto.LocationName,
+                        ShippingAvailable = parameterDto.ShippingAvailable,
+                        StrictMatchOnly = parameterDto.StrictMatchOnly,
+                        Category = parameterDto.Category,
+                        LocationRange = parameterDto.LocationRange,
+                        MinPrice = parameterDto.MinPrice,
+                        MaxPrice = parameterDto.MaxPrice,
+                        BrandId = parameterDto.BrandId,
+                        ModelId = parameterDto.ModelId,
+                        ServiceTypeId = parameterDto.ServiceTypeId,
+                        SearchId = search.Id
+                    };
+                    recoveryContext.SearchParameters.Add(recoverySearchParameter);
+                    await recoveryContext.SaveChangesAsync();
+                    searchParameter = recoverySearchParameter; // Actualizar referencia
+                }
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear el parámetro de búsqueda en el nuevo contexto
+                    var recoverySearchParameter = new SearchParameter
+                    {
+                        Keywords = parameterDto.Keywords,
+                        UserSearch = parameterDto.UserSearch,
+                        Latitude = parameterDto.Latitude,
+                        Longitude = parameterDto.Longitude,
+                        LocationName = parameterDto.LocationName,
+                        ShippingAvailable = parameterDto.ShippingAvailable,
+                        StrictMatchOnly = parameterDto.StrictMatchOnly,
+                        Category = parameterDto.Category,
+                        LocationRange = parameterDto.LocationRange,
+                        MinPrice = parameterDto.MinPrice,
+                        MaxPrice = parameterDto.MaxPrice,
+                        BrandId = parameterDto.BrandId,
+                        ModelId = parameterDto.ModelId,
+                        ServiceTypeId = parameterDto.ServiceTypeId,
+                        SearchId = search.Id
+                    };
+                    recoveryContext.SearchParameters.Add(recoverySearchParameter);
+                    await recoveryContext.SaveChangesAsync();
+                    searchParameter = recoverySearchParameter; // Actualizar referencia
+                }
 
-                currentStage = "create-platform-associations";
                 // Create platform associations (platforms ya obtenidos antes de la transacción)
                 if (platforms.Any())
                 {
@@ -3487,7 +3315,6 @@ namespace newApi.Controllers
                     }
                 }
 
-                currentStage = "load-stripe-tax";
                 // ✅ STRIPE TAX: Obtener tax breakdown de la Checkout Session (NO PaymentIntent)
                 // El tax breakdown está en la Session, no en el PaymentIntent
                 decimal totalAmount = service.Price;
@@ -3513,9 +3340,6 @@ namespace newApi.Controllers
                         if (sessionWithTax.AutomaticTax?.Status == "requires_location_inputs")
                         {
                             // Stripe necesita más información de ubicación - usar precio completo como fallback
-                            // ✅ FIX: Envolver logging en try-catch para evitar ExecutionStrategy dentro de transacción
-                            try
-                            {
                             await _loggingService.LogWarningAsync(
                                 message: "Stripe Tax requires location inputs - using full amount as base",
                                 details: $"Session {session.Id} requires location inputs for tax calculation. Using full amount {totalAmount}€ as base amount.",
@@ -3524,12 +3348,6 @@ namespace newApi.Controllers
                                 relatedEntityType: "SearchHire",
                                 relatedEntityId: null
                             );
-                            }
-                            catch
-                            {
-                                // ✅ FIX: Si el logging falla, solo loguear en consola
-                                LogConsoleDebug($"⚠️ [WARNING] Stripe Tax requires location inputs for Session {session.Id}");
-                            }
                             baseAmount = totalAmount;
                             taxAmount = 0;
                         }
@@ -3537,9 +3355,6 @@ namespace newApi.Controllers
                     else
                     {
                         // ✅ FALLBACK: Si AmountTotal no tiene valor, usar service.Price como base
-                        // ✅ FIX: Envolver logging en try-catch para evitar ExecutionStrategy dentro de transacción
-                        try
-                        {
                         await _loggingService.LogWarningAsync(
                             message: "Stripe Session AmountTotal is null - using service price as base",
                             details: $"Session {session.Id} does not have AmountTotal. Using service price {totalAmount}€ as base amount.",
@@ -3548,12 +3363,6 @@ namespace newApi.Controllers
                             relatedEntityType: "SearchHire",
                             relatedEntityId: null
                         );
-                        }
-                        catch
-                        {
-                            // ✅ FIX: Si el logging falla, solo loguear en consola
-                            LogConsoleDebug($"⚠️ [WARNING] Stripe Session {session.Id} AmountTotal is null");
-                        }
                         baseAmount = totalAmount; // totalAmount ya es service.Price
                         taxAmount = 0;
                     }
@@ -3561,9 +3370,6 @@ namespace newApi.Controllers
                 catch (Exception taxEx)
                 {
                     // Si falla obtener tax breakdown, usar precio completo como fallback
-                    // ✅ FIX: Envolver logging en try-catch para evitar ExecutionStrategy dentro de transacción
-                    try
-                    {
                     await _loggingService.LogWarningAsync(
                         message: "Failed to get tax breakdown from Stripe Session - using full amount as base",
                         details: $"Error getting tax breakdown from Session {session.Id}: {taxEx.Message}. Using full amount {totalAmount}€ as base amount.",
@@ -3572,43 +3378,10 @@ namespace newApi.Controllers
                         relatedEntityType: "SearchHire",
                         relatedEntityId: null
                     );
-                    }
-                    catch
-                    {
-                        // ✅ FIX: Si el logging falla, solo loguear en consola
-                        LogConsoleDebug($"⚠️ [WARNING] Failed to get tax breakdown from Session {session.Id}: {taxEx.Message}");
-                    }
                     baseAmount = totalAmount;
                     taxAmount = 0;
                 }
 
-                currentStage = "create-search-hire";
-                // ✅ FIX CRÍTICO: Asegurar que la conexión esté abierta antes de crear SearchHire
-                await EnsureConnectionOpenAsync(_context, currentStage, userId, serviceId, session?.Id);
-                
-                // ✅ FIX: Asegurar que baseAmount y taxAmount no sean null
-                if (!baseAmount.HasValue)
-                {
-                    baseAmount = totalAmount; // Fallback: usar totalAmount si baseAmount es null
-                }
-                if (!taxAmount.HasValue)
-                {
-                    taxAmount = 0; // Fallback: usar 0 si taxAmount es null
-                }
-                
-                // ✅ LOGGING: Loguear valores antes de crear SearchHire para diagnóstico
-                await _loggingService.LogInfoAsync(
-                    message: "Creating SearchHire - Pre-save validation",
-                    details: $"About to create SearchHire. Stage: {currentStage}. " +
-                            $"ClientId: {userId}, ExpertId: {expertuserid}, SearchServiceId: {service.Id}, SearchId: {search.Id}, " +
-                            $"StatusId: {pendingStatusId}, Amount: {totalAmount}, BaseAmount: {baseAmount}, TaxAmount: {taxAmount}, " +
-                            $"ExpertAvailabilityId: {currentAvailabilityId}, ExpertTimezone: {expertTimezone}, ExpertCountry: {expertCountry}",
-                    userId: userId,
-                    source: "SubscriptionController.HandlePendingHireCompleted",
-                    relatedEntityType: "SearchHire",
-                    relatedEntityId: null
-                );
-                
                 // Create search hire
                 searchHire = new SearchHire
                 {
@@ -3635,108 +3408,76 @@ namespace newApi.Controllers
                 _context.SearchHires.Add(searchHire);
                 try
                 {
-                    // ✅ FIX CRÍTICO: Usar conexión directa para evitar ExecutionStrategy completamente
-                    // ExecutionStrategy causa ObjectDisposedException con ManualResetEventSlim en Npgsql
-                    // Al usar la conexión directamente, evitamos completamente ExecutionStrategy
-                    _context.Database.AutoSavepointsEnabled = false;
-                    
-                    var connection = _context.Database.GetDbConnection();
-                    if (connection.State != System.Data.ConnectionState.Open)
-                    {
-                        await connection.OpenAsync();
-                    }
-                    
-                    using var command = connection.CreateCommand();
-                    command.CommandText = @"INSERT INTO ""SearchHires"" (""ClientId"", ""ExpertId"", ""SearchServiceId"", ""SearchId"", ""StatusId"", ""Amount"", ""BaseAmount"", ""TaxAmount"", ""CreatedAt"", ""CompletionDeadline"", ""ExpertAvailabilityId"", ""ExpertTimezone"", ""ExpertCountry"")
-                                            VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, @p9, @p10, @p11, @p12)
-                                            RETURNING ""Id"";";
-                    
-                    var p0 = command.CreateParameter(); p0.ParameterName = "@p0"; p0.Value = searchHire.ClientId; command.Parameters.Add(p0);
-                    var p1 = command.CreateParameter(); p1.ParameterName = "@p1"; p1.Value = (object)searchHire.ExpertId ?? DBNull.Value; command.Parameters.Add(p1);
-                    var p2 = command.CreateParameter(); p2.ParameterName = "@p2"; p2.Value = searchHire.SearchServiceId; command.Parameters.Add(p2);
-                    var p3 = command.CreateParameter(); p3.ParameterName = "@p3"; p3.Value = (object)searchHire.SearchId ?? DBNull.Value; command.Parameters.Add(p3);
-                    var p4 = command.CreateParameter(); p4.ParameterName = "@p4"; p4.Value = searchHire.StatusId; command.Parameters.Add(p4);
-                    var p5 = command.CreateParameter(); p5.ParameterName = "@p5"; p5.Value = searchHire.Amount; command.Parameters.Add(p5);
-                    var p6 = command.CreateParameter(); p6.ParameterName = "@p6"; p6.Value = (object)searchHire.BaseAmount ?? DBNull.Value; command.Parameters.Add(p6);
-                    var p7 = command.CreateParameter(); p7.ParameterName = "@p7"; p7.Value = (object)searchHire.TaxAmount ?? DBNull.Value; command.Parameters.Add(p7);
-                    var p8 = command.CreateParameter(); p8.ParameterName = "@p8"; p8.Value = searchHire.CreatedAt; command.Parameters.Add(p8);
-                    var p9 = command.CreateParameter(); p9.ParameterName = "@p9"; p9.Value = (object)searchHire.CompletionDeadline ?? DBNull.Value; command.Parameters.Add(p9);
-                    var p10 = command.CreateParameter(); p10.ParameterName = "@p10"; p10.Value = (object)searchHire.ExpertAvailabilityId ?? DBNull.Value; command.Parameters.Add(p10);
-                    var p11 = command.CreateParameter(); p11.ParameterName = "@p11"; p11.Value = (object)searchHire.ExpertTimezone ?? DBNull.Value; command.Parameters.Add(p11);
-                    var p12 = command.CreateParameter(); p12.ParameterName = "@p12"; p12.Value = (object)searchHire.ExpertCountry ?? DBNull.Value; command.Parameters.Add(p12);
-                    
-                    var result = await command.ExecuteScalarAsync();
-                    searchHireId = Convert.ToInt32(result);
-                    
-                    if (searchHireId == 0)
-                    {
-                        throw new InvalidOperationException("Failed to retrieve inserted SearchHire ID from RETURNING clause");
-                    }
-                    
-                    // Actualizar el objeto searchHire con el ID obtenido
-                    searchHire.Id = searchHireId;
+                    await _context.SaveChangesAsync(); // ✅ SAVE FIRST to get the real ID
+                    searchHireId = searchHire.Id;
                 }
-                catch (DbUpdateException dbEx)
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
                 {
-                    // ✅ FIX CRÍTICO: Extraer y loguear el InnerException con todos los detalles
-                    var innerEx = dbEx.InnerException;
-                    var innerExMessage = innerEx?.Message ?? "No inner exception";
-                    var innerExType = innerEx?.GetType().FullName ?? "Unknown";
-                    var innerExStackTrace = innerEx?.StackTrace ?? "No stack trace";
-                    
-                    // Obtener información del estado de la conexión
-                    var connectionState = "Unknown";
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
                     try
                     {
-                        connectionState = _context.Database.GetDbConnection().State.ToString();
+                        await transaction.RollbackAsync();
                     }
                     catch { }
                     
-                    // Información detallada del SearchHire que se intentó guardar
-                    var searchHireInfo = $"ClientId: {userId}, ExpertId: {expertuserid}, SearchServiceId: {service.Id}, SearchId: {search?.Id}, StatusId: {pendingStatusId}, Amount: {totalAmount}, BaseAmount: {baseAmount}, TaxAmount: {taxAmount}";
-                    
-                    await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: DbUpdateException saving SearchHire",
-                        details: $"Failed to save SearchHire in HandlePendingHireCompleted. Stage: {currentStage}. " +
-                                $"SearchHire Info: {searchHireInfo}. " +
-                                $"Connection State: {connectionState}. " +
-                                $"DbUpdateException Message: {dbEx.Message}. " +
-                                $"InnerException Type: {innerExType}. " +
-                                $"InnerException Message: {innerExMessage}. " +
-                                $"InnerException StackTrace: {innerExStackTrace}. " +
-                                $"DbUpdateException StackTrace: {dbEx.StackTrace}",
-                        userId: userId,
-                        source: "SubscriptionController.HandlePendingHireCompleted",
-                        relatedEntityType: "SearchHire",
-                        relatedEntityId: null,
-                        additionalData: new { 
-                            Stage = currentStage,
-                            SearchHireInfo = searchHireInfo,
-                            ConnectionState = connectionState,
-                            DbUpdateExceptionMessage = dbEx.Message,
-                            InnerExceptionType = innerExType,
-                            InnerExceptionMessage = innerExMessage,
-                            InnerExceptionStackTrace = innerExStackTrace,
-                            DbUpdateExceptionStackTrace = dbEx.StackTrace,
-                            ServiceId = serviceId,
-                            SessionId = session?.Id
-                        }
-                    );
-                    throw; // Re-lanzar para que el catch externo lo maneje
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear el SearchHire en el nuevo contexto
+                    var recoverySearchHire = new SearchHire
+                    {
+                        ClientId = userId,
+                        ExpertId = expertuserid,
+                        SearchServiceId = service.Id,
+                        SearchId = search.Id,
+                        StatusId = pendingStatusId,
+                        Amount = totalAmount,
+                        BaseAmount = baseAmount,
+                        TaxAmount = taxAmount,
+                        CreatedAt = DateTime.UtcNow,
+                        CompletionDeadline = DateTime.UtcNow.AddDays(7),
+                        ExpertAvailabilityId = currentAvailabilityId,
+                        ExpertTimezone = expertTimezone,
+                        ExpertCountry = expertCountry
+                    };
+                    recoveryContext.SearchHires.Add(recoverySearchHire);
+                    await recoveryContext.SaveChangesAsync();
+                    searchHireId = recoverySearchHire.Id;
+                    searchHire = recoverySearchHire; // Actualizar referencia
                 }
-                await _loggingService.LogInfoAsync(
-                    message: "SearchHire created successfully",
-                    details: $"Stage: {currentStage}. SearchHireId: {searchHireId}, SearchId: {search.Id}, ServiceId: {serviceId}",
-                    userId: userId,
-                    source: "SubscriptionController.HandlePendingHireCompleted",
-                    relatedEntityType: "SearchHire",
-                    relatedEntityId: searchHireId
-                );
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
+                    
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear el SearchHire en el nuevo contexto
+                    var recoverySearchHire = new SearchHire
+                    {
+                        ClientId = userId,
+                        ExpertId = expertuserid,
+                        SearchServiceId = service.Id,
+                        SearchId = search.Id,
+                        StatusId = pendingStatusId,
+                        Amount = totalAmount,
+                        BaseAmount = baseAmount,
+                        TaxAmount = taxAmount,
+                        CreatedAt = DateTime.UtcNow,
+                        CompletionDeadline = DateTime.UtcNow.AddDays(7),
+                        ExpertAvailabilityId = currentAvailabilityId,
+                        ExpertTimezone = expertTimezone,
+                        ExpertCountry = expertCountry
+                    };
+                    recoveryContext.SearchHires.Add(recoverySearchHire);
+                    await recoveryContext.SaveChangesAsync();
+                    searchHireId = recoverySearchHire.Id;
+                    searchHire = recoverySearchHire; // Actualizar referencia
+                }
 
-                currentStage = "create-financial-transaction";
-                // ✅ FIX CRÍTICO: Asegurar que la conexión esté abierta antes de crear FinancialTransaction
-                await EnsureConnectionOpenAsync(_context, currentStage, userId, serviceId, session?.Id);
-                
                 var paymentTransaction = new FinancialTransaction
                 {
                     UserId = userId,
@@ -3747,385 +3488,129 @@ namespace newApi.Controllers
                         StripePaymentIntentId = session.PaymentIntentId, // ✅ ADDED: Track Stripe payment intent
                     CreatedAt = DateTime.UtcNow
                 };
-                // ✅ FIX CRÍTICO: NO usar Add() porque eso agrega la entidad al ChangeTracker
-                // El ChangeTracker puede intentar usar ExecutionStrategy cuando se llama SaveChangesAsync
-                // En su lugar, usar SQL directo desde el principio
+                _context.FinancialTransactions.Add(paymentTransaction);
+
                 try
                 {
-                    // ✅ FIX CRÍTICO: Usar conexión directa para evitar ExecutionStrategy completamente
-                    // ExecutionStrategy causa ObjectDisposedException con ManualResetEventSlim en Npgsql
-                    _context.Database.AutoSavepointsEnabled = false;
-                    
-                    // ✅ LOGGING: Loguear antes de ejecutar SQL directo
-                    await _loggingService.LogInfoAsync(
-                        message: "Creating FinancialTransaction - Using direct SQL",
-                        details: $"About to create FinancialTransaction using direct SQL. UserId: {userId}, Amount: {-service.Price}, SearchHireId: {searchHireId}",
-                        userId: userId,
-                        source: "SubscriptionController.HandlePendingHireCompleted",
-                        relatedEntityType: "FinancialTransaction",
-                        relatedEntityId: null
-                    );
-                    
-                    var connection = _context.Database.GetDbConnection();
-                    var wasOpen = connection.State == System.Data.ConnectionState.Open;
-                    if (!wasOpen)
-                    {
-                        await connection.OpenAsync();
-                    }
-                    
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
                     try
                     {
-                        using var command = connection.CreateCommand();
-                        command.CommandText = @"INSERT INTO ""FinancialTransactions"" (""UserId"", ""Amount"", ""TransactionType"", ""RelatedEntityType"", ""RelatedEntityId"", ""StripePaymentIntentId"", ""IsRefunded"", ""CreatedAt"")
-                                                VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7)
-                                                RETURNING ""Id"";";
-                        
-                        var p0 = command.CreateParameter(); p0.ParameterName = "@p0"; p0.Value = (object)paymentTransaction.UserId ?? DBNull.Value; command.Parameters.Add(p0);
-                        var p1 = command.CreateParameter(); p1.ParameterName = "@p1"; p1.Value = paymentTransaction.Amount; command.Parameters.Add(p1);
-                        var p2 = command.CreateParameter(); p2.ParameterName = "@p2"; p2.Value = paymentTransaction.TransactionType; command.Parameters.Add(p2);
-                        var p3 = command.CreateParameter(); p3.ParameterName = "@p3"; p3.Value = (object)paymentTransaction.RelatedEntityType ?? DBNull.Value; command.Parameters.Add(p3);
-                        var p4 = command.CreateParameter(); p4.ParameterName = "@p4"; p4.Value = (object)paymentTransaction.RelatedEntityId ?? DBNull.Value; command.Parameters.Add(p4);
-                        var p5 = command.CreateParameter(); p5.ParameterName = "@p5"; p5.Value = (object)paymentTransaction.StripePaymentIntentId ?? DBNull.Value; command.Parameters.Add(p5);
-                        var p6 = command.CreateParameter(); p6.ParameterName = "@p6"; p6.Value = paymentTransaction.IsRefunded; command.Parameters.Add(p6);
-                        var p7 = command.CreateParameter(); p7.ParameterName = "@p7"; p7.Value = paymentTransaction.CreatedAt; command.Parameters.Add(p7);
-                        
-                        var result = await command.ExecuteScalarAsync();
-                        var transactionId = Convert.ToInt32(result);
-                        
-                        if (transactionId == 0)
-                        {
-                            throw new InvalidOperationException("Failed to retrieve inserted FinancialTransaction ID from RETURNING clause");
-                        }
-                        
-                        // Actualizar el objeto paymentTransaction con el ID obtenido
-                        paymentTransaction.Id = transactionId;
-                        
-                        // ✅ LOGGING: Confirmar creación exitosa
-                        await _loggingService.LogInfoAsync(
-                            message: "FinancialTransaction created successfully",
-                            details: $"FinancialTransaction created using direct SQL. TransactionId: {transactionId}, SearchHireId: {searchHireId}",
-                            userId: userId,
-                            source: "SubscriptionController.HandlePendingHireCompleted",
-                            relatedEntityType: "FinancialTransaction",
-                            relatedEntityId: transactionId
-                        );
-                    }
-                    finally
-                    {
-                        // ✅ FIX: Solo cerrar la conexión si la abrimos nosotros
-                        // Si EF Core la abrió, dejarla abierta para que EF Core la maneje
-                        if (!wasOpen && connection.State == System.Data.ConnectionState.Open)
-                        {
-                            await connection.CloseAsync();
-                        }
-                    }
-                }
-                catch (Exception sqlEx) when (!(sqlEx is DbUpdateException))
-                {
-                    // ✅ FIX: Capturar excepciones generales del SQL directo
-                    await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: Exception in direct SQL for FinancialTransaction",
-                        details: $"Failed to create FinancialTransaction using direct SQL. Stage: {currentStage}. " +
-                                $"UserId: {userId}, Amount: {-service.Price}, SearchHireId: {searchHireId}. " +
-                                $"Exception Type: {sqlEx.GetType().FullName}. " +
-                                $"Exception Message: {sqlEx.Message}. " +
-                                $"StackTrace: {sqlEx.StackTrace}",
-                        userId: userId,
-                        source: "SubscriptionController.HandlePendingHireCompleted",
-                        relatedEntityType: "FinancialTransaction",
-                        relatedEntityId: null,
-                        additionalData: new { 
-                            Stage = currentStage,
-                            ExceptionType = sqlEx.GetType().FullName,
-                            ExceptionMessage = sqlEx.Message,
-                            StackTrace = sqlEx.StackTrace,
-                            ServiceId = serviceId,
-                            SessionId = session?.Id,
-                            SearchHireId = searchHireId
-                        }
-                    );
-                    throw; // Re-lanzar para que el catch externo lo maneje
-                }
-                catch (DbUpdateException dbEx)
-                {
-                    // ✅ FIX CRÍTICO: Extraer y loguear el InnerException con todos los detalles
-                    var innerEx = dbEx.InnerException;
-                    var innerExMessage = innerEx?.Message ?? "No inner exception";
-                    var innerExType = innerEx?.GetType().FullName ?? "Unknown";
-                    var innerExStackTrace = innerEx?.StackTrace ?? "No stack trace";
-                    
-                    // Obtener información del estado de la conexión
-                    var connectionState = "Unknown";
-                    try
-                    {
-                        connectionState = _context.Database.GetDbConnection().State.ToString();
+                        await transaction.RollbackAsync();
                     }
                     catch { }
                     
-                    // Información detallada de la transacción financiera
-                    var transactionInfo = $"UserId: {userId}, Amount: {-service.Price}, TransactionType: ServicePayment, RelatedEntityType: SearchHire, RelatedEntityId: {searchHireId}, StripePaymentIntentId: {session.PaymentIntentId}";
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear la transacción financiera en el nuevo contexto
+                    var recoveryPaymentTransaction = new FinancialTransaction
+                    {
+                        UserId = userId,
+                        Amount = -service.Price,
+                        TransactionType = "ServicePayment",
+                        RelatedEntityType = "SearchHire",
+                        RelatedEntityId = searchHireId,
+                        StripePaymentIntentId = session.PaymentIntentId,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    recoveryContext.FinancialTransactions.Add(recoveryPaymentTransaction);
+                    await recoveryContext.SaveChangesAsync();
+                }
+                catch (ObjectDisposedException disposedEx)
+                {
+                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                    try
+                    {
+                        await transaction.RollbackAsync();
+                    }
+                    catch { }
                     
-                    await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: DbUpdateException saving FinancialTransaction",
-                        details: $"Failed to save FinancialTransaction in HandlePendingHireCompleted. Stage: {currentStage}. " +
-                                $"Transaction Info: {transactionInfo}. " +
-                                $"Connection State: {connectionState}. " +
-                                $"DbUpdateException Message: {dbEx.Message}. " +
-                                $"InnerException Type: {innerExType}. " +
-                                $"InnerException Message: {innerExMessage}. " +
-                                $"InnerException StackTrace: {innerExStackTrace}. " +
-                                $"DbUpdateException StackTrace: {dbEx.StackTrace}",
-                        userId: userId,
-                        source: "SubscriptionController.HandlePendingHireCompleted",
-                        relatedEntityType: "FinancialTransaction",
-                        relatedEntityId: null,
-                        additionalData: new { 
-                            Stage = currentStage,
-                            TransactionInfo = transactionInfo,
-                            ConnectionState = connectionState,
-                            DbUpdateExceptionMessage = dbEx.Message,
-                            InnerExceptionType = innerExType,
-                            InnerExceptionMessage = innerExMessage,
-                            InnerExceptionStackTrace = innerExStackTrace,
-                            DbUpdateExceptionStackTrace = dbEx.StackTrace,
-                            ServiceId = serviceId,
-                            SessionId = session?.Id,
-                            SearchHireId = searchHireId
-                        }
-                    );
-                    throw; // Re-lanzar para que el catch externo lo maneje
+                    using var recoveryScope = _serviceScopeFactory.CreateScope();
+                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Re-crear la transacción financiera en el nuevo contexto
+                    var recoveryPaymentTransaction = new FinancialTransaction
+                    {
+                        UserId = userId,
+                        Amount = -service.Price,
+                        TransactionType = "ServicePayment",
+                        RelatedEntityType = "SearchHire",
+                        RelatedEntityId = searchHireId,
+                        StripePaymentIntentId = session.PaymentIntentId,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    recoveryContext.FinancialTransactions.Add(recoveryPaymentTransaction);
+                    await recoveryContext.SaveChangesAsync();
                 }
 
-                currentStage = "validate-payment-intent";
                 if (string.IsNullOrEmpty(session.PaymentIntentId))
                 {
-                    // ✅ FIX: Si falta PaymentIntentId, hacer cleanup manual de lo creado
-                    // (compensación manual ya que no hay transacción)
-                    if (searchHireId > 0)
-                    {
-                        try
-                        {
-                            var hireToDelete = await _context.SearchHires.FindAsync(searchHireId);
-                            if (hireToDelete != null)
-                            {
-                                _context.SearchHires.Remove(hireToDelete);
-                                await _context.SaveChangesAsync();
-                            }
-                        }
-                        catch { }
-                    }
-                    if (search != null && search.Id > 0)
-                    {
-                        try
-                        {
-                            var searchToDelete = await _context.Searches.FindAsync(search.Id);
-                            if (searchToDelete != null)
-                            {
-                                _context.Searches.Remove(searchToDelete);
-                                await _context.SaveChangesAsync();
-                            }
-                        }
-                        catch { }
-                    }
+                    await LogPaymentCaptureFailureAsync(
+                        paymentIntentId: "missing",
+                        userId: userId,
+                        serviceId: serviceId,
+                        failureReason: "Stripe checkout session did not include a PaymentIntentId.",
+                        searchHireId: searchHireId); // ✅ FIX: Usar searchHireId guardado
                     throw new InvalidOperationException("PaymentIntentId is missing from checkout session.");
                 }
 
-                currentStage = "operation-completed";
-                await _loggingService.LogInfoAsync(
-                    message: "Pending hire processing completed successfully",
-                    details: $"Stage: {currentStage}. SearchHireId: {searchHireId}, ServiceId: {serviceId}, PaymentIntentId: {session.PaymentIntentId}",
-                    userId: userId,
-                    source: "SubscriptionController.HandlePendingHireCompleted",
-                    relatedEntityType: "Payment",
-                    relatedEntityId: serviceId
-                );
+                await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHireId); // ✅ FIX: Usar searchHireId guardado
 
-                // ✅ FIX CRÍTICO: Mover EnsurePaymentCapturedAsync FUERA de la transacción
-                // Esto evita que el logging active ExecutionStrategy dentro de una transacción
-                currentStage = "capture-payment";
-                try
-                {
-                    await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHireId); // ✅ FIX: Usar searchHireId guardado
-                }
-                catch (Exception captureEx)
-                {
-                    // ✅ FIX: Si la captura falla, loguear el error pero no fallar toda la operación
-                    // El pago ya se procesó en Stripe, solo falló la captura
-                    try
-                    {
-                        await LogPaymentCaptureFailureAsync(
-                            paymentIntentId: session.PaymentIntentId,
-                            userId: userId,
-                            serviceId: serviceId,
-                            failureReason: $"Error capturing payment: {captureEx.Message}",
-                            searchHireId: searchHireId,
-                            exception: captureEx);
-                    }
-                    catch
-                    {
-                        // ✅ FIX: Si el logging falla, solo loguear en consola
-                        LogConsoleDebug($"\n❌ [ERROR] Failed to log payment capture failure: {captureEx.Message}\n");
-                    }
-                    // ✅ NO lanzar excepción aquí - el pago ya se procesó, solo falló la captura
-                    // El cliente puede reintentar la captura más tarde
-                }
+                await transaction.CommitAsync();
 
                 // ✅ Crear automáticamente la cita en estado "awaiting_appointment" con timer de 24h
                 // Esto asegura que el cliente tenga 24 horas para proponer una fecha/hora
-                currentStage = "create-appointment";
                 try
                 {
                     // Verificar que no exista ya una cita (por si acaso)
                     var existingAppointment = await _context.Appointments
-                        .AsNoTracking()
-                        .FirstOrDefaultAsync(a => a.SearchHireId == searchHireId);
+                        .FirstOrDefaultAsync(a => a.SearchHireId == searchHireId); // ✅ FIX: Usar searchHireId guardado
                     
                     if (existingAppointment == null)
                     {
                         // Obtener el estado "awaiting_appointment"
                         var awaitingStatus = await _context.SystemStatuses
-                            .AsNoTracking()
                             .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
                                                       s.StatusValue == "awaiting_appointment");
                         
                         if (awaitingStatus != null)
                         {
-                            // ✅ FIX CRÍTICO: Usar SQL directo para evitar múltiples SaveChangesAsync que causan ObjectDisposedException
-                            _context.Database.AutoSavepointsEnabled = false;
-                            
-                            // ✅ Declarar variables fuera del try para usarlas con Hangfire después
-                            int appointmentId = 0;
-                            int timerId = 0;
-                            DateTime timerEndTime = DateTime.UtcNow.AddHours(24);
-                            
-                            var connection = _context.Database.GetDbConnection();
-                            var wasOpen = connection.State == System.Data.ConnectionState.Open;
-                            if (!wasOpen)
+                            var appointment = new Appointment
                             {
-                                await connection.OpenAsync();
-                            }
-                            
-                            try
+                                SearchHireId = searchHireId, // ✅ FIX: Usar searchHireId guardado
+                                StatusId = awaitingStatus.Id,
+                                CreatedAt = DateTime.UtcNow,
+                                UpdatedAt = DateTime.UtcNow
+                            };
+
+                            _context.Appointments.Add(appointment);
+                            await _context.SaveChangesAsync();
+
+                            // Crear timer para propuesta del cliente (24 horas)
+                            var proposalTimer = new AppointmentTimer
                             {
-                                // 1. Insertar Appointment y obtener su ID
-                                // ✅ NOTA: ProposedDate, ProposedTime, Location son NOT NULL en BD
-                                // Usamos valores placeholder temporales hasta que el cliente proponga
-                                using (var cmd = connection.CreateCommand())
-                                {
-                                    cmd.CommandText = @"INSERT INTO ""Appointments"" 
-                                                       (""SearchHireId"", ""StatusId"", ""ProposedDate"", ""ProposedTime"", ""Location"", ""CreatedAt"", ""UpdatedAt"")
-                                                       VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6)
-                                                       RETURNING ""Id"";";
-                                    
-                                    var p0 = cmd.CreateParameter(); p0.ParameterName = "@p0"; p0.Value = searchHireId; cmd.Parameters.Add(p0);
-                                    var p1 = cmd.CreateParameter(); p1.ParameterName = "@p1"; p1.Value = awaitingStatus.Id; cmd.Parameters.Add(p1);
-                                    // ✅ ProposedDate: usar fecha mínima como placeholder (será actualizado cuando cliente proponga)
-                                    var p2 = cmd.CreateParameter(); p2.ParameterName = "@p2"; p2.Value = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc); cmd.Parameters.Add(p2);
-                                    // ✅ ProposedTime: usar intervalo cero como placeholder
-                                    var p3 = cmd.CreateParameter(); p3.ParameterName = "@p3"; p3.Value = TimeSpan.Zero; cmd.Parameters.Add(p3);
-                                    // ✅ Location: usar string vacío como placeholder
-                                    var p4 = cmd.CreateParameter(); p4.ParameterName = "@p4"; p4.Value = "Pendiente de propuesta"; cmd.Parameters.Add(p4);
-                                    var p5 = cmd.CreateParameter(); p5.ParameterName = "@p5"; p5.Value = DateTime.UtcNow; cmd.Parameters.Add(p5);
-                                    var p6 = cmd.CreateParameter(); p6.ParameterName = "@p6"; p6.Value = DateTime.UtcNow; cmd.Parameters.Add(p6);
-                                    
-                                    appointmentId = Convert.ToInt32(await cmd.ExecuteScalarAsync());
-                                }
-                                
-                                // 2. Insertar AppointmentTimer y obtener su ID
-                                using (var cmd = connection.CreateCommand())
-                                {
-                                    cmd.CommandText = @"INSERT INTO ""AppointmentTimers"" (""AppointmentId"", ""TimerType"", ""StartTime"", ""EndTime"", ""IsExpired"", ""CreatedAt"")
-                                                       VALUES (@p0, @p1, @p2, @p3, @p4, @p5)
-                                                       RETURNING ""Id"";";
-                                    
-                                    var p0 = cmd.CreateParameter(); p0.ParameterName = "@p0"; p0.Value = appointmentId; cmd.Parameters.Add(p0);
-                                    var p1 = cmd.CreateParameter(); p1.ParameterName = "@p1"; p1.Value = "proposal"; cmd.Parameters.Add(p1);
-                                    var p2 = cmd.CreateParameter(); p2.ParameterName = "@p2"; p2.Value = DateTime.UtcNow; cmd.Parameters.Add(p2);
-                                    var p3 = cmd.CreateParameter(); p3.ParameterName = "@p3"; p3.Value = timerEndTime; cmd.Parameters.Add(p3);
-                                    var p4 = cmd.CreateParameter(); p4.ParameterName = "@p4"; p4.Value = false; cmd.Parameters.Add(p4);
-                                    var p5 = cmd.CreateParameter(); p5.ParameterName = "@p5"; p5.Value = DateTime.UtcNow; cmd.Parameters.Add(p5);
-                                    
-                                    timerId = Convert.ToInt32(await cmd.ExecuteScalarAsync());
-                                }
-                                
-                                LogConsoleDebug($"✅ [SQL SUCCESS] Appointment {appointmentId} and Timer {timerId} created with SQL");
-                            }
-                            finally
-                            {
-                                // ✅ CRÍTICO: Cerrar la conexión ANTES de llamar a Hangfire
-                                // Hangfire necesita su propia conexión limpia
-                                if (!wasOpen && connection.State == System.Data.ConnectionState.Open)
-                                {
-                                    await connection.CloseAsync();
-                                }
-                            }
-                            
-                            // ✅ IMPORTANTE: Hangfire DEBE llamarse DESPUÉS de cerrar la conexión anterior
-                            // 3. Programar scheduled job para cuando expire el timer (24 horas)
-                            string? jobId = null;
-                            try
-                            {
-                                jobId = BackgroundJob.Schedule<IAppointmentService>(
-                                    service => service.ProcessAppointmentTimerAsync(timerId),
-                                    timerEndTime - DateTime.UtcNow
-                                );
-                                
-                                LogConsoleDebug($"✅ [HANGFIRE SUCCESS] Job {jobId} scheduled for timer {timerId}");
-                                
-                                // 4. Actualizar el timer con el HangfireJobId (nueva conexión)
-                                if (!string.IsNullOrEmpty(jobId))
-                                {
-                                    connection = _context.Database.GetDbConnection();
-                                    wasOpen = connection.State == System.Data.ConnectionState.Open;
-                                    if (!wasOpen)
-                                    {
-                                        await connection.OpenAsync();
-                                    }
-                                    
-                                    try
-                                    {
-                                        using (var cmd = connection.CreateCommand())
-                                        {
-                                            cmd.CommandText = @"UPDATE ""AppointmentTimers"" 
-                                                               SET ""HangfireJobId"" = @p0 
-                                                               WHERE ""Id"" = @p1;";
-                                            
-                                            var p0 = cmd.CreateParameter(); p0.ParameterName = "@p0"; p0.Value = jobId; cmd.Parameters.Add(p0);
-                                            var p1 = cmd.CreateParameter(); p1.ParameterName = "@p1"; p1.Value = timerId; cmd.Parameters.Add(p1);
-                                            
-                                            await cmd.ExecuteNonQueryAsync();
-                                        }
-                                        
-                                        LogConsoleDebug($"✅ [UPDATE SUCCESS] Timer {timerId} updated with JobId {jobId}");
-                                    }
-                                    finally
-                                    {
-                                        if (!wasOpen && connection.State == System.Data.ConnectionState.Open)
-                                        {
-                                            await connection.CloseAsync();
-                                        }
-                                    }
-                                }
-                            }
-                            catch (Exception hangfireEx)
-                            {
-                                // ✅ Si Hangfire falla, loguear pero no detener - el appointment ya se creó
-                                LogConsoleDebug($"⚠️ [WARNING] Hangfire job scheduling failed for timer {timerId}: {hangfireEx.Message}");
-                                await _loggingService.LogWarningAsync(
-                                    message: "Failed to schedule Hangfire job for appointment timer",
-                                    details: $"Timer {timerId} created successfully but Hangfire job scheduling failed. Error: {hangfireEx.Message}",
-                                    userId: userId,
-                                    source: "SubscriptionController.HandlePendingHireCompleted",
-                                    relatedEntityType: "AppointmentTimer",
-                                    relatedEntityId: timerId,
-                                    additionalData: new { 
-                                        TimerId = timerId,
-                                        AppointmentId = appointmentId,
-                                        SearchHireId = searchHireId,
-                                        Exception = hangfireEx.Message
-                                    }
-                                );
-                            }
+                                AppointmentId = appointment.Id,
+                                TimerType = "proposal",
+                                StartTime = DateTime.UtcNow,
+                                EndTime = DateTime.UtcNow.AddHours(24),
+                                IsExpired = false,
+                                CreatedAt = DateTime.UtcNow
+                            };
+
+                            _context.AppointmentTimers.Add(proposalTimer);
+                            await _context.SaveChangesAsync();
+
+                            // Programar scheduled job para cuando expire el timer (24 horas)
+                            var jobId = BackgroundJob.Schedule<IAppointmentService>(
+                                service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
+                                proposalTimer.EndTime - DateTime.UtcNow
+                            );
+
+                            // Guardar el JobId en el timer
+                            proposalTimer.HangfireJobId = jobId;
+                            await _context.SaveChangesAsync();
                         }
                     }
                 }
@@ -4153,7 +3638,6 @@ namespace newApi.Controllers
                 }
 
                 // ✅ Notificar al cliente y experto cuando se confirma la contratación
-                currentStage = "notify-client";
                 await _loggingService.LogInfoAsync(
                     message: "Contratación confirmada",
                     details: $"Tu pago se procesó correctamente. La contratación #{searchHireId} está activa y el experto ha sido notificado.", // ✅ FIX: Usar searchHireId guardado
@@ -4167,41 +3651,12 @@ namespace newApi.Controllers
                 // ✅ Enviar factura por email al cliente (en segundo plano con Hangfire)
                 if (!string.IsNullOrEmpty(user.Email))
                 {
-                    try
-                    {
-                        Hangfire.BackgroundJob.Enqueue<IInvoiceService>(service => 
-                            service.SendInvoiceByEmailBackgroundJob(searchHireId, user.Email));
-                        LogConsoleDebug($"[SUBSCRIPTION CONTROLLER] [INVOICE] Factura encolada para envío. SearchHireId: {searchHireId}, Email: {user.Email}");
-                    }
-                    catch (Exception hangfireEx)
-                    {
-                        // ✅ Si Hangfire falla, solo loguear - no fallar toda la operación
-                        // La contratación ya se completó exitosamente
-                        try
-                        {
-                            await _loggingService.LogWarningAsync(
-                                message: "Failed to enqueue invoice email job",
-                                details: $"Hangfire job enqueue failed for SearchHire {searchHireId}. Error: {hangfireEx.Message}. The hire was completed successfully, but the invoice email will not be sent automatically.",
-                                userId: userId,
-                                source: "SubscriptionController.HandlePendingHireCompleted",
-                                relatedEntityType: "SearchHire",
-                                relatedEntityId: searchHireId,
-                                additionalData: new { 
-                                    SearchHireId = searchHireId,
-                                    Email = user.Email,
-                                    Exception = hangfireEx.Message
-                                }
-                            );
-                        }
-                        catch
-                        {
-                            LogConsoleDebug($"⚠️ [WARNING] Failed to enqueue invoice job for SearchHire {searchHireId}: {hangfireEx.Message}");
-                        }
-                    }
+                    Hangfire.BackgroundJob.Enqueue<IInvoiceService>(service => 
+                        service.SendInvoiceByEmailBackgroundJob(searchHireId, user.Email)); // ✅ FIX: Usar searchHireId guardado
+                    Console.WriteLine($"[SUBSCRIPTION CONTROLLER] [INVOICE] Factura encolada para envío. SearchHireId: {searchHireId}, Email: {user.Email}"); // ✅ FIX: Usar searchHireId guardado
                 }
 
                 // ✅ Notificar al experto sobre la nueva contratación
-                currentStage = "notify-expert";
                 if (expertuserid > 0)
                 {
                     await _loggingService.LogInfoAsync(
@@ -4216,90 +3671,22 @@ namespace newApi.Controllers
                 }
 
             }
-            catch (Exception innerEx)
+            catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
             {
-                // El try interno no tiene manejo especial, simplemente re-lanza para que el catch externo lo maneje
-                throw;
-            }
-
-            }
-            catch (Exception ex)
-            {
-                // ✅ FIX: Si hay error, hacer cleanup manual de lo que se creó (compensación)
-                // Ya que no hay transacción, necesitamos limpiar manualmente
+                // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
                 try
                 {
-                    if (searchHireId > 0)
-                    {
-                        var hireToDelete = await _context.SearchHires.FindAsync(searchHireId);
-                        if (hireToDelete != null)
-                        {
-                            _context.SearchHires.Remove(hireToDelete);
-                            await _context.SaveChangesAsync();
-                        }
-                    }
-                    if (searchParameter != null && searchParameter.SearchParameterId > 0)
-                    {
-                        var paramToDelete = await _context.SearchParameters.FindAsync(searchParameter.SearchParameterId);
-                        if (paramToDelete != null)
-                        {
-                            _context.SearchParameters.Remove(paramToDelete);
-                            await _context.SaveChangesAsync();
-                        }
-                    }
-                    if (search != null && search.Id > 0)
-                    {
-                        var searchToDelete = await _context.Searches.FindAsync(search.Id);
-                        if (searchToDelete != null)
-                        {
-                            _context.Searches.Remove(searchToDelete);
-                            await _context.SaveChangesAsync();
-                        }
-                    }
+                    await transaction.RollbackAsync();
                 }
-                catch (Exception cleanupEx)
+                catch
                 {
-                    // Si el cleanup falla, solo loguear - no podemos hacer más
-                    await _loggingService.LogErrorAsync(
-                        message: "Failed to cleanup after error in HandlePendingHireCompleted",
-                        details: $"Cleanup failed. Stage: {currentStage}. UserId: {userId}, ServiceId: {serviceId}, SessionId: {session?.Id}. Original error: {ex.Message}. Cleanup error: {cleanupEx.Message}",
-                        userId: userId,
-                        source: "SubscriptionController.HandlePendingHireCompleted",
-                        relatedEntityType: "Payment",
-                        relatedEntityId: serviceId,
-                        additionalData: new { 
-                            Stage = currentStage,
-                            OriginalError = ex.Message,
-                            CleanupError = cleanupEx.Message
-                        }
-                    );
+                    // Ignorar errores de rollback si la conexión ya está disposed
                 }
                 
-                // ✅ FIX CRÍTICO: Log error original con InnerException detallado
-                var errorType = ex.GetType().FullName ?? "Unknown";
-                var innerEx = ex.InnerException;
-                var innerExMessage = innerEx?.Message ?? "No inner exception";
-                var innerExType = innerEx?.GetType().FullName ?? "Unknown";
-                var innerExStackTrace = innerEx?.StackTrace ?? "No stack trace";
-                
-                // Obtener información del estado de la conexión
-                var connectionState = "Unknown";
-                try
-                {
-                    connectionState = _context.Database.GetDbConnection().State.ToString();
-                }
-                catch { }
-                
+                // Log error pero no reintentar - el webhook ya respondió 200 OK
                 await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Error in HandlePendingHireCompleted",
-                    details: $"Error while processing pending hire. Stage: {currentStage}. UserId: {userId}, ServiceId: {serviceId}, SessionId: {session?.Id}. " +
-                            $"Error Type: {errorType}. " +
-                            $"Error Message: {ex.Message}. " +
-                            $"InnerException Type: {innerExType}. " +
-                            $"InnerException Message: {innerExMessage}. " +
-                            $"InnerException StackTrace: {innerExStackTrace}. " +
-                            $"Connection State: {connectionState}. " +
-                            $"Exception StackTrace: {ex.StackTrace}",
+                    message: "CRITICAL: Connection disposed in HandlePendingHireCompleted",
+                    details: $"Connection disposed while processing pending hire. UserId: {userId}, ServiceId: {serviceId}, SessionId: {session?.Id}",
                     userId: userId,
                     source: "SubscriptionController.HandlePendingHireCompleted",
                     relatedEntityType: "Payment",
@@ -4308,26 +3695,64 @@ namespace newApi.Controllers
                         UserId = userId, 
                         ServiceId = serviceId, 
                         SessionId = session?.Id,
-                        ErrorType = errorType,
-                        ErrorMessage = ex.Message,
-                        InnerExceptionType = innerExType,
-                        InnerExceptionMessage = innerExMessage,
-                        InnerExceptionStackTrace = innerExStackTrace,
-                        ConnectionState = connectionState,
-                        ExceptionStackTrace = ex.StackTrace,
-                        Stage = currentStage
+                        Error = dbEx.Message
                     }
                 );
-                throw;
             }
-            finally
+            catch (ObjectDisposedException disposedEx)
             {
-                // ✅ FIX CRÍTICO: Cerrar la conexión si la abrimos nosotros
-                // Solo cerrar si la abrimos al inicio de este método
-                if (!connectionWasOpen && _context.Database.GetDbConnection().State == System.Data.ConnectionState.Open)
+                // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
+                try
                 {
-                    await _context.Database.CloseConnectionAsync();
+                    await transaction.RollbackAsync();
                 }
+                catch
+                {
+                    // Ignorar errores de rollback si la conexión ya está disposed
+                }
+                
+                // Log error pero no reintentar - el webhook ya respondió 200 OK
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Connection disposed in HandlePendingHireCompleted",
+                    details: $"Connection disposed while processing pending hire. UserId: {userId}, ServiceId: {serviceId}, SessionId: {session?.Id}",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted",
+                    relatedEntityType: "Payment",
+                    relatedEntityId: serviceId,
+                    additionalData: new { 
+                        UserId = userId, 
+                        ServiceId = serviceId, 
+                        SessionId = session?.Id,
+                        Error = disposedEx.Message
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+
+                if (!string.IsNullOrEmpty(session?.PaymentIntentId))
+                {
+                    await LogPaymentCaptureFailureAsync(
+                        paymentIntentId: session.PaymentIntentId,
+                        userId: userId,
+                        serviceId: serviceId,
+                        failureReason: ex.Message,
+                        searchHireId: searchHireId > 0 ? searchHireId : (int?)null); // ✅ FIX: Usar searchHireId guardado
+
+                    await _loggingService.LogWarningAsync(
+                        message: "Intento de pago no capturado",
+                        details: $"No pudimos completar el cobro del servicio {serviceId}. El cargo no se realizó y el cliente debe reintentar el pago.",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: serviceId,
+                        additionalData: new { PaymentIntentId = session.PaymentIntentId, SearchHireId = searchHireId > 0 ? searchHireId : (int?)null }, // ✅ FIX: Usar searchHireId guardado
+                        notifyUser: true
+                    );
+                }
+
+                throw;
             }
         }
 
@@ -4703,9 +4128,9 @@ namespace newApi.Controllers
                     try
                     {
                         user = await _context.Users
-                    .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
-                    .Include(u => u.ExpertProfile)
-                    .FirstOrDefaultAsync();
+                            .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
+                            .Include(u => u.ExpertProfile)
+                            .FirstOrDefaultAsync();
                         
                         await lockTransaction.CommitAsync();
                     }
@@ -4866,14 +4291,14 @@ namespace newApi.Controllers
                     try
                     {
                         searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} AND \"ExpertId\" = {userId} FOR UPDATE")
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.Appointment)
-                    .Include(sh => sh.SearchService)
-                        .ThenInclude(ss => ss.ServiceType)
-                            .ThenInclude(st => st.ServiceTypeCategory)
-                    .FirstOrDefaultAsync();
+                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} AND \"ExpertId\" = {userId} FOR UPDATE")
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.Client)
+                            .Include(sh => sh.Appointment)
+                            .Include(sh => sh.SearchService)
+                                .ThenInclude(ss => ss.ServiceType)
+                                    .ThenInclude(st => st.ServiceTypeCategory)
+                            .FirstOrDefaultAsync();
                         
                         await lockTransaction.CommitAsync();
                     }
@@ -4993,12 +4418,12 @@ namespace newApi.Controllers
                     try
                     {
                         searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.Expert)
-                    .ThenInclude(e => e.ExpertProfile)
-                    .FirstOrDefaultAsync();
+                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.Client)
+                            .Include(sh => sh.Expert)
+                            .ThenInclude(e => e.ExpertProfile)
+                            .FirstOrDefaultAsync();
                         
                         await lockTransaction.CommitAsync();
                     }
@@ -5072,12 +4497,12 @@ namespace newApi.Controllers
                     try
                     {
                         searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.Expert)
-                    .ThenInclude(e => e.ExpertProfile)
-                    .FirstOrDefaultAsync();
+                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.Client)
+                            .Include(sh => sh.Expert)
+                            .ThenInclude(e => e.ExpertProfile)
+                            .FirstOrDefaultAsync();
                         
                         await lockTransaction.CommitAsync();
                     }
@@ -5445,17 +4870,17 @@ namespace newApi.Controllers
                 else
                 {
                     // Crear nuevo evento
-                var processedEvent = new ProcessedWebhookEvent
-                {
-                    EventId = eventId,
-                    EventType = eventType,
-                    StripeAccountId = stripeAccountId,
-                    UserId = userId,
-                    Status = status,
-                    ErrorMessage = errorMessage,
-                    ProcessedAt = DateTime.UtcNow
-                };
-                _context.ProcessedWebhookEvents.Add(processedEvent);
+                    var processedEvent = new ProcessedWebhookEvent
+                    {
+                        EventId = eventId,
+                        EventType = eventType,
+                        StripeAccountId = stripeAccountId,
+                        UserId = userId,
+                        Status = status,
+                        ErrorMessage = errorMessage,
+                        ProcessedAt = DateTime.UtcNow
+                    };
+                    _context.ProcessedWebhookEvents.Add(processedEvent);
                 }
                 
                 await _context.SaveChangesAsync();
@@ -5497,21 +4922,24 @@ namespace newApi.Controllers
                 catch (Exception recoveryEx)
                 {
                     // ✅ CRÍTICO: Si falla el recovery, loguear en consola en rojo
+                    var originalColor = Console.ForegroundColor;
                     try
                     {
+                        Console.ForegroundColor = ConsoleColor.Red;
                         var separator1 = new string('=', 80);
-                        LogConsoleError($"\n{separator1}");
-                        LogConsoleError($"🔴 [CRITICAL] Failed to mark webhook event as processed (recovery failed)");
-                        LogConsoleError($"{separator1}");
-                        LogConsoleError($"EventId: {eventId}");
-                        LogConsoleError($"EventType: {eventType}");
-                        LogConsoleError($"Status: {status}");
-                        LogConsoleError($"Error: {recoveryEx.Message}");
-                        LogConsoleError($"{separator1}\n");
+                        Console.Error.WriteLine($"\n{separator1}");
+                        Console.Error.WriteLine($"🔴 [CRITICAL] Failed to mark webhook event as processed (recovery failed)");
+                        Console.Error.WriteLine($"{separator1}");
+                        Console.Error.WriteLine($"EventId: {eventId}");
+                        Console.Error.WriteLine($"EventType: {eventType}");
+                        Console.Error.WriteLine($"Status: {status}");
+                        Console.Error.WriteLine($"Error: {recoveryEx.Message}");
+                        Console.Error.WriteLine($"{separator1}\n");
+                        Console.ForegroundColor = originalColor;
                     }
                     catch
                     {
-                        LogConsoleError($"Failed to mark webhook event as processed: {eventId}, Error: {recoveryEx.Message}");
+                        Console.Error.WriteLine($"Failed to mark webhook event as processed: {eventId}, Error: {recoveryEx.Message}");
                     }
                 }
             }
@@ -5552,43 +4980,49 @@ namespace newApi.Controllers
                 catch (Exception recoveryEx)
                 {
                     // ✅ CRÍTICO: Si falla el recovery, loguear en consola en rojo
+                    var originalColor = Console.ForegroundColor;
                     try
                     {
+                        Console.ForegroundColor = ConsoleColor.Red;
                         var separator1 = new string('=', 80);
-                        LogConsoleError($"\n{separator1}");
-                        LogConsoleError($"🔴 [CRITICAL] Failed to mark webhook event as processed (recovery failed)");
-                        LogConsoleError($"{separator1}");
-                        LogConsoleError($"EventId: {eventId}");
-                        LogConsoleError($"EventType: {eventType}");
-                        LogConsoleError($"Status: {status}");
-                        LogConsoleError($"Error: {recoveryEx.Message}");
-                        LogConsoleError($"{separator1}\n");
+                        Console.Error.WriteLine($"\n{separator1}");
+                        Console.Error.WriteLine($"🔴 [CRITICAL] Failed to mark webhook event as processed (recovery failed)");
+                        Console.Error.WriteLine($"{separator1}");
+                        Console.Error.WriteLine($"EventId: {eventId}");
+                        Console.Error.WriteLine($"EventType: {eventType}");
+                        Console.Error.WriteLine($"Status: {status}");
+                        Console.Error.WriteLine($"Error: {recoveryEx.Message}");
+                        Console.Error.WriteLine($"{separator1}\n");
+                        Console.ForegroundColor = originalColor;
                     }
                     catch
                     {
-                        LogConsoleError($"Failed to mark webhook event as processed: {eventId}, Error: {recoveryEx.Message}");
+                        Console.Error.WriteLine($"Failed to mark webhook event as processed: {eventId}, Error: {recoveryEx.Message}");
                     }
                 }
             }
             catch (Exception ex)
             {
                 // ✅ CRÍTICO: Loguear error en consola en rojo
+                var originalColor = Console.ForegroundColor;
                 try
                 {
+                    Console.ForegroundColor = ConsoleColor.Red;
                     var separator2 = new string('=', 80);
-                    LogConsoleError($"\n{separator2}");
-                    LogConsoleError($"🔴 [ERROR] Failed to mark webhook event as processed");
-                    LogConsoleError($"{separator2}");
-                    LogConsoleError($"EventId: {eventId}");
-                    LogConsoleError($"EventType: {eventType}");
-                    LogConsoleError($"Status: {status}");
-                    LogConsoleError($"Error Type: {ex.GetType().Name}");
-                    LogConsoleError($"Error Message: {ex.Message}");
-                    LogConsoleError($"{separator2}\n");
+                    Console.Error.WriteLine($"\n{separator2}");
+                    Console.Error.WriteLine($"🔴 [ERROR] Failed to mark webhook event as processed");
+                    Console.Error.WriteLine($"{separator2}");
+                    Console.Error.WriteLine($"EventId: {eventId}");
+                    Console.Error.WriteLine($"EventType: {eventType}");
+                    Console.Error.WriteLine($"Status: {status}");
+                    Console.Error.WriteLine($"Error Type: {ex.GetType().Name}");
+                    Console.Error.WriteLine($"Error Message: {ex.Message}");
+                    Console.Error.WriteLine($"{separator2}\n");
+                    Console.ForegroundColor = originalColor;
                 }
                 catch
                 {
-                    LogConsoleError($"Failed to mark webhook event as processed: {eventId}, Error: {ex.Message}");
+                    Console.Error.WriteLine($"Failed to mark webhook event as processed: {eventId}, Error: {ex.Message}");
                 }
                 // No lanzar excepción para no interrumpir el flujo principal
             }

@@ -1637,6 +1637,28 @@ namespace newApi.Services
 
                                 // Guardar el JobId en el timer
                                 awaitingReportTransitionTimer.HangfireJobId = jobId;
+                                
+                                // ✅ LOG: Timer de transición creado
+                                await _loggingService.LogInfoAsync(
+                                    message: "ConfirmAppointmentAsync: Created awaiting_report_transition timer",
+                                    details: $"AppointmentId: {appointment.Id}, TimerId: {awaitingReportTransitionTimer.Id}, " +
+                                            $"AppointmentDateTime: {appointmentDateTime:yyyy-MM-dd HH:mm:ss}, " +
+                                            $"EndTime: {awaitingReportTransitionTimer.EndTime:yyyy-MM-dd HH:mm:ss} UTC, " +
+                                            $"TimeUntil3HoursAfter: {timeUntil3HoursAfter.TotalHours:F2} hours, " +
+                                            $"HangfireJobId: {jobId}",
+                                    userId: userId,
+                                    source: "AppointmentService.ConfirmAppointmentAsync",
+                                    relatedEntityType: "Appointment",
+                                    relatedEntityId: appointment.Id,
+                                    additionalData: new { 
+                                        AppointmentId = appointment.Id,
+                                        TimerId = awaitingReportTransitionTimer.Id,
+                                        AppointmentDateTime = appointmentDateTime,
+                                        EndTime = awaitingReportTransitionTimer.EndTime,
+                                        TimeUntil3HoursAfter = timeUntil3HoursAfter.TotalHours,
+                                        HangfireJobId = jobId
+                                    }
+                                );
                                 await _context.SaveChangesAsync();
                                 }
                             }
@@ -3615,6 +3637,22 @@ namespace newApi.Services
             catch (Exception ex)
 
             {
+                // 🚨 LOG: Error al obtener métricas de citas
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener métricas de citas",
+                    details: $"Error al obtener AppointmentMetrics. Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "AppointmentService.GetAppointmentMetricsAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
 
                 throw;
 
@@ -4268,6 +4306,17 @@ namespace newApi.Services
 
                 var cutoffTime = DateTime.UtcNow.AddHours(-3);
 
+                // ✅ LOG: Iniciando verificación de citas confirmadas
+                await _loggingService.LogInfoAsync(
+                    message: "CheckAppointmentTimersAsync: Checking confirmed appointments",
+                    details: $"CutoffTime: {cutoffTime:yyyy-MM-dd HH:mm:ss} UTC (3 hours ago). " +
+                            $"Checking appointments confirmed before this time that should transition to awaiting_report.",
+                    userId: null,
+                    source: "AppointmentService.CheckAppointmentTimersAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: null
+                );
+
                 var confirmedAppointments = await _context.Appointments
 
                     .Include(a => a.Status)
@@ -4287,7 +4336,23 @@ namespace newApi.Services
 
                     .ToList();
 
-
+                // ✅ LOG: Citas confirmadas encontradas
+                if (confirmedAppointments.Any())
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "CheckAppointmentTimersAsync: Found confirmed appointments to transition",
+                        details: $"Found {confirmedAppointments.Count} confirmed appointments that should transition to awaiting_report. " +
+                                $"AppointmentIds: {string.Join(", ", confirmedAppointments.Select(a => a.Id))}",
+                        userId: null,
+                        source: "AppointmentService.CheckAppointmentTimersAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: null,
+                        additionalData: new { 
+                            Count = confirmedAppointments.Count,
+                            AppointmentIds = confirmedAppointments.Select(a => a.Id).ToList()
+                        }
+                    );
+                }
 
                 var awaitingReportStatus = await _context.SystemStatuses
 
@@ -4295,9 +4360,27 @@ namespace newApi.Services
 
                                             s.StatusValue == "appointment_awaiting_report");
 
-
-
-                if (awaitingReportStatus != null)
+                if (awaitingReportStatus == null)
+                {
+                    // 🚨 LOG CRÍTICO: Estado awaiting_report no encontrado
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: CheckAppointmentTimersAsync - awaiting_report status not found",
+                        details: $"Cannot transition {confirmedAppointments.Count} confirmed appointments to awaiting_report because the status 'appointment_awaiting_report' does not exist in SystemStatuses table. " +
+                                $"AppointmentIds: {string.Join(", ", confirmedAppointments.Select(a => a.Id))}. " +
+                                $"ACTION REQUIRED: Verify SystemStatuses table contains appointment_awaiting_report status.",
+                        userId: null,
+                        source: "AppointmentService.CheckAppointmentTimersAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: null,
+                        additionalData: new { 
+                            ConfirmedAppointmentsCount = confirmedAppointments.Count,
+                            AppointmentIds = confirmedAppointments.Select(a => a.Id).ToList(),
+                            ExpectedStatusValue = "appointment_awaiting_report",
+                            StatusType = "AppointmentStatus"
+                        }
+                    );
+                }
+                else if (awaitingReportStatus != null)
 
                 {
 
@@ -5935,12 +6018,44 @@ namespace newApi.Services
 
                 if (appointment == null || appointment.Status?.StatusValue != "appointment_confirmed")
                 {
+                    // 🚨 LOG: Cita no encontrada o no está confirmada
+                    await _loggingService.LogWarningAsync(
+                        message: "ProcessAppointmentToAwaitingReportAsync: Appointment not found or not confirmed",
+                        details: $"AppointmentId: {appointmentId}, Appointment is null: {appointment == null}, " +
+                                $"CurrentStatus: {appointment?.Status?.StatusValue ?? "null"}, " +
+                                $"ExpectedStatus: appointment_confirmed. " +
+                                $"This may indicate the appointment was already processed or does not exist.",
+                        userId: null,
+                        source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointmentId,
+                        additionalData: new { 
+                            AppointmentId = appointmentId,
+                            AppointmentExists = appointment != null,
+                            CurrentStatus = appointment?.Status?.StatusValue,
+                            ExpectedStatus = "appointment_confirmed"
+                        }
+                    );
                     return; // Cita no encontrada o no está confirmada
                 }
 
                 // ✅ VALIDACIÓN CRÍTICA: Verificar que el SearchHire exista
                 if (appointment.SearchHire == null)
                 {
+                    // 🚨 LOG: SearchHire eliminado
+                    await _loggingService.LogWarningAsync(
+                        message: "ProcessAppointmentToAwaitingReportAsync: SearchHire is null",
+                        details: $"AppointmentId: {appointmentId}, SearchHireId: {appointment.SearchHireId}, " +
+                                $"SearchHire is null. This may indicate the SearchHire was deleted.",
+                        userId: null,
+                        source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointmentId,
+                        additionalData: new { 
+                            AppointmentId = appointmentId,
+                            SearchHireId = appointment.SearchHireId
+                        }
+                    );
                     return; // SearchHire eliminado
                 }
 
@@ -5949,6 +6064,24 @@ namespace newApi.Services
                 // ✅ VALIDACIÓN CRÍTICA: Verificar que el SearchHire NO esté finalizado
                 if (searchHire.Status?.IsFinalizationStatus == true)
                 {
+                    // 🚨 LOG: SearchHire ya finalizado
+                    await _loggingService.LogInfoAsync(
+                        message: "ProcessAppointmentToAwaitingReportAsync: SearchHire already finalized",
+                        details: $"AppointmentId: {appointmentId}, SearchHireId: {searchHire.Id}, " +
+                                $"SearchHireStatus: {searchHire.Status?.StatusValue}, " +
+                                $"IsFinalizationStatus: {searchHire.Status?.IsFinalizationStatus}. " +
+                                $"Skipping transition to awaiting_report because SearchHire is already finalized.",
+                        userId: null,
+                        source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointmentId,
+                        additionalData: new { 
+                            AppointmentId = appointmentId,
+                            SearchHireId = searchHire.Id,
+                            SearchHireStatus = searchHire.Status?.StatusValue,
+                            IsFinalizationStatus = searchHire.Status?.IsFinalizationStatus
+                        }
+                    );
                     return; // SearchHire ya finalizado, no procesar
                 }
 
@@ -5956,17 +6089,73 @@ namespace newApi.Services
                 var searchHireStatus = searchHire.Status?.StatusValue ?? string.Empty;
                 if (searchHireStatus != "pending" && searchHireStatus != "awaiting_client_decision")
                 {
+                    // 🚨 LOG: SearchHire no está en estado válido
+                    await _loggingService.LogWarningAsync(
+                        message: "ProcessAppointmentToAwaitingReportAsync: Invalid SearchHire status",
+                        details: $"AppointmentId: {appointmentId}, SearchHireId: {searchHire.Id}, " +
+                                $"CurrentSearchHireStatus: '{searchHireStatus}', " +
+                                $"ExpectedStatuses: 'pending' or 'awaiting_client_decision'. " +
+                                $"Skipping transition to awaiting_report because SearchHire is not in a valid state.",
+                        userId: null,
+                        source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointmentId,
+                        additionalData: new { 
+                            AppointmentId = appointmentId,
+                            SearchHireId = searchHire.Id,
+                            CurrentSearchHireStatus = searchHireStatus,
+                            ExpectedStatuses = new[] { "pending", "awaiting_client_decision" }
+                        }
+                    );
                     return; // SearchHire no está en estado válido
                 }
 
                 // ✅ VALIDACIÓN CRÍTICA: Verificar que los usuarios existan y no estén bloqueados
                 if (searchHire.Client == null || searchHire.Client.IsBlocked)
                 {
+                    // 🚨 LOG: Cliente eliminado o bloqueado
+                    await _loggingService.LogWarningAsync(
+                        message: "ProcessAppointmentToAwaitingReportAsync: Client is null or blocked",
+                        details: $"AppointmentId: {appointmentId}, SearchHireId: {searchHire.Id}, " +
+                                $"ClientId: {searchHire.ClientId}, Client is null: {searchHire.Client == null}, " +
+                                $"ClientIsBlocked: {searchHire.Client?.IsBlocked}. " +
+                                $"Skipping transition to awaiting_report because client is unavailable.",
+                        userId: searchHire.ClientId,
+                        source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointmentId,
+                        additionalData: new { 
+                            AppointmentId = appointmentId,
+                            SearchHireId = searchHire.Id,
+                            ClientId = searchHire.ClientId,
+                            ClientIsNull = searchHire.Client == null,
+                            ClientIsBlocked = searchHire.Client?.IsBlocked
+                        }
+                    );
                     return; // Cliente eliminado o bloqueado
                 }
 
                 if (searchHire.ExpertId.HasValue && (searchHire.Expert == null || searchHire.Expert.IsBlocked))
                 {
+                    // 🚨 LOG: Experto eliminado o bloqueado
+                    await _loggingService.LogWarningAsync(
+                        message: "ProcessAppointmentToAwaitingReportAsync: Expert is null or blocked",
+                        details: $"AppointmentId: {appointmentId}, SearchHireId: {searchHire.Id}, " +
+                                $"ExpertId: {searchHire.ExpertId}, Expert is null: {searchHire.Expert == null}, " +
+                                $"ExpertIsBlocked: {searchHire.Expert?.IsBlocked}. " +
+                                $"Skipping transition to awaiting_report because expert is unavailable.",
+                        userId: searchHire.ExpertId,
+                        source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointmentId,
+                        additionalData: new { 
+                            AppointmentId = appointmentId,
+                            SearchHireId = searchHire.Id,
+                            ExpertId = searchHire.ExpertId,
+                            ExpertIsNull = searchHire.Expert == null,
+                            ExpertIsBlocked = searchHire.Expert?.IsBlocked
+                        }
+                    );
                     return; // Experto eliminado o bloqueado
                 }
 
@@ -5974,115 +6163,171 @@ namespace newApi.Services
                     .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
                                             s.StatusValue == "appointment_awaiting_report");
 
-                if (awaitingReportStatus != null)
+                if (awaitingReportStatus == null)
                 {
-                    appointment.StatusId = awaitingReportStatus.Id;
-                    appointment.UpdatedAt = DateTime.UtcNow;
+                    // 🚨 LOG CRÍTICO: Estado awaiting_report no encontrado
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: ProcessAppointmentToAwaitingReportAsync - awaiting_report status not found",
+                        details: $"AppointmentId: {appointmentId}, SearchHireId: {searchHire.Id}, " +
+                                $"Cannot transition to awaiting_report because the status 'appointment_awaiting_report' does not exist in SystemStatuses table. " +
+                                $"ACTION REQUIRED: Verify SystemStatuses table contains appointment_awaiting_report status.",
+                        userId: null,
+                        source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointmentId,
+                        additionalData: new { 
+                            AppointmentId = appointmentId,
+                            SearchHireId = searchHire.Id,
+                            ExpectedStatusValue = "appointment_awaiting_report",
+                            StatusType = "AppointmentStatus"
+                        }
+                    );
+                    return; // Estado no encontrado, no se puede procesar
+                }
 
-                    // Crear timer para reporte del experto (24 horas)
-                    var expertReportTimer = new AppointmentTimer
-                    {
-                        AppointmentId = appointment.Id,
-                        TimerType = "expert_report",
-                        StartTime = DateTime.UtcNow,
-                        EndTime = DateTime.UtcNow.AddHours(24),
-                        IsExpired = false,
-                        CreatedAt = DateTime.UtcNow
-                    };
+                // ✅ LOG: Iniciando transición a awaiting_report
+                await _loggingService.LogInfoAsync(
+                    message: "ProcessAppointmentToAwaitingReportAsync: Starting transition",
+                    details: $"AppointmentId: {appointmentId}, SearchHireId: {searchHire.Id}, " +
+                            $"CurrentStatus: appointment_confirmed, TargetStatus: appointment_awaiting_report, " +
+                            $"AwaitingReportStatusId: {awaitingReportStatus.Id}",
+                    userId: null,
+                    source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId,
+                    additionalData: new { 
+                        AppointmentId = appointmentId,
+                        SearchHireId = searchHire.Id,
+                        CurrentStatus = "appointment_confirmed",
+                        TargetStatus = "appointment_awaiting_report",
+                        AwaitingReportStatusId = awaitingReportStatus.Id
+                    }
+                );
 
-                    _context.AppointmentTimers.Add(expertReportTimer);
-                    await _context.SaveChangesAsync();
+                appointment.StatusId = awaitingReportStatus.Id;
+                appointment.UpdatedAt = DateTime.UtcNow;
 
-                    // Programar scheduled job para cuando expire el timer (24 horas)
-                    var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                        service => service.ProcessAppointmentTimerAsync(expertReportTimer.Id),
-                        expertReportTimer.EndTime - DateTime.UtcNow
+                // Crear timer para reporte del experto (24 horas)
+                var expertReportTimer = new AppointmentTimer
+                {
+                    AppointmentId = appointment.Id,
+                    TimerType = "expert_report",
+                    StartTime = DateTime.UtcNow,
+                    EndTime = DateTime.UtcNow.AddHours(24),
+                    IsExpired = false,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.AppointmentTimers.Add(expertReportTimer);
+                await _context.SaveChangesAsync();
+
+                // Programar scheduled job para cuando expire el timer (24 horas)
+                var jobId = BackgroundJob.Schedule<IAppointmentService>(
+                    service => service.ProcessAppointmentTimerAsync(expertReportTimer.Id),
+                    expertReportTimer.EndTime - DateTime.UtcNow
+                );
+
+                // Guardar el JobId en el timer
+                expertReportTimer.HangfireJobId = jobId;
+                await _context.SaveChangesAsync();
+                
+                // ✅ Enviar mensaje al chat con el cambio de estado (después del commit)
+                // Para cambios automáticos, el senderId es el ExpertId del SearchHire
+                var expertIdForMessage = searchHire.ExpertId ?? 0;
+                if (expertIdForMessage > 0)
+                {
+                    await SendAppointmentStatusChangeMessageAsync(
+                        searchHire.Id,
+                        "appointment_awaiting_report",
+                        expertIdForMessage
+                    );
+                }
+                
+                // ✅ Notificar al experto que debe enviar el reporte en 24 horas
+                if (searchHire.ExpertId.HasValue)
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "Debes enviar el reporte de la cita",
+                        details: $"Han pasado 3 horas desde la cita. Tienes 24 horas para enviar el reporte del servicio #{searchHire.Id}. Si no lo envías a tiempo, la cita será cancelada automáticamente.",
+                        userId: searchHire.ExpertId.Value,
+                        source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointment.Id,
+                        notifyUser: false // Usar email específico
                     );
 
-                    // Guardar el JobId en el timer
-                    expertReportTimer.HangfireJobId = jobId;
-                    await _context.SaveChangesAsync();
-                    
-                    // ✅ Enviar mensaje al chat con el cambio de estado (después del commit)
-                    // Para cambios automáticos, el senderId es el ExpertId del SearchHire
-                    var expertIdForMessage = searchHire.ExpertId ?? 0;
-                    if (expertIdForMessage > 0)
+                    if (searchHire.Expert != null && !string.IsNullOrEmpty(searchHire.Expert.Email))
                     {
-                        await SendAppointmentStatusChangeMessageAsync(
-                            searchHire.Id,
-                            "appointment_awaiting_report",
-                            expertIdForMessage
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            searchHire.Expert.Email,
+                            searchHire.Expert.Name,
+                            "📝 Hora de Enviar el Reporte",
+                            $"Han pasado 3 horas desde la cita #{appointment.Id}. Tienes 24 horas para enviar el reporte del servicio. Si no lo envías a tiempo, la cita será cancelada automáticamente.",
+                            "Enviar Reporte",
+                            "https://www.inspecciono.com/appointments"
                         );
                     }
-                    
-                    // ✅ Notificar al experto que debe enviar el reporte en 24 horas
-                    if (searchHire.ExpertId.HasValue)
-                    {
-                        await _loggingService.LogInfoAsync(
-                            message: "Debes enviar el reporte de la cita",
-                            details: $"Han pasado 3 horas desde la cita. Tienes 24 horas para enviar el reporte del servicio #{searchHire.Id}. Si no lo envías a tiempo, la cita será cancelada automáticamente.",
-                            userId: searchHire.ExpertId.Value,
-                            source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
-                            relatedEntityType: "Appointment",
-                            relatedEntityId: appointment.Id,
-                            notifyUser: false // Usar email específico
-                        );
-
-                        if (searchHire.Expert != null && !string.IsNullOrEmpty(searchHire.Expert.Email))
-                        {
-                            await _notificationService.SendGeneralNotificationEmailAsync(
-                                searchHire.Expert.Email,
-                                searchHire.Expert.Name,
-                                "📝 Hora de Enviar el Reporte",
-                                $"Han pasado 3 horas desde la cita #{appointment.Id}. Tienes 24 horas para enviar el reporte del servicio. Si no lo envías a tiempo, la cita será cancelada automáticamente.",
-                                "Enviar Reporte",
-                                "https://www.inspecciono.com/appointments"
-                            );
-                        }
-                    }
-                    
-                    // ✅ Notificar al cliente que se está esperando el reporte
-                    if (searchHire.ClientId > 0)
-                    {
-                        await _loggingService.LogInfoAsync(
-                            message: "Esperando reporte del experto",
-                            details: $"Han pasado 3 horas desde la cita. El experto tiene 24 horas para enviar el reporte del servicio. Te notificaremos cuando esté listo.",
-                            userId: searchHire.ClientId,
-                            source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
-                            relatedEntityType: "Appointment",
-                            relatedEntityId: appointment.Id,
-                            notifyUser: false // Usar email específico
-                        );
-
-                        if (searchHire.Client != null && !string.IsNullOrEmpty(searchHire.Client.Email))
-                        {
-                            await _notificationService.SendGeneralNotificationEmailAsync(
-                                searchHire.Client.Email,
-                                searchHire.Client.Name,
-                                "⏳ Esperando Reporte",
-                                $"Han pasado 3 horas desde la cita #{appointment.Id}. El experto tiene 24 horas para enviar el reporte. Te notificaremos en cuanto esté disponible."
-                            );
-                        }
-                    }
-                    
-                    // ✅ Marcar el timer de transición como expirado ya que el job se ejecutó exitosamente
-                    var transitionTimers = await _context.AppointmentTimers
-                        .Where(t => t.AppointmentId == appointment.Id && 
-                                   t.TimerType == "awaiting_report_transition" && 
-                                   !t.IsExpired)
-                        .ToListAsync();
-                    
-                    foreach (var timer in transitionTimers)
-                    {
-                        timer.IsExpired = true;
-                        timer.ExpiredAt = DateTime.UtcNow;
-                        if (!string.IsNullOrEmpty(timer.HangfireJobId))
-                        {
-                            timer.HangfireJobId = null; // Limpiar referencia
-                        }
-                    }
-                    await _context.SaveChangesAsync();
                 }
+                
+                // ✅ Notificar al cliente que se está esperando el reporte
+                if (searchHire.ClientId > 0)
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "Esperando reporte del experto",
+                        details: $"Han pasado 3 horas desde la cita. El experto tiene 24 horas para enviar el reporte del servicio. Te notificaremos cuando esté listo.",
+                        userId: searchHire.ClientId,
+                        source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointment.Id,
+                        notifyUser: false // Usar email específico
+                    );
+
+                    if (searchHire.Client != null && !string.IsNullOrEmpty(searchHire.Client.Email))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            searchHire.Client.Email,
+                            searchHire.Client.Name,
+                            "⏳ Esperando Reporte",
+                            $"Han pasado 3 horas desde la cita #{appointment.Id}. El experto tiene 24 horas para enviar el reporte. Te notificaremos en cuanto esté disponible."
+                        );
+                    }
+                }
+                
+                // ✅ Marcar el timer de transición como expirado ya que el job se ejecutó exitosamente
+                var transitionTimers = await _context.AppointmentTimers
+                    .Where(t => t.AppointmentId == appointment.Id && 
+                               t.TimerType == "awaiting_report_transition" && 
+                               !t.IsExpired)
+                    .ToListAsync();
+                
+                foreach (var timer in transitionTimers)
+                {
+                    timer.IsExpired = true;
+                    timer.ExpiredAt = DateTime.UtcNow;
+                    if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                    {
+                        timer.HangfireJobId = null; // Limpiar referencia
+                    }
+                }
+                await _context.SaveChangesAsync();
+                
+                // ✅ LOG: Transición completada exitosamente
+                await _loggingService.LogInfoAsync(
+                    message: "ProcessAppointmentToAwaitingReportAsync: Transition completed successfully",
+                    details: $"AppointmentId: {appointmentId}, SearchHireId: {searchHire.Id}, " +
+                            $"Successfully transitioned from appointment_confirmed to appointment_awaiting_report. " +
+                            $"ExpertReportTimer created with Id: {expertReportTimer.Id}, HangfireJobId: {jobId}",
+                    userId: null,
+                    source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId,
+                    additionalData: new { 
+                        AppointmentId = appointmentId,
+                        SearchHireId = searchHire.Id,
+                        ExpertReportTimerId = expertReportTimer.Id,
+                        HangfireJobId = jobId
+                    }
+                );
             }
             catch (Exception ex)
             {
@@ -6090,7 +6335,10 @@ namespace newApi.Services
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Exception in ProcessAppointmentToAwaitingReportAsync",
                     details: $"Failed to transition appointment {appointmentId} to awaiting_report status. " +
-                            $"Error: {ex.Message}. StackTrace: {ex.StackTrace}",
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"Inner Exception: {ex.InnerException?.Message ?? "none"}. " +
+                            $"StackTrace: {ex.StackTrace}. " +
+                            $"This error will cause Hangfire to retry the job automatically.",
                     userId: null,
                     source: "AppointmentService.ProcessAppointmentToAwaitingReportAsync",
                     relatedEntityType: "Appointment",
@@ -6098,7 +6346,10 @@ namespace newApi.Services
                     additionalData: new { 
                         Action = "ProcessAppointmentToAwaitingReport",
                         AppointmentId = appointmentId,
-                        Exception = ex.Message
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        InnerException = ex.InnerException?.Message,
+                        StackTrace = ex.StackTrace
                     }
                 );
                 throw; // Rethrow para que Hangfire reintente
@@ -6684,6 +6935,24 @@ namespace newApi.Services
             catch (Exception ex)
 
             {
+                // 🚨 LOG: Error al validar entregables requeridos
+                await _loggingService.LogErrorAsync(
+                    message: "Error al validar entregables requeridos",
+                    details: $"Error al validar entregables requeridos para SearchHire {searchHire.Id}. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "AppointmentService.ValidateRequiredDeliverablesAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHire.Id,
+                    additionalData: new { 
+                        SearchHireId = searchHire.Id,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
 
                 return (false, "Error validating required deliverables");
 
@@ -6828,6 +7097,27 @@ namespace newApi.Services
             catch (Exception ex)
 
             {
+                // 🚨 LOG: Error al validar ubicación de cita
+                await _loggingService.LogErrorAsync(
+                    message: "Error al validar ubicación de cita",
+                    details: $"Error al validar ubicación de cita para SearchHire {searchHire.Id}. " +
+                            $"AppointmentLatitude: {appointmentLatitude}, AppointmentLongitude: {appointmentLongitude}. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "AppointmentService.ValidateAppointmentLocationAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHire.Id,
+                    additionalData: new { 
+                        SearchHireId = searchHire.Id,
+                        AppointmentLatitude = appointmentLatitude,
+                        AppointmentLongitude = appointmentLongitude,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
 
                 throw;
 
@@ -7065,6 +7355,26 @@ namespace newApi.Services
             catch (Exception ex)
 
             {
+                // 🚨 LOG: Error al validar disponibilidad de cita
+                await _loggingService.LogErrorAsync(
+                    message: "Error al validar disponibilidad de cita",
+                    details: $"Error al validar disponibilidad de cita para SearchHire {searchHire.Id}. " +
+                            $"ProposedDateTime: {proposedDateTime:yyyy-MM-dd HH:mm:ss} UTC. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "AppointmentService.ValidateAppointmentAvailabilityAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHire.Id,
+                    additionalData: new { 
+                        SearchHireId = searchHire.Id,
+                        ProposedDateTime = proposedDateTime,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
 
                 throw;
 
@@ -7133,7 +7443,28 @@ namespace newApi.Services
             catch (Exception ex)
 
             {
-
+                // 🚨 LOG: Error al enviar mensaje de cambio de estado (no lanzar excepción - no debe afectar flujo principal)
+                await _loggingService.LogWarningAsync(
+                    message: "Error al enviar mensaje de cambio de estado de cita",
+                    details: $"Error al enviar mensaje de cambio de estado para SearchHire {searchHireId}. " +
+                            $"StatusValue: {statusValue}, SenderId: {senderId}. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"StackTrace: {ex.StackTrace}. " +
+                            $"Nota: Este error no afecta el flujo principal de la operación.",
+                    userId: senderId,
+                    source: "AppointmentService.SendAppointmentStatusChangeMessageAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        StatusValue = statusValue,
+                        SenderId = senderId,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message
+                    }
+                );
                 // No lanzar excepción - el envío del mensaje no debe afectar el flujo principal
 
             }

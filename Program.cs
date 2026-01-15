@@ -818,7 +818,9 @@ builder.Services.AddControllers()
         // ✅ CORRECCIÓN: Configurar JSON para evitar referencias circulares
         // ReferenceHandler.IgnoreCycles está disponible desde .NET 6
         options.JsonSerializerOptions.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
-        options.JsonSerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+        // ✅ CAMBIO: Incluir campos null en el JSON para mayor claridad en el frontend
+        // Esto permite que el frontend use tipos más específicos (string | null) en lugar de (string | null | undefined)
+        options.JsonSerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never;
         options.JsonSerializerOptions.WriteIndented = false;
         // ✅ MEJORA: Configurar para mejor rendimiento
         options.JsonSerializerOptions.PropertyNamingPolicy = null; // Mantener nombres de propiedades como están

@@ -2414,17 +2414,24 @@ namespace newApi.Services
                 // ✅ TIMEOUT: Si no hay expertos, saltar la consulta
                 if (expertIds.Count > 0)
                 {
+                    // ✅ CRÍTICO: El CommandTimeout de la connection string (120s) tiene prioridad sobre CancellationToken
+                    // ✅ SOLUCIÓN: Establecer timeout temporalmente en el DbContext antes de la query
+                    var originalTimeout = _context.Database.GetCommandTimeout();
+                    
                     try
                     {
                         // ✅ TIMEOUT: Usar un CancellationTokenSource con timeout de 5 segundos para esta consulta específica
                         using var availabilityCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                         availabilityCts.CancelAfter(TimeSpan.FromSeconds(5)); // Timeout de 5 segundos
                         
+                        _context.Database.SetCommandTimeout(5); // ✅ Forzar timeout de 5 segundos para esta query específica
+                        
                         _logger.LogInformation($"[SERVICE]    Ejecutando consulta de disponibilidades con timeout de 5 segundos...");
                         availabilities = await _context.ExpertAvailabilities
                             .AsNoTracking()
                             .Where(ea => expertIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
                             .ToListAsync(availabilityCts.Token);
+                        
                         var availabilityQueryDuration = (DateTime.UtcNow - availabilityQueryStartTime).TotalMilliseconds;
                         _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Disponibilidades obtenidas: {availabilities.Count}, Duración: {availabilityQueryDuration:F2}ms");
                     }
@@ -2443,6 +2450,11 @@ namespace newApi.Services
                         _logger.LogError($"[SERVICE]    StackTrace: {ex.StackTrace}");
                         // Continuar sin disponibilidades en caso de error
                         availabilities = new List<ExpertAvailability>();
+                    }
+                    finally
+                    {
+                        // ✅ CRÍTICO: Siempre restaurar timeout original, incluso si hay error
+                        _context.Database.SetCommandTimeout(originalTimeout);
                     }
                 }
                 else

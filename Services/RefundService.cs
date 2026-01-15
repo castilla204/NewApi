@@ -45,6 +45,8 @@ namespace newApi.Services
             {
                 // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
                 // Abrir transacción temporal solo para el bloqueo FOR UPDATE
+                // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
+                _context.Database.AutoSavepointsEnabled = false;
                 SearchHire? searchHire = null;
                 await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
                 {
@@ -566,6 +568,8 @@ namespace newApi.Services
                     // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
                     if (existingTransaction == null)
                     {
+                        // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
+                        _context.Database.AutoSavepointsEnabled = false;
                         using var stateTransaction = await _context.Database.BeginTransactionAsync(
                             System.Data.IsolationLevel.ReadCommitted
                         );
@@ -999,6 +1003,8 @@ namespace newApi.Services
                     IDbContextTransaction transaction = null;
                     if (existingTransactionForMoney == null)
                     {
+                        // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
+                        _context.Database.AutoSavepointsEnabled = false;
                         transaction = await _context.Database.BeginTransactionAsync();
                     }
                     // MODIFICACIÓN: Declarar variables fuera del try para acceso en catch blocks

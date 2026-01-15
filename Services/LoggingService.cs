@@ -80,6 +80,46 @@ namespace newApi.Services
             {
                 logMessage += $" [Data: {JsonSerializer.Serialize(additionalData)}]";
             }
+
+            // ✅ CONSOLE OUTPUT: Mostrar en consola en ROJO (errores de menor importancia)
+            var separator = new string('=', 80);
+            var consoleMessage = $"\n{separator}\n";
+            consoleMessage += $"🔍 [DEBUG] [{source ?? "Unknown"}]\n";
+            consoleMessage += $"{separator}\n";
+            consoleMessage += $"Message: {message}\n";
+            if (!string.IsNullOrEmpty(details))
+            {
+                consoleMessage += $"\nDetails:\n{details}\n";
+            }
+            if (userId.HasValue)
+            {
+                consoleMessage += $"\nUserId: {userId}\n";
+            }
+            if (additionalData != null)
+            {
+                try
+                {
+                    var dataJson = JsonSerializer.Serialize(additionalData, new JsonSerializerOptions { WriteIndented = true });
+                    consoleMessage += $"\nAdditional Data:\n{dataJson}\n";
+                }
+                catch
+                {
+                    consoleMessage += "\nAdditional Data: [Error serializing]\n";
+                }
+            }
+            consoleMessage += $"{separator}\n";
+            try
+            {
+                var originalColor = Console.ForegroundColor;
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.Error.WriteLine(consoleMessage);
+                Console.WriteLine(consoleMessage);
+                Console.ForegroundColor = originalColor;
+            }
+            catch
+            {
+                Console.WriteLine(consoleMessage);
+            }
             
             // Si se solicita notificar al usuario, crear notificación (aunque sea debug)
             if (notifyUser && userId.HasValue)

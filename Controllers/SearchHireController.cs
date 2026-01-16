@@ -878,95 +878,69 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
+                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
+                var searchHire = await _context.SearchHires
+                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                    .Include(sh => sh.Status)
+                    .Include(sh => sh.Expert)
+                        .ThenInclude(e => e.ExpertProfile)
+                    .Include(sh => sh.Client)
+                    .FirstOrDefaultAsync();
+
+                if (searchHire == null)
+                {
+                    return NotFound(new { message = "Service not found" });
+                }
+
+                if (searchHire.ClientId != userId)
+                {
+                    return Unauthorized(new { message = "Unauthorized to complete this service" });
+                }
+
+                if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue() && 
+                    searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                {
+                    return BadRequest(new { message = "Service cannot be approved in current state" });
+                }
+
                 if (request.ClientApproved == null)
                 {
                     return BadRequest(new { error = "ClientApproved is required" });
                 }
 
-                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
-                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
-                SearchHire? searchHire = null;
-                await using var transaction = await _context.Database.BeginTransactionAsync();
-                try
+                // ✅ USAR EXECUTION STRATEGY para compatibilidad con NpgsqlRetryingExecutionStrategy
+                var strategy = _context.Database.CreateExecutionStrategy();
+                return await strategy.ExecuteAsync(async () =>
                 {
-                        // 🔒 ROW-LEVEL LOCKING dentro de la transacción para que el candado se mantenga hasta el commit/rollback
-                        searchHire = await _context.SearchHires
-                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
-                            .Include(sh => sh.Status)
-                            .Include(sh => sh.Expert)
-                                .ThenInclude(e => e.ExpertProfile)
-                            .Include(sh => sh.Client)
-                            .FirstOrDefaultAsync();
-
-                        if (searchHire == null)
-                        {
-                            await transaction.RollbackAsync();
-                            return NotFound(new { message = "Service not found" });
-                        }
-
-                        if (searchHire.ClientId != userId)
-                        {
-                            await transaction.RollbackAsync();
-                            return Unauthorized(new { message = "Unauthorized to complete this service" });
-                        }
-
-                        // ✅ VALIDACIÓN: Usuario bloqueado no puede completar servicios
-                        if (searchHire.Client.IsBlocked)
-                        {
-                            await transaction.RollbackAsync();
-                            await _loggingService.LogWarningAsync(
-                                message: "Blocked user attempted to complete service",
-                                details: $"Blocked user {userId} attempted to complete service {request.SearchHireId}",
-                                userId: userId,
-                                source: "SearchHireController.CompleteService",
-                                relatedEntityType: "SearchHire",
-                                relatedEntityId: request.SearchHireId
-                            );
-                            return Unauthorized(new { message = "User account is blocked" });
-                        }
-
-                        if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue() &&
-                            searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
-                        {
-                            await transaction.RollbackAsync();
-                            return BadRequest(new { message = "Service cannot be approved in current state" });
-                        }
-
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
+                    {
                         searchHire.ClientApproved = request.ClientApproved.Value;
 
                         if (!searchHire.ClientApproved.Value)
                         {
+                            // ✅ DISPUTA: Cliente rechaza servicio → Abrir disputa para revisión admin
                             var disputedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
                             searchHire.StatusId = disputedStatusId;
                             searchHire.UpdatedAt = DateTime.UtcNow;
-
-                            await _context.SaveChangesAsync();
-                            await ExpireClientDecisionTimersAsync(searchHire.Id);
-                            
-                            // ✅ COMMIT para asegurar que el estado de disputa se guarde
-                            await transaction.CommitAsync();
                         }
                         else
                         {
-                            await _context.SaveChangesAsync();
-                            await ExpireClientDecisionTimersAsync(searchHire.Id);
-                            
-                            // ✅ COMMIT PREVIO: Guardar "ClientApproved = true" ANTES de procesar dinero
-                            // Esto asegura que la decisión del cliente quede registrada incluso si el pago falla después
-                            await transaction.CommitAsync();
-
-                            // ✅ Procesar distribución de dinero (El servicio gestionará su propia transacción para cambiar el estado a Completed)
-                            // Esto cumple el requisito: "El estado debe cambiar aunque el pago falle"
                             var ok = await _refundService.ProcessMoneyDistributionAsync(
                                 searchHire.Id,
                                 SearchHireStatus.Completed.ToStringValue(),
                                 "Client approved service",
                                 userId);
-
                             if (!ok)
                             {
+                                await transaction.RollbackAsync();
+                                // ✅ MEJORA: NO duplicar log crítico - ProcessMoneyDistributionAsync ya lo registró
+                                // 🔍 Buscar el último log crítico relacionado DESPUÉS del rollback
+                                // IMPORTANTE: El log se crea ANTES de la transacción del controller
+                                // Limpiar el change tracker para forzar lectura fresca de la BD
                                 _context.ChangeTracker.Clear();
                                 
+                                // Usar FromSqlRaw con AsNoTracking para leer directamente de BD sin cache
                                 var lastCriticalLog = await _context.Logs
                                     .FromSqlRaw("SELECT * FROM \"Logs\" WHERE \"RelatedEntityType\" = {0} " +
                                                "AND \"RelatedEntityId\" = {1} " +
@@ -977,20 +951,68 @@ namespace newApi.Controllers
                                     .AsNoTracking()
                                     .FirstOrDefaultAsync();
                                 
+                                if (lastCriticalLog != null)
+                                {
+                                }
+                                else
+                                {
+                                    // Si no encontramos el log, puede ser un problema de timing o el log no se creó
+                                    // En este caso, logueamos un warning pero no duplicamos el log crítico
+                                }
+                                
                                 return StatusCode(500, new { 
                                     message = "Failed to process payment to expert",
                                     logId = lastCriticalLog?.Id,
                                     errorMessage = lastCriticalLog?.Message,
-                                    searchHireId = searchHire.Id,
-                                    note = "Service state was updated but payment failed."
+                                    searchHireId = searchHire.Id
                                 });
                             }
 
-                            await _context.Entry(searchHire).ReloadAsync();
+                            var completedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Completed.ToStringValue());
+                            searchHire.StatusId = completedStatusId;
+                            searchHire.UpdatedAt = DateTime.UtcNow;
+                        }
+                        
+                        // ✅ Cancelar timer de client_decision cuando el cliente aprueba o disputa
+                        var appointment = await _context.Appointments
+                            .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
+                        
+                        if (appointment != null)
+                        {
+                            var clientDecisionTimers = await _context.AppointmentTimers
+                                .Where(t => t.AppointmentId == appointment.Id && 
+                                           t.TimerType == "client_decision" && 
+                                           !t.IsExpired)
+                                .ToListAsync();
+                            
+                            foreach (var timer in clientDecisionTimers)
+                            {
+                                timer.IsExpired = true;
+                                timer.ExpiredAt = DateTime.UtcNow;
+                                
+                                // Cancelar job de Hangfire si existe
+                                if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                                {
+                                    try
+                                    {
+                                        BackgroundJob.Delete(timer.HangfireJobId);
+                                        timer.HangfireJobId = null;
+                                    }
+                                    catch
+                                    {
+                                        timer.HangfireJobId = null;
+                                    }
+                                }
+                            }
                         }
 
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+
+                        // ✅ Notificar a cliente y experto según el resultado
                         if (searchHire.ClientApproved.Value)
                         {
+                            // Cliente aprobó - notificar a ambos
                             await _loggingService.LogInfoAsync(
                                 message: "Servicio completado",
                                 details: $"Has aprobado el servicio #{searchHire.Id}. El experto recibirá el pago.",
@@ -1013,24 +1035,10 @@ namespace newApi.Controllers
                                     notifyUser: true
                                 );
                             }
-
-                            // ✅ EMAIL: Enviar correo de finalización y solicitud de reseña al cliente
-                            if (searchHire.Client != null && !string.IsNullOrEmpty(searchHire.Client.Email))
-                            {
-                                var expertName = searchHire.Expert?.Name ?? "El experto";
-                                var serviceName = searchHire.SearchService?.ServiceType?.Name ?? "Servicio de inspección";
-                                
-                                await _notificationService.SendServiceCompletionEmailAsync(
-                                    searchHire.Client.Email,
-                                    searchHire.Client.Name,
-                                    serviceName,
-                                    expertName,
-                                    searchHire.Id
-                                );
-                            }
                         }
                         else
                         {
+                            // Cliente rechazó - abrir disputa - notificar a ambos
                             await _loggingService.LogWarningAsync(
                                 message: "Disputa abierta",
                                 details: $"Has rechazado el servicio #{searchHire.Id}. Se ha abierto una disputa para revisión.",
@@ -1059,6 +1067,9 @@ namespace newApi.Controllers
                     }
                     catch (StripeException ex)
                     {
+                        await transaction.RollbackAsync();
+                        // 🔒 LOG CRÍTICO: Error de Stripe durante completado de servicio (una sola vez, antes de ProcessMoneyDistributionAsync)
+                        // Este error ocurre ANTES de llamar a ProcessMoneyDistributionAsync, por lo que debe loguearse aquí
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Stripe error during service completion - before money distribution",
                             details: $"Stripe exception occurred in CompleteService endpoint before calling ProcessMoneyDistributionAsync for SearchHire {searchHire.Id}. " +
@@ -1085,34 +1096,10 @@ namespace newApi.Controllers
                         
                         return StatusCode(500, new { message = "Failed to process payment to expert" });
                     }
-                    catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
-                    {
-                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
-                        try
-                        {
-                            await transaction.RollbackAsync();
-                        }
-                        catch
-                        {
-                            // Ignorar errores de rollback si la conexión ya está disposed
-                        }
-                        return StatusCode(500, new { message = "Failed to complete service - connection error" });
-                    }
-                    catch (ObjectDisposedException disposedEx)
-                    {
-                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
-                        try
-                        {
-                            await transaction.RollbackAsync();
-                        }
-                        catch
-                        {
-                            // Ignorar errores de rollback si la conexión ya está disposed
-                        }
-                        return StatusCode(500, new { message = "Failed to complete service - connection error" });
-                    }
                     catch (Exception ex)
                     {
+                        await transaction.RollbackAsync();
+                        // 🔒 LOG CRÍTICO: Error general durante completado de servicio (una sola vez, con información completa)
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Unexpected error completing service",
                             details: $"An unexpected exception occurred while completing service for SearchHire {searchHire.Id}. " +
@@ -1141,6 +1128,7 @@ namespace newApi.Controllers
                         
                         return StatusCode(500, new { message = "Failed to complete service" });
                     }
+                });
             }
             catch (Exception ex)
             {

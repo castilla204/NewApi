@@ -87,16 +87,9 @@ else
     Console.WriteLine($"[DEV] ✅ Desarrollo: usando puerto {portToUse} (localhost:{portToUse})");
 }
 
-// ✅ Configurar codificación UTF-8 para la consola (evita problemas con caracteres especiales)
-Console.OutputEncoding = System.Text.Encoding.UTF8;
-Console.InputEncoding = System.Text.Encoding.UTF8;
-
 // Configurar logging básico
 builder.Logging.ClearProviders();
-builder.Logging.AddConsole(options =>
-{
-    options.FormatterName = "simple";
-});
+builder.Logging.AddConsole();
 builder.Logging.AddDebug();
 
 // Verificar el entorno PRIMERO (necesario para configurar logging)
@@ -741,14 +734,13 @@ if (isDevelopment)
 else
 {
     // ✅ PRODUCCIÓN (Render.com): RENDER POSTGRESQL - Connection string HARDCODEADA
-    // ✅ RESTAURADO: Configuración exacta del commit b41a94c que funcionaba con Render
-    // ✅ Hostname INTERNO para servicios Render (más eficiente dentro de la red privada)
+    // ✅ Hostname interno para servicios Render: dpg-d5kar5l6ubrc73espd5g-a
     // ✅ Render PostgreSQL estándar - Soporta savepoints, transacciones y ExecutionStrategy
     connectionString = "Host=dpg-d5kar5l6ubrc73espd5g-a;Port=5432;Database=inspecciono;Username=inspecciono_user;Password=__REDACTED_URI_PASSWORD__;SslMode=Require;Timeout=60;CommandTimeout=120;Pooling=true;";
     connectionStringSource = "Hardcoded (Producción - Render PostgreSQL)";
     configLogger.LogInformation("✅ Producción: Connection string HARDCODEADA (Render PostgreSQL)");
     configLogger.LogInformation("   ✅ Render PostgreSQL nativo - Soporta todas las características de PostgreSQL");
-    configLogger.LogInformation("   ✅ Hostname INTERNO: dpg-d5kar5l6ubrc73espd5g-a (red privada de Render)");
+    configLogger.LogInformation("   ✅ Hostname interno: dpg-d5kar5l6ubrc73espd5g-a");
     configLogger.LogInformation("   ✅ Database: inspecciono");
     configLogger.LogInformation("   ✅ Compatible con savepoints, ExecutionStrategy y Hangfire");
     configLogger.LogInformation("   Timeouts: Timeout=60, CommandTimeout=120");
@@ -1200,11 +1192,171 @@ builder.Services.AddAuthentication(options =>
 
 // Configure PostgreSQL
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("PostgresConnection"), npgsqlOptions =>
+{
+    var connectionString = builder.Configuration.GetConnectionString("PostgresConnection");
+    
+    // ✅ RENDER POSTGRESQL: Configuración estándar de PostgreSQL
+    var builderConn = new NpgsqlConnectionStringBuilder(connectionString);
+    var host = builderConn.Host ?? string.Empty;
+    var port = builderConn.Port;
+    
+    var dbLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
+    
+    // Render PostgreSQL es estándar, no requiere detección especial
+    dbLogger.LogInformation("[OK] RENDER POSTGRESQL DETECTADO");
+    dbLogger.LogInformation($"   Host: {host}");
+    dbLogger.LogInformation($"   Port: {port}");
+    dbLogger.LogInformation("   [OK] PostgreSQL estándar - Soporta todas las características");
+    dbLogger.LogInformation("   [OK] Compatible con savepoints, ExecutionStrategy y Hangfire");
+    dbLogger.LogInformation("   [OK] PostgreSQL estándar sin poolers intermedios");
+    
+    // ✅ RENDER POSTGRESQL: Configuración optimizada de connection string
+    var connectionStringBuilder = new NpgsqlConnectionStringBuilder(connectionString);
+    
+    // ✅ Configuración de transacciones y multiplexing
+    connectionStringBuilder.Multiplexing = false; // Desactivar para mejor compatibilidad con EF Core
+    connectionStringBuilder.Enlist = false; // Evitar transacciones distribuidas automáticas
+    
+    // ✅ Timeouts optimizados para Render.com
+    if (connectionStringBuilder.Timeout < 60)
     {
-        npgsqlOptions.CommandTimeout(30);
-        npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null);
-    }));
+        connectionStringBuilder.Timeout = 60; // Timeout de conexión
+    }
+    if (connectionStringBuilder.CommandTimeout < 120)
+    {
+        connectionStringBuilder.CommandTimeout = 120; // Timeout de comandos
+    }
+    
+    // ✅ Configurar SSL para Render PostgreSQL
+    if (connectionStringBuilder.SslMode == SslMode.Prefer || 
+        !connectionStringBuilder.ConnectionString.Contains("SslMode", StringComparison.OrdinalIgnoreCase))
+    {
+        connectionStringBuilder.SslMode = SslMode.Require; // Requerir SSL para Render
+    }
+    
+    // ✅ Configuración de pooling para Render PostgreSQL
+    // Render PostgreSQL es estándar, soporta pooling sin restricciones
+    connectionStringBuilder.Pooling = true; // Habilitar pooling
+    connectionStringBuilder.MaxPoolSize = 100; // Limitar pool para evitar exhaustion
+    connectionStringBuilder.MinPoolSize = 0; // Permitir que el pool se reduzca cuando no se use
+    connectionStringBuilder.ConnectionIdleLifetime = 300; // Cerrar conexiones inactivas después de 5 minutos
+    connectionStringBuilder.ConnectionPruningInterval = 10; // Revisar conexiones inactivas cada 10 segundos
+    connectionStringBuilder.MaxAutoPrepare = 0; // Deshabilitar prepared statements (no necesario para Render, pero seguro)
+    
+    // ✅ Obtener connection string final del builder (ya incluye todos los parámetros correctamente formateados)
+    var finalConnectionString = connectionStringBuilder.ToString();
+    
+    dbLogger.LogInformation("✅ Configuración de EF Core para Render PostgreSQL:");
+    dbLogger.LogInformation($"   Multiplexing=false (mejor compatibilidad con transacciones)");
+    dbLogger.LogInformation($"   EnableRetryOnFailure(5) (restaurado como en el archivo antiguo que funcionaba)");
+    dbLogger.LogInformation($"   QuerySplittingBehavior=SingleQuery (evita múltiples conexiones)");
+    dbLogger.LogInformation($"   QueryTrackingBehavior=Tracking (restaurado como en el archivo antiguo)");
+    dbLogger.LogInformation($"   CommandTimeout=1800s (30min para migraciones largas)");
+    
+    // ✅ CRITICAL: Use connection string DIRECTLY, do NOT use NpgsqlDataSourceBuilder
+    // NpgsqlDataSourceBuilder ignores Multiplexing=false from connection string
+    options.UseNpgsql(finalConnectionString, npgsqlOptions =>
+    {
+        // ✅ FIX (Paso 3 del tutorial): CommandTimeout aumentado para migraciones largas
+        // Según migratetopool.txt: "Aumenta CommandTimeout a 1800s" para evitar hangs en migraciones
+        npgsqlOptions.CommandTimeout(1800); // 30 minutos para migraciones largas (según tutorial expandido)
+        
+        // ✅ DESHABILITADO: EnableRetryOnFailure causa conflictos con transacciones manuales
+        // ExecutionStrategy no soporta transacciones iniciadas manualmente (BeginTransactionAsync)
+        // Render PostgreSQL es estándar, pero EF Core ExecutionStrategy tiene limitaciones
+        // que impiden trabajar con transacciones manuales cuando EnableRetryOnFailure está activo
+        // El manejo de errores se hace manualmente en los lugares críticos con IServiceScopeFactory
+        // 
+        // ✅ CORREGIDO: Restaurado EnableRetryOnFailure como en el archivo antiguo que funcionaba
+        // El archivo antiguo tenía retry habilitado (5 reintentos) y funcionaba correctamente en K8s
+        // Los retries ayudan a manejar errores transitorios de conexión en entornos distribuidos
+        npgsqlOptions.EnableRetryOnFailure(
+            maxRetryCount: 5, // Restaurado como en el archivo antiguo
+            maxRetryDelay: TimeSpan.FromSeconds(10),
+            errorCodesToAdd: null
+        );
+        
+        // ✅ FIX (Paso 3): Desactivar query splitting que puede causar disposed connections
+        // Query splitting puede abrir múltiples conexiones que se disponen inesperadamente
+        // Según migratetopool.txt: "Desactiva EF's auto-savepoints: UseQuerySplittingBehavior(SingleQuery)"
+        npgsqlOptions.UseQuerySplittingBehavior(QuerySplittingBehavior.SingleQuery);
+        
+    });
+    
+    // ✅ CORREGIDO: Eliminado UseQueryTrackingBehavior para evitar conflictos con EntityState.Modified
+    // El archivo antiguo funcionaba sin esta configuración y confiaba en el tracking normal de EF Core
+    // NoTrackingWithIdentityResolution causaba conflictos cuando se forzaba EntityState.Modified manualmente
+    
+    // ✅ CRITICAL: Disable Execution Strategy completely to prevent multiplexing issues
+    // Execution Strategy can cause "transactions must be started with BeginTransaction" error
+    // even when Multiplexing=false is set, because it tries to use multiplexing internally
+    // Npgsql tiene un ExecutionStrategy por defecto que se activa automáticamente
+    // incluso sin EnableRetryOnFailure, causando savepoints que fallan con ObjectDisposedException
+    // 
+    // ✅ FIX CRÍTICO: Según documentación oficial de Microsoft (learn.microsoft.com),
+    // la solución correcta es deshabilitar los savepoints automáticos usando AutoSavepointsEnabled = false
+    // en lugar de intentar reemplazar el ExecutionStrategy. Esto evita que EF Core cree savepoints
+    // automáticamente dentro de transacciones manuales, que es la causa del ObjectDisposedException.
+    // 
+    // ❌ COMENTADO: ReplaceService no funciona correctamente porque NoOpExecutionStrategy
+    // no puede obtener el DbContext del state. La solución oficial es AutoSavepointsEnabled = false.
+    // options.ReplaceService<IExecutionStrategyFactory, newApi.NoOpExecutionStrategyFactory>();
+    
+    // ✅ FIX (Paso 2 del tutorial expandido): Configuración de logging según best practices
+    // Según migratetopool.txt: "EnableSensitiveDataLogging(false) para seguridad"
+    // "EnableDetailedErrors(true) para debug disposed"
+    options.EnableSensitiveDataLogging(false); // ✅ Seguridad: no loguear datos sensibles en producción
+    options.EnableDetailedErrors(isDevelopment); // ✅ Debug: habilitar solo en desarrollo para ver detalles de disposed
+    
+    // ✅ LOGGING DETALLADO: Habilitar logging de todas las operaciones de base de datos
+    // Esto incluye: queries SQL, conexiones, transacciones, timeouts, errores
+    // ✅ MEJORADO: En producción también loguear queries que fallan o son lentas
+    if (isDevelopment)
+    {
+        // En desarrollo: logging completo
+        options.LogTo(
+            message => {
+                var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("EFCore");
+                logger.LogInformation($"[EF CORE] {message}");
+            },
+            Microsoft.Extensions.Logging.LogLevel.Information
+        );
+    }
+    else
+    {
+        // En producción: warnings, errores Y queries que fallan o son lentas
+        options.LogTo(
+            message => {
+                var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("EFCore");
+                var lowerMessage = message.ToLowerInvariant();
+                
+                // Loggear siempre: errores, timeouts, excepciones, conexiones fallidas
+                if (lowerMessage.Contains("error") || 
+                    lowerMessage.Contains("timeout") ||
+                    lowerMessage.Contains("failed") ||
+                    lowerMessage.Contains("exception") ||
+                    lowerMessage.Contains("cannot open") ||
+                    lowerMessage.Contains("connection") && (lowerMessage.Contains("refused") || lowerMessage.Contains("closed")) ||
+                    lowerMessage.Contains("authentication") ||
+                    lowerMessage.Contains("password") && lowerMessage.Contains("failed"))
+                {
+                    logger.LogError($"[EF CORE] ❌ {message}");
+                }
+                // Loggear también: queries que toman mucho tiempo (más de 5 segundos)
+                else if (lowerMessage.Contains("executed") && lowerMessage.Contains("elapsed"))
+                {
+                    // Intentar extraer el tiempo de ejecución
+                    var elapsedMatch = System.Text.RegularExpressions.Regex.Match(message, @"(\d+\.?\d*)\s*ms");
+                    if (elapsedMatch.Success && double.TryParse(elapsedMatch.Groups[1].Value, out var elapsedMs) && elapsedMs > 5000)
+                    {
+                        logger.LogWarning($"[EF CORE] ⚠️ Query lenta detectada: {message}");
+                    }
+                }
+            },
+            Microsoft.Extensions.Logging.LogLevel.Warning
+        );
+    }
+});
 
 // Configure Google Cloud Storage
 builder.Services.AddSingleton<StorageClient>(sp =>

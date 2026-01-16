@@ -75,6 +75,7 @@ namespace newApi.DataLayer.Models
                 .HasOne(l => l.User)
                 .WithMany(u => u.Likes)
                 .HasForeignKey(l => l.UserId)
+                .IsRequired(false) // ✅ Opcional para evitar warning con query filter de User
                 .OnDelete(DeleteBehavior.Cascade);
 
             modelBuilder.Entity<Like>()
@@ -87,6 +88,7 @@ namespace newApi.DataLayer.Models
                 .HasOne(s => s.User)
                 .WithMany(u => u.Searches)
                 .HasForeignKey(s => s.UserId)
+                .IsRequired(false) // ✅ Opcional para evitar warning con query filter de User
                 .OnDelete(DeleteBehavior.Cascade);
 
             modelBuilder.Entity<SearchParameter>()
@@ -187,6 +189,7 @@ namespace newApi.DataLayer.Models
                 .HasOne(us => us.User)
                 .WithMany(u => u.UserSubscriptions)
                 .HasForeignKey(us => us.UserId)
+                .IsRequired(false) // ✅ Opcional para evitar warning con query filter de User
                 .OnDelete(DeleteBehavior.Cascade);
 
             modelBuilder.Entity<UserSubscription>()
@@ -199,6 +202,7 @@ namespace newApi.DataLayer.Models
                 .HasOne(us => us.User)
                 .WithOne(u => u.Settings)
                 .HasForeignKey<UserSetting>(us => us.UserId)
+                .IsRequired(false) // ✅ Opcional para evitar warning con query filter de User
                 .OnDelete(DeleteBehavior.Cascade);
 
             modelBuilder.Entity<UserSetting>()
@@ -234,6 +238,7 @@ namespace newApi.DataLayer.Models
                 .HasOne(ep => ep.User)
                 .WithOne(u => u.ExpertProfile)
                 .HasForeignKey<ExpertProfile>(ep => ep.UserId)
+                .IsRequired(false) // ✅ Opcional para evitar warning con query filter de User
                 .OnDelete(DeleteBehavior.Cascade);
 
             modelBuilder.Entity<SearchService>()
@@ -324,6 +329,7 @@ namespace newApi.DataLayer.Models
                 .HasOne(d => d.Reporter)
                 .WithMany(u => u.DisputesReported)
                 .HasForeignKey(d => d.ReporterId)
+                .IsRequired(false) // ✅ Opcional para evitar warning con query filter de User
                 .OnDelete(DeleteBehavior.Restrict);
 
             modelBuilder.Entity<DisputeFile>()
@@ -336,6 +342,7 @@ namespace newApi.DataLayer.Models
                 .HasOne(df => df.UploadedByUser)
                 .WithMany()
                 .HasForeignKey(df => df.UploadedByUserId)
+                .IsRequired(false) // ✅ Opcional para evitar warning con query filter de User
                 .OnDelete(DeleteBehavior.Restrict);
 
             modelBuilder.Entity<FinancialTransaction>()
@@ -717,6 +724,7 @@ namespace newApi.DataLayer.Models
                 entity.HasOne(rt => rt.User)
                     .WithMany()
                     .HasForeignKey(rt => rt.UserId)
+                    .IsRequired(false) // ✅ Opcional para evitar warning con query filter de User
                     .OnDelete(DeleteBehavior.Cascade); // Eliminar tokens si se elimina usuario
 
                 // Índices para rendimiento
@@ -732,6 +740,7 @@ namespace newApi.DataLayer.Models
                 entity.HasOne(mfa => mfa.User)
                     .WithMany()
                     .HasForeignKey(mfa => mfa.UserId)
+                    .IsRequired(false) // ✅ Opcional para evitar warning con query filter de User
                     .OnDelete(DeleteBehavior.Cascade); // Eliminar MFA si se elimina usuario
 
                 // Un usuario solo puede tener una configuración MFA
@@ -750,6 +759,7 @@ namespace newApi.DataLayer.Models
                 entity.HasOne(f => f.User)
                     .WithMany(u => u.FavoriteServices)
                     .HasForeignKey(f => f.UserId)
+                    .IsRequired(false) // ✅ Opcional para evitar warning con query filter de User
                     .OnDelete(DeleteBehavior.Cascade); // Eliminar favoritos si se elimina usuario
 
                 // Relación con SearchService

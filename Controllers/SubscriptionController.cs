@@ -2955,26 +2955,10 @@ namespace newApi.Controllers
                 );
                 return;
             }
-            // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
             // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-            User? user = null;
-            await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
-            {
-                try
-                {
-                    user = await _context.Users
-                        .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
-                        .FirstOrDefaultAsync();
-                    
-                    await lockTransaction.CommitAsync();
-                }
-                catch
-                {
-                    try { await lockTransaction.RollbackAsync(); } catch { }
-                    throw;
-                }
-            }
-            
+            var user = await _context.Users
+                .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
+                .FirstOrDefaultAsync();
             if (user == null)
             {
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
@@ -3079,8 +3063,9 @@ namespace newApi.Controllers
                 }
             }
             
-            // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
-            // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
+            var strategy = _context.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
             using var transaction = await _context.Database.BeginTransactionAsync();
             SearchHire? searchHire = null;
             int searchHireId = 0; // ✅ FIX: Declarar searchHireId antes del try para que esté disponible en catch
@@ -3821,6 +3806,7 @@ namespace newApi.Controllers
 
                 throw;
             }
+            });
         }
 
         // ❌ ELIMINADO: ProcessAutomaticRefundOnError - No se usa (reemplazado por captura manual)

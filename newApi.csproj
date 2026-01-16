@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+<Project Sdk="Microsoft.NET.Sdk.Web">
 
 	<PropertyGroup>
 		<TargetFramework>net10.0</TargetFramework>
@@ -8,6 +8,9 @@
 		<GenerateAssemblyInfo>false</GenerateAssemblyInfo>
 		<GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
 	  <UserSecretsId>dec0adc1-b7d7-4da6-be0f-42e3054c640a</UserSecretsId>
+		<!-- ✅ Suprimir warning de debugging de librerías Release (Stripe.net.dll) -->
+		<DebugType>portable</DebugType>
+		<DebugSymbols>true</DebugSymbols>
   </PropertyGroup>
 
 	<ItemGroup>
@@ -51,6 +54,14 @@
 	  <Compile Remove="DataLayer\Models\DTOs\UpdateSearchDto.cs" />
 	  <Compile Remove="Services\GPTService.cs.cs" />
 	  <Compile Remove="Services\IGPTService.cs" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <!-- Excluir carpetas de respaldo/versiones antiguas -->
+	  <Compile Remove="COMMIT_0cde564a\**" />
+	  <Compile Remove="COMMIT_ANTES_CORRECCIONES\**" />
+	  <Compile Remove="COMMIT_CORREGIDO_EF_K8S\**" />
+	  <Compile Remove="VERSION_6_COMMITS_AGO\**" />
 	</ItemGroup>
 
 </Project>

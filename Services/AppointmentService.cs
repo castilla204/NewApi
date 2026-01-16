@@ -514,8 +514,9 @@ namespace newApi.Services
                         await _context.SaveChangesAsync();
 
                         // Programar scheduled job para cuando expire el timer (24 horas)
+                        // ✅ Usar método wrapper con nombre descriptivo para Hangfire
                         var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                            service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
+                            service => service.ProcessProposalTimerAsync(proposalTimer.Id),
                             proposalTimer.EndTime - DateTime.UtcNow
                         );
 
@@ -726,8 +727,9 @@ namespace newApi.Services
                     await _context.SaveChangesAsync();
 
                     // Programar scheduled job para cuando expire el timer (24 horas)
+                    // ✅ Usar método wrapper con nombre descriptivo para Hangfire
                     var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                        service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
+                        service => service.ProcessProposalTimerAsync(proposalTimer.Id),
                         proposalTimer.EndTime - DateTime.UtcNow
                     );
 
@@ -931,8 +933,9 @@ namespace newApi.Services
                         }
 
                         // Ô£à Programar scheduled job para cuando expire el timer de respuesta (24 horas) - DESPU├ëS del commit
+                        // ✅ Usar método wrapper con nombre descriptivo para Hangfire
                         var responseJobId = BackgroundJob.Schedule<IAppointmentService>(
-                            service => service.ProcessAppointmentTimerAsync(responseTimer.Id),
+                            service => service.ProcessResponseTimerAsync(responseTimer.Id),
                             responseTimer.EndTime - DateTime.UtcNow
                         );
 
@@ -2054,8 +2057,9 @@ namespace newApi.Services
                     await _context.SaveChangesAsync();
                     
                     // Programar scheduled job para cuando expire el timer (24 horas)
+                    // ✅ Usar método wrapper con nombre descriptivo para Hangfire
                     var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                        service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
+                        service => service.ProcessProposalTimerAsync(proposalTimer.Id),
                         proposalTimer.EndTime - DateTime.UtcNow
                     );
                     
@@ -2732,8 +2736,9 @@ namespace newApi.Services
                     await _context.SaveChangesAsync();
                     
                     // Programar scheduled job para cuando expire el timer (24 horas)
+                    // ✅ Usar método wrapper con nombre descriptivo para Hangfire
                     var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                        service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
+                        service => service.ProcessProposalTimerAsync(proposalTimer.Id),
                         proposalTimer.EndTime - DateTime.UtcNow
                     );
                     
@@ -3964,7 +3969,7 @@ namespace newApi.Services
                             // Procesar dinero autom├íticamente
                             // Ô£à MEJORA: Usar l├│gica autom├ítica de mapeo - ProcessMoneyDistributionAsync mapea autom├íticamente
                             // appointment_cancelled_by_client_no_proposal ÔåÆ cancelled (gen├®rico)
-                            // Usa los % del AppointmentStatus (0/100/0) porque tiene configuraci├│n
+                            // Usa los % del AppointmentStatus (100/0/0) porque tiene configuraci├│n - Cliente recibe 100% refund
                             try
                             {
                                 await _refundService.ProcessMoneyDistributionAsync(
@@ -3998,16 +4003,117 @@ namespace newApi.Services
                             // Usa los % del AppointmentStatus (100/0/0) porque tiene configuraci├│n
                             try
                             {
-                                await _refundService.ProcessMoneyDistributionAsync(
+                                var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
                                     timer.Appointment.SearchHireId,
                                     AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
                                     "Expert did not respond within 24h - automatic cancellation",
                                     null,
                                     updateState: true); // Ô£à updateState: true para que haga el mapeo autom├ítico
+                                
+                                if (!moneySuccess)
+                                {
+                                    // ✅ FALLBACK: Verificar si el estado se cambió (puede haber fallado en Fase 1 o 2)
+                                    // Si NO se cambió, cambiarlo manualmente para evitar que el sistema quede bloqueado
+                                    var currentSearchHire = await _context.SearchHires
+                                        .Include(sh => sh.Status)
+                                        .Include(sh => sh.Appointment)
+                                            .ThenInclude(a => a.Status)
+                                        .FirstOrDefaultAsync(sh => sh.Id == timer.Appointment.SearchHireId);
+                                    
+                                    bool stateWasChanged = false;
+                                    if (currentSearchHire != null && currentSearchHire.Status != null)
+                                    {
+                                        // Verificar si el estado ya está en "cancelled" (cambió en Fase 2)
+                                        var isCancelled = currentSearchHire.Status.StatusValue == "cancelled" ||
+                                                        currentSearchHire.Status.IsFinalizationStatus == true;
+                                        
+                                        if (!isCancelled)
+                                        {
+                                            // Estado NO cambió (falló en Fase 1 o 2) → Cambiarlo manualmente como fallback
+                                            try
+                                            {
+                                                // Mapear appointment_cancelled_by_expert_no_response → cancelled
+                                                var cancelledStatusId = await GetStatusIdByValueAsync("cancelled", "SearchHireStatus");
+                                                currentSearchHire.StatusId = cancelledStatusId;
+                                                currentSearchHire.UpdatedAt = DateTime.UtcNow;
+                                                
+                                                await _context.SaveChangesAsync();
+                                                stateWasChanged = true;
+                                                
+                                                // Log del fallback
+                                                await _loggingService.LogWarningAsync(
+                                                    message: "State updated manually after ProcessMoneyDistributionAsync failure",
+                                                    details: $"SearchHire {timer.Appointment.SearchHireId} state was manually updated to 'cancelled' because ProcessMoneyDistributionAsync returned false. " +
+                                                            $"This prevents the system from being blocked. Money distribution still needs manual processing.",
+                                                    userId: currentSearchHire.ClientId,
+                                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                                    relatedEntityType: "SearchHire",
+                                                    relatedEntityId: timer.Appointment.SearchHireId,
+                                                    additionalData: new { 
+                                                        TimerType = "response",
+                                                        TimerId = timer.Id,
+                                                        AppointmentId = timer.Appointment.Id,
+                                                        FallbackStateChange = true
+                                                    }
+                                                );
+                                            }
+                                            catch (Exception fallbackEx)
+                                            {
+                                                // Si el fallback también falla, log crítico
+                                                await _loggingService.LogCriticalAsync(
+                                                    message: "CRITICAL: Failed to update state in fallback after ProcessMoneyDistributionAsync failure",
+                                                    details: $"SearchHire {timer.Appointment.SearchHireId} timer expired but both ProcessMoneyDistributionAsync and fallback state update failed. " +
+                                                            $"System is BLOCKED. Fallback error: {fallbackEx.Message}",
+                                                    userId: currentSearchHire?.ClientId,
+                                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                                    relatedEntityType: "SearchHire",
+                                                    relatedEntityId: timer.Appointment.SearchHireId,
+                                                    additionalData: new { 
+                                                        TimerType = "response",
+                                                        TimerId = timer.Id,
+                                                        AppointmentId = timer.Appointment.Id,
+                                                        FallbackError = fallbackEx.Message
+                                                    }
+                                                );
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // Estado YA cambió (falló en Fase 3 - Stripe) → Correcto, solo falta dinero
+                                            stateWasChanged = true;
+                                        }
+                                    }
+                                    
+                                    await _loggingService.LogWarningAsync(
+                                        message: "ProcessMoneyDistributionAsync returned false for timer response",
+                                        details: $"Timer {timerId} (response type) - ProcessMoneyDistributionAsync returned false. SearchHireId: {timer.Appointment.SearchHireId}, Status: {AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue()}. " +
+                                                $"State was {(stateWasChanged ? "updated" : "NOT updated - system may be blocked")}.",
+                                        userId: null,
+                                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                        relatedEntityType: "AppointmentTimer",
+                                        relatedEntityId: timerId
+                                    );
+                                }
                             }
-                            catch
+                            catch (Exception ex)
                             {
-                                // Log error pero continuar
+                                // ✅ MEJORA: Log error con detalles para debugging
+                                await _loggingService.LogErrorAsync(
+                                    message: "Error processing money distribution for timer response",
+                                    details: $"Timer {timerId} (response type) - Error in ProcessMoneyDistributionAsync: {ex.Message}. StackTrace: {ex.StackTrace}. SearchHireId: {timer.Appointment?.SearchHireId}, Status: {AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue()}",
+                                    userId: null,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "AppointmentTimer",
+                                    relatedEntityId: timerId,
+                                    additionalData: new { 
+                                        TimerId = timerId,
+                                        TimerType = "response",
+                                        SearchHireId = timer.Appointment?.SearchHireId,
+                                        Status = AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
+                                        Error = ex.Message,
+                                        StackTrace = ex.StackTrace
+                                    }
+                                );
                             }
                         }
                         break;
@@ -5635,6 +5741,34 @@ namespace newApi.Services
 
             };
 
+        }
+
+        /// <summary>
+        /// Wrapper para procesar timer de propuesta del cliente.
+        /// Si el cliente no propone en 24h, se cancela y se penaliza al cliente.
+        /// </summary>
+        [AutomaticRetry(
+            Attempts = 5, 
+            DelaysInSeconds = new[] { 60, 300, 600, 900, 1200 },
+            OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+        [JobDisplayName("⏰ Timer Propuesta Cliente (Penaliza Cliente)")]
+        public async Task ProcessProposalTimerAsync(int timerId)
+        {
+            await ProcessAppointmentTimerAsync(timerId);
+        }
+
+        /// <summary>
+        /// Wrapper para procesar timer de respuesta del experto.
+        /// Si el experto no responde en 24h, se cancela y se penaliza al experto.
+        /// </summary>
+        [AutomaticRetry(
+            Attempts = 5, 
+            DelaysInSeconds = new[] { 60, 300, 600, 900, 1200 },
+            OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+        [JobDisplayName("⏰ Timer Respuesta Experto (Penaliza Experto)")]
+        public async Task ProcessResponseTimerAsync(int timerId)
+        {
+            await ProcessAppointmentTimerAsync(timerId);
         }
 
     }

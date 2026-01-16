@@ -270,8 +270,9 @@ namespace newApi.Controllers
                             // Programar scheduled job para cuando expire el timer (24 horas)
                             try
                             {
+                                // ✅ Usar método wrapper con nombre descriptivo para Hangfire
                                 var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                                    service => service.ProcessAppointmentTimerAsync(proposalTimer.Id),
+                                    service => service.ProcessProposalTimerAsync(proposalTimer.Id),
                                     proposalTimer.EndTime - DateTime.UtcNow
                                 );
 

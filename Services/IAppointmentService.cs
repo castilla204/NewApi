@@ -17,6 +17,8 @@ namespace newApi.Services
         Task<object> GetAppointmentMetricsAsync();
         Task CheckAppointmentTimersAsync();
         Task ProcessAppointmentTimerAsync(int timerId);
+        Task ProcessProposalTimerAsync(int timerId);
+        Task ProcessResponseTimerAsync(int timerId);
         Task ProcessAppointmentToAwaitingReportAsync(int appointmentId);
         Task<AppointmentDto> SubmitExpertReportAsync(int appointmentId, int expertId, string? notes = null);
     }

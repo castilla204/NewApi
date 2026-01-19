@@ -1,6 +1,7 @@
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.enums;
 using newApi.Common;
+using Hangfire;
 
 namespace newApi.Services
 {
@@ -17,9 +18,25 @@ namespace newApi.Services
         Task<object> GetAppointmentMetricsAsync();
         Task CheckAppointmentTimersAsync();
         Task ProcessAppointmentTimerAsync(int timerId);
+        
+        [JobDisplayName("⏰ Timer Propuesta Cliente (Penaliza Cliente) - Timer #{0}")]
         Task ProcessProposalTimerAsync(int timerId);
+        
+        [JobDisplayName("⏰ Timer Respuesta Experto (Penaliza Experto) - Timer #{0}")]
         Task ProcessResponseTimerAsync(int timerId);
+        
+        [JobDisplayName("⏰ Timer Reporte Experto (24h para enviar reporte) - Timer #{0}")]
+        Task ProcessExpertReportTimerAsync(int timerId);
+        
+        [JobDisplayName("⏰ Timer Decisión Cliente (24h para aprobar/disputar) - Timer #{0}")]
+        Task ProcessClientDecisionTimerAsync(int timerId);
+        
+        [JobDisplayName("⏰ Timer Transición a Awaiting Report (3h después de cita) - Timer #{0}")]
+        Task ProcessAwaitingReportTransitionTimerAsync(int timerId);
+        
+        [JobDisplayName("⏰ Timer Transición a Awaiting Report (3h después de cita) - Appointment #{0}")]
         Task ProcessAppointmentToAwaitingReportAsync(int appointmentId);
+        
         Task<AppointmentDto> SubmitExpertReportAsync(int appointmentId, int expertId, string? notes = null);
     }
 }

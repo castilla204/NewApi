@@ -986,22 +986,22 @@ namespace newApi.Services
                     {
                         var appointmentDateTime = updatedAppointment.ProposedDate.Value.Date + updatedAppointment.ProposedTime.Value;
                         var formattedDate = appointmentDateTime.ToString("dd/MM/yyyy HH:mm");
-                        
-                        await _loggingService.LogInfoAsync(
-                            message: "Nueva propuesta de cita recibida",
-                            details: $"El cliente ha propuesto una cita para el {formattedDate} en {updatedAppointment.Location}. Tienes 24 horas para aceptar o rechazar.",
-                            userId: updatedAppointment.SearchHire.ExpertId.Value,
-                            source: "AppointmentService.ProposeAppointmentAsync",
-                            relatedEntityType: "Appointment",
-                            relatedEntityId: updatedAppointment.Id,
-                            notifyUser: true
-                        );
+                    
+                    await _loggingService.LogInfoAsync(
+                        message: "Nueva propuesta de cita recibida",
+                        details: $"El cliente ha propuesto una cita para el {formattedDate} en {updatedAppointment.Location}. Tienes 24 horas para aceptar o rechazar.",
+                        userId: updatedAppointment.SearchHire.ExpertId.Value,
+                        source: "AppointmentService.ProposeAppointmentAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: updatedAppointment.Id,
+                        notifyUser: true
+                    );
                     }
                 }
 
                 return MapToDto(updatedAppointment);
-                }
-                catch (Exception innerEx)
+                    }
+                    catch (Exception innerEx)
 
                     {
 
@@ -1209,33 +1209,33 @@ namespace newApi.Services
                             if (appointment.ProposedDate.HasValue && appointment.ProposedTime.HasValue)
                             {
                                 var appointmentDateTime = appointment.ProposedDate.Value.Date + appointment.ProposedTime.Value;
-                                var timeUntil3HoursAfter = appointmentDateTime.AddHours(3) - DateTime.UtcNow;
-                                
-                                if (timeUntil3HoursAfter.TotalSeconds > 0) // Solo programar si a├║n no han pasado las 3 horas
+                            var timeUntil3HoursAfter = appointmentDateTime.AddHours(3) - DateTime.UtcNow;
+                            
+                            if (timeUntil3HoursAfter.TotalSeconds > 0) // Solo programar si a├║n no han pasado las 3 horas
+                            {
+                                // Crear timer para la transici├│n a awaiting_report (3 horas despu├®s de la cita)
+                                var awaitingReportTransitionTimer = new AppointmentTimer
                                 {
-                                    // Crear timer para la transici├│n a awaiting_report (3 horas despu├®s de la cita)
-                                    var awaitingReportTransitionTimer = new AppointmentTimer
-                                    {
-                                        AppointmentId = appointment.Id,
-                                        TimerType = "awaiting_report_transition",
-                                        StartTime = DateTime.UtcNow,
-                                        EndTime = appointmentDateTime.AddHours(3),
-                                        IsExpired = false,
-                                        CreatedAt = DateTime.UtcNow
-                                    };
-                                    
-                                    _context.AppointmentTimers.Add(awaitingReportTransitionTimer);
-                                    await _context.SaveChangesAsync();
+                                    AppointmentId = appointment.Id,
+                                    TimerType = "awaiting_report_transition",
+                                    StartTime = DateTime.UtcNow,
+                                    EndTime = appointmentDateTime.AddHours(3),
+                                    IsExpired = false,
+                                    CreatedAt = DateTime.UtcNow
+                                };
 
-                                    // Programar scheduled job para cuando expire el timer (3 horas despu├®s de la cita)
-                                    var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                                        service => service.ProcessAppointmentToAwaitingReportAsync(appointment.Id),
-                                        timeUntil3HoursAfter
-                                    );
+                                _context.AppointmentTimers.Add(awaitingReportTransitionTimer);
+                                await _context.SaveChangesAsync();
 
-                                    // Guardar el JobId en el timer
-                                    awaitingReportTransitionTimer.HangfireJobId = jobId;
-                                    await _context.SaveChangesAsync();
+                                // Programar scheduled job para cuando expire el timer (3 horas despu├®s de la cita)
+                                var jobId = BackgroundJob.Schedule<IAppointmentService>(
+                                    service => service.ProcessAppointmentToAwaitingReportAsync(appointment.Id),
+                                    timeUntil3HoursAfter
+                                );
+
+                                // Guardar el JobId en el timer
+                                awaitingReportTransitionTimer.HangfireJobId = jobId;
+                                await _context.SaveChangesAsync();
                                 }
                             }
 
@@ -1348,27 +1348,27 @@ namespace newApi.Services
                         {
                             var appointmentDateTime = updatedAppointment.ProposedDate.Value.Date + updatedAppointment.ProposedTime.Value;
                             var formattedDateTime = appointmentDateTime.ToString("dd/MM/yyyy HH:mm");
-                            
-                            // Ô£à LOG: Enviando notificaci├│n al cliente
-                            await _loggingService.LogInfoAsync(
-                                message: "Enviando notificaci├│n al cliente",
-                                details: $"Preparando notificaci├│n para cliente {updatedAppointment.SearchHire.ClientId}. Fecha formateada: {formattedDateTime}",
-                                userId: userId,
-                                source: "AppointmentService.ConfirmAppointmentAsync",
-                                relatedEntityType: "Appointment",
-                                relatedEntityId: dto.AppointmentId,
-                                notifyUser: false
-                            );
-                            
-                            await _loggingService.LogInfoAsync(
-                                message: "Cita confirmada por el experto",
-                                details: $"El experto confirm├│ la cita para el {formattedDateTime} en {updatedAppointment.Location}.",
-                                userId: updatedAppointment.SearchHire.ClientId,
-                                source: "AppointmentService.ConfirmAppointmentAsync",
-                                relatedEntityType: "Appointment",
-                                relatedEntityId: updatedAppointment.Id,
-                                notifyUser: true
-                            );
+                        
+                        // Ô£à LOG: Enviando notificaci├│n al cliente
+                        await _loggingService.LogInfoAsync(
+                            message: "Enviando notificaci├│n al cliente",
+                            details: $"Preparando notificaci├│n para cliente {updatedAppointment.SearchHire.ClientId}. Fecha formateada: {formattedDateTime}",
+                            userId: userId,
+                            source: "AppointmentService.ConfirmAppointmentAsync",
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: dto.AppointmentId,
+                            notifyUser: false
+                        );
+
+                        await _loggingService.LogInfoAsync(
+                            message: "Cita confirmada por el experto",
+                            details: $"El experto confirm├│ la cita para el {formattedDateTime} en {updatedAppointment.Location}.",
+                            userId: updatedAppointment.SearchHire.ClientId,
+                            source: "AppointmentService.ConfirmAppointmentAsync",
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: updatedAppointment.Id,
+                            notifyUser: true
+                        );
                         }
 
                         // Ô£à LOG: Notificaci├│n al cliente enviada
@@ -1821,26 +1821,13 @@ namespace newApi.Services
                 }
 
                 else
-
                 {
-                    // Ô£à MEJORA: Si NO hay mapeo, loguear pero NO bloquear el cambio de estado
-                    // El Appointment.StatusId YA cambi├│ (l├¡nea 1478), esto es correcto
+                    // ✅ COMPORTAMIENTO ESPERADO: Si NO hay mapeo, NO cambiar el estado del SearchHire
+                    // El Appointment.StatusId YA cambió (línea 1478), esto es correcto
                     // El SearchHire NO cambia porque no hay mapeo (comportamiento esperado para estados no finales)
-                    await _loggingService.LogWarningAsync(
-                        message: "No mapping found for AppointmentStatus to SearchHireStatus",
-                        details: $"AppointmentStatus '{statusValue}' does not have a mapping to SearchHireStatus. " +
-                                $"Appointment {appointment.Id} status was updated, but SearchHire {appointment.SearchHireId} status was not changed. " +
-                                $"This is expected for non-finalization states (e.g., first rejection/cancellation).",
-                        userId: userId,
-                        source: "AppointmentService.RejectAppointmentAsync",
-                        relatedEntityType: "Appointment",
-                        relatedEntityId: appointment.Id,
-                        additionalData: new { 
-                            AppointmentStatus = statusValue,
-                            AppointmentId = appointment.Id,
-                            SearchHireId = appointment.SearchHireId
-                        }
-                    );
+                    // Ejemplos: appointment_rejected (primer rechazo), appointment_cancelled_by_client (primera cancelación)
+                    // Estos estados permiten que el cliente proponga otra cita, por lo que el SearchHire debe seguir en "pending"
+                    // NO loguear como Warning porque es el comportamiento esperado y correcto
                 }
 
 
@@ -2583,26 +2570,13 @@ namespace newApi.Services
                 }
 
                 else
-
                 {
-                    // Ô£à MEJORA: Si NO hay mapeo, loguear pero NO bloquear el cambio de estado
-                    // El Appointment.StatusId YA cambi├│ (l├¡nea 2208), esto es correcto
+                    // ✅ COMPORTAMIENTO ESPERADO: Si NO hay mapeo, NO cambiar el estado del SearchHire
+                    // El Appointment.StatusId YA cambió (línea 2208), esto es correcto
                     // El SearchHire NO cambia porque no hay mapeo (comportamiento esperado para estados no finales)
-                    await _loggingService.LogWarningAsync(
-                        message: "No mapping found for AppointmentStatus to SearchHireStatus",
-                        details: $"AppointmentStatus '{statusValue}' does not have a mapping to SearchHireStatus. " +
-                                $"Appointment {appointment.Id} status was updated, but SearchHire {appointment.SearchHireId} status was not changed. " +
-                                $"This is expected for non-finalization states (e.g., first cancellation).",
-                        userId: userId,
-                        source: "AppointmentService.CancelAppointmentAsync",
-                        relatedEntityType: "Appointment",
-                        relatedEntityId: appointment.Id,
-                        additionalData: new { 
-                            AppointmentStatus = statusValue,
-                            AppointmentId = appointment.Id,
-                            SearchHireId = appointment.SearchHireId
-                        }
-                    );
+                    // Ejemplos: appointment_cancelled_by_client (primera cancelación), appointment_cancelled_by_expert (primera cancelación)
+                    // Estos estados permiten que el cliente proponga otra cita, por lo que el SearchHire debe seguir en "pending"
+                    // NO loguear como Warning porque es el comportamiento esperado y correcto
                 }
 
                 // Ô£à CR├ìTICO: Guardar estados ANTES de procesar dinero
@@ -3735,8 +3709,9 @@ namespace newApi.Services
                         await _context.SaveChangesAsync();
 
                         // Programar scheduled job para cuando expire el timer (24 horas)
+                        // ✅ Usar método wrapper con nombre descriptivo para Hangfire
                         var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                            service => service.ProcessAppointmentTimerAsync(expertReportTimer.Id),
+                            service => service.ProcessExpertReportTimerAsync(expertReportTimer.Id),
                             expertReportTimer.EndTime - DateTime.UtcNow
                         );
 
@@ -4058,7 +4033,7 @@ namespace newApi.Services
                                                 );
                                             }
                                             catch (Exception fallbackEx)
-                                            {
+                            {
                                                 // Si el fallback también falla, log crítico
                                                 await _loggingService.LogCriticalAsync(
                                                     message: "CRITICAL: Failed to update state in fallback after ProcessMoneyDistributionAsync failure",
@@ -4505,6 +4480,7 @@ namespace newApi.Services
             Attempts = 5, 
             DelaysInSeconds = new[] { 60, 300, 600, 900, 1200 },  // 1m, 5m, 10m, 15m, 20m
             OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+        [JobDisplayName("⏰ Timer Transición a Awaiting Report (3h después de cita) - Appointment #{0}")]
         public async Task ProcessAppointmentToAwaitingReportAsync(int appointmentId)
         {
             try
@@ -4580,8 +4556,9 @@ namespace newApi.Services
                     await _context.SaveChangesAsync();
 
                     // Programar scheduled job para cuando expire el timer (24 horas)
+                    // ✅ Usar método wrapper con nombre descriptivo para Hangfire
                     var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                        service => service.ProcessAppointmentTimerAsync(expertReportTimer.Id),
+                        service => service.ProcessExpertReportTimerAsync(expertReportTimer.Id),
                         expertReportTimer.EndTime - DateTime.UtcNow
                     );
 
@@ -4898,8 +4875,9 @@ namespace newApi.Services
                 await _context.SaveChangesAsync();
 
                 // Programar scheduled job para cuando expire el timer (24 horas)
+                // ✅ Usar método wrapper con nombre descriptivo para Hangfire
                 var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                    service => service.ProcessAppointmentTimerAsync(clientDecisionTimer.Id),
+                    service => service.ProcessClientDecisionTimerAsync(clientDecisionTimer.Id),
                     clientDecisionTimer.EndTime - DateTime.UtcNow
                 );
 
@@ -5751,7 +5729,7 @@ namespace newApi.Services
             Attempts = 5, 
             DelaysInSeconds = new[] { 60, 300, 600, 900, 1200 },
             OnAttemptsExceeded = AttemptsExceededAction.Fail)]
-        [JobDisplayName("⏰ Timer Propuesta Cliente (Penaliza Cliente)")]
+        [JobDisplayName("⏰ Timer Propuesta Cliente (Penaliza Cliente) - Timer #{0}")]
         public async Task ProcessProposalTimerAsync(int timerId)
         {
             await ProcessAppointmentTimerAsync(timerId);
@@ -5765,8 +5743,50 @@ namespace newApi.Services
             Attempts = 5, 
             DelaysInSeconds = new[] { 60, 300, 600, 900, 1200 },
             OnAttemptsExceeded = AttemptsExceededAction.Fail)]
-        [JobDisplayName("⏰ Timer Respuesta Experto (Penaliza Experto)")]
+        [JobDisplayName("⏰ Timer Respuesta Experto (Penaliza Experto) - Timer #{0}")]
         public async Task ProcessResponseTimerAsync(int timerId)
+        {
+            await ProcessAppointmentTimerAsync(timerId);
+        }
+
+        /// <summary>
+        /// Wrapper para procesar timer de reporte del experto.
+        /// Si el experto no envía el reporte en 24h, se penaliza al experto.
+        /// </summary>
+        [AutomaticRetry(
+            Attempts = 5, 
+            DelaysInSeconds = new[] { 60, 300, 600, 900, 1200 },
+            OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+        [JobDisplayName("⏰ Timer Reporte Experto (24h para enviar reporte) - Timer #{0}")]
+        public async Task ProcessExpertReportTimerAsync(int timerId)
+        {
+            await ProcessAppointmentTimerAsync(timerId);
+        }
+
+        /// <summary>
+        /// Wrapper para procesar timer de decisión del cliente.
+        /// Si el cliente no decide en 24h, se completa automáticamente a favor del experto.
+        /// </summary>
+        [AutomaticRetry(
+            Attempts = 5, 
+            DelaysInSeconds = new[] { 60, 300, 600, 900, 1200 },
+            OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+        [JobDisplayName("⏰ Timer Decisión Cliente (24h para aprobar/disputar) - Timer #{0}")]
+        public async Task ProcessClientDecisionTimerAsync(int timerId)
+        {
+            await ProcessAppointmentTimerAsync(timerId);
+        }
+
+        /// <summary>
+        /// Wrapper para procesar timer de transición a awaiting_report.
+        /// Se ejecuta 3 horas después de la cita para cambiar el estado a "awaiting_report".
+        /// </summary>
+        [AutomaticRetry(
+            Attempts = 5, 
+            DelaysInSeconds = new[] { 60, 300, 600, 900, 1200 },
+            OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+        [JobDisplayName("⏰ Timer Transición a Awaiting Report (3h después de cita) - Timer #{0}")]
+        public async Task ProcessAwaitingReportTransitionTimerAsync(int timerId)
         {
             await ProcessAppointmentTimerAsync(timerId);
         }

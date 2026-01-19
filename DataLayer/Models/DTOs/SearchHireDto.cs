@@ -163,6 +163,7 @@ namespace newApi.DataLayer.Models.DTOs
         public HomepageExpertDto Expert { get; set; }
         public int CompletedSearches { get; set; }
         public double AverageRating { get; set; }
+        public bool IsFavorite { get; set; } // ✅ NUEVO: Indica si el servicio es favorito del usuario autenticado
     }
 
     /// <summary>

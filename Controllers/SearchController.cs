@@ -135,6 +135,13 @@ namespace newApi.Controllers
                     .Include(s => s.SearchHire)
                         .ThenInclude(sh => sh.Expert)
                         .ThenInclude(e => e.ExpertProfile)
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.SearchService)
+                        .ThenInclude(ss => ss.Images)
+                    .Include(s => s.SearchHire)
+                        .ThenInclude(sh => sh.SearchService)
+                        .ThenInclude(ss => ss.ServiceType)
+                        .ThenInclude(st => st.ServiceTypeCategory)
                     .AsQueryable();
 
                 // Aplicar filtros
@@ -179,59 +186,166 @@ namespace newApi.Controllers
                     .Take(request.PageSize)
                     .ToListAsync();
 
-                // Mapear a DTOs
-                var searchDtos = searches.Select(s => new SearchListDto
+                // ✅ Obtener IDs de expertos para cargar disponibilidades
+                var expertIds = searches
+                    .Where(s => s.SearchHire?.Expert?.ExpertProfile != null)
+                    .Select(s => s.SearchHire.Expert.ExpertProfile.Id)
+                    .Distinct()
+                    .ToList();
+
+                // ✅ Cargar disponibilidades de expertos
+                var availabilities = new Dictionary<int, ExpertAvailability>();
+                if (expertIds.Any())
                 {
-                    Id = s.Id,
-                    UserId = s.UserId,
-                    Title = s.Title,
-                    Description = s.Description,
-                    Frequency = s.Frequency,
-                    IsActive = s.IsActive,
-                    IsRevised = s.IsRevised,
-                    LastExecution = s.LastExecution,
-                    CreatedAt = s.CreatedAt,
-                    StartDate = s.StartDate,
-                    Category = s.SearchParameters.FirstOrDefault()?.Category ?? 0,
-                    User = new UserDto
+                    var expertAvailabilities = await _context.ExpertAvailabilities
+                        .Where(ea => expertIds.Contains(ea.ExpertId) && ea.IsActive && ea.EffectiveTo == null)
+                        .OrderByDescending(ea => ea.EffectiveFrom)
+                        .GroupBy(ea => ea.ExpertId)
+                        .Select(g => g.First())
+                        .ToListAsync();
+
+                    foreach (var availability in expertAvailabilities)
                     {
-                        Email = s.User.Email,
-                        Name = s.User.Name
-                    },
-                    SearchHire = s.SearchHire != null ? new SearchHireDto
+                        availabilities[availability.ExpertId] = availability;
+                    }
+                }
+
+                // ✅ Obtener IDs de categorías únicos de los SearchParameters
+                var categoryIds = searches
+                    .SelectMany(s => s.SearchParameters)
+                    .Where(sp => sp.Category.HasValue)
+                    .Select(sp => sp.Category!.Value)
+                    .Distinct()
+                    .ToList();
+
+                // ✅ Cargar nombres de categorías
+                var categoryNames = new Dictionary<int, string>();
+                if (categoryIds.Any())
+                {
+                    var categories = await _context.Categories
+                        .AsNoTracking()
+                        .Where(c => categoryIds.Contains(c.Id) && c.IsActive)
+                        .Select(c => new { c.Id, c.Name })
+                        .ToListAsync();
+
+                    foreach (var category in categories)
                     {
-                        Id = s.SearchHire.Id,
-                        ExpertId = s.SearchHire.ExpertId ?? 0,
-                        Status = s.SearchHire.Status.StatusValue,
-                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(s.SearchHire.Status.StatusValue),
-                        CreatedAt = s.SearchHire.CreatedAt,
-                        Amount = s.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
-                        BaseAmount = s.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
-                        TaxAmount = s.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
-                        ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
-                        ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
-                          Expert = s.SearchHire.Expert != null ? new UserDto
-                          {
-                              Name = s.SearchHire.Expert.Name,
-                              ProfilePictureUrl = ResolveProfilePictureUrl(s.SearchHire.Expert.ExpertProfile)
-                          } : null,
-                        // ✅ NUEVO: Información completa del estado con colores
-                        StatusInfo = s.SearchHire.Status != null ? new SystemStatusDto
+                        categoryNames[category.Id] = category.Name;
+                    }
+                }
+
+                // Mapear a DTOs
+                var searchDtos = searches.Select(s =>
+                {
+                    // ✅ Obtener primera imagen del servicio
+                    string? serviceImageUrl = null;
+                    if (s.SearchHire?.SearchService?.Images != null && s.SearchHire.SearchService.Images.Any())
+                    {
+                        var firstImage = s.SearchHire.SearchService.Images.OrderBy(img => img.Id).First();
+                        serviceImageUrl = !string.IsNullOrWhiteSpace(firstImage.ImageObjectName)
+                            ? _signedUrlService.GetSignedUrl(firstImage.ImageObjectName) ?? firstImage.ImageUrl
+                            : firstImage.ImageUrl;
+                    }
+
+                    // ✅ Obtener disponibilidad del experto
+                    HomepageExpertAvailabilityDto? expertAvailability = null;
+                    if (s.SearchHire?.Expert?.ExpertProfile != null && 
+                        availabilities.TryGetValue(s.SearchHire.Expert.ExpertProfile.Id, out var availability))
+                    {
+                        var daysOfWeek = System.Text.Json.JsonSerializer.Deserialize<List<string>>(availability.DaysOfWeek) ?? new List<string>();
+                        expertAvailability = new HomepageExpertAvailabilityDto
                         {
-                            Id = s.SearchHire.Status.Id,
-                            StatusType = s.SearchHire.Status.StatusType,
-                            StatusName = s.SearchHire.Status.StatusName,
-                            StatusValue = s.SearchHire.Status.StatusValue,
-                            DisplayName = s.SearchHire.Status.DisplayName,
-                            Description = s.SearchHire.Status.Description,
-                            Color = s.SearchHire.Status.Color,
-                            IsActive = s.SearchHire.Status.IsActive,
-                            IsFinalizationStatus = s.SearchHire.Status.IsFinalizationStatus,
-                            SortOrder = s.SearchHire.Status.SortOrder,
-                            CreatedAt = s.SearchHire.Status.CreatedAt,
-                            UpdatedAt = s.SearchHire.Status.UpdatedAt
-                        } : null
-                    } : null
+                            DaysOfWeek = daysOfWeek,
+                            StartTime = availability.StartTime,
+                            EndTime = availability.EndTime
+                        };
+                    }
+
+                    // ✅ Obtener ciudad del experto
+                    string? expertCity = null;
+                    if (s.SearchHire?.Expert?.ExpertProfile != null)
+                    {
+                        expertCity = s.SearchHire.Expert.ExpertProfile.City;
+                    }
+
+                    // ✅ Obtener categoría y nombre de categoría
+                    var categoryId = s.SearchParameters.FirstOrDefault()?.Category ?? 0;
+                    var categoryName = categoryId > 0 && categoryNames.TryGetValue(categoryId, out var name) 
+                        ? name 
+                        : null;
+
+                    return new SearchListDto
+                    {
+                        Id = s.Id,
+                        UserId = s.UserId,
+                        Title = s.Title,
+                        Description = s.Description,
+                        Frequency = s.Frequency,
+                        IsActive = s.IsActive,
+                        IsRevised = s.IsRevised,
+                        LastExecution = s.LastExecution,
+                        CreatedAt = s.CreatedAt,
+                        StartDate = s.StartDate,
+                        Category = categoryId,
+                        CategoryName = categoryName, // ✅ NUEVO: Nombre de la categoría
+                        User = new UserDto
+                        {
+                            Email = s.User.Email,
+                            Name = s.User.Name
+                        },
+                        SearchHire = s.SearchHire != null ? new SearchHireDto
+                        {
+                            Id = s.SearchHire.Id,
+                            ExpertId = s.SearchHire.ExpertId ?? 0,
+                            Status = s.SearchHire.Status.StatusValue,
+                            StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(s.SearchHire.Status.StatusValue),
+                            CreatedAt = s.SearchHire.CreatedAt,
+                            Amount = s.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
+                            BaseAmount = s.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
+                            TaxAmount = s.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
+                            ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
+                            ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
+                              Expert = s.SearchHire.Expert != null ? new UserDto
+                              {
+                                  Name = s.SearchHire.Expert.Name,
+                                  ProfilePictureUrl = ResolveProfilePictureUrl(s.SearchHire.Expert.ExpertProfile)
+                              } : null,
+                            // ✅ NUEVO: Información completa del estado con colores
+                            StatusInfo = s.SearchHire.Status != null ? new SystemStatusDto
+                            {
+                                Id = s.SearchHire.Status.Id,
+                                StatusType = s.SearchHire.Status.StatusType,
+                                StatusName = s.SearchHire.Status.StatusName,
+                                StatusValue = s.SearchHire.Status.StatusValue,
+                                DisplayName = s.SearchHire.Status.DisplayName,
+                                Description = s.SearchHire.Status.Description,
+                                Color = s.SearchHire.Status.Color,
+                                IsActive = s.SearchHire.Status.IsActive,
+                                IsFinalizationStatus = s.SearchHire.Status.IsFinalizationStatus,
+                                SortOrder = s.SearchHire.Status.SortOrder,
+                                CreatedAt = s.SearchHire.Status.CreatedAt,
+                                UpdatedAt = s.SearchHire.Status.UpdatedAt
+                            } : null,
+                            // ✅ NUEVO: Mapear información del servicio
+                            Service = s.SearchHire.SearchService != null ? new ServiceInfo
+                            {
+                                Id = s.SearchHire.SearchService.Id,
+                                ServiceTypeId = s.SearchHire.SearchService.ServiceTypeId,
+                                ServiceTypeName = s.SearchHire.SearchService.ServiceType?.Name ?? "Unknown Service Type",
+                                ServiceTypeCategoryId = s.SearchHire.SearchService.ServiceType?.ServiceTypeCategoryId,
+                                ServiceTypeCategoryName = s.SearchHire.SearchService.ServiceType?.ServiceTypeCategory?.Name,
+                                RequiresAppointment = s.SearchHire.SearchService.ServiceType?.RequiresAppointment ?? false,
+                                Price = s.SearchHire.SearchService.Price,
+                                ExpertLatitude = s.SearchHire.SearchService.ExpertProfile?.Latitude,
+                                ExpertLongitude = s.SearchHire.SearchService.ExpertProfile?.Longitude,
+                                LocationRange = s.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50
+                            } : null
+                        } : null,
+                        // ✅ NUEVO: Imagen del servicio, horario y ciudad del experto
+                        ServiceImageUrl = serviceImageUrl,
+                        ExpertAvailability = expertAvailability,
+                        ExpertCity = expertCity
+                    };
                 }).ToList();
 
                 // Crear respuesta paginada

@@ -17,6 +17,7 @@ namespace newApi.DataLayer.Models.DTOs
         public DateTime StartDate { get; set; }
         public string? LocationName { get; set; } // Nombre de la ubicación (ej: "Calle Juan Sadar, Soria")
         public int Category { get; set; }
+        public string? CategoryName { get; set; } // ✅ NUEVO: Nombre de la categoría (ej: "Hogar", "Coches", "Motos")
         public UserDto User { get; set; }
         public SearchHireDto? SearchHire { get; set; }
         
@@ -24,6 +25,11 @@ namespace newApi.DataLayer.Models.DTOs
         public int UnreadMessagesCount { get; set; } // Número de mensajes sin leer
         public bool HasPendingAppointment { get; set; } // Si hay una cita pendiente
         public string? PendingAppointmentStatus { get; set; } // Estado de la cita pendiente
+        
+        // ✅ NUEVO: Información del servicio y experto para cards
+        public string? ServiceImageUrl { get; set; } // Primera imagen del servicio (si hay SearchHire con SearchService)
+        public HomepageExpertAvailabilityDto? ExpertAvailability { get; set; } // Horario del experto
+        public string? ExpertCity { get; set; } // Ciudad del experto (ej: "Madrid", "Barcelona")
     }
 
 

@@ -20,17 +20,20 @@ namespace newApi.Controllers
         private readonly AppDbContext _context;
         private readonly ILoggingService _loggingService;
         private readonly ILogger<SearchServiceController> _logger;
+        private readonly IFavoriteService _favoriteService;
 
         public SearchServiceController(
             SearchServiceService searchServiceService,
             AppDbContext context,
             ILoggingService loggingService,
-            ILogger<SearchServiceController> logger)
+            ILogger<SearchServiceController> logger,
+            IFavoriteService favoriteService)
         {
             _searchServiceService = searchServiceService;
             _context = context;
             _loggingService = loggingService;
             _logger = logger;
+            _favoriteService = favoriteService;
         }
 
         private string GetStripeStatusMessage(StripeStatus status)
@@ -999,6 +1002,54 @@ namespace newApi.Controllers
                 
                 string categoryName = category;
                 
+                // ✅ Obtener userId del usuario autenticado (si existe)
+                int? userId = null;
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (!string.IsNullOrEmpty(userIdClaim) && int.TryParse(userIdClaim, out int parsedUserId))
+                {
+                    userId = parsedUserId;
+                }
+                
+                // ✅ Recolectar todos los IDs de servicios para verificar favoritos
+                var allServiceIds = new List<int>();
+                allServiceIds.AddRange(nearbyServicesList.Select(s => s.Id));
+                allServiceIds.AddRange(popularServicesList.Select(s => s.Id));
+                
+                // ✅ Verificar favoritos de forma eficiente (una sola consulta a la BD)
+                Dictionary<int, bool> favoritesMap = new Dictionary<int, bool>();
+                if (userId.HasValue && allServiceIds.Any())
+                {
+                    _logger.LogInformation($"[ENDPOINT] 🔍 GetHomepageWall - Verificando favoritos para {allServiceIds.Count} servicios...");
+                    var favoritesStartTime = DateTime.UtcNow;
+                    
+                    // ✅ Consulta directa a la BD para obtener todos los favoritos de una vez
+                    var favoriteServiceIds = await _context.SearchServiceFavorites
+                        .AsNoTracking()
+                        .Where(f => f.UserId == userId.Value && allServiceIds.Contains(f.SearchServiceId))
+                        .Select(f => f.SearchServiceId)
+                        .ToListAsync(cts.Token);
+                    
+                    // Crear mapa de favoritos
+                    foreach (var serviceId in allServiceIds)
+                    {
+                        favoritesMap[serviceId] = favoriteServiceIds.Contains(serviceId);
+                    }
+                    
+                    var favoritesDuration = (DateTime.UtcNow - favoritesStartTime).TotalMilliseconds;
+                    _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - Favoritos verificados: {favoriteServiceIds.Count} favoritos encontrados, Duración: {favoritesDuration:F2}ms");
+                }
+                
+                // ✅ Aplicar IsFavorite a cada servicio
+                foreach (var service in nearbyServicesList)
+                {
+                    service.IsFavorite = favoritesMap.TryGetValue(service.Id, out var isFavorite) ? isFavorite : false;
+                }
+                
+                foreach (var service in popularServicesList)
+                {
+                    service.IsFavorite = favoritesMap.TryGetValue(service.Id, out var isFavorite) ? isFavorite : false;
+                }
+                
                 // ✅ Construir array plano con todas las secciones
                 var allSections = new List<object>();
                 
@@ -1063,20 +1114,60 @@ namespace newApi.Controllers
                     foreach (var section in categoryCountrySections)
                     {
                         var (services, totalCount, sectionCategoryName, country) = section.Value;
+                        var servicesList = services.ToList();
+                        
+                        // ✅ Añadir IDs de servicios de estas secciones para verificar favoritos
+                        allServiceIds.AddRange(servicesList.Select(s => s.Id));
+                        
+                        // ✅ Verificar favoritos de servicios de estas secciones si aún no están en el mapa
+                        if (userId.HasValue)
+                        {
+                            var newServiceIds = servicesList.Select(s => s.Id).Where(id => !favoritesMap.ContainsKey(id)).ToList();
+                            if (newServiceIds.Any())
+                            {
+                                // ✅ Consulta directa a la BD para obtener favoritos de estos servicios
+                                var newFavoriteServiceIds = await _context.SearchServiceFavorites
+                                    .AsNoTracking()
+                                    .Where(f => f.UserId == userId.Value && newServiceIds.Contains(f.SearchServiceId))
+                                    .Select(f => f.SearchServiceId)
+                                    .ToListAsync(cts.Token);
+                                
+                                foreach (var serviceId in newServiceIds)
+                                {
+                                    favoritesMap[serviceId] = newFavoriteServiceIds.Contains(serviceId);
+                                }
+                            }
+                        }
+                        
+                        // ✅ Aplicar IsFavorite a cada servicio de estas secciones
+                        foreach (var service in servicesList)
+                        {
+                            service.IsFavorite = favoritesMap.TryGetValue(service.Id, out var isFavorite) ? isFavorite : false;
+                        }
+                        
+                        // ✅ Asegurar que CategoryName esté presente (ya debería estar, pero por si acaso)
+                        foreach (var service in servicesList)
+                        {
+                            if (string.IsNullOrEmpty(service.CategoryName))
+                            {
+                                // Si por alguna razón no tiene CategoryName, obtenerlo de la sección
+                                service.CategoryName = sectionCategoryName;
+                            }
+                        }
                         
                         allSections.Add(new
                         {
                             title = $"Revisiones en {GetCountryDisplayName(country)}", // Ej: "Revisiones en Alemania"
-                            services = services,
+                            services = servicesList,
                             categoryName = sectionCategoryName,
                             country = country,
                             pagination = new
                             {
                                 page = 1,
-                                pageSize = services.Count(),
+                                pageSize = servicesList.Count,
                                 totalCount = totalCount,
                                 totalPages = (int)Math.Ceiling(totalCount / 20.0),
-                                hasNextPage = totalCount > services.Count(),
+                                hasNextPage = totalCount > servicesList.Count,
                                 hasPreviousPage = false
                             }
                         });

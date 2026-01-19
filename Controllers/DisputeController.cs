@@ -11,6 +11,7 @@ using Google.Cloud.Storage.V1;
 using Microsoft.Extensions.Configuration;
 using System.IO;
 using newApi.Services;
+using Hangfire;
 
 namespace newApi.Controllers
 {
@@ -132,7 +133,50 @@ namespace newApi.Controllers
 
                         _context.Disputes.Add(dispute);
                         await _context.SaveChangesAsync();
+                        
+                        // ✅ FIX: Cancelar todos los timers activos del appointment cuando se crea una disputa
+                        var appointment = await _context.Appointments
+                            .Include(a => a.Timers)
+                            .FirstOrDefaultAsync(a => a.SearchHireId == request.SearchHireId);
+                        
+                        var hangfireJobIdsToCancel = new List<string>();
+                        
+                        if (appointment != null)
+                        {
+                            var activeTimers = appointment.Timers
+                                .Where(t => !t.IsExpired)
+                                .ToList();
+                            
+                            foreach (var timer in activeTimers)
+                            {
+                                timer.IsExpired = true;
+                                timer.ExpiredAt = DateTime.UtcNow;
+                                
+                                if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                                {
+                                    hangfireJobIdsToCancel.Add(timer.HangfireJobId);
+                                    timer.HangfireJobId = null;
+                                }
+                            }
+                            
+                            await _context.SaveChangesAsync();
+                        }
+                        
                         await transaction.CommitAsync();
+                        
+                        // Cancelar jobs de Hangfire DESPUÉS del commit
+                        foreach (var jobId in hangfireJobIdsToCancel)
+                        {
+                            try
+                            {
+                                BackgroundJob.Delete(jobId);
+                            }
+                            catch
+                            {
+                                // Si el job ya no existe o fue procesado, continuar sin error
+                            }
+                        }
+                        
                         return Ok(new { message = "Dispute opened", disputeId = dispute.Id });
                     }
                     catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
@@ -405,6 +449,23 @@ namespace newApi.Controllers
                     dispute.ResolutionComments = request.ResolutionComments;
                     await _context.SaveChangesAsync();
 
+                        // ✅ FIX: Actualizar el estado del SearchHire ANTES de procesar dinero
+                        // Esto asegura que el estado se actualice incluso si falla el procesamiento de dinero
+                        string targetStatusValue = request.Action.ToLower() == "refund_client"
+                            ? SearchHireStatus.DisputeResolvedClient.ToStringValue()
+                            : SearchHireStatus.DisputeResolvedExpert.ToStringValue();
+                        
+                        var targetStatusRow = await _context.SystemStatuses
+                            .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                       s.StatusValue == targetStatusValue);
+                        
+                        if (targetStatusRow != null && dispute.SearchHire.StatusId != targetStatusRow.Id)
+                        {
+                            dispute.SearchHire.StatusId = targetStatusRow.Id;
+                            dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
+                            await _context.SaveChangesAsync();
+                        }
+
                         switch (request.Action.ToLower())
                         {
                             case "refund_client":
@@ -412,10 +473,13 @@ namespace newApi.Controllers
                                     try
                                     {
                                         var refundReason = $"Dispute resolved in favor of client: {request.ResolutionComments}";
+                                        // ✅ FIX: Pasar updateState=false porque ya actualizamos el estado arriba
                                         var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
                                             dispute.SearchHire.Id,
                                             SearchHireStatus.DisputeResolvedClient.ToStringValue(),
-                                            refundReason);
+                                            refundReason,
+                                            null,
+                                            updateState: false);
                                         if (!refundSuccess)
                                         {
                                             var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
@@ -511,10 +575,13 @@ namespace newApi.Controllers
                                 {
                                     try
                                     {
+                                        // ✅ FIX: Pasar updateState=false porque ya actualizamos el estado arriba
                                         var transferSuccess = await _refundService.ProcessMoneyDistributionAsync(
                                             dispute.SearchHire.Id,
                                             SearchHireStatus.DisputeResolvedExpert.ToStringValue(),
-                                            "Dispute resolved in favor of expert");
+                                            "Dispute resolved in favor of expert",
+                                            null,
+                                            updateState: false);
                                         if (!transferSuccess)
                                         {
                                             var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
@@ -1032,35 +1099,84 @@ namespace newApi.Controllers
                 // Variable para almacenar el ID de la disputa creada
                 int disputeId = 0;
                 
-                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
-                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
-                // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
-                _context.Database.AutoSavepointsEnabled = false;
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                
-                try
+                // ✅ FIX: Usar ExecutionStrategy para envolver la transacción cuando EnableRetryOnFailure está activo
+                var strategy = _context.Database.CreateExecutionStrategy();
+                await strategy.ExecuteAsync(async () =>
                 {
-                    // Crear la disputa
-                    var dispute = new DataLayer.Models.PostGresModels.Dispute
-                    {
-                        SearchHireId = request.SearchHireId,
-                        ReporterId = userId,
-                        Reason = request.Reason,
-                        Status = "Pending",
-                        CreatedAt = DateTime.UtcNow,
-                        // Establecer ventana de 48h para que el experto responda
-                        ExpertResponseDeadline = DateTime.UtcNow.AddHours(48)
-                    };
-                    _context.Disputes.Add(dispute);
-                    await _context.SaveChangesAsync();
-                    // Actualizar el estado del SearchHire a Disputed
-                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
-                    await _context.SaveChangesAsync();
+                    // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
+                    _context.Database.AutoSavepointsEnabled = false;
+                    using var transaction = await _context.Database.BeginTransactionAsync();
                     
-                    await transaction.CommitAsync();
-                    // Guardar el ID para uso posterior
-                    disputeId = dispute.Id;
-                }
+                    try
+                    {
+                        // Crear la disputa
+                        var dispute = new DataLayer.Models.PostGresModels.Dispute
+                        {
+                            SearchHireId = request.SearchHireId,
+                            ReporterId = userId,
+                            Reason = request.Reason,
+                            Status = "Pending",
+                            CreatedAt = DateTime.UtcNow,
+                            // Establecer ventana de 48h para que el experto responda
+                            ExpertResponseDeadline = DateTime.UtcNow.AddHours(48)
+                        };
+                        _context.Disputes.Add(dispute);
+                        await _context.SaveChangesAsync();
+                        // Actualizar el estado del SearchHire a Disputed
+                        searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
+                        await _context.SaveChangesAsync();
+                        
+                        // ✅ FIX: Cancelar todos los timers activos del appointment cuando se crea una disputa
+                        // Esto evita que el timer de "client_decision" se ejecute después de que el cliente ya disputó
+                        var appointment = await _context.Appointments
+                            .Include(a => a.Timers)
+                            .FirstOrDefaultAsync(a => a.SearchHireId == request.SearchHireId);
+                        
+                        if (appointment != null)
+                        {
+                            var activeTimers = appointment.Timers
+                                .Where(t => !t.IsExpired)
+                                .ToList();
+                            
+                            var hangfireJobIdsToCancel = new List<string>();
+                            
+                            foreach (var timer in activeTimers)
+                            {
+                                timer.IsExpired = true;
+                                timer.ExpiredAt = DateTime.UtcNow;
+                                
+                                // Almacenar JobId para cancelarlo después del commit
+                                if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                                {
+                                    hangfireJobIdsToCancel.Add(timer.HangfireJobId);
+                                    timer.HangfireJobId = null; // Limpiar referencia
+                                }
+                            }
+                            
+                            await _context.SaveChangesAsync();
+                            
+                            // Cancelar jobs de Hangfire DESPUÉS del commit (mejor práctica: operaciones externas fuera de transacción)
+                            await transaction.CommitAsync();
+                            
+                            foreach (var jobId in hangfireJobIdsToCancel)
+                            {
+                                try
+                                {
+                                    Hangfire.BackgroundJob.Delete(jobId);
+                                }
+                                catch
+                                {
+                                    // Si el job ya no existe o fue procesado, continuar sin error
+                                }
+                            }
+                        }
+                        else
+                        {
+                            await transaction.CommitAsync();
+                        }
+                        // Guardar el ID para uso posterior
+                        disputeId = dispute.Id;
+                    }
                 catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
                 {
                     // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
@@ -1095,14 +1211,69 @@ namespace newApi.Controllers
                         recoverySearchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
                         await recoveryContext.SaveChangesAsync();
                         
+                        // ✅ FIX: Cancelar todos los timers activos del appointment cuando se crea una disputa (recovery)
+                        var recoveryAppointment = await recoveryContext.Appointments
+                            .Include(a => a.Timers)
+                            .FirstOrDefaultAsync(a => a.SearchHireId == request.SearchHireId);
+                        
+                        if (recoveryAppointment != null)
+                        {
+                            var activeTimers = recoveryAppointment.Timers
+                                .Where(t => !t.IsExpired)
+                                .ToList();
+                            
+                            var hangfireJobIdsToCancel = new List<string>();
+                            
+                            foreach (var timer in activeTimers)
+                            {
+                                timer.IsExpired = true;
+                                timer.ExpiredAt = DateTime.UtcNow;
+                                
+                                if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                                {
+                                    hangfireJobIdsToCancel.Add(timer.HangfireJobId);
+                                    timer.HangfireJobId = null;
+                                }
+                            }
+                            
+                            await recoveryContext.SaveChangesAsync();
+                            
+                            // Cancelar jobs de Hangfire DESPUÉS de guardar
+                            foreach (var jobId in hangfireJobIdsToCancel)
+                            {
+                                try
+                                {
+                                    BackgroundJob.Delete(jobId);
+                                }
+                                catch
+                                {
+                                    // Si el job ya no existe o fue procesado, continuar sin error
+                                }
+                            }
+                        }
+                        
                         disputeId = recoveryDispute.Id;
                     }
                     else
                     {
-                        return StatusCode(500, new { message = "Failed to create dispute - connection error" });
+                        // ✅ LOGGING: Registrar error de recovery
+                        await _loggingService.LogErrorAsync(
+                            message: "Error al recuperar SearchHire en recovery de disputa (DbUpdateException)",
+                            details: $"No se pudo encontrar SearchHire {request.SearchHireId} en contexto de recovery después de DbUpdateException con ObjectDisposedException",
+                            userId: userId,
+                            source: "DisputeController.CreateDisputeWithFiles",
+                            relatedEntityType: "Dispute",
+                            relatedEntityId: null,
+                            additionalData: new { 
+                                SearchHireId = request.SearchHireId,
+                                UserId = userId
+                            }
+                        );
+                        
+                        throw new InvalidOperationException("Failed to create dispute - connection error");
                     }
                 }
-                catch (ObjectDisposedException disposedEx)
+                    catch (ObjectDisposedException disposedEx)
                 {
                     // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
                     try
@@ -1136,25 +1307,104 @@ namespace newApi.Controllers
                         recoverySearchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
                         await recoveryContext.SaveChangesAsync();
                         
+                        // ✅ FIX: Cancelar todos los timers activos del appointment cuando se crea una disputa (recovery)
+                        var recoveryAppointment = await recoveryContext.Appointments
+                            .Include(a => a.Timers)
+                            .FirstOrDefaultAsync(a => a.SearchHireId == request.SearchHireId);
+                        
+                        if (recoveryAppointment != null)
+                        {
+                            var activeTimers = recoveryAppointment.Timers
+                                .Where(t => !t.IsExpired)
+                                .ToList();
+                            
+                            var hangfireJobIdsToCancel = new List<string>();
+                            
+                            foreach (var timer in activeTimers)
+                            {
+                                timer.IsExpired = true;
+                                timer.ExpiredAt = DateTime.UtcNow;
+                                
+                                if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                                {
+                                    hangfireJobIdsToCancel.Add(timer.HangfireJobId);
+                                    timer.HangfireJobId = null;
+                                }
+                            }
+                            
+                            await recoveryContext.SaveChangesAsync();
+                            
+                            // Cancelar jobs de Hangfire DESPUÉS de guardar
+                            foreach (var jobId in hangfireJobIdsToCancel)
+                            {
+                                try
+                                {
+                                    BackgroundJob.Delete(jobId);
+                                }
+                                catch
+                                {
+                                    // Si el job ya no existe o fue procesado, continuar sin error
+                                }
+                            }
+                        }
+                        
                         disputeId = recoveryDispute.Id;
                     }
                     else
                     {
-                        return StatusCode(500, new { message = "Failed to create dispute - connection error" });
+                        // ✅ LOGGING: Registrar error de recovery
+                        await _loggingService.LogErrorAsync(
+                            message: "Error al recuperar SearchHire en recovery de disputa (ObjectDisposedException)",
+                            details: $"No se pudo encontrar SearchHire {request.SearchHireId} en contexto de recovery después de ObjectDisposedException",
+                            userId: userId,
+                            source: "DisputeController.CreateDisputeWithFiles",
+                            relatedEntityType: "Dispute",
+                            relatedEntityId: null,
+                            additionalData: new { 
+                                SearchHireId = request.SearchHireId,
+                                UserId = userId
+                            }
+                        );
+                        
+                        throw new InvalidOperationException("Failed to create dispute - connection error");
                     }
                 }
-                catch (Exception ex)
-                {
-                    try
+                    catch (Exception ex)
                     {
-                        await transaction.RollbackAsync();
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch
+                        {
+                            // Ignorar errores de rollback
+                        }
+                        
+                        // ✅ LOGGING: Registrar error detallado antes de lanzar
+                        await _loggingService.LogErrorAsync(
+                            message: "Error al crear disputa en transacción",
+                            details: $"Error al crear disputa para SearchHire {request.SearchHireId}. " +
+                                    $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                                    $"UserId: {userId}, ReporterId: {userId}, Reason: {request.Reason?.Substring(0, Math.Min(100, request.Reason?.Length ?? 0))}... " +
+                                    $"StackTrace: {ex.StackTrace}",
+                            userId: userId,
+                            source: "DisputeController.CreateDisputeWithFiles",
+                            relatedEntityType: "Dispute",
+                            relatedEntityId: null,
+                            additionalData: new { 
+                                SearchHireId = request.SearchHireId,
+                                UserId = userId,
+                                Reason = request.Reason,
+                                ErrorType = ex.GetType().Name,
+                                ErrorMessage = ex.Message,
+                                StackTrace = ex.StackTrace,
+                                InnerException = ex.InnerException?.Message
+                            }
+                        );
+                        
+                        throw;
                     }
-                    catch
-                    {
-                        // Ignorar errores de rollback
-                    }
-                    throw;
-                }
+                });
 
                 // ✅ Notificar a la otra parte sobre la disputa creada
                 if (searchHire.ClientId == userId)
@@ -1245,7 +1495,31 @@ namespace newApi.Controllers
                             }
                             catch (Exception ex)
                             {
-                                return StatusCode(500, new { message = "Failed to upload file" });
+                                // ✅ LOGGING: Registrar error al subir archivo
+                                await _loggingService.LogErrorAsync(
+                                    message: "Error al subir archivo en disputa",
+                                    details: $"Error al subir archivo '{file.FileName}' para disputa {disputeId}. " +
+                                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                                            $"FileSize: {file.Length}, ContentType: {file.ContentType}",
+                                    userId: userId,
+                                    source: "DisputeController.CreateDisputeWithFiles",
+                                    relatedEntityType: "Dispute",
+                                    relatedEntityId: disputeId,
+                                    additionalData: new { 
+                                        DisputeId = disputeId,
+                                        FileName = file.FileName,
+                                        FileSize = file.Length,
+                                        ContentType = file.ContentType,
+                                        ErrorType = ex.GetType().Name,
+                                        ErrorMessage = ex.Message
+                                    }
+                                );
+                                
+                                return StatusCode(500, new { 
+                                    message = "Failed to upload file",
+                                    fileName = file.FileName,
+                                    error = ex.Message
+                                });
                             }
                         }
                     }
@@ -1260,7 +1534,42 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "An error occurred while creating the dispute" });
+                // ✅ LOGGING: Registrar error detallado en el catch final
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                int? userId = null;
+                if (!string.IsNullOrEmpty(userIdClaim) && int.TryParse(userIdClaim, out int parsedUserId))
+                {
+                    userId = parsedUserId;
+                }
+                
+                await _loggingService.LogErrorAsync(
+                    message: "CRITICAL: Error al crear disputa",
+                    details: $"Error crítico al crear disputa. " +
+                            $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
+                            $"UserId: {userId?.ToString() ?? "unknown"}, SearchHireId: {request?.SearchHireId ?? 0}, " +
+                            $"Reason: {request?.Reason?.Substring(0, Math.Min(100, request?.Reason?.Length ?? 0)) ?? "N/A"}... " +
+                            $"StackTrace: {ex.StackTrace}",
+                    userId: userId,
+                    source: "DisputeController.CreateDisputeWithFiles",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: null,
+                    additionalData: new { 
+                        SearchHireId = request?.SearchHireId ?? 0,
+                        UserId = userId,
+                        Reason = request?.Reason,
+                        ErrorType = ex.GetType().Name,
+                        ErrorMessage = ex.Message,
+                        StackTrace = ex.StackTrace,
+                        InnerException = ex.InnerException?.Message,
+                        InnerExceptionType = ex.InnerException?.GetType().Name
+                    }
+                );
+                
+                return StatusCode(500, new { 
+                    message = "An error occurred while creating the dispute",
+                    error = ex.Message,
+                    errorType = ex.GetType().Name
+                });
             }
         }
 

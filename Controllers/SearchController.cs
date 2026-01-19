@@ -29,6 +29,19 @@ namespace newApi.Controllers
         private readonly ILoggingService _loggingService;
         private readonly ISignedUrlService _signedUrlService;
 
+        // ✅ COMENTADO: Ya no necesario - Stripe usa default automático configurado en Dashboard
+        // Según docs oficiales Stripe 2026, se recomienda usar "unspecified" y configurar
+        // "Automatic" como default en Dashboard (Tax Settings → "Incluir impuestos en los precios")
+        // private static string GetTaxBehaviorForCurrency(string currency)
+        // {
+        //     return currency?.ToLower() switch
+        //     {
+        //         "usd" => "exclusive",
+        //         "cad" => "exclusive",
+        //         _ => "inclusive" // EUR, GBP, MXN, etc.
+        //     };
+        // }
+
         public SearchController(
             AppDbContext context,
             IAuthorizationServices authService,
@@ -532,9 +545,10 @@ namespace newApi.Controllers
                                     ProductData = new SessionLineItemPriceDataProductDataOptions
                                     {
                                         Name = $"Payment for Service {service.Id}"
-                                    },
-                                    // ✅ STRIPE TAX: Configurar tax como inclusivo
-                                    TaxBehavior = "inclusive"
+                                    }
+                                    // ✅ STRIPE TAX (Docs 2026): NO especificar TaxBehavior para que Stripe use el default automático configurado en Dashboard
+                                    // Si el Dashboard está en "Automático", Stripe aplicará según moneda: USD/CAD → exclusive, resto → inclusive
+                                    // Si se especifica, solo se permiten: "inclusive" o "exclusive" (no "unspecified" ni "automatic")
                                 },
                                 Quantity = 1
                             }
@@ -554,8 +568,20 @@ namespace newApi.Controllers
                             { "serviceId", service.Id.ToString() },
                             { "amount", amountToCharge.ToString() },
                             { "pendingHire", "true" },
-                            { "searchData", JsonSerializer.Serialize(searchDto) },
-                            { "parameters", JsonSerializer.Serialize(parameterDto) }
+                            // ✅ OPTIMIZACIÓN: Solo enviar campos esenciales para evitar exceder límite de 500 caracteres
+                            // En lugar de serializar DTOs completos, enviar solo IDs y campos críticos
+                            { "searchId", "0" }, // ✅ CreateSearchDto no tiene Id (se crea después del pago)
+                            { "searchTitle", searchDto?.Title?.Length > 100 ? searchDto.Title.Substring(0, 100) : searchDto?.Title ?? "" },
+                            { "searchDescription", searchDto?.Description?.Length > 100 ? searchDto.Description.Substring(0, 100) : searchDto?.Description ?? "" },
+                            { "frequency", searchDto?.Frequency.ToString() ?? "24" },
+                            { "keywords", parameterDto?.Keywords?.Length > 100 ? parameterDto.Keywords.Substring(0, 100) : parameterDto?.Keywords ?? "" },
+                            { "userSearch", parameterDto?.UserSearch?.Length > 200 ? parameterDto.UserSearch.Substring(0, 200) : parameterDto?.UserSearch ?? "" },
+                            { "latitude", parameterDto?.Latitude ?? "" },
+                            { "longitude", parameterDto?.Longitude ?? "" },
+                            { "locationName", parameterDto?.LocationName?.Length > 100 ? parameterDto.LocationName.Substring(0, 100) : parameterDto?.LocationName ?? "" },
+                            { "categoryId", parameterDto?.Category?.ToString() ?? "" },
+                            { "serviceTypeId", parameterDto?.ServiceTypeId?.ToString() ?? "" },
+                            { "locationRange", parameterDto?.LocationRange?.ToString() ?? "" }
                         },
                         // ✅ CAPTURA MANUAL: Autoriza el pago pero no lo captura hasta validar todo en el webhook
                         // Esto evita perder comisiones si algo falla después del pago

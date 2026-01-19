@@ -631,6 +631,25 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "La duración debe ser mayor que 0" });
                 }
 
+                // ✅ VALIDACIÓN: Verificar que al menos un tipo de entregable esté seleccionado
+                if (string.IsNullOrWhiteSpace(request.SelectedDeliverableTypes))
+                {
+                    return BadRequest(new { message = "Debe seleccionar al menos un tipo de archivo de entrega (PDF, Video, etc.)" });
+                }
+
+                try
+                {
+                    var deliverableTypeIds = System.Text.Json.JsonSerializer.Deserialize<int[]>(request.SelectedDeliverableTypes);
+                    if (deliverableTypeIds == null || deliverableTypeIds.Length == 0)
+                    {
+                        return BadRequest(new { message = "Debe seleccionar al menos un tipo de archivo de entrega (PDF, Video, etc.)" });
+                    }
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return BadRequest(new { message = "El formato de tipos de entregables no es válido" });
+                }
+
                 var (success, service, imageUrls) = await _searchServiceService.CreateSearchService(userId, request);
                 if (!success)
                 {
@@ -815,6 +834,25 @@ namespace newApi.Controllers
                 if (request.DurationInHours <= 0)
                 {
                     return BadRequest(new { message = "La duración debe ser mayor que 0" });
+                }
+
+                // ✅ VALIDACIÓN: Verificar que al menos un tipo de entregable esté seleccionado
+                if (string.IsNullOrWhiteSpace(request.SelectedDeliverableTypes))
+                {
+                    return BadRequest(new { message = "Debe seleccionar al menos un tipo de archivo de entrega (PDF, Video, etc.)" });
+                }
+
+                try
+                {
+                    var deliverableTypeIds = System.Text.Json.JsonSerializer.Deserialize<int[]>(request.SelectedDeliverableTypes);
+                    if (deliverableTypeIds == null || deliverableTypeIds.Length == 0)
+                    {
+                        return BadRequest(new { message = "Debe seleccionar al menos un tipo de archivo de entrega (PDF, Video, etc.)" });
+                    }
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return BadRequest(new { message = "El formato de tipos de entregables no es válido" });
                 }
 
                 var (success, newService, imageUrls) = await _searchServiceService.UpdateSearchService(userId, request);

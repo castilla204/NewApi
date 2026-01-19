@@ -1153,6 +1153,26 @@ namespace newApi.Services
                     searchService = recoveryService; // Actualizar referencia
                 }
                 
+                // ✅ VALIDACIÓN: Verificar que al menos un tipo de entregable esté seleccionado
+                if (string.IsNullOrWhiteSpace(request.SelectedDeliverableTypes))
+                {
+                    return (false, null, null); // No se puede crear servicio sin tipos de entregables
+                }
+
+                int[] deliverableTypeIds;
+                try
+                {
+                    deliverableTypeIds = System.Text.Json.JsonSerializer.Deserialize<int[]>(request.SelectedDeliverableTypes);
+                    if (deliverableTypeIds == null || deliverableTypeIds.Length == 0)
+                    {
+                        return (false, null, null); // No se puede crear servicio sin tipos de entregables
+                    }
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return (false, null, null); // Formato inválido
+                }
+
                 // Procesar tipos de entregables seleccionados
                 bool deliverableTypesRecoveryUsed = false;
                 AppDbContext deliverableTypesContext = _context;
@@ -1161,7 +1181,8 @@ namespace newApi.Services
                 {
                     try
                     {
-                        var deliverableTypeIds = System.Text.Json.JsonSerializer.Deserialize<int[]>(request.SelectedDeliverableTypes);
+                        // deliverableTypeIds ya está declarado en el ámbito superior
+                        deliverableTypeIds = System.Text.Json.JsonSerializer.Deserialize<int[]>(request.SelectedDeliverableTypes);
                         _logger.LogInformation("Creating deliverable types for service {ServiceId} with {Count} types: {Types}", serviceId, deliverableTypeIds?.Length ?? 0, string.Join(", ", deliverableTypeIds ?? Array.Empty<int>()));
                         
                         foreach (var deliverableTypeId in deliverableTypeIds)
@@ -1815,6 +1836,26 @@ namespace newApi.Services
                     newServiceId = recoveryService.Id; // ✅ FIX: Guardar ID del servicio recuperado
                     newSearchService = recoveryService; // Actualizar referencia
                 }
+                // ✅ VALIDACIÓN: Verificar que al menos un tipo de entregable esté seleccionado
+                if (string.IsNullOrWhiteSpace(request.SelectedDeliverableTypes))
+                {
+                    return (false, null, null); // No se puede actualizar servicio sin tipos de entregables
+                }
+
+                int[] deliverableTypeIds;
+                try
+                {
+                    deliverableTypeIds = System.Text.Json.JsonSerializer.Deserialize<int[]>(request.SelectedDeliverableTypes);
+                    if (deliverableTypeIds == null || deliverableTypeIds.Length == 0)
+                    {
+                        return (false, null, null); // No se puede actualizar servicio sin tipos de entregables
+                    }
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return (false, null, null); // Formato inválido
+                }
+
                 // Paso 3: Procesar tipos de entregables seleccionados
                 bool deliverableTypesRecoveryUsed = false;
                 AppDbContext deliverableTypesContext = _context;
@@ -1823,7 +1864,8 @@ namespace newApi.Services
                 {
                     try
                     {
-                        var deliverableTypeIds = System.Text.Json.JsonSerializer.Deserialize<int[]>(request.SelectedDeliverableTypes);
+                        // deliverableTypeIds ya está declarado en el ámbito superior
+                        deliverableTypeIds = System.Text.Json.JsonSerializer.Deserialize<int[]>(request.SelectedDeliverableTypes);
                         _logger.LogInformation("Creating deliverable types for updated service {ServiceId} with {Count} types: {Types}", newServiceId, deliverableTypeIds?.Length ?? 0, string.Join(", ", deliverableTypeIds ?? Array.Empty<int>()));
                         
                         foreach (var deliverableTypeId in deliverableTypeIds)

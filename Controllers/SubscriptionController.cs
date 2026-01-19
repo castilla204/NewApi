@@ -51,6 +51,19 @@ namespace newApi.Controllers
         private string? GeneralWebhookSecret => _configuration["Stripe:GeneralWebhookSecret"];
         private string? StripeSecretKey => _configuration["Stripe:SecretKey"];
 
+        // ✅ COMENTADO: Ya no necesario - Stripe usa default automático configurado en Dashboard
+        // Según docs oficiales Stripe 2026, se recomienda usar "unspecified" y configurar
+        // "Automatic" como default en Dashboard (Tax Settings → "Incluir impuestos en los precios")
+        // private static string GetTaxBehaviorForCurrency(string currency)
+        // {
+        //     return currency?.ToLower() switch
+        //     {
+        //         "usd" => "exclusive",
+        //         "cad" => "exclusive",
+        //         _ => "inclusive" // EUR, GBP, MXN, etc.
+        //     };
+        // }
+
         public SubscriptionController(AppDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService, IInvoiceService invoiceService, IAppointmentService appointmentService, IServiceScopeFactory serviceScopeFactory)
         {
             _context = context;
@@ -1406,9 +1419,10 @@ namespace newApi.Controllers
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {
                                     Name = "Load Money"
-                                },
-                                // ✅ STRIPE TAX: Configurar tax como inclusivo
-                                TaxBehavior = "inclusive"
+                                }
+                                // ✅ STRIPE TAX (Docs 2026): NO especificar TaxBehavior para que Stripe use el default automático configurado en Dashboard
+                                // Si el Dashboard está en "Automático", Stripe aplicará según moneda: USD/CAD → exclusive, resto → inclusive
+                                // Si se especifica, solo se permiten: "inclusive" o "exclusive" (no "unspecified" ni "automatic")
                             },
                             Quantity = 1
                         }
@@ -1608,9 +1622,10 @@ namespace newApi.Controllers
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {
                                     Name = $"Payment for Service {service.Id}"
-                                },
-                                // ✅ STRIPE TAX: Configurar tax como inclusivo (el precio ya incluye IVA)
-                                TaxBehavior = "inclusive" // Stripe hace reverse calc automático
+                                }
+                                // ✅ STRIPE TAX (Docs 2026): NO especificar TaxBehavior para que Stripe use el default automático configurado en Dashboard
+                                // Si el Dashboard está en "Automático", Stripe aplicará según moneda: USD/CAD → exclusive, resto → inclusive
+                                // Si se especifica, solo se permiten: "inclusive" o "exclusive" (no "unspecified" ni "automatic")
                             },
                             Quantity = 1
                         }
@@ -2957,8 +2972,8 @@ namespace newApi.Controllers
             }
             // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
             var user = await _context.Users
-                .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
-                .FirstOrDefaultAsync();
+                        .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
+                        .FirstOrDefaultAsync();
             if (user == null)
             {
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
@@ -2970,20 +2985,55 @@ namespace newApi.Controllers
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
             }
 
-            if (!metadata.TryGetValue("searchData", out var searchDataJson) || !metadata.TryGetValue("parameters", out var parametersJson))
-            {
-                return; // ✅ CORRECTO: Salir silenciosamente en método async Task
-            }
-
+            // ✅ OPTIMIZACIÓN: Construir DTOs desde campos individuales de metadata (evita límite de 500 caracteres)
+            // En lugar de deserializar JSON completo, construir desde campos individuales
             CreateSearchDto searchDto;
             CreateSearchParameterDto parameterDto;
+            
             try
             {
-                searchDto = JsonSerializer.Deserialize<CreateSearchDto>(searchDataJson);
-                parameterDto = JsonSerializer.Deserialize<CreateSearchParameterDto>(parametersJson);
+                // Construir SearchDto desde campos individuales
+                // ✅ Usar el serviceId que ya viene como parámetro del método (más confiable que metadata)
+                searchDto = new CreateSearchDto
+                {
+                    ServiceId = serviceId, // ✅ Usar el parámetro del método directamente
+                    Title = metadata.GetValueOrDefault("searchTitle", ""),
+                    Description = metadata.GetValueOrDefault("searchDescription", ""),
+                    Frequency = int.TryParse(metadata.GetValueOrDefault("frequency", "24"), out int parsedFrequency) ? parsedFrequency : 24,
+                    IsActive = true,
+                    StartDate = DateTime.UtcNow
+                };
+
+                // Construir ParameterDto desde campos individuales
+                parameterDto = new CreateSearchParameterDto
+                {
+                    Keywords = metadata.GetValueOrDefault("keywords", ""),
+                    UserSearch = metadata.GetValueOrDefault("userSearch", ""),
+                    Latitude = metadata.GetValueOrDefault("latitude", ""),
+                    Longitude = metadata.GetValueOrDefault("longitude", ""),
+                    LocationName = metadata.GetValueOrDefault("locationName", ""),
+                    ShippingAvailable = false, // Valor por defecto
+                    StrictMatchOnly = false, // Valor por defecto
+                    Category = int.TryParse(metadata.GetValueOrDefault("categoryId", ""), out int paramCategory) ? paramCategory : null,
+                    LocationRange = int.TryParse(metadata.GetValueOrDefault("locationRange", ""), out int locationRange) ? locationRange : null,
+                    MinPrice = null,
+                    MaxPrice = null,
+                    BrandId = null,
+                    ModelId = null,
+                    ServiceTypeId = int.TryParse(metadata.GetValueOrDefault("serviceTypeId", ""), out int serviceTypeId) ? serviceTypeId : null,
+                    PlatformIds = new List<int>() // Valor por defecto
+                };
             }
-            catch (JsonException ex)
+            catch (Exception ex)
             {
+                await _loggingService.LogErrorAsync(
+                    message: "Error constructing DTOs from metadata",
+                    details: $"Failed to construct SearchDto/ParameterDto from metadata. Error: {ex.Message}",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: null
+                );
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
             }
 
@@ -3395,6 +3445,53 @@ namespace newApi.Controllers
                 {
                     await _context.SaveChangesAsync(); // ✅ SAVE FIRST to get the real ID
                     searchHireId = searchHire.Id;
+                    
+                    // ✅ CANCELAR timers activos de SearchHires anteriores para el mismo servicio/cliente
+                    // Esto evita que queden timers huérfanos cuando se crea un nuevo SearchHire
+                    var previousSearchHires = await _context.SearchHires
+                        .Where(sh => sh.ClientId == userId && 
+                                     sh.SearchServiceId == service.Id && 
+                                     sh.Id != searchHireId &&
+                                     sh.Status.StatusValue == "pending")
+                        .Include(sh => sh.Status)
+                        .Include(sh => sh.Appointment)
+                            .ThenInclude(a => a.Timers)
+                        .ToListAsync();
+
+                    foreach (var prevSearchHire in previousSearchHires)
+                    {
+                        if (prevSearchHire.Appointment != null)
+                        {
+                            var activeTimers = prevSearchHire.Appointment.Timers
+                                .Where(t => !t.IsExpired)
+                                .ToList();
+                            
+                            foreach (var timer in activeTimers)
+                            {
+                                timer.IsExpired = true;
+                                timer.ExpiredAt = DateTime.UtcNow;
+                                
+                                // Cancelar job de Hangfire si existe
+                                if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                                {
+                                    try
+                                    {
+                                        BackgroundJob.Delete(timer.HangfireJobId);
+                                        timer.HangfireJobId = null;
+                                    }
+                                    catch
+                                    {
+                                        timer.HangfireJobId = null;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (previousSearchHires.Any())
+                    {
+                        await _context.SaveChangesAsync();
+                    }
                 }
                 catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
                 {
@@ -4274,9 +4371,10 @@ namespace newApi.Controllers
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {
                                     Name = $"Payment for Service {service.Id}"
-                                },
-                                // ✅ STRIPE TAX: Configurar tax como inclusivo (el precio ya incluye IVA)
-                                TaxBehavior = "inclusive" // Stripe hace reverse calc automático
+                                }
+                                // ✅ STRIPE TAX (Docs 2026): NO especificar TaxBehavior para que Stripe use el default automático configurado en Dashboard
+                                // Si el Dashboard está en "Automático", Stripe aplicará según moneda: USD/CAD → exclusive, resto → inclusive
+                                // Si se especifica, solo se permiten: "inclusive" o "exclusive" (no "unspecified" ni "automatic")
                             },
                             Quantity = 1
                         }

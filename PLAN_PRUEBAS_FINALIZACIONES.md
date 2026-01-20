@@ -241,46 +241,81 @@
   - ✅ Consistencia matemática verificada: 1.65€ × 95% = 1.5675€
   - ✅ Timer "client_decision" cancelado correctamente después de la resolución
 
+### 11. ✅ `cancelled_by_client_account_delete`
+- **Trigger**: Cliente elimina su cuenta
+- **Porcentajes**: Client=0%, Expert=95%, Platform=5%
+- **Estado SearchHire**: `cancelled_by_client_account_delete`
+- **Estado Appointment**: `appointment_cancelled_by_client_account_delete`
+- **Resultado**: ✅ **Correcto** - Todo funcionó perfectamente después de las correcciones
+- **SearchHireId de prueba**: 70 (prueba inicial con errores), 79 (prueba exitosa)
+- **Fecha de prueba**: 2026-01-20 11:51:44 (70), 2026-01-20 19:00:36 (79)
+- **Verificación detallada (SearchHire 79)**:
+  - ✅ Estados correctos: `appointment_cancelled_by_client_account_delete` → `cancelled_by_client_account_delete`
+  - ✅ Ambos estados tienen `IsFinalizationStatus = true`
+  - ✅ Porcentajes suman 100%: Client=0%, Expert=95%, Platform=5%
+  - ✅ Cálculos base correctos: Client=0€, Expert=1.5675€ (95%), Platform=0.0825€ (5%)
+  - ✅ Monto original: 2.00€ (Amount), BaseAmount: 1.65€, TaxAmount: 0.35€
+  - ✅ Transfer Stripe procesado correctamente: 1.5675€ (95% del BaseAmount, sin tax)
+  - ✅ StripeTransferId registrado: `tr_1SrkAGR7PVKiStYufsvBDYFz`
+  - ✅ No hay refund al cliente (0%)
+  - ✅ Transacciones registradas: 1 ServicePayment (-2€), 1 Payout (1.5675€)
+  - ✅ Logs sin errores: 0 errores, 0 warnings, 0 críticos
+  - ✅ Log "Money distribution calculation" presente con breakdown correcto
+  - ✅ Log "Pago procesado por eliminación de cuenta del cliente" presente
+  - ✅ Log muestra razón correcta: "Client account deletion - transfer to expert"
+  - ✅ Usuario eliminado correctamente: UserId 11 eliminado a las 19:00:36
+  - ✅ Datos anonimizados correctamente: SearchHires, Notifications, FinancialTransactions, Conversations, Messages
+  - ✅ Notificaciones enviadas a cliente y experto
+  - ✅ Consistencia matemática verificada: 1.65€ × 95% = 1.5675€
+  - ✅ **Correcciones aplicadas y verificadas**:
+    1. **Error en eliminación de datos del usuario**: CORREGIDO
+       - Error original: "NpgsqlRetryingExecutionStrategy does not support user-initiated transactions"
+       - **Solución**: Uso de SQL directo y `CreateExecutionStrategy().ExecuteAsync()` para envolver la transacción
+       - **Estado**: ✅ Funcionando correctamente
+    2. **Jobs de Hangfire no cancelados**: CORREGIDO
+       - **Solución**: Método `CancelActiveTimersAndHangfireJobsAsync` agregado
+       - **Estado**: ✅ Timers y jobs cancelados correctamente
+
 ---
 
 ### CATEGORÍA E: CANCELACIONES POR ELIMINACIÓN DE CUENTA
 
-### 11. ⚠️ `cancelled_by_client_account_delete` (ERROR CORREGIDO)
+### 11. ✅ `cancelled_by_client_account_delete`
 - **Trigger**: Cliente elimina su cuenta
 - **Porcentajes**: Client=0%, Expert=95%, Platform=5%
 - **Estado SearchHire**: `cancelled_by_client_account_delete`
-- **Resultado**: ⚠️ **Dinero procesado correctamente, pero error en eliminación de datos** (CORREGIDO)
-- **SearchHireId de prueba**: 70
-- **Fecha de prueba**: 2026-01-20 11:51:44
-- **Verificación detallada**:
-  - ✅ Estados correctos: `cancelled_by_client_account_delete` (StatusId: 28)
-  - ✅ SearchHire tiene `IsFinalizationStatus = true`
+- **Estado Appointment**: `appointment_cancelled_by_client_account_delete`
+- **Resultado**: ✅ **Correcto** - Todo funcionó perfectamente después de las correcciones
+- **SearchHireId de prueba**: 70 (prueba inicial con errores), 79 (prueba exitosa)
+- **Fecha de prueba**: 2026-01-20 11:51:44 (70), 2026-01-20 19:00:36 (79)
+- **Verificación detallada (SearchHire 79)**:
+  - ✅ Estados correctos: `appointment_cancelled_by_client_account_delete` → `cancelled_by_client_account_delete`
+  - ✅ Ambos estados tienen `IsFinalizationStatus = true`
   - ✅ Porcentajes suman 100%: Client=0%, Expert=95%, Platform=5%
-  - ✅ Cálculos base correctos: Client=0€, Expert=1.57€ (95%), Platform=0.08€ (5%)
+  - ✅ Cálculos base correctos: Client=0€, Expert=1.5675€ (95%), Platform=0.0825€ (5%)
+  - ✅ Monto original: 2.00€ (Amount), BaseAmount: 1.65€, TaxAmount: 0.35€
   - ✅ Transfer Stripe procesado correctamente: 1.5675€ (95% del BaseAmount, sin tax)
-  - ✅ StripeTransferId registrado: `tr_1SrdUQR7PVKiStYu0VXe1VHT`
+  - ✅ StripeTransferId registrado: `tr_1SrkAGR7PVKiStYufsvBDYFz`
   - ✅ No hay refund al cliente (0%)
   - ✅ Transacciones registradas: 1 ServicePayment (-2€), 1 Payout (1.5675€)
-  - ✅ Logs de dinero: 0 errores en procesamiento de dinero
-  - ✅ Log "Pago recibido" presente
+  - ✅ Logs sin errores: 0 errores, 0 warnings, 0 críticos
+  - ✅ Log "Money distribution calculation" presente con breakdown correcto
+  - ✅ Log "Pago procesado por eliminación de cuenta del cliente" presente
   - ✅ Log muestra razón correcta: "Client account deletion - transfer to expert"
-  - ⚠️ **ERRORES ENCONTRADOS Y CORREGIDOS**:
-    1. **Error en eliminación de datos del usuario**:
-       - Error: "NpgsqlRetryingExecutionStrategy does not support user-initiated transactions"
-       - Causa: `EnableRetryOnFailure` activa ExecutionStrategy automáticamente, incompatible con transacciones manuales
-       - Ubicación: `AccountDeletionService.DeleteUserDataAsync` línea 856 (query `AnyAsync` dentro de transacción)
-       - **Corrección aplicada**: Cambiado `AnyAsync()` a SQL directo (`ExecuteSqlRawAsync`) para evitar ExecutionStrategy
-    2. **Jobs de Hangfire no cancelados**:
-       - Problema: Timer activo (Id: 162, JobId: "529") no fue cancelado durante la eliminación de cuenta
-       - Causa: `ProcessActiveContractsAsync` no cancelaba timers activos ni sus jobs de Hangfire
-       - **Corrección aplicada**: Agregado método `CancelActiveTimersAndHangfireJobsAsync` que:
-         - Marca todos los timers activos como expirados
-         - Cancela todos los jobs de Hangfire asociados
-         - Se ejecuta después de procesar el dinero exitosamente (tanto para cliente como experto)
-       - **Estado**: El dinero ya estaba procesado correctamente antes del error, solo falló la eliminación de datos y cancelación de timers
-       - **Acción requerida**: Reintentar eliminación de cuenta después de las correcciones
+  - ✅ Usuario eliminado correctamente: UserId 11 eliminado a las 19:00:36
+  - ✅ Datos anonimizados correctamente: SearchHires, Notifications, FinancialTransactions, Conversations, Messages
+  - ✅ Notificaciones enviadas a cliente y experto
+  - ✅ Consistencia matemática verificada: 1.65€ × 95% = 1.5675€
+  - ✅ **Correcciones aplicadas y verificadas**:
+    1. **Error en eliminación de datos del usuario**: CORREGIDO
+       - Error original: "NpgsqlRetryingExecutionStrategy does not support user-initiated transactions"
+       - **Solución**: Uso de SQL directo y `CreateExecutionStrategy().ExecuteAsync()` para envolver la transacción
+       - **Estado**: ✅ Funcionando correctamente
+    2. **Jobs de Hangfire no cancelados**: CORREGIDO
+       - **Solución**: Método `CancelActiveTimersAndHangfireJobsAsync` agregado
+       - **Estado**: ✅ Timers y jobs cancelados correctamente
 
-#### 12. 🔴 `cancelled_by_expert_account_delete`
+### 12. 🔴 `cancelled_by_expert_account_delete`
 - **Trigger**: Experto elimina su cuenta
 - **Porcentajes esperados**: Client=100%, Expert=0%, Platform=0%
 - **Estado SearchHire esperado**: `cancelled_by_expert_account_delete`
@@ -338,14 +373,15 @@ Para cada caso de prueba, verificar:
 2. ✅ **Completado**: Cancelaciones manuales segunda vez (5 ✅, 6 ✅, 7 ✅)
 3. ✅ **Completado**: Completado manual (8 ✅)
 4. ✅ **Completado**: Disputas (9 ✅, 10 ✅)
-5. **Pendiente**: Eliminación de cuentas (11, 12)
+5. ✅ **Completado**: Eliminación de cuenta del cliente (11 ✅)
+6. **Pendiente**: Eliminación de cuenta del experto (12)
 
 ## 📊 PROGRESO
 
-- **Casos probados**: 10/12 (83%)
-- **Casos pendientes**: 2/12 (17%)
-- **Última prueba**: Caso 10 - `dispute_resolved_expert` (2026-01-20 11:44:53)
-- **SearchHireIds de prueba**: 58, 60 (caso 1), 61 (caso 2), 62 (caso 3), 63 (caso 4), 64 (caso 5), 65 (caso 6), 66 (caso 7), 67 (caso 8), 68 (caso 9), 69 (caso 10)
+- **Casos probados**: 11/12 (92%)
+- **Casos pendientes**: 1/12 (8%)
+- **Última prueba**: Caso 11 - `cancelled_by_client_account_delete` (2026-01-20 19:00:36)
+- **SearchHireIds de prueba**: 58, 60 (caso 1), 61 (caso 2), 62 (caso 3), 63 (caso 4), 64 (caso 5), 65 (caso 6), 66 (caso 7), 67 (caso 8), 68 (caso 9), 69 (caso 10), 79 (caso 11)
 
 ---
 

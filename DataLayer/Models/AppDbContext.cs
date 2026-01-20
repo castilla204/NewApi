@@ -602,6 +602,16 @@ namespace newApi.DataLayer.Models
                 entity.HasIndex(e => new { e.StatusType, e.StatusValue }).IsUnique();
                 entity.HasIndex(e => e.StatusType);
                 entity.HasIndex(e => e.IsActive);
+                
+                // Mapeo explícito de columnas para evitar problemas con EF Core
+                entity.Property(e => e.StatusValue)
+                    .HasColumnName("StatusValue")
+                    .IsRequired()
+                    .HasMaxLength(50);
+                entity.Property(e => e.StatusType)
+                    .HasColumnName("StatusType")
+                    .IsRequired()
+                    .HasMaxLength(50);
             });
 
             modelBuilder.Entity<StatusMapping>(entity =>

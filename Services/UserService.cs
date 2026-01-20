@@ -219,7 +219,7 @@ namespace newApi.Services
         }
         */
 
-        public async Task<(bool success, string token, User user)> GoogleAuth(GoogleAuthDto request)
+        public async Task<(bool success, string? token, User? user, string? errorReason)> GoogleAuth(GoogleAuthDto request)
         {
             // Leer Client IDs
             string[]? clientIds = null;
@@ -266,13 +266,23 @@ namespace newApi.Services
             var payload = await GoogleJsonWebSignature.ValidateAsync(request.AccessToken, settings);
 
             // Query user (sin AsNoTracking para poder actualizar si es necesario)
+            // ✅ FIX: Usar IgnoreQueryFilters para encontrar usuarios incluso si están eliminados
+            // pero luego verificar IsDeleted para rechazar el login
             var user = await _context.Users
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(u => u.GoogleId == payload.Subject);
 
+            // ✅ SEGURIDAD: Rechazar login si el usuario está bloqueado
             if (user != null && user.IsBlocked)
             {
-                return (false, null, null);
+                return (false, null, null, "account_blocked");
+            }
+
+            // ✅ SEGURIDAD CRÍTICA: Rechazar login si el usuario está eliminado
+            // Los usuarios eliminados NO pueden acceder al sistema
+            if (user != null && user.IsDeleted)
+            {
+                return (false, null, null, "account_deleted");
             }
 
             // SIN TRANSACCIÓN - Usar SaveChanges directamente
@@ -305,33 +315,9 @@ namespace newApi.Services
                 };
                 _context.UserSettings.Add(userSettings);
             }
-            else if (user.IsDeleted)
-            {
-                if (user.IsBlocked)
-                {
-                    return (false, null, null);
-                }
-
-                user.IsDeleted = false;
-                user.DeletedAt = null;
-                user.Name = payload.Name?.Trim();
-                user.Email = payload.Email?.Trim();
-
-                var existingSettings = await _context.UserSettings.FirstOrDefaultAsync(us => us.UserId == user.Id);
-                if (existingSettings == null)
-                {
-                    var userSettings = new UserSetting
-                    {
-                        UserId = user.Id,
-                        IsWhatsAppEnabled = true,
-                        IsEmailEnabled = true,
-                        Theme = "light",
-                        CreatedAt = DateTime.UtcNow,
-                        UpdatedAt = DateTime.UtcNow
-                    };
-                    _context.UserSettings.Add(userSettings);
-                }
-            }
+            // ✅ NOTA: El código de restauración de usuarios eliminados fue removido
+            // Los usuarios eliminados NO pueden restaurarse automáticamente al intentar loguearse
+            // Esto es por seguridad y para mantener la integridad de los datos
 
             var refreshToken = GenerateSecureRefreshToken();
             var refreshTokenEntity = new RefreshToken
@@ -349,7 +335,7 @@ namespace newApi.Services
             var accessToken = GenerateJwtToken(user);
             var combinedToken = $"{accessToken}|{refreshToken}";
 
-            return (true, combinedToken, user);
+            return (true, combinedToken, user, null);
         }
 
         public async Task<(bool success, string token, User user, ExpertProfile expertProfile)> BecomeExpert(

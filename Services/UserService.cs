@@ -1092,14 +1092,16 @@ namespace newApi.Services
             return new ExpertProfileDto
             {
                 Id = expertProfile.Id,
-                ProfilePictureUrl = expertProfile.ProfilePictureUrl,
+                ProfilePictureUrl = expertProfile.ProfilePictureUrl ?? string.Empty,
                 StripeAccountId = expertProfile.StripeAccountId,
                 Description = expertProfile.Description,
                 CreatedAt = expertProfile.CreatedAt,
                 User = new UserDto
                 {
+                    Id = expertProfile.User.Id,
                     Name = expertProfile.User.Name,
-                    Email = expertProfile.User.Email
+                    Email = expertProfile.User.Email,
+                    ProfilePictureUrl = null // ✅ FIX: User no tiene ProfilePictureUrl, está en ExpertProfile
                 },
                 Reviews = new List<ReviewDto>(), // Inicializar lista vacía para mantener compatibilidad
                 Latitude = expertProfile.Latitude,
@@ -1111,7 +1113,11 @@ namespace newApi.Services
                 CurrentAvailability = availabilityDto,
                 // ✅ FUTURE REQUIREMENTS
                 StripeFutureRequirements = expertProfile.StripeFutureRequirements,
-                StripeFutureDueAt = expertProfile.StripeFutureDueAt
+                StripeFutureDueAt = expertProfile.StripeFutureDueAt,
+                // ✅ INTERNACIONALIZACIÓN
+                Timezone = expertProfile.Timezone,
+                Country = expertProfile.Country,
+                City = expertProfile.City
             };
         }
 
@@ -1351,27 +1357,55 @@ namespace newApi.Services
                 await _context.SaveChangesAsync();
 
                 // Devolver el perfil actualizado
+                // ✅ Obtener la nueva disponibilidad creada
+                var createdAvailability = await _context.ExpertAvailabilities
+                    .Where(ea => ea.ExpertId == expertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
+                    .OrderByDescending(ea => ea.EffectiveFrom)
+                    .FirstOrDefaultAsync();
+
+                CurrentExpertAvailabilityDto? availabilityDto = null;
+                if (createdAvailability != null)
+                {
+                    var daysOfWeek = System.Text.Json.JsonSerializer.Deserialize<List<string>>(createdAvailability.DaysOfWeek) ?? new List<string>();
+                    availabilityDto = new CurrentExpertAvailabilityDto
+                    {
+                        Id = createdAvailability.Id,
+                        DaysOfWeek = daysOfWeek,
+                        StartTime = createdAvailability.StartTime,
+                        EndTime = createdAvailability.EndTime,
+                        EffectiveFrom = createdAvailability.EffectiveFrom
+                    };
+                }
+
                 var updatedProfileDto = new ExpertProfileDto
                 {
                     Id = expertProfile.Id,
-                    ProfilePictureUrl = expertProfile.ProfilePictureUrl,
+                    ProfilePictureUrl = expertProfile.ProfilePictureUrl ?? string.Empty,
                     StripeAccountId = expertProfile.StripeAccountId,
                     Description = expertProfile.Description,
                     CreatedAt = expertProfile.CreatedAt,
                     User = new UserDto
                     {
+                        Id = expertProfile.User.Id,
                         Name = expertProfile.User.Name,
-                        Email = expertProfile.User.Email
+                        Email = expertProfile.User.Email,
+                        ProfilePictureUrl = null // ✅ FIX: User no tiene ProfilePictureUrl, está en ExpertProfile
                     },
+                    Reviews = new List<ReviewDto>(), // Mantener compatibilidad
                     Latitude = expertProfile.Latitude,
                     Longitude = expertProfile.Longitude,
                     StripeStatus = expertProfile.StripeStatus,
                     StripeStatusDetails = expertProfile.StripeStatusDetails,
                     OnboardingCompleted = expertProfile.OnboardingCompleted,
+                    IsOnVacation = expertProfile.IsOnVacation,
+                    CurrentAvailability = availabilityDto,
                     // ✅ FUTURE REQUIREMENTS
                     StripeFutureRequirements = expertProfile.StripeFutureRequirements,
                     StripeFutureDueAt = expertProfile.StripeFutureDueAt,
-                    IsOnVacation = expertProfile.IsOnVacation
+                    // ✅ INTERNACIONALIZACIÓN
+                    Timezone = expertProfile.Timezone,
+                    Country = expertProfile.Country,
+                    City = expertProfile.City
                 };
                 return (true, updatedProfileDto);
             }

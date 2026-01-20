@@ -9,7 +9,9 @@
         Cancelled,                           // Cancelado (genérico)
         TransferFailed,
         DisputeResolvedClient,               // Disputa resuelta a favor del cliente
-        DisputeResolvedExpert                // Disputa resuelta a favor del experto
+        DisputeResolvedExpert,               // Disputa resuelta a favor del experto
+        CancelledByClientAccountDelete,      // Cancelado por eliminación de cuenta del cliente
+        CancelledByExpertAccountDelete       // Cancelado por eliminación de cuenta del experto
     }
 
     public static class SearchHireStatusExtensions
@@ -26,6 +28,8 @@
                 SearchHireStatus.TransferFailed => "transfer_failed",
                 SearchHireStatus.DisputeResolvedClient => "dispute_resolved_client",
                 SearchHireStatus.DisputeResolvedExpert => "dispute_resolved_expert",
+                SearchHireStatus.CancelledByClientAccountDelete => "cancelled_by_client_account_delete",
+                SearchHireStatus.CancelledByExpertAccountDelete => "cancelled_by_expert_account_delete",
                 _ => throw new ArgumentException($"Unknown status: {status}")
             };
         }
@@ -42,6 +46,8 @@
                 SearchHireStatus.TransferFailed => "Transferencia fallida",
                 SearchHireStatus.DisputeResolvedClient => "Disputa resuelta a favor del cliente",
                 SearchHireStatus.DisputeResolvedExpert => "Disputa resuelta a favor del experto",
+                SearchHireStatus.CancelledByClientAccountDelete => "Cancelado - Cliente eliminó cuenta",
+                SearchHireStatus.CancelledByExpertAccountDelete => "Cancelado - Experto eliminó cuenta",
                 _ => throw new ArgumentException($"Unknown status: {status}")
             };
         }
@@ -58,6 +64,8 @@
                 "transfer_failed" => SearchHireStatus.TransferFailed,
                 "dispute_resolved_client" => SearchHireStatus.DisputeResolvedClient,
                 "dispute_resolved_expert" => SearchHireStatus.DisputeResolvedExpert,
+                "cancelled_by_client_account_delete" => SearchHireStatus.CancelledByClientAccountDelete,
+                "cancelled_by_expert_account_delete" => SearchHireStatus.CancelledByExpertAccountDelete,
                 _ => throw new ArgumentException($"Invalid SearchHireStatus: {value}")
             };
         }
@@ -74,6 +82,8 @@
                 "transfer_failed" => "Transferencia fallida",
                 "dispute_resolved_client" => "Disputa resuelta a favor del cliente",
                 "dispute_resolved_expert" => "Disputa resuelta a favor del experto",
+                "cancelled_by_client_account_delete" => "Cancelado - Cliente eliminó cuenta",
+                "cancelled_by_expert_account_delete" => "Cancelado - Experto eliminó cuenta",
                 _ => statusString // Si no se encuentra, devolver el original
             };
         }

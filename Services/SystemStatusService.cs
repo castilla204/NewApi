@@ -233,6 +233,8 @@ namespace newApi.Services
                 AppointmentStatus.AppointmentCancelledByExpertRejection => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCancelledByNoReport => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCompletedWithoutClientApproval => SearchHireStatus.Completed,
+                AppointmentStatus.AppointmentCancelledByClientAccountDelete => SearchHireStatus.CancelledByClientAccountDelete,
+                AppointmentStatus.AppointmentCancelledByExpertAccountDelete => SearchHireStatus.CancelledByExpertAccountDelete,
                 _ => null // Otros estados no tienen mapeo directo
             };
         }

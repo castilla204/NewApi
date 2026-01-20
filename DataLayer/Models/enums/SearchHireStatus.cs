@@ -1,4 +1,4 @@
-﻿namespace newApi.Common // Or newApi.DataLayer.Models, depending on your project structure
+namespace newApi.Common // Or newApi.DataLayer.Models, depending on your project structure
 {
     public enum SearchHireStatus
     {

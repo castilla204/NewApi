@@ -1466,6 +1466,14 @@ namespace newApi.Services
                     .Select(img => ResolveServiceImageUrl(img))
                     .Where(url => !string.IsNullOrEmpty(url))
                     .ToList() ?? new List<string>(),
+                Images = ss.Images?
+                    .Select(img => new SearchServiceImageDto
+                    {
+                        Id = img.Id,
+                        Url = ResolveServiceImageUrl(img)
+                    })
+                    .Where(img => !string.IsNullOrEmpty(img.Url))
+                    .ToList() ?? new List<SearchServiceImageDto>(),
                 SelectedDeliverableTypes = ss.SelectedDeliverableTypes?
                     .Select(ssdt => new DeliverableTypeDto
                     {
@@ -1601,6 +1609,14 @@ namespace newApi.Services
                     .Select(img => ResolveServiceImageUrl(img))
                     .Where(url => !string.IsNullOrEmpty(url))
                     .ToList() ?? new List<string>(),
+                Images = ss.Images?
+                    .Select(img => new SearchServiceImageDto
+                    {
+                        Id = img.Id,
+                        Url = ResolveServiceImageUrl(img)
+                    })
+                    .Where(img => !string.IsNullOrEmpty(img.Url))
+                    .ToList() ?? new List<SearchServiceImageDto>(),
                 SelectedDeliverableTypes = ss.SelectedDeliverableTypes?
                     .Select(ssdt => new DeliverableTypeDto
                     {
@@ -1976,12 +1992,52 @@ namespace newApi.Services
                 {
                 }
 
-                // Paso 4: Procesar las imágenes si se proporcionaron
+                // Paso 4: Procesar las imágenes
                 var imageUrls = new List<string>();
+                
+                // ✅ NUEVO: Cargar imágenes existentes del servicio anterior
+                var existingImages = await _context.SearchServiceImages
+                    .Where(img => img.SearchServiceId == existingService.Id)
+                    .ToListAsync();
+                
+                // ✅ NUEVO: Procesar imágenes a eliminar explícitamente
+                List<int> imagesToDeleteIds = new List<int>();
+                if (!string.IsNullOrWhiteSpace(request.ImagesToDelete))
+                {
+                    try
+                    {
+                        imagesToDeleteIds = System.Text.Json.JsonSerializer.Deserialize<List<int>>(request.ImagesToDelete) ?? new List<int>();
+                    }
+                    catch (System.Text.Json.JsonException)
+                    {
+                        _logger.LogWarning("Invalid format for ImagesToDelete in UpdateSearchService request. ServiceId: {ServiceId}", request.ServiceId);
+                    }
+                }
+                
+                // ✅ NUEVO: Conservar imágenes existentes que NO se eliminan explícitamente
+                var imagesToKeep = existingImages
+                    .Where(img => !imagesToDeleteIds.Contains(img.Id))
+                    .ToList();
+                
+                // ✅ NUEVO: Copiar imágenes conservadas al nuevo servicio
+                foreach (var existingImage in imagesToKeep)
+                {
+                    var copiedImage = new SearchServiceImage
+                    {
+                        SearchServiceId = newServiceId,
+                        ImageUrl = existingImage.ImageUrl,
+                        ImageObjectName = existingImage.ImageObjectName,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    _context.SearchServiceImages.Add(copiedImage);
+                    imageUrls.Add(ResolveServiceImageUrl(copiedImage));
+                }
+                
+                // ✅ NUEVO: Agregar nuevas imágenes si se proporcionaron
+                var uploadedImages = new List<(string ImageUrl, string ImageObjectName)>();
                 if (request.Images != null && request.Images.Any())
                 {
                     var bucketName = _configuration["GoogleCloud:BucketName"];
-                    var uploadedImages = new List<(string ImageUrl, string ImageObjectName)>();
                     
                     foreach (var imageFile in request.Images)
                     {
@@ -2028,7 +2084,11 @@ namespace newApi.Services
                         _context.SearchServiceImages.Add(searchServiceImage);
                         imageUrls.Add(ResolveServiceImageUrl(searchServiceImage));
                     }
-                    
+                }
+                
+                // ✅ NUEVO: Guardar todas las imágenes (conservadas + nuevas) en una sola transacción
+                if (imagesToKeep.Any() || uploadedImages.Any())
+                {
                     try
                     {
                         await _context.SaveChangesAsync();
@@ -2041,25 +2101,38 @@ namespace newApi.Services
                             using var recoveryScope = _serviceScopeFactory.CreateScope();
                             var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
                             
-                            // Re-crear las imágenes en el nuevo contexto (ya están subidas a GCS)
+                            // Re-crear las imágenes conservadas en el nuevo contexto
+                            foreach (var existingImage in imagesToKeep)
+                            {
+                                var recoveryImage = new SearchServiceImage
+                                {
+                                    SearchServiceId = newServiceId,
+                                    ImageUrl = existingImage.ImageUrl,
+                                    ImageObjectName = existingImage.ImageObjectName,
+                                    CreatedAt = DateTime.UtcNow
+                                };
+                                recoveryContext.SearchServiceImages.Add(recoveryImage);
+                            }
+                            
+                            // Re-crear las nuevas imágenes en el nuevo contexto (ya están subidas a GCS)
                             foreach (var (imageUrl, objectName) in uploadedImages)
                             {
                                 var recoveryImage = new SearchServiceImage
                                 {
-                                    SearchServiceId = newServiceId, // ✅ FIX: Usar newServiceId guardado
+                                    SearchServiceId = newServiceId,
                                     ImageUrl = imageUrl,
                                     ImageObjectName = objectName,
                                     CreatedAt = DateTime.UtcNow
                                 };
                                 recoveryContext.SearchServiceImages.Add(recoveryImage);
                             }
+                            
                             await recoveryContext.SaveChangesAsync();
                         }
                         catch (Exception recoveryEx)
                         {
                             // ✅ FIX: Si el recovery falla, loguear pero continuar
-                            // Las imágenes ya están en GCS, solo falta registrarlas en BD
-                            _logger.LogWarning(recoveryEx, "Failed to save images to database for updated service {ServiceId} after recovery, but images are uploaded to GCS", newServiceId);
+                            _logger.LogWarning(recoveryEx, "Failed to save images to database for updated service {ServiceId} after recovery", newServiceId);
                         }
                     }
                     catch (ObjectDisposedException disposedEx)
@@ -2070,25 +2143,38 @@ namespace newApi.Services
                             using var recoveryScope = _serviceScopeFactory.CreateScope();
                             var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
                             
-                            // Re-crear las imágenes en el nuevo contexto (ya están subidas a GCS)
+                            // Re-crear las imágenes conservadas en el nuevo contexto
+                            foreach (var existingImage in imagesToKeep)
+                            {
+                                var recoveryImage = new SearchServiceImage
+                                {
+                                    SearchServiceId = newServiceId,
+                                    ImageUrl = existingImage.ImageUrl,
+                                    ImageObjectName = existingImage.ImageObjectName,
+                                    CreatedAt = DateTime.UtcNow
+                                };
+                                recoveryContext.SearchServiceImages.Add(recoveryImage);
+                            }
+                            
+                            // Re-crear las nuevas imágenes en el nuevo contexto (ya están subidas a GCS)
                             foreach (var (imageUrl, objectName) in uploadedImages)
                             {
                                 var recoveryImage = new SearchServiceImage
                                 {
-                                    SearchServiceId = newServiceId, // ✅ FIX: Usar newServiceId guardado
+                                    SearchServiceId = newServiceId,
                                     ImageUrl = imageUrl,
                                     ImageObjectName = objectName,
                                     CreatedAt = DateTime.UtcNow
                                 };
                                 recoveryContext.SearchServiceImages.Add(recoveryImage);
                             }
+                            
                             await recoveryContext.SaveChangesAsync();
                         }
                         catch (Exception recoveryEx)
                         {
                             // ✅ FIX: Si el recovery falla, loguear pero continuar
-                            // Las imágenes ya están en GCS, solo falta registrarlas en BD
-                            _logger.LogWarning(recoveryEx, "Failed to save images to database for updated service {ServiceId} after recovery, but images are uploaded to GCS", newServiceId);
+                            _logger.LogWarning(recoveryEx, "Failed to save images to database for updated service {ServiceId} after recovery", newServiceId);
                         }
                     }
                 }

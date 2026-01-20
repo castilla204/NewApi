@@ -122,6 +122,12 @@ namespace newApi.DataLayer.Models.DTOs
         public string Status { get; set; }
     }
 
+    public class SearchServiceImageDto
+    {
+        public int Id { get; set; }
+        public string Url { get; set; }
+    }
+
     public class SearchServiceResponseDto
     {
         public int Id { get; set; }
@@ -136,7 +142,8 @@ namespace newApi.DataLayer.Models.DTOs
         public int DurationInHours { get; set; }
         public DateTime CreatedAt { get; set; }
         public bool IsActive { get; set; }
-        public List<string> ImageUrls { get; set; }
+        public List<string> ImageUrls { get; set; } // ✅ Mantener para compatibilidad
+        public List<SearchServiceImageDto> Images { get; set; } = new List<SearchServiceImageDto>(); // ✅ NUEVO: Incluye IDs
         public ExpertProfileDto? Expert { get; set; }
         public List<DeliverableTypeDto> SelectedDeliverableTypes { get; set; } = new List<DeliverableTypeDto>();
     }
@@ -293,7 +300,21 @@ namespace newApi.DataLayer.Models.DTOs
         
         public string Conditions { get; set; }
         public int? DurationInHours { get; set; }
+        
+        /// <summary>
+        /// Nuevas imágenes a agregar al servicio.
+        /// Si se proporcionan, se agregarán a las imágenes existentes (a menos que se eliminen explícitamente).
+        /// </summary>
         public List<IFormFile>? Images { get; set; }
+        
+        /// <summary>
+        /// IDs de las imágenes a eliminar explícitamente.
+        /// Formato: JSON array de enteros, ej: "[1, 2, 3]"
+        /// Si se proporciona, se eliminarán estas imágenes del servicio antes de agregar las nuevas.
+        /// Si no se proporciona o está vacío, se conservarán todas las imágenes existentes.
+        /// </summary>
+        public string? ImagesToDelete { get; set; } // JSON string from FormData: array de IDs de SearchServiceImage
+        
         public string? SelectedDeliverableTypes { get; set; } // JSON string from FormData
     }
 

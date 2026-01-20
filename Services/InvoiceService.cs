@@ -25,7 +25,9 @@ namespace newApi.Services
         public async Task<byte[]> GenerateInvoicePdfAsync(int searchHireId)
         {
             // Cargar datos de la contratación con todas las relaciones necesarias
+            // ✅ FIX: Usar IgnoreQueryFilters para cargar incluso si el usuario fue eliminado
             var searchHire = await _context.SearchHires
+                .IgnoreQueryFilters()
                 .Include(sh => sh.Client)
                 .Include(sh => sh.Expert)
                 .Include(sh => sh.SearchService)
@@ -40,13 +42,34 @@ namespace newApi.Services
                 throw new ArgumentException($"SearchHire con ID {searchHireId} no encontrado");
             }
 
+            // ✅ FIX: Validar que los datos necesarios no sean null (pueden estar anonimizados)
+            if (searchHire.Client == null)
+            {
+                throw new InvalidOperationException($"No se puede generar factura para SearchHire {searchHireId}: el cliente fue eliminado o anonimizado. ClientId: {searchHire.ClientId}");
+            }
+
+            if (searchHire.SearchService == null)
+            {
+                throw new InvalidOperationException($"No se puede generar factura para SearchHire {searchHireId}: el servicio fue eliminado. SearchServiceId: {searchHire.SearchServiceId}");
+            }
+
+            if (searchHire.SearchService.ServiceType == null)
+            {
+                throw new InvalidOperationException($"No se puede generar factura para SearchHire {searchHireId}: el tipo de servicio fue eliminado. ServiceTypeId: {searchHire.SearchService.ServiceTypeId}");
+            }
+
+            if (searchHire.SearchService.Category == null)
+            {
+                throw new InvalidOperationException($"No se puede generar factura para SearchHire {searchHireId}: la categoría fue eliminada. CategoryId: {searchHire.SearchService.CategoryId}");
+            }
+
             // Datos para la factura
             var invoiceNumber = $"FAC-{searchHire.Id:D6}";
             var invoiceDate = searchHire.CreatedAt;
-            var clientName = searchHire.Client.Name;
-            var clientEmail = searchHire.Client.Email;
-            var serviceName = searchHire.SearchService.ServiceType.Name;
-            var serviceCategory = searchHire.SearchService.Category.Name;
+            var clientName = searchHire.Client.Name ?? "Cliente eliminado";
+            var clientEmail = searchHire.Client.Email ?? "email@eliminado.com";
+            var serviceName = searchHire.SearchService.ServiceType.Name ?? "Servicio eliminado";
+            var serviceCategory = searchHire.SearchService.Category.Name ?? "Categoría eliminada";
             var amount = searchHire.Amount;
             var iva = searchHire.TaxAmount ?? (amount * 0.21m); // Usar tax real o fallback 21%
             var total = amount + iva;
@@ -188,11 +211,9 @@ namespace newApi.Services
         {
             try
             {
-                // Generar PDF
-                var pdfBytes = await GenerateInvoicePdfAsync(searchHireId);
-
-                // Obtener datos para el email
+                // ✅ FIX: Validar primero si el SearchHire existe y tiene datos válidos
                 var searchHire = await _context.SearchHires
+                    .IgnoreQueryFilters()
                     .Include(sh => sh.Client)
                     .Include(sh => sh.Expert)
                     .Include(sh => sh.SearchService)
@@ -204,11 +225,26 @@ namespace newApi.Services
                     throw new ArgumentException($"SearchHire con ID {searchHireId} no encontrado");
                 }
 
+                // ✅ FIX: Validar que el cliente no sea null (puede estar anonimizado)
+                if (searchHire.Client == null)
+                {
+                    throw new InvalidOperationException($"No se puede enviar factura para SearchHire {searchHireId}: el cliente fue eliminado o anonimizado. ClientId: {searchHire.ClientId}");
+                }
+
+                // ✅ FIX: Validar que SearchService y ServiceType no sean null
+                if (searchHire.SearchService == null || searchHire.SearchService.ServiceType == null)
+                {
+                    throw new InvalidOperationException($"No se puede enviar factura para SearchHire {searchHireId}: el servicio fue eliminado. SearchServiceId: {searchHire.SearchServiceId}");
+                }
+
+                // Generar PDF
+                var pdfBytes = await GenerateInvoicePdfAsync(searchHireId);
+
                 var invoiceNumber = $"FAC-{searchHire.Id:D6}";
                 var subject = "Factura y confirmación de contratación";
                 var title = "¡Contratación completada!";
                 var serviceName = searchHire.SearchService.ServiceType.Name;
-                var expertName = searchHire.Expert.Name;
+                var expertName = searchHire.Expert?.Name ?? "Experto eliminado";
 
                 var content = $@"
                     <p style='margin:0 0 12px 0;'>Hola {searchHire.Client.Name},</p>
@@ -298,10 +334,16 @@ namespace newApi.Services
                 await SendInvoiceByEmailAsync(searchHireId, toEmail);
                 Console.WriteLine($"[INVOICE SERVICE] [HANGFIRE SUCCESS] Factura enviada exitosamente. SearchHireId: {searchHireId}");
             }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("eliminado") || ex.Message.Contains("anonimizado"))
+            {
+                // ✅ FIX: No reintentar si el cliente fue eliminado/anonimizado - es un error permanente
+                Console.WriteLine($"[INVOICE SERVICE] [HANGFIRE ERROR] ERROR permanente al enviar factura. SearchHireId: {searchHireId}, Error: {ex.Message}. No se reintentará.");
+                // No re-lanzar la excepción para que Hangfire no siga reintentando
+            }
             catch (Exception ex)
             {
                 Console.WriteLine($"[INVOICE SERVICE] [HANGFIRE ERROR] ERROR al enviar factura. SearchHireId: {searchHireId}, Error: {ex.Message}");
-                throw; // Re-lanzar para que Hangfire reintente
+                throw; // Re-lanzar para que Hangfire reintente solo errores temporales
             }
         }
     }

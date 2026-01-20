@@ -363,7 +363,7 @@ public class UserController : ControllerBase
             }
 
             // ✅ OPTIMIZACIÓN: Autenticación sin logging síncrono
-            var (success, token, user) = await _userService.GoogleAuth(request);
+            var (success, token, user, errorReason) = await _userService.GoogleAuth(request);
             
             if (!success)
             {
@@ -376,16 +376,37 @@ public class UserController : ControllerBase
                     var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
                     await loggingService.LogWarningAsync(
                         message: "Google Auth failed",
-                        details: $"Google Auth failed. RequestId: {requestId}, IP: {remoteIp}, Email: {email}, GoogleId: {googleId}",
+                        details: $"Google Auth failed. RequestId: {requestId}, IP: {remoteIp}, Email: {email}, GoogleId: {googleId}, Reason: {errorReason ?? "unknown"}",
                         userId: null,
                         source: "UserController.GoogleAuth",
                         relatedEntityType: "Auth",
-                        additionalData: new { RequestId = requestId, RemoteIp = remoteIp, RequestEmail = email, RequestGoogleId = googleId }
+                        additionalData: new { RequestId = requestId, RemoteIp = remoteIp, RequestEmail = email, RequestGoogleId = googleId, ErrorReason = errorReason }
                     );
                 });
+                
+                // ✅ Mensaje específico según el motivo del error
+                string message;
+                string error;
+                
+                if (errorReason == "account_deleted")
+                {
+                    message = "No puedes acceder a tu cuenta";
+                    error = "Tu cuenta fue eliminada. Si eliminaste tu cuenta, no puedes volver a acceder con este correo electrónico. Si crees que esto es un error, contacta con soporte.";
+                }
+                else if (errorReason == "account_blocked")
+                {
+                    message = "Cuenta bloqueada";
+                    error = "Tu cuenta ha sido bloqueada. Por favor, contacta con soporte para más información.";
+                }
+                else
+                {
+                    message = "Authentication failed";
+                    error = "Invalid Google token or authentication error";
+                }
+                
                 return BadRequest(new { 
-                    message = "Authentication failed", 
-                    error = "Invalid Google token or authentication error",
+                    message = message, 
+                    error = error,
                     requestId = requestId
                 });
             }

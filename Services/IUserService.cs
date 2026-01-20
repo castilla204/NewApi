@@ -14,7 +14,7 @@ namespace newApi.Services
         // ✅ COMENTADO: Verificación de teléfono ya no es necesaria - métodos stub devuelven false/null
         Task<bool> SendVerification(int userId, string phoneNumber);
         Task<(bool success, string token, User user)> VerifyCode(int userId, string phoneNumber, string code);
-        Task<(bool success, string token, User user)> GoogleAuth(GoogleAuthDto request);
+        Task<(bool success, string? token, User? user, string? errorReason)> GoogleAuth(GoogleAuthDto request);
         Task<(bool success, string token, User user, ExpertProfile expertProfile)> BecomeExpert(int userId, BecomeExpertRequestDto request);
         Task<ExpertProfileDto?> GetExpertProfile(int userId);
         Task<(bool Success, ExpertProfileDto? UpdatedProfile)> UpdateExpertProfile(int userId, UpdateExpertProfileRequestDto request);

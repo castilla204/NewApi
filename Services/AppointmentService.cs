@@ -3941,22 +3941,123 @@ namespace newApi.Services
                             timer.Appointment.StatusId = noProposalStatus.Id;
                             timer.Appointment.UpdatedAt = DateTime.UtcNow;
 
-                            // Procesar dinero autom├íticamente
-                            // Ô£à MEJORA: Usar l├│gica autom├ítica de mapeo - ProcessMoneyDistributionAsync mapea autom├íticamente
-                            // appointment_cancelled_by_client_no_proposal ÔåÆ cancelled (gen├®rico)
-                            // Usa los % del AppointmentStatus (100/0/0) porque tiene configuraci├│n - Cliente recibe 100% refund
+                            // Procesar dinero automáticamente
+                            // ✅ MEJORA: Usar lógica automática de mapeo - ProcessMoneyDistributionAsync mapea automáticamente
+                            // appointment_cancelled_by_client_no_proposal → cancelled (genérico)
+                            // Usa los % del AppointmentStatus (100/0/0) porque tiene configuración - Cliente recibe 100% refund
                             try
                             {
-                                await _refundService.ProcessMoneyDistributionAsync(
+                                var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
                                     timer.Appointment.SearchHireId,
                                     AppointmentStatus.AppointmentCancelledByClientNoProposal.ToStringValue(),
                                     "Client did not propose within 24h - automatic cancellation",
                                     null,
-                                    updateState: true); // Ô£à updateState: true para que haga el mapeo autom├ítico
+                                    updateState: true); // ✅ updateState: true para que haga el mapeo automático
+                                
+                                if (!moneySuccess)
+                                {
+                                    // ✅ FALLBACK: Verificar si el estado se cambió (puede haber fallado en Fase 1 o 2)
+                                    // Si NO se cambió, cambiarlo manualmente para evitar que el sistema quede bloqueado
+                                    var currentSearchHire = await _context.SearchHires
+                                        .Include(sh => sh.Status)
+                                        .Include(sh => sh.Appointment)
+                                            .ThenInclude(a => a.Status)
+                                        .FirstOrDefaultAsync(sh => sh.Id == timer.Appointment.SearchHireId);
+                                    
+                                    bool stateWasChanged = false;
+                                    if (currentSearchHire != null && currentSearchHire.Status != null)
+                                    {
+                                        // Verificar si el estado ya está en "cancelled" (cambió en Fase 2)
+                                        var isCancelled = currentSearchHire.Status.StatusValue == "cancelled" ||
+                                                        currentSearchHire.Status.IsFinalizationStatus == true;
+                                        
+                                        if (!isCancelled)
+                                        {
+                                            // Estado NO cambió (falló en Fase 1 o 2) → Cambiarlo manualmente como fallback
+                                            try
+                                            {
+                                                // Mapear appointment_cancelled_by_client_no_proposal → cancelled
+                                                var cancelledStatusId = await GetStatusIdByValueAsync("cancelled", "SearchHireStatus");
+                                                currentSearchHire.StatusId = cancelledStatusId;
+                                                currentSearchHire.UpdatedAt = DateTime.UtcNow;
+                                                
+                                                await _context.SaveChangesAsync();
+                                                stateWasChanged = true;
+                                                
+                                                // Log del fallback
+                                                await _loggingService.LogWarningAsync(
+                                                    message: "State updated manually after ProcessMoneyDistributionAsync failure",
+                                                    details: $"SearchHire {timer.Appointment.SearchHireId} state was manually updated to 'cancelled' because ProcessMoneyDistributionAsync returned false. " +
+                                                            $"This prevents the system from being blocked. Money distribution still needs manual processing.",
+                                                    userId: currentSearchHire.ClientId,
+                                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                                    relatedEntityType: "SearchHire",
+                                                    relatedEntityId: timer.Appointment.SearchHireId,
+                                                    additionalData: new { 
+                                                        TimerType = "proposal",
+                                                        TimerId = timer.Id,
+                                                        AppointmentId = timer.Appointment.Id,
+                                                        FallbackStateChange = true
+                                                    }
+                                                );
+                                            }
+                                            catch (Exception fallbackEx)
+                                            {
+                                                // Si el fallback también falla, log crítico
+                                                await _loggingService.LogCriticalAsync(
+                                                    message: "CRITICAL: Failed to update state in fallback after ProcessMoneyDistributionAsync failure",
+                                                    details: $"SearchHire {timer.Appointment.SearchHireId} timer expired but both ProcessMoneyDistributionAsync and fallback state update failed. " +
+                                                            $"System is BLOCKED. Fallback error: {fallbackEx.Message}",
+                                                    userId: currentSearchHire?.ClientId,
+                                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                                    relatedEntityType: "SearchHire",
+                                                    relatedEntityId: timer.Appointment.SearchHireId,
+                                                    additionalData: new { 
+                                                        TimerType = "proposal",
+                                                        TimerId = timer.Id,
+                                                        AppointmentId = timer.Appointment.Id,
+                                                        FallbackError = fallbackEx.Message
+                                                    }
+                                                );
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // Estado YA cambió (falló en Fase 3 - Stripe) → Correcto, solo falta dinero
+                                            stateWasChanged = true;
+                                        }
+                                    }
+                                    
+                                    await _loggingService.LogWarningAsync(
+                                        message: "ProcessMoneyDistributionAsync returned false for timer proposal",
+                                        details: $"Timer {timerId} (proposal type) - ProcessMoneyDistributionAsync returned false. SearchHireId: {timer.Appointment.SearchHireId}, Status: {AppointmentStatus.AppointmentCancelledByClientNoProposal.ToStringValue()}. " +
+                                                $"State was {(stateWasChanged ? "updated" : "NOT updated - system may be blocked")}.",
+                                        userId: null,
+                                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                        relatedEntityType: "AppointmentTimer",
+                                        relatedEntityId: timerId
+                                    );
+                                }
                             }
-                            catch
+                            catch (Exception ex)
                             {
-                                // Log error pero continuar
+                                // ✅ MEJORA: Log error con detalles para debugging
+                                await _loggingService.LogErrorAsync(
+                                    message: "Error processing money distribution for timer proposal",
+                                    details: $"Timer {timerId} (proposal type) - Error in ProcessMoneyDistributionAsync: {ex.Message}. StackTrace: {ex.StackTrace}. SearchHireId: {timer.Appointment?.SearchHireId}, Status: {AppointmentStatus.AppointmentCancelledByClientNoProposal.ToStringValue()}",
+                                    userId: null,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "AppointmentTimer",
+                                    relatedEntityId: timerId,
+                                    additionalData: new { 
+                                        TimerId = timerId,
+                                        TimerType = "proposal",
+                                        SearchHireId = timer.Appointment?.SearchHireId,
+                                        Status = AppointmentStatus.AppointmentCancelledByClientNoProposal.ToStringValue(),
+                                        Error = ex.Message,
+                                        StackTrace = ex.StackTrace
+                                    }
+                                );
                             }
                         }
                         break;

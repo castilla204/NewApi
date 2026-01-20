@@ -288,56 +288,56 @@ namespace newApi.Controllers
                         : null;
 
                     return new SearchListDto
-                    {
-                        Id = s.Id,
-                        UserId = s.UserId,
-                        Title = s.Title,
-                        Description = s.Description,
-                        Frequency = s.Frequency,
-                        IsActive = s.IsActive,
-                        IsRevised = s.IsRevised,
-                        LastExecution = s.LastExecution,
-                        CreatedAt = s.CreatedAt,
-                        StartDate = s.StartDate,
+                {
+                    Id = s.Id,
+                    UserId = s.UserId,
+                    Title = s.Title,
+                    Description = s.Description,
+                    Frequency = s.Frequency,
+                    IsActive = s.IsActive,
+                    IsRevised = s.IsRevised,
+                    LastExecution = s.LastExecution,
+                    CreatedAt = s.CreatedAt,
+                    StartDate = s.StartDate,
                         Category = categoryId,
                         CategoryName = categoryName, // ✅ NUEVO: Nombre de la categoría
-                        User = new UserDto
+                    User = new UserDto
+                    {
+                        Email = s.User.Email,
+                        Name = s.User.Name
+                    },
+                    SearchHire = s.SearchHire != null ? new SearchHireDto
+                    {
+                        Id = s.SearchHire.Id,
+                        ExpertId = s.SearchHire.ExpertId ?? 0,
+                        Status = s.SearchHire.Status.StatusValue,
+                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(s.SearchHire.Status.StatusValue),
+                        CreatedAt = s.SearchHire.CreatedAt,
+                        Amount = s.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
+                        BaseAmount = s.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
+                        TaxAmount = s.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
+                        ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
+                        ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
+                          Expert = s.SearchHire.Expert != null ? new UserDto
+                          {
+                              Name = s.SearchHire.Expert.Name,
+                              ProfilePictureUrl = ResolveProfilePictureUrl(s.SearchHire.Expert.ExpertProfile)
+                          } : null,
+                        // ✅ NUEVO: Información completa del estado con colores
+                        StatusInfo = s.SearchHire.Status != null ? new SystemStatusDto
                         {
-                            Email = s.User.Email,
-                            Name = s.User.Name
-                        },
-                        SearchHire = s.SearchHire != null ? new SearchHireDto
-                        {
-                            Id = s.SearchHire.Id,
-                            ExpertId = s.SearchHire.ExpertId ?? 0,
-                            Status = s.SearchHire.Status.StatusValue,
-                            StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(s.SearchHire.Status.StatusValue),
-                            CreatedAt = s.SearchHire.CreatedAt,
-                            Amount = s.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
-                            BaseAmount = s.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
-                            TaxAmount = s.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
-                            ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
-                            ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
-                              Expert = s.SearchHire.Expert != null ? new UserDto
-                              {
-                                  Name = s.SearchHire.Expert.Name,
-                                  ProfilePictureUrl = ResolveProfilePictureUrl(s.SearchHire.Expert.ExpertProfile)
-                              } : null,
-                            // ✅ NUEVO: Información completa del estado con colores
-                            StatusInfo = s.SearchHire.Status != null ? new SystemStatusDto
-                            {
-                                Id = s.SearchHire.Status.Id,
-                                StatusType = s.SearchHire.Status.StatusType,
-                                StatusName = s.SearchHire.Status.StatusName,
-                                StatusValue = s.SearchHire.Status.StatusValue,
-                                DisplayName = s.SearchHire.Status.DisplayName,
-                                Description = s.SearchHire.Status.Description,
-                                Color = s.SearchHire.Status.Color,
-                                IsActive = s.SearchHire.Status.IsActive,
-                                IsFinalizationStatus = s.SearchHire.Status.IsFinalizationStatus,
-                                SortOrder = s.SearchHire.Status.SortOrder,
-                                CreatedAt = s.SearchHire.Status.CreatedAt,
-                                UpdatedAt = s.SearchHire.Status.UpdatedAt
+                            Id = s.SearchHire.Status.Id,
+                            StatusType = s.SearchHire.Status.StatusType,
+                            StatusName = s.SearchHire.Status.StatusName,
+                            StatusValue = s.SearchHire.Status.StatusValue,
+                            DisplayName = s.SearchHire.Status.DisplayName,
+                            Description = s.SearchHire.Status.Description,
+                            Color = s.SearchHire.Status.Color,
+                            IsActive = s.SearchHire.Status.IsActive,
+                            IsFinalizationStatus = s.SearchHire.Status.IsFinalizationStatus,
+                            SortOrder = s.SearchHire.Status.SortOrder,
+                            CreatedAt = s.SearchHire.Status.CreatedAt,
+                            UpdatedAt = s.SearchHire.Status.UpdatedAt
                             } : null,
                             // ✅ NUEVO: Mapear información del servicio
                             Service = s.SearchHire.SearchService != null ? new ServiceInfo
@@ -352,7 +352,7 @@ namespace newApi.Controllers
                                 ExpertLatitude = s.SearchHire.SearchService.ExpertProfile?.Latitude,
                                 ExpertLongitude = s.SearchHire.SearchService.ExpertProfile?.Longitude,
                                 LocationRange = s.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50
-                            } : null
+                        } : null
                         } : null,
                         // ✅ NUEVO: Imagen del servicio, horario y ciudad del experto
                         ServiceImageUrl = serviceImageUrl,
@@ -1420,391 +1420,6 @@ namespace newApi.Controllers
                 );
 
                 return StatusCode(500, new { message = ex.Message });
-            }
-        }
-
-        /// <summary>
-        /// Obtener detalles completos de una búsqueda (optimizado para SearchDetails)
-        /// </summary>
-        [HttpGet("{searchId}/details-complete")]
-        public async Task<IActionResult> GetSearchDetailsComplete(int searchId)
-        {
-            try
-            {
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                {
-                    // En modo desarrollo, usar un usuario por defecto
-                    if (Request.Headers.ContainsKey("X-Development-Mode"))
-                    {
-                        userId = 38; // Usuario por defecto para desarrollo
-                    }
-                    else
-                    {
-                        return Unauthorized(new { message = "Invalid user identification" });
-                    }
-                }
-
-                // Cargar búsqueda con todas las relaciones necesarias
-                var search = await _context.Searches
-                    .Include(s => s.User)
-                    .Include(s => s.SearchParameters) // ✅ NUEVO: Para obtener el rango de ubicación
-                    .Include(s => s.SearchHire)
-                        .ThenInclude(sh => sh.Client)
-                    .Include(s => s.SearchHire)
-                        .ThenInclude(sh => sh.Status)
-                    .Include(s => s.SearchHire)
-                        .ThenInclude(sh => sh.Expert)
-                    .Include(s => s.SearchHire)
-                        .ThenInclude(sh => sh.SearchService)
-                        .ThenInclude(ss => ss.ExpertProfile) // ✅ NUEVO: Para obtener coordenadas del experto
-                    .Include(s => s.SearchHire)
-                        .ThenInclude(sh => sh.SearchService)
-                        .ThenInclude(ss => ss.ServiceType)
-                        .ThenInclude(st => st.ServiceTypeCategory)
-                    .Include(s => s.SearchHire)
-                        .ThenInclude(sh => sh.SearchService)
-                        .ThenInclude(ss => ss.SelectedDeliverableTypes)
-                        .ThenInclude(ssdt => ssdt.DeliverableType) // ✅ NUEVO: Para obtener tipos de reportes requeridos
-                    .Include(s => s.SearchHire)
-                        .ThenInclude(sh => sh.Appointment)
-                        .ThenInclude(a => a.Status)
-                    .Include(s => s.SearchHire)
-                        .ThenInclude(sh => sh.Appointment)
-                        .ThenInclude(a => a.Timers)
-                    .Include(s => s.SearchHire)
-                        .ThenInclude(sh => sh.Deliverables)
-                    .Include(s => s.SearchHire)
-                        .ThenInclude(sh => sh.Disputes)
-                    .FirstOrDefaultAsync(s => s.Id == searchId &&
-                        (s.UserId == userId || 
-                         _authService.IsAdmin(User) || 
-                         (s.SearchHire != null && (s.SearchHire.ExpertId == userId || 
-                          (s.SearchHire.Expert != null && s.SearchHire.Expert.Id == userId)))));
-
-                if (search == null)
-                {
-                    return NotFound(new { message = "Search not found" });
-                }
-
-                // Obtener configuración de distribución de dinero a través del servicio
-                var systemStatusService = HttpContext.RequestServices.GetRequiredService<SystemStatusService>();
-                var moneyDistribution = await systemStatusService.GetMoneyDistributionAsync(
-                    search.SearchHire.Status.StatusValue, 
-                    search.SearchHire.SearchService?.CategoryId, 
-                    search.SearchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
-
-                // Obtener la categoría del servicio
-                CategoryDto category = null;
-                if (search.SearchHire?.SearchService?.ServiceType?.ServiceTypeCategory != null)
-                {
-                    category = new CategoryDto
-                    {
-                        Id = search.SearchHire.SearchService.ServiceType.ServiceTypeCategory.Id,
-                        Name = search.SearchHire.SearchService.ServiceType.ServiceTypeCategory.Name,
-                        IsActive = search.SearchHire.SearchService.ServiceType.ServiceTypeCategory.IsActive,
-                        CreatedAt = search.SearchHire.SearchService.ServiceType.ServiceTypeCategory.CreatedAt,
-                        UpdatedAt = search.SearchHire.SearchService.ServiceType.ServiceTypeCategory.UpdatedAt
-                    };
-                }
-
-                // Obtener la reseña para este SearchHire si existe
-                ReviewDto review = null;
-                if (search.SearchHire != null)
-                {
-                    var reviewEntity = await _context.Reviews
-                        .Include(r => r.Reviewer)
-                        .Include(r => r.ImagesCollection)
-                        .Include(r => r.SearchHire) // ✅ INTERNACIONALIZACIÓN: Cargar SearchHire para obtener ExpertCountry
-                        .FirstOrDefaultAsync(r => r.SearchHireId == search.SearchHire.Id);
-
-                    if (reviewEntity != null)
-                    {
-                        review = new ReviewDto
-                        {
-                            Id = reviewEntity.Id,
-                            Score = reviewEntity.Score,
-                            Description = reviewEntity.Description,
-                            CreatedAt = reviewEntity.CreatedAt,
-                            Reviewer = new UserDto
-                            {
-                                Id = reviewEntity.Reviewer.Id,
-                                Name = reviewEntity.Reviewer.Name,
-                                Email = reviewEntity.Reviewer.Email,
-                                ProfilePictureUrl = null
-                            },
-                            ImageUrls = reviewEntity.ImagesCollection?.Select(img => img.ImageUrl).ToList() ?? new List<string>(),
-                            // ✅ INTERNACIONALIZACIÓN: País donde se realizó la contratación
-                            Country = reviewEntity.SearchHire?.ExpertCountry
-                        };
-                    }
-                }
-
-                // ✅ DEBUG: Log para verificar datos del experto
-                var locationRange = search.SearchParameters?.FirstOrDefault()?.LocationRange;
-
-                // ✅ NUEVO: Cargar disponibilidad del experto si existe
-                ExpertProfileDto? expertProfileDto = null;
-                if (search.SearchHire?.SearchService?.ExpertProfile != null)
-                {
-                    var expertProfile = search.SearchHire.SearchService.ExpertProfile;
-                    var currentAvailability = await _context.ExpertAvailabilities
-                        .Where(ea => ea.ExpertId == expertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
-                        .OrderByDescending(ea => ea.EffectiveFrom)
-                        .FirstOrDefaultAsync();
-
-                    CurrentExpertAvailabilityDto? availabilityDto = null;
-                    if (currentAvailability != null)
-                    {
-                        var daysOfWeek = System.Text.Json.JsonSerializer.Deserialize<List<string>>(currentAvailability.DaysOfWeek) ?? new List<string>();
-                        availabilityDto = new CurrentExpertAvailabilityDto
-                        {
-                            Id = currentAvailability.Id,
-                            DaysOfWeek = daysOfWeek,
-                            StartTime = currentAvailability.StartTime,
-                            EndTime = currentAvailability.EndTime,
-                            EffectiveFrom = currentAvailability.EffectiveFrom
-                        };
-                    }
-
-                      expertProfileDto = new ExpertProfileDto
-                      {
-                          Id = expertProfile.Id,
-                          ProfilePictureUrl = ResolveProfilePictureUrl(expertProfile),
-                          Description = expertProfile.Description ?? string.Empty,
-                          StripeAccountId = expertProfile.StripeAccountId,
-                          CreatedAt = expertProfile.CreatedAt,
-                          User = search.SearchHire.Expert != null ? new UserDto
-                          {
-                              Id = search.SearchHire.Expert.Id,
-                              Name = search.SearchHire.Expert.Name,
-                              Email = search.SearchHire.Expert.Email,
-                              ProfilePictureUrl = null
-                          } : null,
-                        Reviews = new List<ReviewDto>(), // Las reviews se cargan por separado si es necesario
-                        Latitude = expertProfile.Latitude ?? string.Empty,
-                        Longitude = expertProfile.Longitude ?? string.Empty,
-                        StripeStatus = expertProfile.StripeStatus,
-                        StripeStatusDetails = expertProfile.StripeStatusDetails,
-                        OnboardingCompleted = expertProfile.OnboardingCompleted,
-                        IsOnVacation = expertProfile.IsOnVacation,
-                        CurrentAvailability = availabilityDto, // ✅ NUEVO: Horarios de disponibilidad
-                        // ✅ FUTURE REQUIREMENTS
-                        StripeFutureRequirements = expertProfile.StripeFutureRequirements,
-                        StripeFutureDueAt = expertProfile.StripeFutureDueAt
-                    };
-                }
-
-                // Crear respuesta completa con todos los datos usando DTO
-                var searchDetailsComplete = new SearchDetailsCompleteResponseDto
-                {
-                    Search = new SearchListDto
-                    {
-                        Id = search.Id,
-                        UserId = search.UserId,
-                        Title = search.Title,
-                        Description = search.Description,
-                        Frequency = search.Frequency,
-                        IsActive = search.IsActive,
-                        IsRevised = search.IsRevised,
-                        CreatedAt = search.CreatedAt,
-                        User = new UserDto
-                        {
-                            Id = search.User.Id,
-                            Name = search.User.Name,
-                            Email = search.User.Email,
-                            ProfilePictureUrl = null // Los clientes no tienen foto de perfil
-                        },
-                        SearchHire = search.SearchHire != null ? new SearchHireDto
-                        {
-                            Id = search.SearchHire.Id,
-                            Status = search.SearchHire.Status.StatusValue,
-                            CreatedAt = search.SearchHire.CreatedAt,
-                            Amount = search.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
-                            BaseAmount = search.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
-                            TaxAmount = search.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
-                            ExpertTimezone = search.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
-                            ExpertCountry = search.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
-                            Expert = search.SearchHire.Expert != null ? new UserDto
-                            {
-                                Id = search.SearchHire.Expert.Id,
-                                Name = search.SearchHire.Expert.Name,
-                                Email = search.SearchHire.Expert.Email,
-                                  ProfilePictureUrl = ResolveProfilePictureUrl(search.SearchHire.SearchService?.ExpertProfile)
-                            } : null,
-                            Service = search.SearchHire.SearchService != null ? new ServiceInfo
-                            {
-                                Id = search.SearchHire.SearchService.Id,
-                                ServiceTypeId = search.SearchHire.SearchService.ServiceTypeId,
-                                ServiceTypeName = search.SearchHire.SearchService.ServiceType?.Name ?? string.Empty,
-                                ServiceTypeCategoryId = search.SearchHire.SearchService.ServiceType?.ServiceTypeCategoryId,
-                                ServiceTypeCategoryName = search.SearchHire.SearchService.ServiceType?.ServiceTypeCategory?.Name,
-                                RequiresAppointment = false,
-                                Price = search.SearchHire.SearchService.Price,
-                                // ✅ NUEVOS CAMPOS: Información de ubicación del experto
-                                ExpertLatitude = search.SearchHire.SearchService.ExpertProfile?.Latitude,
-                                ExpertLongitude = search.SearchHire.SearchService.ExpertProfile?.Longitude,
-                                LocationRange = search.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50 // Rango por defecto de 50km
-                            } : null,
-                            // ✅ NUEVO: Información completa del estado
-                            StatusInfo = search.SearchHire.Status != null ? new SystemStatusDto
-                            {
-                                Id = search.SearchHire.Status.Id,
-                                StatusType = search.SearchHire.Status.StatusType,
-                                StatusName = search.SearchHire.Status.StatusName,
-                                StatusValue = search.SearchHire.Status.StatusValue,
-                                DisplayName = search.SearchHire.Status.DisplayName,
-                                Description = search.SearchHire.Status.Description,
-                                Color = search.SearchHire.Status.Color,
-                                IsActive = search.SearchHire.Status.IsActive,
-                                IsFinalizationStatus = search.SearchHire.Status.IsFinalizationStatus,
-                                SortOrder = search.SearchHire.Status.SortOrder,
-                                CreatedAt = search.SearchHire.Status.CreatedAt,
-                                UpdatedAt = search.SearchHire.Status.UpdatedAt
-                            } : null
-                        } : null
-                    },
-                    MoneyDistribution = moneyDistribution != null ? new MoneyDistributionConfigDto
-                    {
-                        ClientPercentage = moneyDistribution.ClientPercentage,
-                        ExpertPercentage = moneyDistribution.ExpertPercentage,
-                        PlatformPercentage = moneyDistribution.PlatformPercentage,
-                        Source = "SearchHire",
-                        Status = "Active"
-                    } : null,
-                    Category = category,
-                    Review = review,
-                    Appointment = search.SearchHire?.Appointment != null ? new AppointmentDto
-                    {
-                        Id = search.SearchHire.Appointment.Id,
-                        SearchHireId = search.SearchHire.Appointment.SearchHireId,
-                        Status = search.SearchHire.Appointment.Status?.StatusValue ?? string.Empty,
-                        ProposedDate = search.SearchHire.Appointment.ProposedDate,
-                        ProposedTime = search.SearchHire.Appointment.ProposedTime,
-                        Location = search.SearchHire.Appointment.Location,
-                        Latitude = search.SearchHire.Appointment.Latitude,
-                        Longitude = search.SearchHire.Appointment.Longitude,
-                        DoorNumber = search.SearchHire.Appointment.DoorNumber,
-                        OwnerPhone = search.SearchHire.Appointment.OwnerPhone,
-                        SiteDetails = search.SearchHire.Appointment.SiteDetails,
-                        RejectionCount = search.SearchHire.Appointment.RejectionCount,
-                        ClientCancellationCount = search.SearchHire.Appointment.ClientCancellationCount,
-                        ExpertCancellationCount = search.SearchHire.Appointment.ExpertCancellationCount,
-                        LastRejectionAt = search.SearchHire.Appointment.LastRejectionAt,
-                        LastClientCancellationAt = search.SearchHire.Appointment.LastClientCancellationAt,
-                        LastExpertCancellationAt = search.SearchHire.Appointment.LastExpertCancellationAt,
-                        LastProposalAt = search.SearchHire.Appointment.LastProposalAt,
-                        LastResponseAt = search.SearchHire.Appointment.LastResponseAt,
-                        CreatedAt = search.SearchHire.Appointment.CreatedAt,
-                        UpdatedAt = search.SearchHire.Appointment.UpdatedAt,
-                        ClientName = search.SearchHire?.Client?.Name,
-                        ExpertName = search.SearchHire?.Expert?.Name,
-                        Amount = search.SearchHire?.Amount ?? 0,
-                        // ✅ NUEVOS CAMPOS: Información de ubicación del experto
-                        ExpertLatitude = search.SearchHire?.SearchService?.ExpertProfile?.Latitude,
-                        ExpertLongitude = search.SearchHire?.SearchService?.ExpertProfile?.Longitude,
-                        LocationRange = search.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50, // Rango por defecto de 50km
-                        // ✅ NUEVO: Información completa del estado
-                        StatusInfo = search.SearchHire.Appointment.Status != null ? new SystemStatusDto
-                        {
-                            Id = search.SearchHire.Appointment.Status.Id,
-                            StatusType = search.SearchHire.Appointment.Status.StatusType,
-                            StatusName = search.SearchHire.Appointment.Status.StatusName,
-                            StatusValue = search.SearchHire.Appointment.Status.StatusValue,
-                            DisplayName = search.SearchHire.Appointment.Status.DisplayName,
-                            Description = search.SearchHire.Appointment.Status.Description,
-                            Color = search.SearchHire.Appointment.Status.Color,
-                            IsActive = search.SearchHire.Appointment.Status.IsActive,
-                            IsFinalizationStatus = search.SearchHire.Appointment.Status.IsFinalizationStatus,
-                            SortOrder = search.SearchHire.Appointment.Status.SortOrder,
-                            CreatedAt = search.SearchHire.Appointment.Status.CreatedAt,
-                            UpdatedAt = search.SearchHire.Appointment.Status.UpdatedAt
-                        } : null,
-                        Timers = search.SearchHire.Appointment.Timers?.Select(t => new AppointmentTimerDto
-                        {
-                            Id = t.Id,
-                            AppointmentId = t.AppointmentId,
-                            TimerType = t.TimerType,
-                            StartTime = t.StartTime,
-                            EndTime = t.EndTime,
-                            IsExpired = t.IsExpired,
-                            ExpiredAt = t.ExpiredAt
-                        }).ToList() ?? new List<AppointmentTimerDto>()
-                    } : null,
-                    Deliverables = search.SearchHire?.Deliverables?.Select(d => new DeliverableDto
-                    {
-                        Id = d.Id,
-                        Type = d.Type,
-                        Url = ResolveDeliverableUrl(d),
-                        CreatedAt = d.CreatedAt
-                    }).ToList() ?? new List<DeliverableDto>(),
-                    RequiredDeliverableTypes = search.SearchHire?.SearchService?.SelectedDeliverableTypes?
-                        .Where(ssdt => ssdt.IsSelected && ssdt.DeliverableType != null)
-                        .Select(ssdt => new DeliverableTypeDto
-                        {
-                            Id = ssdt.DeliverableType.Id,
-                            Name = ssdt.DeliverableType.Name,
-                            DisplayName = ssdt.DeliverableType.DisplayName,
-                            Description = ssdt.DeliverableType.Description,
-                            IsRequired = ssdt.DeliverableType.IsRequired,
-                            IsActive = ssdt.DeliverableType.IsActive,
-                            SortOrder = ssdt.DeliverableType.SortOrder
-                        })
-                        .OrderBy(dt => dt.SortOrder)
-                        .ToList() ?? new List<DeliverableTypeDto>(),
-                    Disputes = search.SearchHire?.Disputes?.Select(d => new DisputeDto
-                    {
-                        Id = d.Id,
-                        SearchHireId = d.SearchHireId,
-                        ReporterId = d.ReporterId,
-                        Status = d.Status,
-                        Reason = d.Reason,
-                        ExpertResponse = d.ExpertResponse,
-                        ExpertResponseDeadline = d.ExpertResponseDeadline,
-                        ExpertResponseAt = d.ExpertResponseAt,
-                        CanExpertRespond = d.CanExpertRespond,
-                        CreatedAt = d.CreatedAt
-                    }).ToList() ?? new List<DisputeDto>(),
-                    ExpertProfile = expertProfileDto // ✅ NUEVO: Perfil completo del experto con horarios
-                };
-
-                await _loggingService.LogInfoAsync(
-                    message: "Detalles completos de búsqueda obtenidos exitosamente",
-                    details: $"Search {searchId} detalles completos obtenidos por usuario {userId}",
-                    userId: userId,
-                    source: "SearchController.GetSearchDetailsComplete",
-                    relatedEntityType: "Search",
-                    relatedEntityId: searchId
-                );
-
-                return Ok(searchDetailsComplete);
-            }
-            catch (Exception ex)
-            {
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                int? userId = null;
-                if (int.TryParse(userIdClaim, out int parsedUserId))
-                {
-                    userId = parsedUserId;
-                }
-
-                await _loggingService.LogErrorAsync(
-                    message: "Error al obtener detalles completos de búsqueda",
-                    details: $"Error obteniendo detalles completos de Search {searchId}. UserId: {userId}, Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
-                    userId: userId,
-                    source: "SearchController.GetSearchDetailsComplete",
-                    relatedEntityType: "Search",
-                    relatedEntityId: searchId,
-                    additionalData: new { 
-                        SearchId = searchId,
-                        ErrorType = ex.GetType().Name,
-                        ErrorMessage = ex.Message,
-                        StackTrace = ex.StackTrace,
-                        InnerException = ex.InnerException?.Message
-                    }
-                );
-
-                return StatusCode(500, new { message = "Internal server error" });
             }
         }
 

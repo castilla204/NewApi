@@ -3445,53 +3445,6 @@ namespace newApi.Controllers
                 {
                     await _context.SaveChangesAsync(); // ✅ SAVE FIRST to get the real ID
                     searchHireId = searchHire.Id;
-                    
-                    // ✅ CANCELAR timers activos de SearchHires anteriores para el mismo servicio/cliente
-                    // Esto evita que queden timers huérfanos cuando se crea un nuevo SearchHire
-                    var previousSearchHires = await _context.SearchHires
-                        .Where(sh => sh.ClientId == userId && 
-                                     sh.SearchServiceId == service.Id && 
-                                     sh.Id != searchHireId &&
-                                     sh.Status.StatusValue == "pending")
-                        .Include(sh => sh.Status)
-                        .Include(sh => sh.Appointment)
-                            .ThenInclude(a => a.Timers)
-                        .ToListAsync();
-
-                    foreach (var prevSearchHire in previousSearchHires)
-                    {
-                        if (prevSearchHire.Appointment != null)
-                        {
-                            var activeTimers = prevSearchHire.Appointment.Timers
-                                .Where(t => !t.IsExpired)
-                                .ToList();
-                            
-                            foreach (var timer in activeTimers)
-                            {
-                                timer.IsExpired = true;
-                                timer.ExpiredAt = DateTime.UtcNow;
-                                
-                                // Cancelar job de Hangfire si existe
-                                if (!string.IsNullOrEmpty(timer.HangfireJobId))
-                                {
-                                    try
-                                    {
-                                        BackgroundJob.Delete(timer.HangfireJobId);
-                                        timer.HangfireJobId = null;
-                                    }
-                                    catch
-                                    {
-                                        timer.HangfireJobId = null;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    if (previousSearchHires.Any())
-                    {
-                        await _context.SaveChangesAsync();
-                    }
                 }
                 catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
                 {

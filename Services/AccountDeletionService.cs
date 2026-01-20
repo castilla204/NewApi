@@ -5,6 +5,7 @@ using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.Common;
+using Hangfire;
 
 namespace newApi.Services
 {
@@ -670,6 +671,9 @@ namespace newApi.Services
                                 DeletionReason = deletionReason
                             }
                         );
+                        
+                        // ✅ CANCELAR timers activos y jobs de Hangfire
+                        await CancelActiveTimersAndHangfireJobsAsync(searchHire.Id, cancellationToken);
                      }
                      else
                      {
@@ -746,6 +750,9 @@ namespace newApi.Services
                                 }
                             );
                         }
+                        
+                        // ✅ CANCELAR timers activos y jobs de Hangfire
+                        await CancelActiveTimersAndHangfireJobsAsync(searchHire.Id, cancellationToken);
                      }
                      
                      // ✅ NOTA: NO cambiar StatusId manualmente aquí - ProcessMoneyDistributionAsync con updateState: true ya lo hizo
@@ -853,10 +860,14 @@ namespace newApi.Services
             try
             {
                 // ✅ VALIDACIONES PRE-DELETE: Verificar que no haya transacciones pendientes
-                var pendingTransactions = await _context.FinancialTransactions
-                    .Where(ft => ft.UserId == userId && 
-                                (ft.TransactionType == "ServicePayment" || ft.TransactionType == "Deposit"))
-                    .AnyAsync(cancellationToken);
+                // ✅ FIX: Usar SQL directo para evitar ExecutionStrategy dentro de transacción manual
+                // EnableRetryOnFailure activa ExecutionStrategy automáticamente, causando error con transacciones manuales
+                var pendingTransactionsCount = await _context.Database.ExecuteSqlRawAsync(
+                    @"SELECT COUNT(*) FROM ""FinancialTransactions"" 
+                      WHERE ""UserId"" = {0} 
+                        AND (""TransactionType"" = 'ServicePayment' OR ""TransactionType"" = 'Deposit')",
+                    new object[] { userId }, cancellationToken);
+                var pendingTransactions = pendingTransactionsCount > 0;
                 
                 if (pendingTransactions)
                 {
@@ -1127,32 +1138,41 @@ namespace newApi.Services
                 bool hasDeletes = false;
                 
                 // 7. Eliminar likes (datos no críticos)
-                var likes = await _context.Likes
-                    .Where(l => l.UserId == userId)
-                    .ToListAsync(cancellationToken);
-                if (likes.Any())
+                // ✅ FIX: Usar SQL directo para evitar ExecutionStrategy dentro de transacción manual
+                var likesDeleted = await _context.Database.ExecuteSqlRawAsync(
+                    @"DELETE FROM ""Likes"" WHERE ""UserId"" = {0}",
+                    new object[] { userId }, cancellationToken);
+                if (likesDeleted > 0)
                 {
-                    _context.Likes.RemoveRange(likes);
                     hasDeletes = true;
                 }
 
                 // 8. Eliminar búsquedas (datos no críticos)
-                var searches = await _context.Searches
-                    .Where(s => s.UserId == userId)
-                    .ToListAsync(cancellationToken);
-                if (searches.Any())
+                // ✅ FIX: Usar SQL directo para evitar ExecutionStrategy dentro de transacción manual
+                var searchesDeleted = await _context.Database.ExecuteSqlRawAsync(
+                    @"DELETE FROM ""Searches"" WHERE ""UserId"" = {0}",
+                    new object[] { userId }, cancellationToken);
+                if (searchesDeleted > 0)
                 {
-                    _context.Searches.RemoveRange(searches);
                     hasDeletes = true;
                 }
 
                 // 9. Eliminar/anonimizar servicios (SOLO si el usuario que elimina es el EXPERTO - datos no críticos)
                 // ✅ CRÍTICO: Si un CLIENTE elimina su cuenta, NO tocar los servicios del experto
                 // ✅ MEJORA: Preservar servicios con contrataciones históricas (anonimizar en lugar de eliminar)
+                // ✅ FIX: Usar FromSqlRaw para evitar ExecutionStrategy dentro de transacción manual
                 var expertProfile = await _context.ExpertProfiles
-                    .Include(ep => ep.SearchServices)
-                        .ThenInclude(ss => ss.Images)
-                    .FirstOrDefaultAsync(ep => ep.UserId == userId, cancellationToken);
+                    .FromSqlRaw(@"SELECT * FROM ""ExpertProfiles"" WHERE ""UserId"" = {0}", userId)
+                    .FirstOrDefaultAsync(cancellationToken);
+                
+                if (expertProfile != null)
+                {
+                    // Cargar servicios con imágenes usando FromSqlRaw
+                    expertProfile.SearchServices = await _context.SearchServices
+                        .FromSqlRaw(@"SELECT * FROM ""SearchServices"" WHERE ""ExpertProfileId"" = {0}", expertProfile.Id)
+                        .Include(ss => ss.Images)
+                        .ToListAsync(cancellationToken);
+                }
 
                 // ✅ CORRECCIÓN: Solo procesar servicios si el usuario que elimina ES el experto
                 // Si un cliente elimina su cuenta, el experto y sus servicios NO deben ser afectados
@@ -1170,10 +1190,10 @@ namespace newApi.Services
                         // ✅ CRÍTICO: Verificar TODOS los SearchHires asociados, incluso si están anonimizados
                         // Esto previene eliminar servicios que tienen contrataciones históricas (aunque anonimizadas)
                         // ✅ MEJORA: Buscar por SearchServiceId directamente, no por ClientId/ExpertId
-                        var servicesWithHires = await _context.SearchHires
-                            .Where(sh => allServiceIds.Contains(sh.SearchServiceId))
-                            .Select(sh => sh.SearchServiceId)
-                            .Distinct()
+                        // ✅ FIX: Usar SqlQueryRaw para evitar ExecutionStrategy dentro de transacción manual
+                        var serviceIdsParam = string.Join(",", allServiceIds);
+                        var servicesWithHires = await _context.Database
+                            .SqlQueryRaw<int>(@"SELECT DISTINCT ""SearchServiceId"" FROM ""SearchHires"" WHERE ""SearchServiceId"" = ANY(ARRAY[{0}])", serviceIdsParam)
                             .ToListAsync(cancellationToken);
 
                         var servicesWithHiresSet = new HashSet<int>(servicesWithHires);
@@ -1302,10 +1322,10 @@ namespace newApi.Services
                     {
                         // ✅ CRÍTICO: Verificar una vez más que los servicios NO tienen SearchHires asociados
                         // Esto previene eliminar servicios que tienen contrataciones (incluso anonimizadas)
-                        var finalCheckServicesWithHires = await _context.SearchHires
-                            .Where(sh => servicesToDelete.Contains(sh.SearchServiceId))
-                            .Select(sh => sh.SearchServiceId)
-                            .Distinct()
+                        // ✅ FIX: Usar SqlQueryRaw para evitar ExecutionStrategy dentro de transacción manual
+                        var servicesToDeleteParam = string.Join(",", servicesToDelete);
+                        var finalCheckServicesWithHires = await _context.Database
+                            .SqlQueryRaw<int>(@"SELECT DISTINCT ""SearchServiceId"" FROM ""SearchHires"" WHERE ""SearchServiceId"" = ANY(ARRAY[{0}])", servicesToDeleteParam)
                             .ToListAsync(cancellationToken);
                         
                         // ✅ Filtrar servicios que realmente no tienen SearchHires
@@ -1431,22 +1451,22 @@ namespace newApi.Services
                 }
 
                 // 10. Eliminar configuraciones de usuario (datos no críticos)
-                var userSettings = await _context.UserSettings
-                    .Where(us => us.UserId == userId)
-                    .ToListAsync(cancellationToken);
-                if (userSettings.Any())
+                // ✅ FIX: Usar SQL directo para evitar ExecutionStrategy dentro de transacción manual
+                var userSettingsDeleted = await _context.Database.ExecuteSqlRawAsync(
+                    @"DELETE FROM ""UserSettings"" WHERE ""UserId"" = {0}",
+                    new object[] { userId }, cancellationToken);
+                if (userSettingsDeleted > 0)
                 {
-                    _context.UserSettings.RemoveRange(userSettings);
                     hasDeletes = true;
                 }
 
                 // 11. Eliminar suscripciones (datos no críticos)
-                var subscriptions = await _context.UserSubscriptions
-                    .Where(us => us.UserId == userId)
-                    .ToListAsync(cancellationToken);
-                if (subscriptions.Any())
+                // ✅ FIX: Usar SQL directo para evitar ExecutionStrategy dentro de transacción manual
+                var subscriptionsDeleted = await _context.Database.ExecuteSqlRawAsync(
+                    @"DELETE FROM ""UserSubscriptions"" WHERE ""UserId"" = {0}",
+                    new object[] { userId }, cancellationToken);
+                if (subscriptionsDeleted > 0)
                 {
-                    _context.UserSubscriptions.RemoveRange(subscriptions);
                     hasDeletes = true;
                 }
                 
@@ -1542,6 +1562,98 @@ namespace newApi.Services
                     }
                 );
                 throw; // Re-throw para que la transacción global haga rollback
+            }
+        }
+
+        /// <summary>
+        /// Cancela todos los timers activos y sus jobs de Hangfire asociados para un SearchHire
+        /// </summary>
+        private async Task CancelActiveTimersAndHangfireJobsAsync(int searchHireId, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                // Obtener el Appointment asociado al SearchHire
+                var appointment = await _context.Appointments
+                    .FirstOrDefaultAsync(a => a.SearchHireId == searchHireId, cancellationToken);
+
+                if (appointment == null)
+                {
+                    return; // No hay appointment, no hay timers que cancelar
+                }
+
+                // Obtener todos los timers activos del Appointment
+                var activeTimers = await _context.AppointmentTimers
+                    .Where(t => t.AppointmentId == appointment.Id && !t.IsExpired)
+                    .ToListAsync(cancellationToken);
+
+                if (!activeTimers.Any())
+                {
+                    return; // No hay timers activos
+                }
+
+                var hangfireJobIdsToCancel = new List<string>();
+
+                // Marcar todos los timers como expirados y recopilar JobIds
+                foreach (var timer in activeTimers)
+                {
+                    timer.IsExpired = true;
+                    timer.ExpiredAt = DateTime.UtcNow;
+
+                    // Almacenar JobId para cancelarlo después del commit
+                    if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                    {
+                        hangfireJobIdsToCancel.Add(timer.HangfireJobId);
+                        timer.HangfireJobId = null; // Limpiar referencia
+                    }
+                }
+
+                // Guardar cambios en la base de datos
+                await _context.SaveChangesAsync(cancellationToken);
+
+                // Cancelar jobs de Hangfire DESPUÉS del commit (mejor práctica: operaciones externas fuera de transacción)
+                foreach (var jobId in hangfireJobIdsToCancel)
+                {
+                    try
+                    {
+                        BackgroundJob.Delete(jobId);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Si el job ya no existe o fue procesado, continuar sin error
+                        // Loguear pero no fallar - la cancelación de Hangfire no es crítica
+                        await _loggingService.LogWarningAsync(
+                            message: "Failed to cancel Hangfire job during account deletion",
+                            details: $"Failed to cancel Hangfire job {jobId} for SearchHire {searchHireId} during account deletion. Job may have already been processed. Error: {ex.Message}",
+                            userId: null,
+                            source: "AccountDeletionService.CancelActiveTimersAndHangfireJobsAsync",
+                            relatedEntityType: "AppointmentTimer",
+                            relatedEntityId: appointment.Id,
+                            additionalData: new { 
+                                SearchHireId = searchHireId,
+                                AppointmentId = appointment.Id,
+                                HangfireJobId = jobId,
+                                Error = ex.Message
+                            }
+                        );
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Loguear pero no fallar - la cancelación de timers no debe bloquear la eliminación de cuenta
+                await _loggingService.LogWarningAsync(
+                    message: "Failed to cancel timers during account deletion",
+                    details: $"Failed to cancel active timers for SearchHire {searchHireId} during account deletion. This is non-critical. Error: {ex.Message}",
+                    userId: null,
+                    source: "AccountDeletionService.CancelActiveTimersAndHangfireJobsAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { 
+                        SearchHireId = searchHireId,
+                        Error = ex.Message,
+                        ErrorType = ex.GetType().Name
+                    }
+                );
             }
         }
 

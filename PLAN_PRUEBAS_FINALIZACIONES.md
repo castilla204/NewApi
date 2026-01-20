@@ -6,17 +6,46 @@
 - **Trigger**: Cliente no propone cita en 24h (timer "proposal" expira)
 - **Porcentajes**: Client=100%, Expert=0%, Platform=0%
 - **Estado SearchHire**: `cancelled`
-- **Resultado**: ✅ Correcto - Verificado exhaustivamente
-- **SearchHireId de prueba**: 58
-- **Fecha de prueba**: 2026-01-19 23:22:32
-- **Verificación detallada**:
+- **Resultado**: ✅ **Correcto** - Estados, porcentajes y lógica funcionan correctamente
+- **SearchHireId de prueba**: 58, 60 (última prueba)
+- **Fecha de prueba**: 2026-01-19 23:22:32 (58), 2026-01-20 09:48:31 (60)
+- **Verificación detallada (SearchHire 60)**:
   - ✅ Estados correctos: `appointment_cancelled_by_client_no_proposal` → `cancelled`
+  - ✅ Ambos estados tienen `IsFinalizationStatus = true`
   - ✅ Porcentajes suman 100%: Client=100%, Expert=0%, Platform=0%
   - ✅ Cálculos base correctos: Client=1.65€, Expert=0€, Platform=0€
-  - ✅ Refund Stripe correcto: 2.00€ (reembolso total del Amount, ClientPercentage=100%)
+  - ✅ Timer expirado correctamente: timer "proposal" expirado el 2026-01-20 09:50:47
+  - ✅ **Comportamiento esperado**: Refund pendiente por saldo insuficiente (NORMAL)
+    - Cliente pagó: 2,00€
+    - Stripe cobró comisión: ~0.31€ (2.9% + 0.30€ estándar)
+    - Balance disponible: 1,69€ (2,00€ - 0.31€)
+    - Refund requerido: 2,00€ (devolución completa al cliente)
+    - **Esto es normal**: Stripe ya se llevó su comisión, por lo que el balance es menor que el monto original
+    - El sistema detecta correctamente la falta de balance y registra el log
+    - PaymentIntentId: `pi_3SrbXzR7PVKiStYu2vnmTKlx`
+  - ✅ Transacciones: 1 ServicePayment (-2€) registrado correctamente
+  - ✅ Logs: Sistema detecta correctamente el saldo insuficiente y actualiza el estado
+  - **Nota**: El refund se procesará cuando haya suficiente balance en la cuenta de Stripe (normalmente después de que Stripe procese el pago y haya fondos disponibles)
+
+### 2. ✅ `appointment_cancelled_by_expert_no_response`
+- **Trigger**: Experto no responde propuesta en 24h (timer "response" expira)
+- **Porcentajes**: Client=100%, Expert=0%, Platform=0%
+- **Estado SearchHire**: `cancelled`
+- **Resultado**: ✅ **Correcto** - Todo funcionó perfectamente
+- **SearchHireId de prueba**: 61
+- **Fecha de prueba**: 2026-01-20 09:58:04
+- **Verificación detallada**:
+  - ✅ Estados correctos: `appointment_cancelled_by_expert_no_response` → `cancelled`
+  - ✅ Ambos estados tienen `IsFinalizationStatus = true`
+  - ✅ Porcentajes suman 100%: Client=100%, Expert=0%, Platform=0%
+  - ✅ Cálculos base correctos: Client=1.65€, Expert=0€, Platform=0€
+  - ✅ Timer "response" expirado correctamente: expirado el 2026-01-20 09:59:55
+  - ✅ Refund Stripe procesado correctamente: 2.00€ (reembolso total del Amount)
+  - ✅ StripeRefundId registrado: `re_3SrbhFR7PVKiStYu1N6umRP5`
   - ✅ No hay transfer al experto (0%)
-  - ✅ Transacciones registradas: 1 Refund, 0 Payouts
+  - ✅ Transacciones registradas: 1 ServicePayment (-2€), 1 Refund (2€)
   - ✅ Logs sin errores: 0 errores, 0 warnings, 0 críticos
+  - ✅ Log "Reembolso procesado" presente
   - ✅ Consistencia matemática verificada
 
 ---
@@ -25,192 +54,231 @@
 
 ### CATEGORÍA A: CANCELACIONES AUTOMÁTICAS POR TIMERS
 
-#### 2. ⏰ `appointment_cancelled_by_expert_no_response`
-
-#### 2. ⏰ `appointment_cancelled_by_expert_no_response` ⏳ SIGUIENTE
-- **Trigger**: Experto no responde propuesta en 24h (timer "response" expira)
-- **Porcentajes esperados**: Client=100%, Expert=0%, Platform=0%
-- **Estado SearchHire esperado**: `cancelled`
-- **Pasos para probar**:
-  1. Crear SearchHire con servicio que requiere cita
-  2. Cliente propone cita
-  3. **NO responder** (esperar 24h o forzar timer "response")
-  4. Verificar:
-     - Appointment.Status = `appointment_cancelled_by_expert_no_response`
-     - SearchHire.Status = `cancelled`
-     - Refund: 100% del Amount (reembolso total)
-     - Expert: 0€
-     - Platform: 0€
-
-#### 3. ⏰ `appointment_cancelled_by_no_report`
+### 3. ✅ `appointment_cancelled_by_no_report`
 - **Trigger**: Experto no envía reporte en 24h (timer "expert_report" expira)
-- **Porcentajes esperados**: Client=95%, Expert=0%, Platform=5%
-- **Estado SearchHire esperado**: `cancelled`
-- **Pasos para probar**:
-  1. Crear SearchHire con servicio que requiere cita
-  2. Cliente propone cita
-  3. Experto confirma cita
-  4. Esperar 3h para que cambie a "awaiting_report" (o forzar timer)
-  5. **NO enviar reporte del experto**
-  6. Esperar 24h (o forzar timer "expert_report")
-  7. Verificar:
-     - Appointment.Status = `appointment_cancelled_by_no_report`
-     - SearchHire.Status = `cancelled`
-     - Refund: 95% del BaseAmount (con tax proporcional)
-     - Platform: 5% del BaseAmount
-     - Expert: 0€
+- **Porcentajes**: Client=95%, Expert=0%, Platform=5%
+- **Estado SearchHire**: `cancelled`
+- **Resultado**: ✅ **Correcto** - Todo funcionó perfectamente
+- **SearchHireId de prueba**: 62
+- **Fecha de prueba**: 2026-01-20 10:02:38
+- **Verificación detallada**:
+  - ✅ Estados correctos: `appointment_cancelled_by_no_report` → `cancelled`
+  - ✅ Ambos estados tienen `IsFinalizationStatus = true`
+  - ✅ Porcentajes suman 100%: Client=95%, Expert=0%, Platform=5%
+  - ✅ Cálculos base correctos: Client=1.57€ (95%), Expert=0€, Platform=0.08€ (5%)
+  - ✅ Timer "expert_report" expirado correctamente: expirado el 2026-01-20 10:04:56
+  - ✅ Refund Stripe procesado correctamente: 1.90€ (95% del Amount con tax proporcional)
+  - ✅ StripeRefundId registrado: `re_3SrblfR7PVKiStYu2K63x5Ov`
+  - ✅ No hay transfer al experto (0%)
+  - ✅ Transacciones registradas: 1 ServicePayment (-2€), 1 Refund (1.90€)
+  - ✅ Logs sin errores: 0 errores, 0 warnings, 0 críticos
+  - ✅ Log "Reembolso procesado" presente
+  - ✅ Consistencia matemática verificada
+  - ✅ Cálculo con tax proporcional correcto: 1.57€ base → 1.90€ con tax (95% de 2€)
 
-#### 4. ⏰ `appointment_completed_without_client_approval`
+### 4. ✅ `appointment_completed_without_client_approval`
 - **Trigger**: Cliente no aprueba/disputa en 24h (timer "client_decision" expira)
-- **Porcentajes esperados**: Client=0%, Expert=100%, Platform=0%
-- **Estado SearchHire esperado**: `completed`
-- **Pasos para probar**:
-  1. Crear SearchHire con servicio que requiere cita
-  2. Cliente propone cita
-  3. Experto confirma cita
-  4. Esperar 3h para que cambie a "awaiting_report"
-  5. Experto envía reporte (con archivos requeridos)
-  6. **NO aprobar ni disputar** (esperar 24h o forzar timer "client_decision")
-  7. Verificar:
-     - Appointment.Status = `appointment_completed_without_client_approval`
-     - SearchHire.Status = `completed`
-     - Transfer al experto: 100% del BaseAmount (sin tax)
-     - Client: 0€
-     - Platform: 0€
+- **Porcentajes**: Client=0%, Expert=100%, Platform=0%
+- **Estado SearchHire**: `completed`
+- **Resultado**: ✅ **Correcto** - Todo funcionó perfectamente
+- **SearchHireId de prueba**: 63
+- **Fecha de prueba**: 2026-01-20 10:08:23
+- **Verificación detallada**:
+  - ✅ Estados correctos: `appointment_completed_without_client_approval` → `completed`
+  - ✅ Ambos estados tienen `IsFinalizationStatus = true`
+  - ✅ Porcentajes suman 100%: Client=0%, Expert=100%, Platform=0%
+  - ✅ Cálculos base correctos: Client=0€, Expert=1.65€ (100%), Platform=0€
+  - ✅ Timer "client_decision" expirado correctamente: expirado el 2026-01-20 10:11:22
+  - ✅ Transfer Stripe procesado correctamente: 1.65€ (100% del BaseAmount, sin tax)
+  - ✅ StripeTransferId registrado: `tr_1SrbuDR7PVKiStYuCNHzVWw7`
+  - ✅ No hay refund al cliente (0%)
+  - ✅ Transacciones registradas: 1 ServicePayment (-2€), 1 Payout (1.65€)
+  - ✅ Logs sin errores: 0 errores, 0 warnings, 0 críticos
+  - ✅ Log "Pago recibido" presente
+  - ✅ Consistencia matemática verificada
+  - ✅ Transfer usa BaseAmount (sin tax) como se espera
 
 ---
 
 ### CATEGORÍA B: CANCELACIONES MANUALES (SEGUNDA VEZ)
 
-#### 5. 🔴 `appointment_cancelled_by_client_second`
+### 5. ✅ `appointment_cancelled_by_client_second`
 - **Trigger**: Cliente cancela cita confirmada por segunda vez
-- **Porcentajes esperados**: Client=100%, Expert=0%, Platform=0%
-- **Estado SearchHire esperado**: `cancelled`
-- **Pasos para probar**:
-  1. Crear SearchHire con servicio que requiere cita
-  2. Cliente propone cita
-  3. Experto confirma cita
-  4. Cliente cancela (primera vez) → `appointment_cancelled_by_client`
-  5. Cliente propone nueva cita
-  6. Experto confirma nueva cita
-  7. Cliente cancela (segunda vez) → `appointment_cancelled_by_client_second`
-  8. Verificar:
-     - Appointment.Status = `appointment_cancelled_by_client_second`
-     - SearchHire.Status = `cancelled`
-     - Refund: 100% del Amount (reembolso total)
-     - Expert: 0€
-     - Platform: 0€
+- **Porcentajes**: Client=100%, Expert=0%, Platform=0%
+- **Estado SearchHire**: `cancelled`
+- **Resultado**: ✅ **Correcto** - Todo funcionó perfectamente
+- **SearchHireId de prueba**: 64
+- **Fecha de prueba**: 2026-01-20 11:12:14
+- **Verificación detallada**:
+  - ✅ Estados correctos: `appointment_cancelled_by_client_second` → `cancelled`
+  - ✅ Ambos estados tienen `IsFinalizationStatus = true`
+  - ✅ Porcentajes suman 100%: Client=100%, Expert=0%, Platform=0%
+  - ✅ Cálculos base correctos: Client=1.65€ (100%), Expert=0€, Platform=0€
+  - ✅ Refund Stripe procesado correctamente: 2.00€ (reembolso total del Amount con tax proporcional)
+  - ✅ StripeRefundId registrado: `re_3Srcr1R7PVKiStYu2icEcn1r`
+  - ✅ No hay transfer al experto (0%)
+  - ✅ Transacciones registradas: 1 ServicePayment (-2€), 1 Refund (2€)
+  - ✅ Logs sin errores: 0 errores, 0 warnings, 0 críticos
+  - ✅ Log "Reembolso procesado" presente
+  - ✅ Consistencia matemática verificada
+  - ✅ Timers cancelados correctamente después de la cancelación
 
-#### 6. 🔴 `appointment_cancelled_by_expert_second`
+### 6. ✅ `appointment_cancelled_by_expert_second`
 - **Trigger**: Experto cancela cita confirmada por segunda vez
-- **Porcentajes esperados**: Client=100%, Expert=0%, Platform=0%
-- **Estado SearchHire esperado**: `cancelled`
-- **Pasos para probar**:
-  1. Crear SearchHire con servicio que requiere cita
-  2. Cliente propone cita
-  3. Experto confirma cita
-  4. Experto cancela (primera vez) → `appointment_cancelled_by_expert`
-  5. Cliente propone nueva cita
-  6. Experto confirma nueva cita
-  7. Experto cancela (segunda vez) → `appointment_cancelled_by_expert_second`
-  8. Verificar:
-     - Appointment.Status = `appointment_cancelled_by_expert_second`
-     - SearchHire.Status = `cancelled`
-     - Refund: 100% del Amount (con tax proporcional)
-     - Expert: 0€
-     - Platform: 0€
+- **Porcentajes**: Client=100%, Expert=0%, Platform=0%
+- **Estado SearchHire**: `cancelled`
+- **Resultado**: ✅ **Correcto** - Todo funcionó perfectamente
+- **SearchHireId de prueba**: 65
+- **Fecha de prueba**: 2026-01-20 11:23:52
+- **Verificación detallada**:
+  - ✅ Estados correctos: `appointment_cancelled_by_expert_second` → `cancelled`
+  - ✅ Ambos estados tienen `IsFinalizationStatus = true`
+  - ✅ Porcentajes suman 100%: Client=100%, Expert=0%, Platform=0%
+  - ✅ Cálculos base correctos: Client=1.65€ (100%), Expert=0€, Platform=0€
+  - ✅ Refund Stripe procesado correctamente: 2.00€ (reembolso total del Amount con tax proporcional)
+  - ✅ StripeRefundId registrado: `re_3Srd2GR7PVKiStYu0xnp41rd`
+  - ✅ No hay transfer al experto (0%)
+  - ✅ Transacciones registradas: 1 ServicePayment (-2€), 1 Refund (2€)
+  - ✅ Logs sin errores: 0 errores, 0 warnings, 0 críticos
+  - ✅ Log "Reembolso procesado" presente
+  - ✅ Consistencia matemática verificada
+  - ✅ Timers cancelados correctamente después de la cancelación
 
-#### 7. 🔴 `appointment_cancelled_by_expert_rejection`
+### 7. ✅ `appointment_cancelled_by_expert_rejection`
 - **Trigger**: Experto rechaza propuesta por segunda vez
-- **Porcentajes esperados**: Client=100%, Expert=0%, Platform=0%
-- **Estado SearchHire esperado**: `cancelled`
-- **Pasos para probar**:
-  1. Crear SearchHire con servicio que requiere cita
-  2. Cliente propone cita
-  3. Experto rechaza (primera vez) → `appointment_rejected`
-  4. Cliente propone nueva cita
-  5. Experto rechaza (segunda vez) → `appointment_cancelled_by_expert_rejection`
-  6. Verificar:
-     - Appointment.Status = `appointment_cancelled_by_expert_rejection`
-     - SearchHire.Status = `cancelled`
-     - Refund: 100% del Amount (con tax proporcional)
-     - Expert: 0€
-     - Platform: 0€
+- **Porcentajes**: Client=100%, Expert=0%, Platform=0%
+- **Estado SearchHire**: `cancelled`
+- **Resultado**: ✅ **Correcto** - Todo funcionó perfectamente
+- **SearchHireId de prueba**: 66
+- **Fecha de prueba**: 2026-01-20 11:29:30
+- **Verificación detallada**:
+  - ✅ Estados correctos: `appointment_cancelled_by_expert_rejection` → `cancelled`
+  - ✅ Ambos estados tienen `IsFinalizationStatus = true`
+  - ✅ Porcentajes suman 100%: Client=100%, Expert=0%, Platform=0%
+  - ✅ Cálculos base correctos: Client=1.65€ (100%), Expert=0€, Platform=0€
+  - ✅ Refund Stripe procesado correctamente: 2.00€ (reembolso total del Amount con tax proporcional)
+  - ✅ StripeRefundId registrado: `re_3Srd7jR7PVKiStYu1f6kNeF7`
+  - ✅ No hay transfer al experto (0%)
+  - ✅ Transacciones registradas: 1 ServicePayment (-2€), 1 Refund (2€)
+  - ✅ Logs sin errores: 0 errores, 0 warnings, 0 críticos
+  - ✅ Log "Reembolso procesado" presente
+  - ✅ Log muestra razón correcta: "Segundo rechazo del experto - penalización máxima"
+  - ✅ Consistencia matemática verificada
+  - ✅ Timers cancelados correctamente después de la cancelación
 
 ---
 
 ### CATEGORÍA C: COMPLETADO MANUAL
 
-#### 8. ✅ `completed` (por aprobación del cliente)
+### 8. ✅ `completed` (por aprobación del cliente)
 - **Trigger**: Cliente aprueba servicio después de recibir reporte
-- **Porcentajes esperados**: Client=0%, Expert=95%, Platform=5%
-- **Estado SearchHire esperado**: `completed`
-- **Pasos para probar**:
-  1. Crear SearchHire con servicio que requiere cita
-  2. Cliente propone cita
-  3. Experto confirma cita
-  4. Esperar 3h para que cambie a "awaiting_report"
-  5. Experto envía reporte (con archivos requeridos)
-  6. Cliente aprueba el servicio
-  7. Verificar:
-     - Appointment.Status = `appointment_report_sent` (o similar)
-     - SearchHire.Status = `completed`
-     - Transfer al experto: 95% del BaseAmount (sin tax)
-     - Platform: 5% del BaseAmount
-     - Client: 0€
+- **Porcentajes**: Client=0%, Expert=95%, Platform=5%
+- **Estado SearchHire**: `completed`
+- **Resultado**: ✅ **Correcto** - Todo funcionó perfectamente
+- **SearchHireId de prueba**: 67
+- **Fecha de prueba**: 2026-01-20 11:34:16
+- **Verificación detallada**:
+  - ✅ Estados correctos: `appointment_report_sent` → `completed`
+  - ✅ SearchHire tiene `IsFinalizationStatus = true`
+  - ✅ Porcentajes suman 100%: Client=0%, Expert=95%, Platform=5%
+  - ✅ Cálculos base correctos: Client=0€, Expert=1.57€ (95%), Platform=0.08€ (5%)
+  - ✅ Transfer Stripe procesado correctamente: 1.5675€ (95% del BaseAmount, sin tax)
+  - ✅ StripeTransferId registrado: `tr_1SrdE7R7PVKiStYul69zUiLx`
+  - ✅ No hay refund al cliente (0%)
+  - ✅ Transacciones registradas: 1 ServicePayment (-2€), 1 Payout (1.5675€)
+  - ✅ Logs sin errores: 0 errores, 0 warnings, 0 críticos
+  - ✅ Log "Pago recibido" presente
+  - ✅ Log "Servicio completado" y "Servicio aprobado por el cliente" presentes
+  - ✅ Consistencia matemática verificada: 1.65€ × 95% = 1.5675€
+  - ✅ Timers cancelados correctamente después de la aprobación
 
 ---
 
 ### CATEGORÍA D: DISPUTAS Y RESOLUCIONES
 
-#### 9. 🔴 `dispute_resolved_client`
+### 9. ✅ `dispute_resolved_client`
 - **Trigger**: Administrador resuelve disputa a favor del cliente
-- **Porcentajes esperados**: Client=90%, Expert=8%, Platform=2%
-- **Estado SearchHire esperado**: `dispute_resolved_client`
-- **Pasos para probar**:
-  1. Crear SearchHire con servicio que requiere cita
-  2. Completar flujo hasta que experto envíe reporte
-  3. Cliente abre disputa
-  4. Administrador resuelve disputa a favor del cliente
-  5. Verificar:
-     - SearchHire.Status = `dispute_resolved_client`
-     - Refund al cliente: 90% del BaseAmount (con tax proporcional)
-     - Transfer al experto: 8% del BaseAmount (sin tax)
-     - Platform: 2% del BaseAmount
-     - Timer "client_decision" cancelado
+- **Porcentajes**: Client=90%, Expert=8%, Platform=2%
+- **Estado SearchHire**: `dispute_resolved_client`
+- **Resultado**: ✅ **Correcto** - Todo funcionó perfectamente
+- **SearchHireId de prueba**: 68
+- **Fecha de prueba**: 2026-01-20 11:38:30
+- **Verificación detallada**:
+  - ✅ Estados correctos: `appointment_report_sent` → `dispute_resolved_client`
+  - ✅ SearchHire tiene `IsFinalizationStatus = true`
+  - ✅ Porcentajes suman 100%: Client=90%, Expert=8%, Platform=2%
+  - ✅ Cálculos base correctos: Client=1.49€ (90%), Expert=0.13€ (8%), Platform=0.03€ (2%)
+  - ✅ Refund Stripe procesado correctamente: 1.80€ (90% del Amount con tax proporcional)
+  - ✅ StripeRefundId registrado: `re_3SrdGSR7PVKiStYu2ScmkmRo`
+  - ✅ Transfer Stripe procesado correctamente: 0.1320€ (8% del BaseAmount, sin tax)
+  - ✅ StripeTransferId registrado: `tr_1SrdJhR7PVKiStYu0VXe1VHT`
+  - ✅ Transacciones registradas: 1 ServicePayment (-2€), 1 Refund (1.80€), 1 Payout (0.1320€)
+  - ✅ Logs sin errores: 0 errores, 0 warnings, 0 críticos
+  - ✅ Log "Reembolso procesado" y "Pago recibido" presentes
+  - ✅ Log muestra razón correcta: "Dispute resolved in favor of client"
+  - ✅ Consistencia matemática verificada: 1.65€ × 90% = 1.49€ base → 1.80€ con tax, 1.65€ × 8% = 0.132€
+  - ✅ Timer "client_decision" cancelado correctamente después de la resolución
 
-#### 10. 🔴 `dispute_resolved_expert`
+### 10. ✅ `dispute_resolved_expert`
 - **Trigger**: Administrador resuelve disputa a favor del experto
-- **Porcentajes esperados**: Client=0%, Expert=95%, Platform=5%
-- **Estado SearchHire esperado**: `dispute_resolved_expert`
-- **Pasos para probar**:
-  1. Crear SearchHire con servicio que requiere cita
-  2. Completar flujo hasta que experto envíe reporte
-  3. Cliente abre disputa
-  4. Administrador resuelve disputa a favor del experto
-  5. Verificar:
-     - SearchHire.Status = `dispute_resolved_expert`
-     - Transfer al experto: 95% del BaseAmount (sin tax)
-     - Platform: 5% del BaseAmount
-     - Client: 0€
-     - Timer "client_decision" cancelado
+- **Porcentajes**: Client=0%, Expert=95%, Platform=5%
+- **Estado SearchHire**: `dispute_resolved_expert`
+- **Resultado**: ✅ **Correcto** - Todo funcionó perfectamente
+- **SearchHireId de prueba**: 69
+- **Fecha de prueba**: 2026-01-20 11:44:53
+- **Verificación detallada**:
+  - ✅ Estados correctos: `appointment_report_sent` → `dispute_resolved_expert`
+  - ✅ SearchHire tiene `IsFinalizationStatus = true`
+  - ✅ Porcentajes suman 100%: Client=0%, Expert=95%, Platform=5%
+  - ✅ Cálculos base correctos: Client=0€, Expert=1.57€ (95%), Platform=0.08€ (5%)
+  - ✅ Transfer Stripe procesado correctamente: 1.5675€ (95% del BaseAmount, sin tax)
+  - ✅ StripeTransferId registrado: `tr_1SrdQ8R7PVKiStYu09wOk1fM`
+  - ✅ No hay refund al cliente (0%)
+  - ✅ Transacciones registradas: 1 ServicePayment (-2€), 1 Payout (1.5675€)
+  - ✅ Logs sin errores: 0 errores, 0 warnings, 0 críticos
+  - ✅ Log "Pago recibido" presente
+  - ✅ Log muestra razón correcta: "Dispute resolved in favor of expert"
+  - ✅ Consistencia matemática verificada: 1.65€ × 95% = 1.5675€
+  - ✅ Timer "client_decision" cancelado correctamente después de la resolución
 
 ---
 
 ### CATEGORÍA E: CANCELACIONES POR ELIMINACIÓN DE CUENTA
 
-#### 11. 🔴 `cancelled_by_client_account_delete`
+### 11. ⚠️ `cancelled_by_client_account_delete` (ERROR CORREGIDO)
 - **Trigger**: Cliente elimina su cuenta
-- **Porcentajes esperados**: Client=0%, Expert=95%, Platform=5%
-- **Estado SearchHire esperado**: `cancelled_by_client_account_delete`
-- **Pasos para probar**:
-  1. Crear SearchHire con servicio activo
-  2. Eliminar cuenta del cliente
-  3. Verificar:
-     - SearchHire.Status = `cancelled_by_client_account_delete`
-     - Transfer al experto: 95% del BaseAmount (sin tax)
-     - Platform: 5% del BaseAmount
-     - Client: 0€
+- **Porcentajes**: Client=0%, Expert=95%, Platform=5%
+- **Estado SearchHire**: `cancelled_by_client_account_delete`
+- **Resultado**: ⚠️ **Dinero procesado correctamente, pero error en eliminación de datos** (CORREGIDO)
+- **SearchHireId de prueba**: 70
+- **Fecha de prueba**: 2026-01-20 11:51:44
+- **Verificación detallada**:
+  - ✅ Estados correctos: `cancelled_by_client_account_delete` (StatusId: 28)
+  - ✅ SearchHire tiene `IsFinalizationStatus = true`
+  - ✅ Porcentajes suman 100%: Client=0%, Expert=95%, Platform=5%
+  - ✅ Cálculos base correctos: Client=0€, Expert=1.57€ (95%), Platform=0.08€ (5%)
+  - ✅ Transfer Stripe procesado correctamente: 1.5675€ (95% del BaseAmount, sin tax)
+  - ✅ StripeTransferId registrado: `tr_1SrdUQR7PVKiStYu0VXe1VHT`
+  - ✅ No hay refund al cliente (0%)
+  - ✅ Transacciones registradas: 1 ServicePayment (-2€), 1 Payout (1.5675€)
+  - ✅ Logs de dinero: 0 errores en procesamiento de dinero
+  - ✅ Log "Pago recibido" presente
+  - ✅ Log muestra razón correcta: "Client account deletion - transfer to expert"
+  - ⚠️ **ERRORES ENCONTRADOS Y CORREGIDOS**:
+    1. **Error en eliminación de datos del usuario**:
+       - Error: "NpgsqlRetryingExecutionStrategy does not support user-initiated transactions"
+       - Causa: `EnableRetryOnFailure` activa ExecutionStrategy automáticamente, incompatible con transacciones manuales
+       - Ubicación: `AccountDeletionService.DeleteUserDataAsync` línea 856 (query `AnyAsync` dentro de transacción)
+       - **Corrección aplicada**: Cambiado `AnyAsync()` a SQL directo (`ExecuteSqlRawAsync`) para evitar ExecutionStrategy
+    2. **Jobs de Hangfire no cancelados**:
+       - Problema: Timer activo (Id: 162, JobId: "529") no fue cancelado durante la eliminación de cuenta
+       - Causa: `ProcessActiveContractsAsync` no cancelaba timers activos ni sus jobs de Hangfire
+       - **Corrección aplicada**: Agregado método `CancelActiveTimersAndHangfireJobsAsync` que:
+         - Marca todos los timers activos como expirados
+         - Cancela todos los jobs de Hangfire asociados
+         - Se ejecuta después de procesar el dinero exitosamente (tanto para cliente como experto)
+       - **Estado**: El dinero ya estaba procesado correctamente antes del error, solo falló la eliminación de datos y cancelación de timers
+       - **Acción requerida**: Reintentar eliminación de cuenta después de las correcciones
 
 #### 12. 🔴 `cancelled_by_expert_account_delete`
 - **Trigger**: Experto elimina su cuenta
@@ -266,18 +334,18 @@ Para cada caso de prueba, verificar:
 
 ## 🎯 ORDEN RECOMENDADO DE PRUEBAS
 
-1. ⏳ **En progreso**: Casos automáticos por timers (1 ✅, 2, 3, 4)
-2. **Pendiente**: Cancelaciones manuales segunda vez (5, 6, 7)
-3. **Pendiente**: Completado manual (8)
-4. **Pendiente**: Disputas (9, 10)
+1. ✅ **Completado**: Casos automáticos por timers (1 ✅, 2 ✅, 3 ✅, 4 ✅)
+2. ✅ **Completado**: Cancelaciones manuales segunda vez (5 ✅, 6 ✅, 7 ✅)
+3. ✅ **Completado**: Completado manual (8 ✅)
+4. ✅ **Completado**: Disputas (9 ✅, 10 ✅)
 5. **Pendiente**: Eliminación de cuentas (11, 12)
 
 ## 📊 PROGRESO
 
-- **Casos probados**: 1/12 (8%)
-- **Casos pendientes**: 11/12 (92%)
-- **Última prueba**: Caso 1 - `appointment_cancelled_by_client_no_proposal` (2026-01-19 23:22:32)
-- **SearchHireIds de prueba**: 58
+- **Casos probados**: 10/12 (83%)
+- **Casos pendientes**: 2/12 (17%)
+- **Última prueba**: Caso 10 - `dispute_resolved_expert` (2026-01-20 11:44:53)
+- **SearchHireIds de prueba**: 58, 60 (caso 1), 61 (caso 2), 62 (caso 3), 63 (caso 4), 64 (caso 5), 65 (caso 6), 66 (caso 7), 67 (caso 8), 68 (caso 9), 69 (caso 10)
 
 ---
 

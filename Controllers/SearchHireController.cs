@@ -223,53 +223,6 @@ namespace newApi.Controllers
 
                 await _context.SaveChangesAsync();
 
-                // ✅ CANCELAR timers activos de SearchHires anteriores para el mismo servicio/cliente
-                // Esto evita que queden timers huérfanos cuando se crea un nuevo SearchHire
-                var previousSearchHires = await _context.SearchHires
-                    .Where(sh => sh.ClientId == searchHire.ClientId && 
-                                 sh.SearchServiceId == searchHire.SearchServiceId && 
-                                 sh.Id != searchHire.Id &&
-                                 sh.Status.StatusValue == "pending")
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Appointment)
-                        .ThenInclude(a => a.Timers)
-                    .ToListAsync();
-
-                foreach (var prevSearchHire in previousSearchHires)
-                {
-                    if (prevSearchHire.Appointment != null)
-                    {
-                        var activeTimers = prevSearchHire.Appointment.Timers
-                            .Where(t => !t.IsExpired)
-                            .ToList();
-                        
-                        foreach (var timer in activeTimers)
-                        {
-                            timer.IsExpired = true;
-                            timer.ExpiredAt = DateTime.UtcNow;
-                            
-                            // Cancelar job de Hangfire si existe
-                            if (!string.IsNullOrEmpty(timer.HangfireJobId))
-                            {
-                                try
-                                {
-                                    BackgroundJob.Delete(timer.HangfireJobId);
-                                    timer.HangfireJobId = null;
-                                }
-                                catch
-                                {
-                                    timer.HangfireJobId = null;
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                if (previousSearchHires.Any())
-                {
-                    await _context.SaveChangesAsync();
-                }
-
                 // ✅ Crear automáticamente la cita en estado "awaiting_appointment" con timer de 24h
                 // Esto asegura que el cliente tenga 24 horas para proponer una fecha/hora
                 try
@@ -569,9 +522,20 @@ namespace newApi.Controllers
                 }
 
                 // Obtener configuración de distribución de dinero
+                // ✅ CORRECCIÓN: Si hay Appointment con estado de finalización, usar ese estado (más específico)
+                // El estado del Appointment tiene porcentajes más precisos que el estado genérico del SearchHire
                 var systemStatusService = HttpContext.RequestServices.GetRequiredService<SystemStatusService>();
-                var moneyDistribution = await systemStatusService.GetMoneyDistributionAsync(
-                    searchHire.Status.StatusValue, 
+                string statusValueForMoneyDistribution = searchHire.Status.StatusValue;
+                
+                if (searchHire?.Appointment?.Status != null && 
+                    searchHire.Appointment.Status.IsFinalizationStatus)
+                {
+                    // Usar el estado del Appointment si es de finalización (más específico)
+                    statusValueForMoneyDistribution = searchHire.Appointment.Status.StatusValue;
+                }
+                
+                var moneyDistribution = await systemStatusService.GetMoneyDistributionConfigAsync(
+                    statusValueForMoneyDistribution, 
                     searchHire.SearchService?.CategoryId, 
                     searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId);
 
@@ -694,6 +658,55 @@ namespace newApi.Controllers
                             Name = searchHire.Client.Name,
                             Email = searchHire.Client.Email,
                             ProfilePictureUrl = null
+                        } : null,
+                        // ✅ CORRECCIÓN: Mapear SearchHire dentro del SearchListDto
+                        SearchHire = searchHire.Status != null ? new SearchHireDto
+                        {
+                            Id = searchHire.Id,
+                            ExpertId = searchHire.ExpertId ?? 0,
+                            Status = searchHire.Status.StatusValue,
+                            StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(searchHire.Status.StatusValue),
+                            CreatedAt = searchHire.CreatedAt,
+                            Amount = searchHire.Amount,
+                            BaseAmount = searchHire.BaseAmount,
+                            TaxAmount = searchHire.TaxAmount,
+                            ExpertTimezone = searchHire.ExpertTimezone,
+                            ExpertCountry = searchHire.ExpertCountry,
+                            Expert = searchHire.ExpertId.HasValue && searchHire.Expert != null ? new UserDto
+                            {
+                                Id = searchHire.Expert.Id,
+                                Name = searchHire.Expert.Name,
+                                Email = searchHire.Expert.Email,
+                                ProfilePictureUrl = ResolveProfilePictureUrl(searchHire.SearchService?.ExpertProfile)
+                            } : null,
+                            Service = searchHire.SearchService != null ? new ServiceInfo
+                            {
+                                Id = searchHire.SearchService.Id,
+                                ServiceTypeId = searchHire.SearchService.ServiceTypeId,
+                                ServiceTypeName = searchHire.SearchService.ServiceType?.Name ?? string.Empty,
+                                ServiceTypeCategoryId = searchHire.SearchService.ServiceType?.ServiceTypeCategoryId,
+                                ServiceTypeCategoryName = searchHire.SearchService.ServiceType?.ServiceTypeCategory?.Name,
+                                RequiresAppointment = false,
+                                Price = searchHire.SearchService.Price,
+                                ExpertLatitude = searchHire.SearchService.ExpertProfile?.Latitude,
+                                ExpertLongitude = searchHire.SearchService.ExpertProfile?.Longitude,
+                                LocationRange = searchHire.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50
+                            } : null,
+                            StatusInfo = searchHire.Status != null ? new SystemStatusDto
+                            {
+                                Id = searchHire.Status.Id,
+                                StatusType = searchHire.Status.StatusType,
+                                StatusName = searchHire.Status.StatusName,
+                                StatusValue = searchHire.Status.StatusValue,
+                                DisplayName = searchHire.Status.DisplayName,
+                                Description = searchHire.Status.Description,
+                                Color = searchHire.Status.Color,
+                                IsActive = searchHire.Status.IsActive,
+                                IsFinalizationStatus = searchHire.Status.IsFinalizationStatus,
+                                SortOrder = searchHire.Status.SortOrder,
+                                CreatedAt = searchHire.Status.CreatedAt,
+                                UpdatedAt = searchHire.Status.UpdatedAt
+                            } : null
                         } : null
                     } : null, // ✅ Search puede ser null si cliente borró cuenta
                     MoneyDistribution = moneyDistribution != null ? new MoneyDistributionConfigDto

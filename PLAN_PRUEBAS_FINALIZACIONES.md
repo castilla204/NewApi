@@ -6,60 +6,11 @@
 - **Trigger**: Cliente no propone cita en 24h (timer "proposal" expira)
 - **Porcentajes**: Client=100%, Expert=0%, Platform=0%
 - **Estado SearchHire**: `cancelled`
-- **Resultado**: ✅ Correcto
-- **SearchHireId de prueba**: 50
-
-### 2. ✅ `appointment_cancelled_by_expert_no_response`
-- **Trigger**: Experto no responde propuesta en 24h (timer "response" expira)
-- **Porcentajes**: Client=100%, Expert=0%, Platform=0%
-- **Estado SearchHire**: `cancelled`
-- **Resultado**: ✅ Correcto
-- **SearchHireId de prueba**: 51
-
-### 3. ✅ `appointment_cancelled_by_no_report`
-- **Trigger**: Experto no envía reporte en 24h (timer "expert_report" expira)
-- **Porcentajes**: Client=95%, Expert=0%, Platform=5%
-- **Estado SearchHire**: `cancelled`
 - **Resultado**: ✅ Correcto - Verificado exhaustivamente
-- **SearchHireId de prueba**: 52
-- **Fecha de prueba**: 2026-01-19 22:11:07
+- **SearchHireId de prueba**: 58
+- **Fecha de prueba**: 2026-01-19 23:22:32
 - **Verificación detallada**:
-  - ✅ Estados correctos: `appointment_cancelled_by_no_report` → `cancelled`
-  - ✅ Porcentajes suman 100%: Client=95%, Expert=0%, Platform=5%
-  - ✅ Cálculos base correctos: Client=1.5675€, Expert=0€, Platform=0.0825€
-  - ✅ Refund Stripe correcto: 1.90€ (2.00€ × 95% con tax proporcional)
-  - ✅ No hay transfer al experto (0%)
-  - ✅ Transacciones registradas: 1 Refund, 0 Payouts
-  - ✅ Logs sin errores: 0 errores, 0 warnings, 0 críticos
-  - ✅ Consistencia matemática verificada
-- **Documento de análisis**: `ANALISIS_CASO_3_DETALLADO.md`
-
-### 4. ✅ `appointment_completed_without_client_approval`
-- **Trigger**: Cliente no aprueba/disputa en 24h (timer "client_decision" expira)
-- **Porcentajes**: Client=0%, Expert=100%, Platform=0%
-- **Estado SearchHire**: `completed`
-- **Resultado**: ✅ Correcto - Verificado exhaustivamente
-- **SearchHireId de prueba**: 53
-- **Fecha de prueba**: 2026-01-19 22:23:40
-- **Verificación detallada**:
-  - ✅ Estados correctos: `appointment_completed_without_client_approval` → `completed`
-  - ✅ Porcentajes suman 100%: Client=0%, Expert=100%, Platform=0%
-  - ✅ Cálculos base correctos: Client=0€, Expert=1.65€, Platform=0€
-  - ✅ Transfer Stripe correcto: 1.65€ (BaseAmount sin tax, como debe ser)
-  - ✅ No hay refund al cliente (0%)
-  - ✅ Transacciones registradas: 1 Payout, 0 Refunds
-  - ✅ Logs sin errores: 0 errores, 0 warnings, 0 críticos
-  - ✅ Consistencia matemática verificada
-
-### 5. ✅ `appointment_cancelled_by_client_second`
-- **Trigger**: Cliente cancela cita confirmada por segunda vez
-- **Porcentajes**: Client=100%, Expert=0%, Platform=0%
-- **Estado SearchHire**: `cancelled`
-- **Resultado**: ✅ Correcto - Verificado exhaustivamente
-- **SearchHireId de prueba**: 55
-- **Fecha de prueba**: 2026-01-19 22:32:31
-- **Verificación detallada**:
-  - ✅ Estados correctos: `appointment_cancelled_by_client_second` → `cancelled`
+  - ✅ Estados correctos: `appointment_cancelled_by_client_no_proposal` → `cancelled`
   - ✅ Porcentajes suman 100%: Client=100%, Expert=0%, Platform=0%
   - ✅ Cálculos base correctos: Client=1.65€, Expert=0€, Platform=0€
   - ✅ Refund Stripe correcto: 2.00€ (reembolso total del Amount, ClientPercentage=100%)
@@ -74,11 +25,81 @@
 
 ### CATEGORÍA A: CANCELACIONES AUTOMÁTICAS POR TIMERS
 
-*(Todos los casos de esta categoría ya han sido probados)*
+#### 2. ⏰ `appointment_cancelled_by_expert_no_response`
+
+#### 2. ⏰ `appointment_cancelled_by_expert_no_response` ⏳ SIGUIENTE
+- **Trigger**: Experto no responde propuesta en 24h (timer "response" expira)
+- **Porcentajes esperados**: Client=100%, Expert=0%, Platform=0%
+- **Estado SearchHire esperado**: `cancelled`
+- **Pasos para probar**:
+  1. Crear SearchHire con servicio que requiere cita
+  2. Cliente propone cita
+  3. **NO responder** (esperar 24h o forzar timer "response")
+  4. Verificar:
+     - Appointment.Status = `appointment_cancelled_by_expert_no_response`
+     - SearchHire.Status = `cancelled`
+     - Refund: 100% del Amount (reembolso total)
+     - Expert: 0€
+     - Platform: 0€
+
+#### 3. ⏰ `appointment_cancelled_by_no_report`
+- **Trigger**: Experto no envía reporte en 24h (timer "expert_report" expira)
+- **Porcentajes esperados**: Client=95%, Expert=0%, Platform=5%
+- **Estado SearchHire esperado**: `cancelled`
+- **Pasos para probar**:
+  1. Crear SearchHire con servicio que requiere cita
+  2. Cliente propone cita
+  3. Experto confirma cita
+  4. Esperar 3h para que cambie a "awaiting_report" (o forzar timer)
+  5. **NO enviar reporte del experto**
+  6. Esperar 24h (o forzar timer "expert_report")
+  7. Verificar:
+     - Appointment.Status = `appointment_cancelled_by_no_report`
+     - SearchHire.Status = `cancelled`
+     - Refund: 95% del BaseAmount (con tax proporcional)
+     - Platform: 5% del BaseAmount
+     - Expert: 0€
+
+#### 4. ⏰ `appointment_completed_without_client_approval`
+- **Trigger**: Cliente no aprueba/disputa en 24h (timer "client_decision" expira)
+- **Porcentajes esperados**: Client=0%, Expert=100%, Platform=0%
+- **Estado SearchHire esperado**: `completed`
+- **Pasos para probar**:
+  1. Crear SearchHire con servicio que requiere cita
+  2. Cliente propone cita
+  3. Experto confirma cita
+  4. Esperar 3h para que cambie a "awaiting_report"
+  5. Experto envía reporte (con archivos requeridos)
+  6. **NO aprobar ni disputar** (esperar 24h o forzar timer "client_decision")
+  7. Verificar:
+     - Appointment.Status = `appointment_completed_without_client_approval`
+     - SearchHire.Status = `completed`
+     - Transfer al experto: 100% del BaseAmount (sin tax)
+     - Client: 0€
+     - Platform: 0€
 
 ---
 
 ### CATEGORÍA B: CANCELACIONES MANUALES (SEGUNDA VEZ)
+
+#### 5. 🔴 `appointment_cancelled_by_client_second`
+- **Trigger**: Cliente cancela cita confirmada por segunda vez
+- **Porcentajes esperados**: Client=100%, Expert=0%, Platform=0%
+- **Estado SearchHire esperado**: `cancelled`
+- **Pasos para probar**:
+  1. Crear SearchHire con servicio que requiere cita
+  2. Cliente propone cita
+  3. Experto confirma cita
+  4. Cliente cancela (primera vez) → `appointment_cancelled_by_client`
+  5. Cliente propone nueva cita
+  6. Experto confirma nueva cita
+  7. Cliente cancela (segunda vez) → `appointment_cancelled_by_client_second`
+  8. Verificar:
+     - Appointment.Status = `appointment_cancelled_by_client_second`
+     - SearchHire.Status = `cancelled`
+     - Refund: 100% del Amount (reembolso total)
+     - Expert: 0€
+     - Platform: 0€
 
 #### 6. 🔴 `appointment_cancelled_by_expert_second`
 - **Trigger**: Experto cancela cita confirmada por segunda vez
@@ -245,18 +266,18 @@ Para cada caso de prueba, verificar:
 
 ## 🎯 ORDEN RECOMENDADO DE PRUEBAS
 
-1. ✅ **Completado**: Casos automáticos por timers (1, 2, 3, 4)
-2. ⏳ **En progreso**: Cancelaciones manuales segunda vez (5 ✅, 6, 7)
+1. ⏳ **En progreso**: Casos automáticos por timers (1 ✅, 2, 3, 4)
+2. **Pendiente**: Cancelaciones manuales segunda vez (5, 6, 7)
 3. **Pendiente**: Completado manual (8)
 4. **Pendiente**: Disputas (9, 10)
 5. **Pendiente**: Eliminación de cuentas (11, 12)
 
 ## 📊 PROGRESO
 
-- **Casos probados**: 5/12 (42%)
-- **Casos pendientes**: 7/12 (58%)
-- **Última prueba**: Caso 5 - `appointment_cancelled_by_client_second` (2026-01-19 22:32:31)
-- **SearchHireIds de prueba**: 50, 51, 52, 53, 55
+- **Casos probados**: 1/12 (8%)
+- **Casos pendientes**: 11/12 (92%)
+- **Última prueba**: Caso 1 - `appointment_cancelled_by_client_no_proposal` (2026-01-19 23:22:32)
+- **SearchHireIds de prueba**: 58
 
 ---
 

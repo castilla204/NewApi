@@ -1208,13 +1208,18 @@ namespace newApi.Services
                 int expertProfileId = 0;
                 var serviceIds = new List<int>();
 
+                // ✅ FIX: Usar conexión de forma segura con manejo explícito
                 var connection = _context.Database.GetDbConnection();
-                if (connection.State != System.Data.ConnectionState.Open)
+                var connectionWasOpen = connection.State == System.Data.ConnectionState.Open;
+                
+                if (!connectionWasOpen)
                 {
                     await _context.Database.OpenConnectionAsync(cancellationToken);
                 }
 
-                using (var command = connection.CreateCommand())
+                try
+                {
+                    using (var command = connection.CreateCommand())
                 {
                     command.CommandText = @"SELECT ""Id"" FROM ""ExpertProfiles"" WHERE ""UserId"" = @userId LIMIT 1";
                     var param = command.CreateParameter();
@@ -1525,7 +1530,16 @@ namespace newApi.Services
                             hasDeletes = true;
                         }
                     } // Cerrar if (serviceIds.Any())
-                } // Cerrar if (expertProfileId > 0)
+                    } // Cerrar if (expertProfileId > 0)
+                }
+                finally
+                {
+                    // ✅ FIX: Cerrar conexión explícitamente si la abrimos nosotros
+                    if (!connectionWasOpen && connection.State == System.Data.ConnectionState.Open)
+                    {
+                        await _context.Database.CloseConnectionAsync();
+                    }
+                }
 
                 // 10. Eliminar configuraciones de usuario (datos no críticos)
                 // ✅ FIX: Usar SQL directo para evitar ExecutionStrategy dentro de transacción manual
@@ -1557,24 +1571,72 @@ namespace newApi.Services
                 // ✅ MEJORA: Soft delete en lugar de hard delete para permitir recuperación y cumplimiento legal
                 // El query filter en AppDbContext excluirá automáticamente usuarios con IsDeleted = true
 
+                // ✅ FIX CRÍTICO: ExecuteSqlRawAsync con RETURNING puede no retornar el número de filas correctamente
+                // en Entity Framework Core dentro de transacciones manuales. Usar UPDATE sin RETURNING y verificar después.
                 // ✅ IDEMPOTENCIA: Verificar que el usuario aún existe y no está eliminado
                 // ✅ FIX: Usar SQL directo para evitar ExecutionStrategy dentro de transacción manual
-                var userExistsAndNotDeleted = await _context.Database.ExecuteSqlRawAsync(
+                // ✅ MEJORA: Si el usuario es experto, cambiar el rol a Client antes de eliminarlo
+                // Esto asegura que si el usuario se restaura, no tenga rol de experto sin ExpertProfile
+                var rowsAffected = await _context.Database.ExecuteSqlRawAsync(
                     @"UPDATE ""Users""
                       SET ""IsDeleted"" = true,
-                          ""DeletedAt"" = CURRENT_TIMESTAMP
-                      WHERE ""Id"" = {0} AND (""IsDeleted"" IS NULL OR ""IsDeleted"" = false)
-                      RETURNING ""Id""",
+                          ""DeletedAt"" = CURRENT_TIMESTAMP,
+                          ""Role"" = CASE 
+                              WHEN ""Role"" = 1 THEN 0 
+                              ELSE ""Role"" 
+                          END
+                      WHERE ""Id"" = {0} AND (""IsDeleted"" IS NULL OR ""IsDeleted"" = false)",
                     new object[] { userId }, cancellationToken);
 
-                if (userExistsAndNotDeleted > 0)
+                // ✅ VERIFICACIÓN: Verificar que el UPDATE realmente se ejecutó consultando la BD
+                // Esto es necesario porque ExecuteSqlRawAsync puede retornar un valor incorrecto en algunos casos
+                // ✅ FIX: Usar consulta directa con comando SQL para evitar problemas con SqlQueryRaw
+                var userWasUpdated = false;
+                if (rowsAffected > 0)
+                {
+                    // Verificar que el usuario realmente fue actualizado consultando la BD
+                    // ✅ FIX: Usar comando SQL directo en lugar de SqlQueryRaw para evitar problemas con mapeo
+                    // Reutilizar la conexión existente si está abierta
+                    var verificationConnection = _context.Database.GetDbConnection();
+                    var verificationConnectionWasOpen = verificationConnection.State == System.Data.ConnectionState.Open;
+                    if (!verificationConnectionWasOpen)
+                    {
+                        await _context.Database.OpenConnectionAsync(cancellationToken);
+                    }
+
+                    try
+                    {
+                        using (var verificationCommand = verificationConnection.CreateCommand())
+                        {
+                            verificationCommand.CommandText = @"SELECT COUNT(*) FROM ""Users""
+                              WHERE ""Id"" = @userId AND ""IsDeleted"" = true AND ""DeletedAt"" IS NOT NULL";
+                            var verificationParam = verificationCommand.CreateParameter();
+                            verificationParam.ParameterName = "@userId";
+                            verificationParam.Value = userId;
+                            verificationParam.DbType = System.Data.DbType.Int32;
+                            verificationCommand.Parameters.Add(verificationParam);
+
+                            var verificationResult = await verificationCommand.ExecuteScalarAsync(cancellationToken);
+                            userWasUpdated = verificationResult != null && verificationResult != DBNull.Value && Convert.ToInt32(verificationResult) > 0;
+                        }
+                    }
+                    finally
+                    {
+                        if (!verificationConnectionWasOpen && verificationConnection.State == System.Data.ConnectionState.Open)
+                        {
+                            await _context.Database.CloseConnectionAsync();
+                        }
+                    }
+                }
+
+                if (userWasUpdated)
                 {
                     // Usuario marcado como eliminado correctamente
                     // No necesitamos SaveChangesAsync porque ExecuteSqlRawAsync ya ejecuta el UPDATE
 
                     await _loggingService.LogInfoAsync(
                         message: "User soft deleted successfully",
-                        details: $"User {userId} has been soft deleted (IsDeleted=true, DeletedAt={DateTime.UtcNow:O}). User will be excluded from queries automatically by query filter.",
+                        details: $"User {userId} has been soft deleted (IsDeleted=true, DeletedAt={DateTime.UtcNow:O}). User will be excluded from queries automatically by query filter. Rows affected: {rowsAffected}, Verified: {userWasUpdated}.",
                         userId: null,
                         source: "AccountDeletionService.DeleteUserDataAsync",
                         relatedEntityType: "User",
@@ -1587,7 +1649,7 @@ namespace newApi.Services
                     // El UPDATE no afectó ninguna fila, lo que significa que el usuario ya estaba eliminado o no existe
                     await _loggingService.LogWarningAsync(
                         message: "User already soft deleted or does not exist - idempotent call",
-                        details: $"User {userId} was already soft deleted or does not exist. Account deletion process completed (idempotent).",
+                        details: $"User {userId} was already soft deleted or does not exist. Account deletion process completed (idempotent). Rows affected: {rowsAffected}, Verified: {userWasUpdated}.",
                         userId: null,
                         source: "AccountDeletionService.DeleteUserDataAsync",
                         relatedEntityType: "User",
@@ -1642,7 +1704,25 @@ namespace newApi.Services
         {
             try
             {
+                await _loggingService.LogInfoAsync(
+                    message: "EnsureStateChangedAsync - Iniciando",
+                    details: $"Iniciando EnsureStateChangedAsync para SearchHireId: {searchHireId}, appointmentStatusValue: {appointmentStatusValue}",
+                    userId: null,
+                    source: "AccountDeletionService.EnsureStateChangedAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId
+                );
+                
                 // Recargar SearchHire con estado actual
+                await _loggingService.LogInfoAsync(
+                    message: "EnsureStateChangedAsync - Cargando SearchHire",
+                    details: $"Ejecutando consulta: SearchHires WHERE Id = {searchHireId} con Include(Status, Appointment.Status)",
+                    userId: null,
+                    source: "AccountDeletionService.EnsureStateChangedAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId
+                );
+                
                 var currentSearchHire = await _context.SearchHires
                     .Include(sh => sh.Status)
                     .Include(sh => sh.Appointment)
@@ -1678,13 +1758,43 @@ namespace newApi.Services
                 // Cambiar Appointment.Status si existe
                 if (currentSearchHire.Appointment != null)
                 {
+                    await _loggingService.LogInfoAsync(
+                        message: "EnsureStateChangedAsync - Buscando AppointmentStatusRow",
+                        details: $"Ejecutando consulta: SystemStatuses WHERE StatusType = 'AppointmentStatus' AND StatusValue = '{appointmentStatusValue}' para SearchHireId: {searchHireId}, AppointmentId: {currentSearchHire.Appointment.Id}",
+                        userId: null,
+                        source: "AccountDeletionService.EnsureStateChangedAsync",
+                        relatedEntityType: "SystemStatus",
+                        relatedEntityId: null
+                    );
+                    
                     var appointmentStatusRow = await _context.SystemStatuses
                         .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
                                                  s.StatusValue == appointmentStatusValue, cancellationToken);
+                    
                     if (appointmentStatusRow != null && currentSearchHire.Appointment.StatusId != appointmentStatusRow.Id)
                     {
+                        await _loggingService.LogInfoAsync(
+                            message: "EnsureStateChangedAsync - Actualizando Appointment.StatusId",
+                            details: $"Actualizando Appointment {currentSearchHire.Appointment.Id} StatusId de {currentSearchHire.Appointment.StatusId} a {appointmentStatusRow.Id} para SearchHireId: {searchHireId}",
+                            userId: null,
+                            source: "AccountDeletionService.EnsureStateChangedAsync",
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: currentSearchHire.Appointment.Id
+                        );
+                        
                         currentSearchHire.Appointment.StatusId = appointmentStatusRow.Id;
                         currentSearchHire.Appointment.UpdatedAt = DateTime.UtcNow;
+                    }
+                    else
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "EnsureStateChangedAsync - No se actualizó Appointment.StatusId",
+                            details: $"Appointment {currentSearchHire.Appointment.Id} StatusId no se actualizó. appointmentStatusRow: {(appointmentStatusRow != null ? $"Id={appointmentStatusRow.Id}" : "null")}, currentAppointment.StatusId: {currentSearchHire.Appointment.StatusId} para SearchHireId: {searchHireId}",
+                            userId: null,
+                            source: "AccountDeletionService.EnsureStateChangedAsync",
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: currentSearchHire.Appointment.Id
+                        );
                     }
                 }
 
@@ -1702,17 +1812,67 @@ namespace newApi.Services
                     return;
                 }
 
+                await _loggingService.LogInfoAsync(
+                    message: "EnsureStateChangedAsync - Llamando a GetTargetSearchHireStatusAsync",
+                    details: $"Llamando a GetTargetSearchHireStatusAsync con AppointmentStatus: {appointmentStatus.Value} para SearchHireId: {searchHireId}",
+                    userId: null,
+                    source: "AccountDeletionService.EnsureStateChangedAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId
+                );
+                
                 var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatus.Value);
+                
+                await _loggingService.LogInfoAsync(
+                    message: "EnsureStateChangedAsync - GetTargetSearchHireStatusAsync completado",
+                    details: $"GetTargetSearchHireStatusAsync retornó: {(targetSearchHireStatus.HasValue ? targetSearchHireStatus.Value.ToString() : "null")} para SearchHireId: {searchHireId}",
+                    userId: null,
+                    source: "AccountDeletionService.EnsureStateChangedAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId
+                );
+                
                 if (targetSearchHireStatus.HasValue)
                 {
                     var targetSearchHireStatusValue = SearchHireStatusExtensions.ToStringValue(targetSearchHireStatus.Value);
+                    
+                    await _loggingService.LogInfoAsync(
+                        message: "EnsureStateChangedAsync - Buscando SearchHireStatusRow",
+                        details: $"Ejecutando consulta: SystemStatuses WHERE StatusType = 'SearchHireStatus' AND StatusValue = '{targetSearchHireStatusValue}' para SearchHireId: {searchHireId}",
+                        userId: null,
+                        source: "AccountDeletionService.EnsureStateChangedAsync",
+                        relatedEntityType: "SystemStatus",
+                        relatedEntityId: null
+                    );
+                    
                     var searchHireStatusRow = await _context.SystemStatuses
                         .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
                                                  s.StatusValue == targetSearchHireStatusValue, cancellationToken);
+                    
                     if (searchHireStatusRow != null && currentSearchHire.StatusId != searchHireStatusRow.Id)
                     {
+                        await _loggingService.LogInfoAsync(
+                            message: "EnsureStateChangedAsync - Actualizando SearchHire.StatusId",
+                            details: $"Actualizando SearchHire {searchHireId} StatusId de {currentSearchHire.StatusId} a {searchHireStatusRow.Id}",
+                            userId: null,
+                            source: "AccountDeletionService.EnsureStateChangedAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId
+                        );
+                        
                         currentSearchHire.StatusId = searchHireStatusRow.Id;
                         currentSearchHire.UpdatedAt = DateTime.UtcNow;
+                    }
+                    else
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "EnsureStateChangedAsync - No se actualizó SearchHire.StatusId",
+                            details: $"SearchHire {searchHireId} StatusId no se actualizó. searchHireStatusRow: {(searchHireStatusRow != null ? $"Id={searchHireStatusRow.Id}" : "null")}, currentSearchHire.StatusId: {currentSearchHire.StatusId}",
+                            userId: null,
+                            source: "AccountDeletionService.EnsureStateChangedAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId
+                        );
                     }
                 }
 

@@ -5,6 +5,7 @@ using newApi.DataLayer;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models.enums;
 using newApi.Common;
 using Hangfire;
 
@@ -22,6 +23,7 @@ namespace newApi.Services
         private readonly IAccountDeletionNotificationService _notificationService;
         private readonly StripeRefundService _refundService;
         private readonly ILoggingService _loggingService;
+        private readonly SystemStatusService _systemStatusService;
 
         // ✅ MEJORA: Timeout para transacciones (5 minutos)
         private static readonly TimeSpan _transactionTimeout = TimeSpan.FromMinutes(5);
@@ -30,12 +32,14 @@ namespace newApi.Services
             AppDbContext context,
             IAccountDeletionNotificationService notificationService,
             StripeRefundService refundService,
-            ILoggingService loggingService)
+            ILoggingService loggingService,
+            SystemStatusService systemStatusService)
         {
             _context = context;
             _notificationService = notificationService;
             _refundService = refundService;
             _loggingService = loggingService;
+            _systemStatusService = systemStatusService;
         }
 
         public async Task<AccountDeletionStatusDto> CheckDeletionStatusAsync(int userId, CancellationToken cancellationToken = default)
@@ -643,8 +647,15 @@ namespace newApi.Services
                                 }
                             );
 
+                            // ✅ CRÍTICO: Verificar si el estado se cambió (puede haber fallado en Fase 1 o 2)
+                            // Si NO se cambió, cambiarlo manualmente para evitar que el sistema quede bloqueado
+                            await EnsureStateChangedAsync(searchHire.Id, "appointment_cancelled_by_client_account_delete", cancellationToken);
+
                             // ✅ Acumular error para log crítico final
                             processingErrors.Add((searchHire.Id, errorMessage, errorType, searchHire.Amount));
+
+                            // ✅ CANCELAR timers activos y jobs de Hangfire (aunque falle el dinero)
+                            await CancelActiveTimersAndHangfireJobsAsync(searchHire.Id, cancellationToken);
 
                             // Continuar con siguiente contratación (no lanzar excepción)
                             continue;
@@ -725,8 +736,15 @@ namespace newApi.Services
                                 }
                             );
 
+                            // ✅ CRÍTICO: Verificar si el estado se cambió (puede haber fallado en Fase 1 o 2)
+                            // Si NO se cambió, cambiarlo manualmente para evitar que el sistema quede bloqueado
+                            await EnsureStateChangedAsync(searchHire.Id, "appointment_cancelled_by_expert_account_delete", cancellationToken);
+
                             // ✅ Acumular error para log crítico final
                             processingErrors.Add((searchHire.Id, errorMessage, errorType, searchHire.Amount));
+
+                            // ✅ CANCELAR timers activos y jobs de Hangfire (aunque falle el dinero)
+                            await CancelActiveTimersAndHangfireJobsAsync(searchHire.Id, cancellationToken);
 
                             // Continuar con siguiente contratación (no lanzar excepción)
                             continue;
@@ -1615,6 +1633,138 @@ namespace newApi.Services
                 );
                 throw; // Re-throw para que la transacción global haga rollback
             }
+        }
+
+        /// <summary>
+        /// Verifica y cambia el estado del SearchHire y Appointment si no se cambió durante el procesamiento de dinero
+        /// </summary>
+        private async Task EnsureStateChangedAsync(int searchHireId, string appointmentStatusValue, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                // Recargar SearchHire con estado actual
+                var currentSearchHire = await _context.SearchHires
+                    .Include(sh => sh.Status)
+                    .Include(sh => sh.Appointment)
+                        .ThenInclude(a => a.Status)
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId, cancellationToken);
+
+                if (currentSearchHire == null)
+                {
+                    return; // SearchHire no existe
+                }
+
+                // Verificar si el estado ya está finalizado (ya se cambió)
+                if (currentSearchHire.Status?.IsFinalizationStatus == true)
+                {
+                    return; // Estado ya está cambiado
+                }
+
+                // Mapear AppointmentStatus a enum
+                AppointmentStatus? appointmentStatus = MapAppointmentStatus(appointmentStatusValue);
+                if (!appointmentStatus.HasValue)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Cannot map AppointmentStatus for state change fallback",
+                        details: $"AppointmentStatus '{appointmentStatusValue}' could not be mapped to enum. Cannot change state for SearchHire {searchHireId}.",
+                        userId: null,
+                        source: "AccountDeletionService.EnsureStateChangedAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId
+                    );
+                    return;
+                }
+
+                // Cambiar Appointment.Status si existe
+                if (currentSearchHire.Appointment != null)
+                {
+                    var appointmentStatusRow = await _context.SystemStatuses
+                        .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                                                 s.StatusValue == appointmentStatusValue, cancellationToken);
+                    if (appointmentStatusRow != null && currentSearchHire.Appointment.StatusId != appointmentStatusRow.Id)
+                    {
+                        currentSearchHire.Appointment.StatusId = appointmentStatusRow.Id;
+                        currentSearchHire.Appointment.UpdatedAt = DateTime.UtcNow;
+                    }
+                }
+
+                // Cambiar SearchHire.Status usando el mapeo
+                if (currentSearchHire.Status == null)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "SearchHire has null Status - cannot change state",
+                        details: $"SearchHire {searchHireId} has null Status. Cannot change state manually.",
+                        userId: null,
+                        source: "AccountDeletionService.EnsureStateChangedAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId
+                    );
+                    return;
+                }
+
+                var targetSearchHireStatus = await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatus.Value);
+                if (targetSearchHireStatus.HasValue)
+                {
+                    var targetSearchHireStatusValue = SearchHireStatusExtensions.ToStringValue(targetSearchHireStatus.Value);
+                    var searchHireStatusRow = await _context.SystemStatuses
+                        .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                                 s.StatusValue == targetSearchHireStatusValue, cancellationToken);
+                    if (searchHireStatusRow != null && currentSearchHire.StatusId != searchHireStatusRow.Id)
+                    {
+                        currentSearchHire.StatusId = searchHireStatusRow.Id;
+                        currentSearchHire.UpdatedAt = DateTime.UtcNow;
+                    }
+                }
+
+                await _context.SaveChangesAsync(cancellationToken);
+
+                await _loggingService.LogWarningAsync(
+                    message: "State changed manually after money processing failure",
+                    details: $"SearchHire {searchHireId} state was manually changed to {appointmentStatusValue} because ProcessMoneyDistributionAsync failed. " +
+                            $"This ensures the system does not remain blocked even when money processing fails.",
+                    userId: null,
+                    source: "AccountDeletionService.EnsureStateChangedAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId,
+                    additionalData: new
+                    {
+                        AppointmentStatus = appointmentStatusValue,
+                        FallbackStateChange = true
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                // Log error pero no lanzar excepción (no queremos bloquear la eliminación de cuenta)
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Failed to change state manually after money processing failure",
+                    details: $"Failed to manually change state for SearchHire {searchHireId} after money processing failed. " +
+                            $"Error: {ex.Message}. Manual intervention may be required.",
+                    userId: null,
+                    source: "AccountDeletionService.EnsureStateChangedAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId,
+                    additionalData: new
+                    {
+                        Error = ex.Message,
+                        ErrorType = ex.GetType().Name,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+            }
+        }
+
+        /// <summary>
+        /// Mapea un string de AppointmentStatus a su enum correspondiente
+        /// </summary>
+        private AppointmentStatus? MapAppointmentStatus(string statusValue)
+        {
+            return statusValue switch
+            {
+                "appointment_cancelled_by_client_account_delete" => AppointmentStatus.AppointmentCancelledByClientAccountDelete,
+                "appointment_cancelled_by_expert_account_delete" => AppointmentStatus.AppointmentCancelledByExpertAccountDelete,
+                _ => null
+            };
         }
 
         /// <summary>

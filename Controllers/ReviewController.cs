@@ -303,8 +303,33 @@ namespace newApi.Controllers
                 return string.Empty;
             }
 
-            var fallback = string.IsNullOrWhiteSpace(image.ImageUrl) ? string.Empty : image.ImageUrl;
-            return _signedUrlService.GetSignedUrl(image.ImageObjectName ?? string.Empty) ?? fallback;
+            // ✅ PRIORIDAD 1: Si la URL es de Unsplash u otro servicio externo, usar directamente (IGNORAR ImageObjectName)
+            if (!string.IsNullOrWhiteSpace(image.ImageUrl))
+            {
+                var imageUrlLower = image.ImageUrl.ToLowerInvariant();
+                if (imageUrlLower.Contains("unsplash.com") || 
+                    imageUrlLower.Contains("pexels.com") || 
+                    imageUrlLower.Contains("picsum.photos") ||
+                    imageUrlLower.Contains("http://") ||
+                    imageUrlLower.Contains("https://"))
+                {
+                    // Si es URL externa, NO usar ImageObjectName para generar signed URL
+                    return image.ImageUrl;
+                }
+            }
+
+            // ✅ PRIORIDAD 2: Si no es URL externa y hay ImageObjectName, intentar generar URL firmada del bucket
+            if (!string.IsNullOrWhiteSpace(image.ImageObjectName))
+            {
+                var signedUrl = _signedUrlService.GetSignedUrl(image.ImageObjectName);
+                if (!string.IsNullOrWhiteSpace(signedUrl))
+                {
+                    return signedUrl;
+                }
+            }
+
+            // ✅ PRIORIDAD 3: Fallback a ImageUrl si existe
+            return string.IsNullOrWhiteSpace(image.ImageUrl) ? string.Empty : image.ImageUrl;
         }
     }
 }

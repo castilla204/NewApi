@@ -1582,7 +1582,8 @@ namespace newApi.Services
                 CompletedSearches = ss.ExpertProfile?.User?.SearchHiresAsExpert?.Count(sh => sh.Status != null && sh.Status.StatusValue == "completed") ?? 0,
                 AverageRating = ss.ExpertProfile?.User?.ReviewsReceived != null && ss.ExpertProfile.User.ReviewsReceived.Any()
                     ? ss.ExpertProfile.User.ReviewsReceived.Average(r => r.Score)
-                    : 0
+                    : 0,
+                TotalReviews = ss.ExpertProfile?.User?.ReviewsReceived?.Count ?? 0 // ✅ NUEVO: Total de reseñas
             };
 
             return detailDto;

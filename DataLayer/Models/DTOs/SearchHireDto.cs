@@ -153,6 +153,7 @@ namespace newApi.DataLayer.Models.DTOs
         public string CategoryName { get; set; }
         public int CompletedSearches { get; set; }
         public double AverageRating { get; set; }
+        public int TotalReviews { get; set; } // ✅ NUEVO: Total de reseñas del experto
     }
 
     /// <summary>

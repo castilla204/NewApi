@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 
 using System.Security.Claims;
 using newApi.Services;
@@ -28,6 +29,7 @@ namespace newApi.Controllers
         private readonly IStripeValidationService _stripeValidationService;
         private readonly ILoggingService _loggingService;
         private readonly ISignedUrlService _signedUrlService;
+        private readonly IConfiguration _configuration;
 
         // ✅ COMENTADO: Ya no necesario - Stripe usa default automático configurado en Dashboard
         // Según docs oficiales Stripe 2026, se recomienda usar "unspecified" y configurar
@@ -49,7 +51,8 @@ namespace newApi.Controllers
             ISubscriptionService subscriptionService,
             IStripeValidationService stripeValidationService,
             ILoggingService loggingService,
-            ISignedUrlService signedUrlService)
+            ISignedUrlService signedUrlService,
+            IConfiguration configuration)
         {
             _context = context;
             _authService = authService;
@@ -58,6 +61,7 @@ namespace newApi.Controllers
             _stripeValidationService = stripeValidationService;
             _loggingService = loggingService;
             _signedUrlService = signedUrlService;
+            _configuration = configuration;
         }
 
         /// <summary>
@@ -250,14 +254,35 @@ namespace newApi.Controllers
                 // Mapear a DTOs
                 var searchDtos = searches.Select(s =>
                 {
-                    // ✅ Obtener primera imagen del servicio
+                    // ✅ Obtener primera imagen del servicio (usando misma lógica que ResolveServiceImageUrl)
                     string? serviceImageUrl = null;
                     if (s.SearchHire?.SearchService?.Images != null && s.SearchHire.SearchService.Images.Any())
                     {
                         var firstImage = s.SearchHire.SearchService.Images.OrderBy(img => img.Id).First();
-                        serviceImageUrl = !string.IsNullOrWhiteSpace(firstImage.ImageObjectName)
-                            ? _signedUrlService.GetSignedUrl(firstImage.ImageObjectName) ?? firstImage.ImageUrl
-                            : firstImage.ImageUrl;
+                        
+                        // ✅ Si la URL es externa (no de Google Cloud Storage), devolverla directamente
+                        if (!string.IsNullOrWhiteSpace(firstImage.ImageUrl))
+                        {
+                            var bucketName = _configuration["GoogleCloud:BucketName"];
+                            var isExternalUrl = string.IsNullOrWhiteSpace(bucketName) || 
+                                               !firstImage.ImageUrl.Contains($"storage.googleapis.com/{bucketName}", StringComparison.OrdinalIgnoreCase);
+                            
+                            if (isExternalUrl)
+                            {
+                                // URL externa (Unsplash, Pexels, etc.) - devolver directamente sin signed URL
+                                serviceImageUrl = firstImage.ImageUrl;
+                            }
+                            else
+                            {
+                                // ✅ Si es URL de Google Cloud Storage o hay ImageObjectName, generar signed URL
+                                serviceImageUrl = _signedUrlService.GetSignedUrl(firstImage.ImageObjectName ?? string.Empty) ?? firstImage.ImageUrl;
+                            }
+                        }
+                        else
+                        {
+                            // Fallback si no hay ImageUrl
+                            serviceImageUrl = _signedUrlService.GetSignedUrl(firstImage.ImageObjectName ?? string.Empty) ?? string.Empty;
+                        }
                     }
 
                     // ✅ Obtener disponibilidad del experto

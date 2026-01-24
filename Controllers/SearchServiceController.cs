@@ -9,6 +9,7 @@ using newApi.DataLayer.Models;
 using System.Threading;
 using Microsoft.Extensions.Logging;
 using System.Linq;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace newApi.Controllers
 {
@@ -21,19 +22,47 @@ namespace newApi.Controllers
         private readonly ILoggingService _loggingService;
         private readonly ILogger<SearchServiceController> _logger;
         private readonly IFavoriteService _favoriteService;
+        private readonly ITimezoneService _timezoneService;
+        private readonly IMemoryCache _memoryCache;
+
+        // ✅ CACHÉ: Países que deben tener caché habilitado
+        private static readonly HashSet<string> CachedCountries = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "ES", // España
+            "DE", // Alemania
+            "FR", // Francia
+            "PT", // Portugal
+            "MA", // Marruecos
+            "IT"  // Italia
+        };
+
+        // ✅ CACHÉ: Categorías que deben tener caché habilitado (por nombre)
+        private static readonly HashSet<string> CachedCategories = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Coches",
+            "Motos",
+            "Inmobiliaria"
+        };
+
+        // ✅ CACHÉ: TTL de 5 minutos (300 segundos)
+        private static readonly TimeSpan CacheExpiration = TimeSpan.FromMinutes(5);
 
         public SearchServiceController(
             SearchServiceService searchServiceService,
             AppDbContext context,
             ILoggingService loggingService,
             ILogger<SearchServiceController> logger,
-            IFavoriteService favoriteService)
+            IFavoriteService favoriteService,
+            ITimezoneService timezoneService,
+            IMemoryCache memoryCache)
         {
             _searchServiceService = searchServiceService;
             _context = context;
             _loggingService = loggingService;
             _logger = logger;
             _favoriteService = favoriteService;
+            _timezoneService = timezoneService;
+            _memoryCache = memoryCache;
         }
 
         private string GetStripeStatusMessage(StripeStatus status)
@@ -935,19 +964,31 @@ namespace newApi.Controllers
 
         /// <summary>
         /// Obtiene el muro de servicios para la homepage con servicios cercanos y populares
+        /// ✅ El país se detecta automáticamente desde la IP del cliente
+        /// ✅ Usa la capital del país detectado para buscar servicios cercanos
         /// </summary>
-        /// <param name="latitude">Latitud del usuario (opcional, si no se proporciona usa capital del país)</param>
-        /// <param name="longitude">Longitud del usuario (opcional, si no se proporciona usa capital del país)</param>
-        /// <param name="countryCode">Código de país ISO 3166-1 alpha-2 (opcional, por defecto ES - Madrid)</param>
-        /// <param name="locationRange">Rango de búsqueda en km (por defecto 50)</param>
         /// <param name="categoryId">ID de la categoría (REQUERIDO) - Filtra servicios por categoría específica</param>
+        /// <param name="latitude">⚠️ DEPRECADO: Ya no se usa - el país se detecta desde la IP del cliente</param>
+        /// <param name="longitude">⚠️ DEPRECADO: Ya no se usa - el país se detecta desde la IP del cliente</param>
+        /// <param name="countryCode">⚠️ DEPRECADO: Ya no se usa - el país se detecta desde la IP del cliente</param>
+        /// <param name="locationRange">Rango de búsqueda en km (por defecto 50)</param>
         /// <param name="nearbyPage">Página para servicios cercanos (por defecto 1)</param>
         /// <param name="nearbyPageSize">Tamaño de página para servicios cercanos (por defecto 20, máximo 50)</param>
         /// <param name="popularPage">Página para servicios populares (por defecto 1)</param>
         /// <param name="popularPageSize">Tamaño de página para servicios populares (por defecto 20, máximo 50)</param>
-        /// <returns>Array plano con secciones: "Revisiones cerca de mí", "Revisiones populares", y secciones específicas por país (solo para Coches y Motos)</returns>
+        /// <returns>Array plano con secciones: "Revisiones en [País]" (detectado por IP), "Revisiones populares", y secciones específicas por país (solo para Coches y Motos)</returns>
+        /// <remarks>
+        /// ✅ El país se detecta automáticamente desde la IP del cliente usando ip-api.com
+        /// ✅ No se requieren parámetros latitude/longitude/countryCode - se usa la capital del país detectado
+        /// ✅ El título de la primera sección será "Revisiones en [País]" (ej: "Revisiones en España")
+        /// ✅ CACHÉ: Solo se cachea para países específicos (DE, FR, PT, MA, IT) y categorías específicas (Coches, Motos, Inmobiliaria)
+        /// ✅ CACHÉ: TTL de 5 minutos para respuestas cacheadas
+        /// </remarks>
         [HttpGet("homepage-wall")]
         [AllowAnonymous] // ✅ PÚBLICO: Permitir acceso sin autenticación para homepage
+        // ⚠️ NOTA: ResponseCache deshabilitado porque ahora detectamos país por IP del cliente
+        // Cada cliente puede tener un país diferente, así que el caché HTTP no es apropiado aquí
+        // Si necesitas caché, considera implementar un caché en memoria que varíe por (categoryId, countryCode, page)
         public async Task<IActionResult> GetHomepageWall(
             [FromQuery] int categoryId,  // ✅ REQUERIDO: Filtro por categoría (obligatorio)
             [FromQuery] string? latitude = null,
@@ -967,12 +1008,6 @@ namespace newApi.Controllers
             _logger.LogInformation($"[HOMEPAGE-ENDPOINT] 📥 GetHomepageWall INICIADO - RequestId: {requestId}");
             _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    Timestamp: {startTime:yyyy-MM-dd HH:mm:ss.fff}");
             _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    categoryId: {categoryId}");
-            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    latitude: {latitude ?? "null"}");
-            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    longitude: {longitude ?? "null"}");
-            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    countryCode: {countryCode ?? "null"}");
-            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    locationRange: {locationRange}");
-            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    nearbyPage: {nearbyPage}, nearbyPageSize: {nearbyPageSize}");
-            _logger.LogInformation($"[HOMEPAGE-ENDPOINT]    popularPage: {popularPage}, popularPageSize: {popularPageSize}");
             
             // ✅ DESARROLLO: Timeout aumentado a 120 segundos para desarrollo (PC lento)
             // La connection string tiene CommandTimeout=120, así que 120s es razonable para desarrollo
@@ -993,13 +1028,59 @@ namespace newApi.Controllers
                 if (popularPageSize < 1 || popularPageSize > 50) popularPageSize = 20;
                 if (locationRange <= 0) locationRange = 50;
 
-                // Obtener servicios cercanos
-                _logger.LogInformation($"[ENDPOINT] 🔍 GetHomepageWall - Obteniendo servicios cercanos...");
+                // ✅ Obtener nombre de categoría PRIMERO (necesario para verificar si debe cachear)
+                _logger.LogInformation($"[ENDPOINT] 🔍 GetHomepageWall - Obteniendo nombre de categoría para categoryId: {categoryId}");
+                var category = await _context.Categories
+                    .AsNoTracking()
+                    .Where(c => c.Id == categoryId && c.IsActive)
+                    .Select(c => c.Name)
+                    .FirstOrDefaultAsync(cts.Token);
+                
+                if (category == null)
+                {
+                    _logger.LogWarning($"[ENDPOINT] ❌ GetHomepageWall - Categoría con ID {categoryId} no encontrada o no está activa");
+                    return NotFound(new { message = $"Categoría con ID {categoryId} no encontrada o no está activa" });
+                }
+                
+                string categoryName = category;
+                _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - Categoría obtenida: {categoryName}");
+
+                // ✅ NUEVO: Obtener IP del cliente y detectar país desde IP
+                var clientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                _logger.LogInformation($"[ENDPOINT] 🌍 GetHomepageWall - IP del cliente: {clientIp}");
+                
+                // Obtener país desde IP
+                var detectedCountryCode = await _timezoneService.GetCountryFromIpAddressAsync(clientIp);
+                _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - País detectado desde IP: {detectedCountryCode}");
+                
+                // Obtener nombre del país para el título
+                var countryDisplayName = GetCountryDisplayName(detectedCountryCode);
+                _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - Nombre del país: {countryDisplayName}");
+
+                // ✅ CACHÉ: Verificar si debe cachear (solo para países y categorías específicos)
+                bool shouldCache = CachedCountries.Contains(detectedCountryCode) && CachedCategories.Contains(categoryName);
+                _logger.LogInformation($"[ENDPOINT] 💾 GetHomepageWall - ¿Debe cachear? {shouldCache} (País: {detectedCountryCode}, Categoría: {categoryName})");
+                
+                // ✅ CACHÉ: Generar clave de caché única
+                var cacheKey = $"homepage-wall-{detectedCountryCode}-{categoryId}-{nearbyPage}-{nearbyPageSize}-{popularPage}-{popularPageSize}";
+                
+                // ✅ CACHÉ: Intentar obtener del caché si está habilitado
+                if (shouldCache && _memoryCache.TryGetValue(cacheKey, out List<object>? cachedResult))
+                {
+                    _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - Resultado obtenido del CACHÉ - RequestId: {requestId}");
+                    _logger.LogInformation($"[ENDPOINT]    Total secciones: {cachedResult.Count}");
+                    _logger.LogInformation($"[ENDPOINT]    Duración: {(DateTime.UtcNow - startTime).TotalMilliseconds:F2}ms (desde caché)");
+                    return Ok(cachedResult);
+                }
+                
+                // ✅ Usar la capital del país detectado (no latitude/longitude del cliente)
+                // No pasamos latitude/longitude, así que GetNearbyServices usará la capital del país
+                _logger.LogInformation($"[ENDPOINT] 🔍 GetHomepageWall - Obteniendo servicios cercanos usando capital de {countryDisplayName}...");
                 var nearbyStartTime = DateTime.UtcNow;
                 var (nearbyServices, nearbyTotalCount) = await _searchServiceService.GetNearbyServices(
-                    latitude,
-                    longitude,
-                    countryCode,
+                    null,  // ✅ No usar latitude del cliente
+                    null,  // ✅ No usar longitude del cliente
+                    detectedCountryCode,  // ✅ Usar país detectado desde IP
                     locationRange,
                     categoryId,  // ✅ Filtrar por categoría si se proporciona
                     nearbyPage,
@@ -1020,25 +1101,6 @@ namespace newApi.Controllers
                 var popularDuration = (DateTime.UtcNow - popularStartTime).TotalMilliseconds;
                 var popularServicesList = popularServices.ToList();
                 _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - Servicios populares obtenidos: {popularServicesList.Count} servicios, Total: {popularTotalCount}, Duración: {popularDuration:F2}ms");
-
-                // ✅ Obtener nombre de categoría (categoryId es obligatorio)
-                _logger.LogInformation($"[ENDPOINT] 🔍 GetHomepageWall - Obteniendo nombre de categoría para categoryId: {categoryId}");
-                var categoryStartTime = DateTime.UtcNow;
-                var category = await _context.Categories
-                    .AsNoTracking()
-                    .Where(c => c.Id == categoryId && c.IsActive)
-                    .Select(c => c.Name)
-                    .FirstOrDefaultAsync(cts.Token);
-                var categoryDuration = (DateTime.UtcNow - categoryStartTime).TotalMilliseconds;
-                _logger.LogInformation($"[ENDPOINT] ✅ GetHomepageWall - Categoría obtenida: {category ?? "null"}, Duración: {categoryDuration:F2}ms");
-                
-                if (category == null)
-                {
-                    _logger.LogWarning($"[ENDPOINT] ❌ GetHomepageWall - Categoría con ID {categoryId} no encontrada o no está activa");
-                    return NotFound(new { message = $"Categoría con ID {categoryId} no encontrada o no está activa" });
-                }
-                
-                string categoryName = category;
                 
                 // ✅ Obtener userId del usuario autenticado (si existe)
                 int? userId = null;
@@ -1091,10 +1153,10 @@ namespace newApi.Controllers
                 // ✅ Construir array plano con todas las secciones
                 var allSections = new List<object>();
                 
-                // 1. Sección "Cerca de mí"
+                // 1. Sección "Revisiones en [País]" (basado en IP del cliente)
                 allSections.Add(new
                 {
-                    title = "Revisiones cerca de mí",
+                    title = $"Revisiones en {countryDisplayName}",  // ✅ Cambiado: "Revisiones en España" en lugar de "Revisiones cerca de mí"
                     services = nearbyServices,
                     pagination = new
                     {
@@ -1238,6 +1300,29 @@ namespace newApi.Controllers
                 }
                 
                 _logger.LogInformation($"[ENDPOINT] ========================================");
+                
+                // ✅ CACHÉ: Guardar en caché si está habilitado para este país y categoría
+                if (shouldCache)
+                {
+                    try
+                    {
+                        var cacheOptions = new MemoryCacheEntryOptions
+                        {
+                            AbsoluteExpirationRelativeToNow = CacheExpiration,
+                            Priority = CacheItemPriority.Normal,
+                            SlidingExpiration = null // No usar sliding expiration, solo absolute
+                        };
+                        
+                        _memoryCache.Set(cacheKey, allSections, cacheOptions);
+                        _logger.LogInformation($"[ENDPOINT] 💾 GetHomepageWall - Resultado guardado en CACHÉ - Clave: {cacheKey}, TTL: {CacheExpiration.TotalMinutes} minutos");
+                    }
+                    catch (Exception cacheEx)
+                    {
+                        // No fallar si hay error al guardar en caché, solo loguear
+                        _logger.LogWarning(cacheEx, $"[ENDPOINT] ⚠️ Error al guardar en caché: {cacheEx.Message}");
+                    }
+                }
+                
                 return Ok(allSections);
             }
             catch (OperationCanceledException)

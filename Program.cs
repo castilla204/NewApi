@@ -859,6 +859,14 @@ builder.Services.Configure<FormOptions>(options =>
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+// ✅ CACHÉ: Agregar Memory Cache para caché en memoria (más flexible que ResponseCache)
+// Útil para homepage-wall con caché condicional por país y categoría
+builder.Services.AddMemoryCache();
+
+// ✅ CACHÉ: Agregar Response Caching para mejorar performance de endpoints públicos
+// Especialmente útil para homepage-wall que hace múltiples consultas a la BD
+builder.Services.AddResponseCaching();
 // Note: Swagger security definition removed due to Microsoft.OpenApi.Models namespace issues
 // Swagger will still work for testing endpoints
 
@@ -1624,6 +1632,9 @@ if (app.Environment.IsDevelopment())
 // KeepAliveTimeout y RequestHeadersTimeout están en 5 y 2 minutos respectivamente
 
 // ✅ RENDER.COM BEST PRACTICES: Orden correcto del middleware según ASP.NET Core
+// 0. Response Caching PRIMERO (antes de routing para cachear respuestas)
+app.UseResponseCaching();
+
 // 1. Routing PRIMERO (necesario para que funcionen los endpoints)
 app.UseRouting();
 

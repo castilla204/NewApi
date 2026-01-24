@@ -80,6 +80,14 @@ namespace newApi.Services
         /// <param name="longitude">Longitud en grados decimales</param>
         /// <returns>Nombre de la ciudad (ej: "Madrid", "Barcelona") o null si no se puede detectar</returns>
         Task<string?> GetCityFromCoordinatesAsync(decimal latitude, decimal longitude);
+        
+        /// <summary>
+        /// Detecta el país desde la dirección IP del cliente
+        /// Usa ip-api.com (servicio gratuito) para obtener el código de país (ISO 3166-1 alpha-2)
+        /// </summary>
+        /// <param name="ipAddress">Dirección IP del cliente</param>
+        /// <returns>Código de país ISO 3166-1 alpha-2 (ej: "ES", "US", "MX") o "ES" por defecto si no se puede detectar</returns>
+        Task<string> GetCountryFromIpAddressAsync(string ipAddress);
     }
 
     public class TimezoneService : ITimezoneService
@@ -715,6 +723,76 @@ namespace newApi.Services
                     latitude, longitude);
                 throw new InvalidOperationException(
                     $"Error inesperado llamando a Google Geocoding API para coordenadas ({latitude}, {longitude}): {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// Detecta el país desde la dirección IP del cliente usando ip-api.com
+        /// Servicio gratuito, sin API key necesario (límite: 45 requests/minuto)
+        /// </summary>
+        public async Task<string> GetCountryFromIpAddressAsync(string ipAddress)
+        {
+            // Validar IP
+            if (string.IsNullOrWhiteSpace(ipAddress) || ipAddress == "unknown" || ipAddress == "::1" || ipAddress == "127.0.0.1")
+            {
+                _logger.LogWarning("⚠️ IP inválida o localhost: '{IpAddress}', usando 'ES' por defecto", ipAddress);
+                return "ES"; // España por defecto
+            }
+            
+            try
+            {
+                // ✅ Usar ip-api.com (gratuito, sin API key, límite 45 req/min)
+                // Formato JSON: http://ip-api.com/json/{ip}?fields=status,message,countryCode
+                var url = $"http://ip-api.com/json/{ipAddress}?fields=status,message,countryCode";
+                
+                _logger.LogDebug("Llamando a ip-api.com para detectar país desde IP: {IpAddress}", ipAddress);
+                
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)); // Timeout de 5 segundos
+                var response = await _httpClient.GetAsync(url, cts.Token);
+                var json = await response.Content.ReadAsStringAsync(cts.Token);
+                
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("⚠️ ip-api.com request failed. Status: {StatusCode}, usando 'ES' por defecto", response.StatusCode);
+                    return "ES";
+                }
+                
+                var jsonDoc = JsonDocument.Parse(json);
+                
+                // ip-api.com devuelve: { "status": "success", "countryCode": "ES" }
+                // O errores: { "status": "fail", "message": "..." }
+                if (jsonDoc.RootElement.TryGetProperty("status", out var status))
+                {
+                    var statusValue = status.GetString();
+                    
+                    if (statusValue == "success" && jsonDoc.RootElement.TryGetProperty("countryCode", out var countryCode))
+                    {
+                        var country = countryCode.GetString();
+                        
+                        if (!string.IsNullOrWhiteSpace(country) && country.Length == 2)
+                        {
+                            _logger.LogInformation("✅ País detectado: '{Country}' desde IP: {IpAddress}", country.ToUpperInvariant(), ipAddress);
+                            return country.ToUpperInvariant();
+                        }
+                    }
+                    else if (statusValue == "fail" && jsonDoc.RootElement.TryGetProperty("message", out var message))
+                    {
+                        _logger.LogWarning("⚠️ ip-api.com error: {Message}, usando 'ES' por defecto", message.GetString());
+                    }
+                }
+                
+                _logger.LogWarning("⚠️ No se pudo obtener país desde IP: {IpAddress}, usando 'ES' por defecto", ipAddress);
+                return "ES";
+            }
+            catch (TaskCanceledException)
+            {
+                _logger.LogWarning("⚠️ Timeout llamando a ip-api.com para IP: {IpAddress}, usando 'ES' por defecto", ipAddress);
+                return "ES";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error inesperado llamando a ip-api.com para IP: {IpAddress}, usando 'ES' por defecto", ipAddress);
+                return "ES";
             }
         }
     }

@@ -206,21 +206,106 @@ namespace newApi.Controllers
 
                 _context.SearchHires.Add(searchHire);
 
-                // Automatically create a Conversation
-                var conversation = new Conversation
+                // ✅ NUEVO: Buscar conversación previa por SearchServiceId para migrar mensajes
+                var preHireConversation = await _context.Conversations
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Attachments)
+                    .FirstOrDefaultAsync(c => c.SearchServiceId == searchService.Id && 
+                                             c.SearchHireId == null &&
+                                             c.ClientId == search.UserId &&
+                                             c.ExpertId == dto.ExpertId.Value);
+
+                Conversation conversation;
+                
+                if (preHireConversation != null && preHireConversation.Messages.Any())
                 {
-                    SearchHireId = searchHire.Id,
-                    ClientId = searchHire.ClientId,
-                    ExpertId = searchHire.ExpertId.Value,
-                    IsActive = true,
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
-                    Messages = new List<Message>()
-                };
+                    // ✅ Migrar mensajes de la conversación previa a la nueva conversación
+                    conversation = new Conversation
+                    {
+                        SearchHireId = searchHire.Id,
+                        SearchServiceId = null, // Ya no es conversación previa
+                        ClientId = searchHire.ClientId,
+                        ExpertId = searchHire.ExpertId.Value,
+                        IsActive = true,
+                        CreatedAt = preHireConversation.CreatedAt, // ✅ Mantener fecha original
+                        UpdatedAt = DateTime.UtcNow,
+                        Messages = new List<Message>()
+                    };
 
-                _context.Conversations.Add(conversation);
+                    _context.Conversations.Add(conversation);
+                    
+                    // Migrar todos los mensajes
+                    foreach (var oldMessage in preHireConversation.Messages)
+                    {
+                        var newMessage = new Message
+                        {
+                            ConversationId = conversation.Id,
+                            SenderId = oldMessage.SenderId,
+                            Content = oldMessage.Content,
+                            SentAt = oldMessage.SentAt,
+                            IsRead = oldMessage.IsRead,
+                            LocationLatitude = oldMessage.LocationLatitude,
+                            LocationLongitude = oldMessage.LocationLongitude
+                        };
+                        
+                        _context.Messages.Add(newMessage);
+                        
+                        // Migrar attachments
+                        if (oldMessage.Attachments != null && oldMessage.Attachments.Any())
+                        {
+                            foreach (var oldAttachment in oldMessage.Attachments)
+                            {
+                                var newAttachment = new MessageAttachment
+                                {
+                                    MessageId = newMessage.Id,
+                                    Url = oldAttachment.Url,
+                                    ObjectName = oldAttachment.ObjectName,
+                                    Type = oldAttachment.Type,
+                                    CreatedAt = oldAttachment.CreatedAt
+                                };
+                                _context.MessageAttachments.Add(newAttachment);
+                            }
+                        }
+                    }
+                    
+                    // Marcar la conversación previa como inactiva
+                    preHireConversation.IsActive = false;
+                    preHireConversation.UpdatedAt = DateTime.UtcNow;
+                    
+                    await _loggingService.LogInfoAsync(
+                        message: "Pre-hire conversation messages migrated",
+                        details: $"Migrated {preHireConversation.Messages.Count} messages from pre-hire conversation {preHireConversation.Id} to new conversation {conversation.Id} for SearchHire {searchHire.Id}",
+                        userId: search.UserId,
+                        source: "SearchHireController.CreateSearchHire",
+                        relatedEntityType: "Conversation",
+                        relatedEntityId: conversation.Id,
+                        additionalData: new { 
+                            PreHireConversationId = preHireConversation.Id,
+                            NewConversationId = conversation.Id,
+                            SearchHireId = searchHire.Id,
+                            MessagesMigrated = preHireConversation.Messages.Count
+                        }
+                    );
+                }
+                else
+                {
+                    // Crear nueva conversación sin mensajes previos
+                    conversation = new Conversation
+                    {
+                        SearchHireId = searchHire.Id,
+                        SearchServiceId = null,
+                        ClientId = searchHire.ClientId,
+                        ExpertId = searchHire.ExpertId.Value,
+                        IsActive = true,
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow,
+                        Messages = new List<Message>()
+                    };
+
+                    _context.Conversations.Add(conversation);
+                }
+
                 searchHire.Conversations.Add(conversation);
-
                 await _context.SaveChangesAsync();
 
                 // ✅ Crear automáticamente la cita en estado "awaiting_appointment" con timer de 24h

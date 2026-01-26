@@ -375,9 +375,18 @@ namespace newApi.DataLayer.Models
                 entity.Property(e => e.IsActive)
                     .HasDefaultValue(true);
 
+                // ✅ Relación con SearchHire (nullable para conversaciones previas)
                 entity.HasOne(c => c.SearchHire)
                     .WithMany(sh => sh.Conversations)
                     .HasForeignKey(c => c.SearchHireId)
+                    .IsRequired(false) // ✅ Nullable para conversaciones previas a contratar
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                // ✅ NUEVO: Relación con SearchService (nullable para conversaciones post-contratación)
+                entity.HasOne(c => c.SearchService)
+                    .WithMany()
+                    .HasForeignKey(c => c.SearchServiceId)
+                    .IsRequired(false) // Nullable para conversaciones post-contratación
                     .OnDelete(DeleteBehavior.Cascade);
 
                 entity.HasOne(c => c.Client)
@@ -389,6 +398,10 @@ namespace newApi.DataLayer.Models
                     .WithMany(u => u.ConversationsAsExpert)
                     .HasForeignKey(c => c.ExpertId)
                     .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull para permitir anonimización
+
+                // ✅ Índices para búsquedas eficientes
+                entity.HasIndex(e => e.SearchHireId);
+                entity.HasIndex(e => e.SearchServiceId);
             });
 
             modelBuilder.Entity<Message>(entity =>

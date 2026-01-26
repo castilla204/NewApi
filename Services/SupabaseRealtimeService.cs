@@ -89,17 +89,23 @@ namespace newApi.Services
                     "application/json"
                 );
 
+                // ✅ LOG: Antes de enviar el broadcast
+                _logger.LogInformation("🔔 [SupabaseRealtime] Enviando broadcast a canal: {Channel}, evento: {Event}", channel, eventName);
+                _logger.LogInformation("🔔 [SupabaseRealtime] URL: {Url}", broadcastUrl);
+                
                 var response = await _httpClient.PostAsync(broadcastUrl, content);
                 
                 if (!response.IsSuccessStatusCode)
                 {
                     var errorContent = await response.Content.ReadAsStringAsync();
-                    _logger.LogError("Error broadcasting to Supabase Realtime: {StatusCode} - {Error}", 
+                    _logger.LogError("❌ [SupabaseRealtime] Error broadcasting: {StatusCode} - {Error}", 
                         response.StatusCode, errorContent);
                 }
                 else
                 {
-                    _logger.LogDebug("Broadcast sent to channel {Channel}, event: {Event}", channel, eventName);
+                    var responseContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogInformation("✅ [SupabaseRealtime] Broadcast enviado exitosamente a canal: {Channel}, evento: {Event}", channel, eventName);
+                    _logger.LogInformation("✅ [SupabaseRealtime] Respuesta: {Response}", responseContent);
                 }
             }
             catch (Exception ex)
@@ -114,6 +120,19 @@ namespace newApi.Services
         public async Task NotifyNewMessageAsync(int conversationId, object messageData)
         {
             var channel = $"conversation:{conversationId}";
+            _logger.LogInformation("📨 [SupabaseRealtime] Notificando nuevo mensaje - ConversationId: {ConversationId}, Canal: {Channel}", conversationId, channel);
+            
+            // ✅ Serializar el payload para logging
+            try
+            {
+                var payloadJson = JsonSerializer.Serialize(messageData);
+                _logger.LogInformation("📨 [SupabaseRealtime] Payload del mensaje: {Payload}", payloadJson);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("⚠️ [SupabaseRealtime] No se pudo serializar el payload para logging: {Error}", ex.Message);
+            }
+            
             await BroadcastToChannelAsync(channel, "new_message", messageData);
         }
 

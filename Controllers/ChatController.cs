@@ -69,6 +69,7 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid or missing user ID in token" });
                 }
                 // Admin puede ver cualquier conversación, usuarios normales solo las suyas
+                // ✅ CORRECCIÓN: SearchHire puede ser nullable ahora
                 var conversation = await _context.Conversations
                     .Include(c => c.Messages)
                         .ThenInclude(m => m.Sender)
@@ -76,7 +77,9 @@ namespace newApi.Controllers
                         .ThenInclude(m => m.Attachments)
                     .Include(c => c.Client)
                     .Include(c => c.Expert)
-                    .FirstOrDefaultAsync(c => c.SearchHire.SearchId == searchId &&
+                    .Include(c => c.SearchHire)
+                    .FirstOrDefaultAsync(c => c.SearchHire != null && 
+                                             c.SearchHire.SearchId == searchId &&
                                              ((c.ClientId.HasValue && c.ClientId.Value == userId) || 
                                               (c.ExpertId.HasValue && c.ExpertId.Value == userId) || 
                                               _authService.IsAdmin(User)));
@@ -146,6 +149,92 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// ✅ NUEVO: Obtener todas las conversaciones previas a contratar del experto
+        /// Permite al experto ver quién le ha hablado antes de contratar
+        /// </summary>
+        [HttpGet("pre-hire-conversations")]
+        public async Task<ActionResult<List<PreHireConversationSummaryDto>>> GetPreHireConversations()
+        {
+            try
+            {
+                if (!int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
+                {
+                    return Unauthorized(new { message = "Invalid or missing user ID in token" });
+                }
+
+                // Buscar todas las conversaciones previas donde el usuario es el experto
+                var conversations = await _context.Conversations
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Sender)
+                    .Include(c => c.Client)
+                    .Include(c => c.SearchService)
+                        .ThenInclude(ss => ss.Images)
+                    .Include(c => c.SearchService)
+                        .ThenInclude(ss => ss.ServiceType)
+                    .Where(c => c.ExpertId.HasValue && 
+                               c.ExpertId.Value == userId &&
+                               c.SearchHireId == null && // ✅ Solo conversaciones previas
+                               c.SearchServiceId != null &&
+                               c.IsActive == true)
+                    .OrderByDescending(c => c.UpdatedAt)
+                    .ToListAsync();
+
+                var conversationSummaries = conversations.Select(c => 
+                {
+                    // Obtener último mensaje (ordenado por fecha descendente)
+                    var lastMessage = c.Messages
+                        .OrderByDescending(m => m.SentAt)
+                        .FirstOrDefault();
+                    
+                    // Contar mensajes no leídos (del cliente, no del experto)
+                    var unreadCount = c.Messages
+                        .Count(m => !m.IsRead && m.SenderId != userId);
+
+                    return new PreHireConversationSummaryDto
+                    {
+                        ConversationId = c.Id,
+                        SearchServiceId = c.SearchServiceId ?? 0,
+                        ServiceName = c.SearchService?.ServiceType?.Name ?? "Servicio",
+                        ServicePrice = c.SearchService?.Price ?? 0,
+                        ServiceImageUrl = c.SearchService?.Images?.FirstOrDefault()?.ImageUrl,
+                        ClientId = c.ClientId,
+                        ClientName = c.Client?.Name ?? "[Usuario eliminado]",
+                        ClientProfilePictureUrl = c.Client?.ExpertProfile?.ProfilePictureUrl,
+                        LastMessage = lastMessage != null ? new MessageSummaryDto
+                        {
+                            Id = lastMessage.Id,
+                            Content = lastMessage.Content ?? "",
+                            SentAt = lastMessage.SentAt,
+                            SenderId = lastMessage.SenderId,
+                            SenderName = lastMessage.Sender?.Name ?? "[Usuario eliminado]",
+                            IsRead = lastMessage.IsRead
+                        } : null,
+                        UnreadCount = unreadCount,
+                        CreatedAt = c.CreatedAt,
+                        UpdatedAt = c.UpdatedAt
+                    };
+                }).ToList();
+
+                return Ok(conversationSummaries);
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogErrorAsync(
+                    message: "Error getting pre-hire conversations",
+                    details: $"Error retrieving pre-hire conversations for expert: {ex.Message}",
+                    source: "ChatController.GetPreHireConversations",
+                    relatedEntityType: "Conversation",
+                    additionalData: new { 
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+                
+                return StatusCode(500, new { message = "An error occurred while retrieving pre-hire conversations" });
+            }
+        }
+
+        /// <summary>
         /// Obtener todas las conversaciones (solo para Admin)
         /// </summary>
         [HttpGet("conversations")]
@@ -196,6 +285,114 @@ namespace newApi.Controllers
                 );
                 
                 return StatusCode(500, new { message = "An error occurred while retrieving conversations" });
+            }
+        }
+
+        /// <summary>
+        /// ✅ NUEVO: Obtener o crear conversación previa a contratar por SearchServiceId
+        /// Permite chatear antes de contratar el servicio
+        /// </summary>
+        [HttpGet("conversation-by-service")]
+        public async Task<ActionResult<ConversationDto>> GetConversationBySearchServiceId([FromQuery] int searchServiceId)
+        {
+            try
+            {
+                if (!int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
+                {
+                    return Unauthorized(new { message = "Invalid or missing user ID in token" });
+                }
+
+                // Buscar el servicio
+                var searchService = await _context.SearchServices
+                    .Include(ss => ss.ExpertProfile)
+                        .ThenInclude(ep => ep.User)
+                    .FirstOrDefaultAsync(ss => ss.Id == searchServiceId);
+
+                if (searchService == null)
+                {
+                    return NotFound(new { message = "Search service not found" });
+                }
+
+                // ✅ CORRECCIÓN: Permitir que el experto también acceda a la conversación
+                // El experto puede ver y responder a los mensajes de los clientes que le escriben
+                // No restringimos el acceso, solo evitamos que el experto cree conversaciones consigo mismo
+                var expertUserId = searchService.ExpertProfile?.User?.Id;
+                var isExpert = expertUserId.HasValue && expertUserId.Value == userId;
+
+                // Buscar conversación existente por SearchServiceId
+                var conversation = await _context.Conversations
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Sender)
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Attachments)
+                    .Include(c => c.Client)
+                    .Include(c => c.Expert)
+                    .FirstOrDefaultAsync(c => c.SearchServiceId == searchServiceId &&
+                                             ((c.ClientId.HasValue && c.ClientId.Value == userId) || 
+                                              (c.ExpertId.HasValue && c.ExpertId.Value == userId) || 
+                                              _authService.IsAdmin(User)));
+
+                if (conversation == null)
+                {
+                    // ✅ CORRECCIÓN: Solo el cliente puede crear conversaciones previas
+                    // Si el usuario es el experto y no existe conversación, retornar NotFound
+                    if (isExpert)
+                    {
+                        return NotFound(new { message = "No conversation found for this service. Only clients can start pre-hire conversations." });
+                    }
+
+                    // Crear nueva conversación previa (solo si es cliente)
+                    conversation = new Conversation
+                    {
+                        SearchServiceId = searchServiceId,
+                        SearchHireId = null, // ✅ No hay SearchHire aún
+                        ClientId = userId, // El usuario actual es el cliente
+                        ExpertId = expertUserId, // El experto del servicio
+                        IsActive = true,
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow,
+                        Messages = new List<Message>()
+                    };
+
+                    _context.Conversations.Add(conversation);
+                    await _context.SaveChangesAsync();
+                    
+                    await _loggingService.LogInfoAsync(
+                        message: "New pre-hire conversation created",
+                        details: $"New pre-hire conversation created for SearchServiceId {searchServiceId}. ConversationId: {conversation.Id}, ClientId: {conversation.ClientId}, ExpertId: {conversation.ExpertId}",
+                        userId: userId,
+                        source: "ChatController.GetConversationBySearchServiceId",
+                        relatedEntityType: "Conversation",
+                        relatedEntityId: conversation.Id,
+                        additionalData: new { 
+                            Action = "CreatePreHireConversation",
+                            SearchServiceId = searchServiceId,
+                            ConversationId = conversation.Id,
+                            ClientId = conversation.ClientId,
+                            ExpertId = conversation.ExpertId
+                        }
+                    );
+                }
+
+                var conversationDto = ConversationDto.FromConversation(conversation);
+                PopulateSignedAttachmentUrls(conversation, conversationDto);
+                return Ok(conversationDto);
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogErrorAsync(
+                    message: "Error getting conversation by SearchServiceId",
+                    details: $"Error retrieving conversation for SearchServiceId {searchServiceId}: {ex.Message}",
+                    source: "ChatController.GetConversationBySearchServiceId",
+                    relatedEntityType: "Conversation",
+                    additionalData: new { 
+                        SearchServiceId = searchServiceId,
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+                
+                return StatusCode(500, new { message = "Failed to retrieve conversation", detail = ex.Message });
             }
         }
 
@@ -1270,7 +1467,8 @@ namespace newApi.Controllers
     public class ConversationDto
     {
         public int Id { get; set; }
-        public int SearchHireId { get; set; }
+        public int? SearchHireId { get; set; } // ✅ Nullable para conversaciones previas
+        public int? SearchServiceId { get; set; } // ✅ NUEVO: Para conversaciones previas a contratar
         public int? ClientId { get; set; } // ✅ Nullable para permitir anonimización completa
         public int? ExpertId { get; set; }
         public bool IsActive { get; set; }
@@ -1284,6 +1482,7 @@ namespace newApi.Controllers
             {
                 Id = conversation.Id,
                 SearchHireId = conversation.SearchHireId,
+                SearchServiceId = conversation.SearchServiceId, // ✅ NUEVO
                 ClientId = conversation.ClientId,
                 ExpertId = conversation.ExpertId,
                 IsActive = conversation.IsActive,
@@ -1339,5 +1538,38 @@ namespace newApi.Controllers
     {
         public int ConversationId { get; set; }
         public bool IsTyping { get; set; }
+    }
+
+    /// <summary>
+    /// ✅ NUEVO: DTO para resumen de conversaciones previas a contratar
+    /// Usado para listar conversaciones del experto
+    /// </summary>
+    public class PreHireConversationSummaryDto
+    {
+        public int ConversationId { get; set; }
+        public int SearchServiceId { get; set; }
+        public string ServiceName { get; set; } = string.Empty;
+        public decimal ServicePrice { get; set; }
+        public string? ServiceImageUrl { get; set; }
+        public int? ClientId { get; set; }
+        public string ClientName { get; set; } = string.Empty;
+        public string? ClientProfilePictureUrl { get; set; }
+        public MessageSummaryDto? LastMessage { get; set; }
+        public int UnreadCount { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+    }
+
+    /// <summary>
+    /// ✅ NUEVO: DTO para resumen de mensaje (último mensaje de la conversación)
+    /// </summary>
+    public class MessageSummaryDto
+    {
+        public int Id { get; set; }
+        public string Content { get; set; } = string.Empty;
+        public DateTime SentAt { get; set; }
+        public int? SenderId { get; set; }
+        public string SenderName { get; set; } = string.Empty;
+        public bool IsRead { get; set; }
     }
 }

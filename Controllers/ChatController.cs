@@ -104,8 +104,16 @@ namespace newApi.Controllers
                         return Unauthorized(new { message = "You are not authorized to create a conversation for this search" });
                     }
 
+                    // ✅ VALIDACIÓN: Asegurar que cliente y experto sean diferentes (si ambos existen)
+                    if (searchHire.ClientId.HasValue && searchHire.ExpertId.HasValue && 
+                        searchHire.ClientId.Value == searchHire.ExpertId.Value)
+                    {
+                        return BadRequest(new { message = "Client and expert cannot be the same user" });
+                    }
+
                     // ✅ CORRECCIÓN: Permitir crear conversación incluso si ExpertId es NULL (experto borró cuenta)
                     // La conversación debe preservarse para que el cliente pueda ver el historial
+                    // ✅ GARANTÍA: Solo 2 participantes (cliente y experto, o solo cliente si experto borró cuenta)
                     conversation = new Conversation
                     {
                         SearchHireId = searchHire.Id,
@@ -235,6 +243,176 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// ✅ NUEVO: Obtener todas las conversaciones del cliente (pre y post contratación)
+        /// Devuelve un listado unificado similar a WhatsApp/Wallapop
+        /// </summary>
+        [HttpGet("my-conversations")]
+        public async Task<ActionResult<List<ClientConversationSummaryDto>>> GetMyConversations()
+        {
+            try
+            {
+                if (!int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
+                {
+                    return Unauthorized(new { message = "Invalid or missing user ID in token" });
+                }
+
+                // Buscar todas las conversaciones donde el usuario es el cliente
+                var conversations = await _context.Conversations
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Sender)
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Attachments)
+                    .Include(c => c.Expert)
+                        .ThenInclude(e => e.ExpertProfile)
+                    .Include(c => c.SearchService)
+                        .ThenInclude(ss => ss.Images)
+                    .Include(c => c.SearchService)
+                        .ThenInclude(ss => ss.ServiceType)
+                    .Include(c => c.SearchService)
+                        .ThenInclude(ss => ss.ExpertProfile)
+                            .ThenInclude(ep => ep.User)
+                    .Include(c => c.SearchHire)
+                        .ThenInclude(sh => sh.SearchService)
+                            .ThenInclude(ss => ss.Images)
+                    .Include(c => c.SearchHire)
+                        .ThenInclude(sh => sh.SearchService)
+                            .ThenInclude(ss => ss.ServiceType)
+                    .Include(c => c.SearchHire)
+                        .ThenInclude(sh => sh.Expert)
+                            .ThenInclude(e => e.ExpertProfile)
+                    .Include(c => c.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(c => c.SearchHire)
+                        .ThenInclude(sh => sh.Search)
+                    .Where(c => c.ClientId.HasValue && 
+                               c.ClientId.Value == userId &&
+                               c.IsActive == true)
+                    .OrderByDescending(c => c.UpdatedAt)
+                    .ToListAsync();
+
+                var conversationSummaries = conversations.Select(c =>
+                {
+                    // Obtener último mensaje (ordenado por fecha descendente)
+                    var lastMessage = c.Messages
+                        .OrderByDescending(m => m.SentAt)
+                        .FirstOrDefault();
+
+                    // Contar mensajes no leídos (donde el remitente no es el usuario actual)
+                    var unreadCount = c.Messages
+                        .Count(m => !m.IsRead && m.SenderId.HasValue && m.SenderId.Value != userId);
+
+                    // Determinar tipo de conversación y obtener información correspondiente
+                    var isPreHire = c.SearchHireId == null && c.SearchServiceId != null;
+                    var isPostHire = c.SearchHireId != null;
+
+                    var summary = new ClientConversationSummaryDto
+                    {
+                        ConversationId = c.Id,
+                        ConversationType = isPreHire ? "pre-hire" : "post-hire",
+                        CreatedAt = c.CreatedAt,
+                        UpdatedAt = c.UpdatedAt,
+                        UnreadCount = unreadCount,
+                        LastMessage = lastMessage != null ? new MessageSummaryDto
+                        {
+                            Id = lastMessage.Id,
+                            Content = lastMessage.Content ?? "[Mensaje eliminado]",
+                            SentAt = lastMessage.SentAt,
+                            SenderId = lastMessage.SenderId,
+                            SenderName = lastMessage.SenderId.HasValue 
+                                ? (lastMessage.Sender?.Name ?? "[Usuario eliminado]") 
+                                : "[Usuario eliminado]",
+                            IsRead = lastMessage.IsRead
+                        } : null
+                    };
+
+                    // Información del experto (común para ambos tipos)
+                    if (c.Expert != null)
+                    {
+                        summary.ExpertId = c.Expert.Id;
+                        summary.ExpertName = c.Expert.Name;
+                        summary.ExpertProfilePictureUrl = c.Expert.ExpertProfile?.ProfilePictureUrl;
+                    }
+
+                    // Información para conversaciones PRE-CONTRATACIÓN
+                    if (isPreHire && c.SearchService != null)
+                    {
+                        summary.SearchServiceId = c.SearchServiceId;
+                        summary.ServiceName = c.SearchService.ServiceType?.Name ?? "Servicio";
+                        summary.ServicePrice = c.SearchService.Price;
+                        summary.ServiceImageUrl = c.SearchService.Images
+                            .OrderBy(img => img.Id)
+                            .FirstOrDefault()?.ImageUrl;
+                        
+                        // Información adicional del experto desde el servicio
+                        if (c.SearchService.ExpertProfile?.User != null)
+                        {
+                            summary.ExpertName = c.SearchService.ExpertProfile.User.Name;
+                            summary.ExpertProfilePictureUrl = c.SearchService.ExpertProfile.ProfilePictureUrl;
+                        }
+                    }
+
+                    // Información para conversaciones POST-CONTRATACIÓN
+                    if (isPostHire && c.SearchHire != null)
+                    {
+                        summary.SearchHireId = c.SearchHireId;
+                        summary.HireStatus = c.SearchHire.Status?.StatusValue ?? "Unknown";
+                        summary.HireStatusTranslated = c.SearchHire.Status?.DisplayName ?? "Desconocido";
+                        summary.HireCreatedAt = c.SearchHire.CreatedAt;
+                        summary.HireAmount = c.SearchHire.Amount;
+                        summary.HireBaseAmount = c.SearchHire.BaseAmount;
+                        summary.HireTaxAmount = c.SearchHire.TaxAmount;
+
+                        // Información del servicio desde la contratación
+                        if (c.SearchHire.SearchService != null)
+                        {
+                            summary.SearchServiceId = c.SearchHire.SearchServiceId;
+                            summary.ServiceName = c.SearchHire.SearchService.ServiceType?.Name ?? "Servicio";
+                            summary.ServicePrice = c.SearchHire.SearchService.Price;
+                            summary.ServiceImageUrl = c.SearchHire.SearchService.Images
+                                .OrderBy(img => img.Id)
+                                .FirstOrDefault()?.ImageUrl;
+                        }
+
+                        // Información del experto desde la contratación
+                        if (c.SearchHire.Expert != null)
+                        {
+                            summary.ExpertId = c.SearchHire.Expert.Id;
+                            summary.ExpertName = c.SearchHire.Expert.Name;
+                            summary.ExpertProfilePictureUrl = c.SearchHire.Expert.ExpertProfile?.ProfilePictureUrl;
+                        }
+
+                        // Información de la búsqueda si existe
+                        if (c.SearchHire.Search != null)
+                        {
+                            summary.SearchTitle = c.SearchHire.Search.Title;
+                            summary.SearchDescription = c.SearchHire.Search.Description;
+                        }
+                    }
+
+                    return summary;
+                }).ToList();
+
+                return Ok(conversationSummaries);
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogErrorAsync(
+                    message: "Error getting client conversations",
+                    details: $"Error retrieving conversations for client: {ex.Message}",
+                    userId: int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var uid) ? uid : null,
+                    source: "ChatController.GetMyConversations",
+                    relatedEntityType: "Conversation",
+                    additionalData: new { 
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+                
+                return StatusCode(500, new { message = "An error occurred while retrieving conversations" });
+            }
+        }
+
+        /// <summary>
         /// Obtener todas las conversaciones (solo para Admin)
         /// </summary>
         [HttpGet("conversations")]
@@ -318,8 +496,11 @@ namespace newApi.Controllers
                 // No restringimos el acceso, solo evitamos que el experto cree conversaciones consigo mismo
                 var expertUserId = searchService.ExpertProfile?.User?.Id;
                 var isExpert = expertUserId.HasValue && expertUserId.Value == userId;
+                var isAdmin = _authService.IsAdmin(User);
 
-                // Buscar conversación existente por SearchServiceId
+                // ✅ CORRECCIÓN: Buscar conversación existente por SearchServiceId
+                // Priorizar conversación del cliente si el usuario es cliente
+                // Si es experto, puede ver todas sus conversaciones pero necesitamos un ClientId específico
                 var conversation = await _context.Conversations
                     .Include(c => c.Messages)
                         .ThenInclude(m => m.Sender)
@@ -327,26 +508,38 @@ namespace newApi.Controllers
                         .ThenInclude(m => m.Attachments)
                     .Include(c => c.Client)
                     .Include(c => c.Expert)
-                    .FirstOrDefaultAsync(c => c.SearchServiceId == searchServiceId &&
-                                             ((c.ClientId.HasValue && c.ClientId.Value == userId) || 
-                                              (c.ExpertId.HasValue && c.ExpertId.Value == userId) || 
-                                              _authService.IsAdmin(User)));
+                    .Where(c => c.SearchServiceId == searchServiceId &&
+                               c.IsActive == true &&
+                               ((c.ClientId.HasValue && c.ClientId.Value == userId) || 
+                                (c.ExpertId.HasValue && c.ExpertId.Value == userId) || 
+                                _authService.IsAdmin(User)))
+                    .OrderByDescending(c => c.ClientId == userId) // ✅ Priorizar conversación del cliente si es cliente
+                    .ThenByDescending(c => c.UpdatedAt) // Luego por más reciente
+                    .FirstOrDefaultAsync();
 
                 if (conversation == null)
                 {
-                    // ✅ CORRECCIÓN: Solo el cliente puede crear conversaciones previas
-                    // Si el usuario es el experto y no existe conversación, retornar NotFound
-                    if (isExpert)
+                    // ✅ CORRECCIÓN: Cliente y Admin pueden crear conversaciones previas
+                    // Si el usuario es el experto (y no es admin) y no existe conversación, retornar NotFound
+                    if (isExpert && !isAdmin)
                     {
-                        return NotFound(new { message = "No conversation found for this service. Only clients can start pre-hire conversations." });
+                        return NotFound(new { message = "No conversation found for this service. Only clients and admins can start pre-hire conversations." });
                     }
 
-                    // Crear nueva conversación previa (solo si es cliente)
+                    // ✅ VALIDACIÓN: Asegurar que cliente y experto sean diferentes
+                    if (userId == expertUserId)
+                    {
+                        return BadRequest(new { message = "Client and expert cannot be the same user" });
+                    }
+
+                    // Crear nueva conversación previa (si es cliente o admin)
+                    // ✅ GARANTÍA: Solo 2 participantes (cliente y experto)
+                    // ✅ PERMISO: Admin puede crear para pruebas
                     conversation = new Conversation
                     {
                         SearchServiceId = searchServiceId,
                         SearchHireId = null, // ✅ No hay SearchHire aún
-                        ClientId = userId, // El usuario actual es el cliente
+                        ClientId = userId, // El usuario actual es el cliente (o admin haciendo de cliente)
                         ExpertId = expertUserId, // El experto del servicio
                         IsActive = true,
                         CreatedAt = DateTime.UtcNow,
@@ -359,7 +552,7 @@ namespace newApi.Controllers
                     
                     await _loggingService.LogInfoAsync(
                         message: "New pre-hire conversation created",
-                        details: $"New pre-hire conversation created for SearchServiceId {searchServiceId}. ConversationId: {conversation.Id}, ClientId: {conversation.ClientId}, ExpertId: {conversation.ExpertId}",
+                        details: $"New pre-hire conversation created for SearchServiceId {searchServiceId}. ConversationId: {conversation.Id}, ClientId: {conversation.ClientId}, ExpertId: {conversation.ExpertId}. Created by: {(isAdmin ? "Admin" : "Client")}",
                         userId: userId,
                         source: "ChatController.GetConversationBySearchServiceId",
                         relatedEntityType: "Conversation",
@@ -369,13 +562,80 @@ namespace newApi.Controllers
                             SearchServiceId = searchServiceId,
                             ConversationId = conversation.Id,
                             ClientId = conversation.ClientId,
-                            ExpertId = conversation.ExpertId
+                            ExpertId = conversation.ExpertId,
+                            CreatedByAdmin = isAdmin
+                        }
+                    );
+                }
+
+                // ✅ VALIDACIÓN ADICIONAL: Verificar que la conversación es correcta
+                // Si el usuario es cliente, asegurar que es su conversación
+                if (!isExpert && !_authService.IsAdmin(User))
+                {
+                    if (!conversation.ClientId.HasValue || conversation.ClientId.Value != userId)
+                    {
+                        await _loggingService.LogErrorAsync(
+                            message: "Security issue: Client accessing wrong conversation",
+                            details: $"Client {userId} attempted to access conversation {conversation.Id} with ClientId {conversation.ClientId} for SearchServiceId {searchServiceId}",
+                            userId: userId,
+                            source: "ChatController.GetConversationBySearchServiceId",
+                            relatedEntityType: "Conversation",
+                            relatedEntityId: conversation.Id,
+                            additionalData: new { 
+                                RequestedSearchServiceId = searchServiceId,
+                                ConversationId = conversation.Id,
+                                ConversationClientId = conversation.ClientId,
+                                RequestingUserId = userId
+                            }
+                        );
+                        return Unauthorized(new { message = "You are not authorized to access this conversation" });
+                    }
+                }
+                
+                // ✅ LOGGING: Registrar cuando admin accede a conversación pre-contratación
+                if (_authService.IsAdmin(User) && 
+                    conversation.ClientId.HasValue && conversation.ClientId.Value != userId && 
+                    conversation.ExpertId.HasValue && conversation.ExpertId.Value != userId)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Admin accessed pre-hire conversation",
+                        details: $"Admin {userId} accessed pre-hire conversation {conversation.Id} for SearchServiceId {searchServiceId}. ClientId: {conversation.ClientId}, ExpertId: {conversation.ExpertId}",
+                        userId: userId,
+                        source: "ChatController.GetConversationBySearchServiceId",
+                        relatedEntityType: "Conversation",
+                        relatedEntityId: conversation.Id,
+                        additionalData: new { 
+                            SearchServiceId = searchServiceId,
+                            ConversationId = conversation.Id,
+                            ConversationClientId = conversation.ClientId,
+                            ConversationExpertId = conversation.ExpertId,
+                            AdminUserId = userId,
+                            Action = "AdminAccessPreHireConversation"
                         }
                     );
                 }
 
                 var conversationDto = ConversationDto.FromConversation(conversation);
                 PopulateSignedAttachmentUrls(conversation, conversationDto);
+                
+                // ✅ LOG: Registrar acceso a conversación para debugging
+                await _loggingService.LogInfoAsync(
+                    message: "Conversation accessed",
+                    details: $"User {userId} accessed conversation {conversation.Id} for SearchServiceId {searchServiceId}. ClientId: {conversation.ClientId}, ExpertId: {conversation.ExpertId}, MessageCount: {conversation.Messages?.Count ?? 0}",
+                    userId: userId,
+                    source: "ChatController.GetConversationBySearchServiceId",
+                    relatedEntityType: "Conversation",
+                    relatedEntityId: conversation.Id,
+                    additionalData: new { 
+                        SearchServiceId = searchServiceId,
+                        ConversationId = conversation.Id,
+                        ClientId = conversation.ClientId,
+                        ExpertId = conversation.ExpertId,
+                        MessageCount = conversation.Messages?.Count ?? 0,
+                        IsExpert = isExpert
+                    }
+                );
+                
                 return Ok(conversationDto);
             }
             catch (Exception ex)
@@ -445,8 +705,16 @@ namespace newApi.Controllers
                         return Unauthorized(new { message = "You are not authorized to access this conversation" });
                     }
 
+                    // ✅ VALIDACIÓN: Asegurar que cliente y experto sean diferentes (si ambos existen)
+                    if (searchHire.ClientId.HasValue && searchHire.ExpertId.HasValue && 
+                        searchHire.ClientId.Value == searchHire.ExpertId.Value)
+                    {
+                        return BadRequest(new { message = "Client and expert cannot be the same user" });
+                    }
+
                     // ✅ CORRECCIÓN: Permitir crear conversación incluso si ExpertId es NULL (experto borró cuenta)
                     // La conversación debe preservarse para que el cliente pueda ver el historial
+                    // ✅ GARANTÍA: Solo 2 participantes (cliente y experto, o solo cliente si experto borró cuenta)
                     // Crear nueva conversación
                     conversation = new Conversation
                     {
@@ -562,6 +830,32 @@ namespace newApi.Controllers
                 if (!UserBelongsToConversation(conversation, userId, isAdmin))
                 {
                     return Unauthorized(new { message = "You are not authorized to send messages to this conversation" });
+                }
+
+                // ✅ VALIDACIÓN CRÍTICA: Asegurar que solo cliente y experto puedan enviar mensajes
+                // Prevenir que más de 2 personas participen en la conversación
+                var isClient = conversation.ClientId.HasValue && conversation.ClientId.Value == userId;
+                var isExpert = conversation.ExpertId.HasValue && conversation.ExpertId.Value == userId;
+                
+                if (!isClient && !isExpert)
+                {
+                    // ⚠️ CRÍTICO: Usuario no autorizado intentando enviar mensaje
+                    await _loggingService.LogErrorAsync(
+                        message: "CRITICAL: Unauthorized user attempting to send message",
+                        details: $"User {userId} attempted to send a message to conversation {conversation.Id} where they are not the client ({conversation.ClientId}) or expert ({conversation.ExpertId}). This violates the 2-person conversation rule.",
+                        userId: userId,
+                        source: "ChatController.SendMessage",
+                        relatedEntityType: "Conversation",
+                        relatedEntityId: conversation.Id,
+                        additionalData: new { 
+                            ConversationId = conversation.Id,
+                            ConversationClientId = conversation.ClientId,
+                            ConversationExpertId = conversation.ExpertId,
+                            AttemptingUserId = userId,
+                            IsAdmin = isAdmin
+                        }
+                    );
+                    return Unauthorized(new { message = "Only the client and expert can send messages in this conversation" });
                 }
 
                 var sanitizedContent = SanitizeMessageContent(dto.Content);
@@ -1143,16 +1437,15 @@ namespace newApi.Controllers
 
         private bool UserBelongsToConversation(Conversation conversation, int userId, bool isAdmin)
         {
-            if (isAdmin)
-            {
-                return true;
-            }
-
             if (conversation == null)
             {
                 return false;
             }
 
+            // ✅ CORRECCIÓN: Solo cliente y experto pueden enviar mensajes
+            // Los admins pueden VER conversaciones pero NO enviar mensajes
+            // Si necesitas que admins puedan intervenir, debe ser explícito y con logging
+            
             if (conversation.ClientId.HasValue && conversation.ClientId.Value == userId)
             {
                 return true;
@@ -1161,6 +1454,28 @@ namespace newApi.Controllers
             if (conversation.ExpertId.HasValue && conversation.ExpertId.Value == userId)
             {
                 return true;
+            }
+
+            // ⚠️ Si es admin, registrar warning pero NO permitir enviar mensajes
+            // Los admins pueden ver conversaciones para soporte, pero no deben enviar mensajes
+            if (isAdmin)
+            {
+                // Logging para detectar intentos de admins enviando mensajes
+                _loggingService.LogWarningAsync(
+                    message: "Admin attempted to send message to conversation",
+                    details: $"Admin {userId} attempted to send a message to conversation {conversation.Id} where they are not the client or expert. ClientId: {conversation.ClientId}, ExpertId: {conversation.ExpertId}. This action was blocked for security.",
+                    userId: userId,
+                    source: "ChatController.UserBelongsToConversation",
+                    relatedEntityType: "Conversation",
+                    relatedEntityId: conversation.Id,
+                    additionalData: new { 
+                        ConversationId = conversation.Id,
+                        ClientId = conversation.ClientId,
+                        ExpertId = conversation.ExpertId,
+                        AdminUserId = userId,
+                        Action = "SendMessageBlocked"
+                    }
+                ).Wait(); // Fire and forget logging
             }
 
             return false;
@@ -1571,5 +1886,42 @@ namespace newApi.Controllers
         public int? SenderId { get; set; }
         public string SenderName { get; set; } = string.Empty;
         public bool IsRead { get; set; }
+    }
+
+    /// <summary>
+    /// ✅ NUEVO: DTO para resumen de conversación del cliente (pre y post contratación)
+    /// Similar a WhatsApp/Wallapop - listado unificado de todas las conversaciones
+    /// </summary>
+    public class ClientConversationSummaryDto
+    {
+        // Información básica de la conversación
+        public int ConversationId { get; set; }
+        public string ConversationType { get; set; } = string.Empty; // "pre-hire" o "post-hire"
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+        public int UnreadCount { get; set; }
+        public MessageSummaryDto? LastMessage { get; set; }
+
+        // Información del experto (común para ambos tipos)
+        public int? ExpertId { get; set; }
+        public string ExpertName { get; set; } = string.Empty;
+        public string? ExpertProfilePictureUrl { get; set; }
+
+        // Información para PRE-CONTRATACIÓN (SearchServiceId)
+        public int? SearchServiceId { get; set; }
+        public string? ServiceName { get; set; }
+        public decimal? ServicePrice { get; set; }
+        public string? ServiceImageUrl { get; set; }
+
+        // Información para POST-CONTRATACIÓN (SearchHireId)
+        public int? SearchHireId { get; set; }
+        public string? HireStatus { get; set; }
+        public string? HireStatusTranslated { get; set; }
+        public DateTime? HireCreatedAt { get; set; }
+        public decimal? HireAmount { get; set; }
+        public decimal? HireBaseAmount { get; set; }
+        public decimal? HireTaxAmount { get; set; }
+        public string? SearchTitle { get; set; }
+        public string? SearchDescription { get; set; }
     }
 }

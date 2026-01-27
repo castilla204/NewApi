@@ -207,13 +207,17 @@ namespace newApi.Controllers
                 _context.SearchHires.Add(searchHire);
 
                 // ✅ NUEVO: Buscar conversación previa por SearchServiceId para migrar mensajes
+                // ✅ MEJORA: Ordenar por UpdatedAt para tomar la más reciente y asegurar que esté activa
                 var preHireConversation = await _context.Conversations
                     .Include(c => c.Messages)
                         .ThenInclude(m => m.Attachments)
-                    .FirstOrDefaultAsync(c => c.SearchServiceId == searchService.Id && 
-                                             c.SearchHireId == null &&
-                                             c.ClientId == search.UserId &&
-                                             c.ExpertId == dto.ExpertId.Value);
+                    .Where(c => c.SearchServiceId == searchService.Id && 
+                               c.SearchHireId == null &&
+                               c.ClientId == search.UserId &&
+                               c.ExpertId == dto.ExpertId.Value &&
+                               c.IsActive == true)  // ✅ Asegurar que esté activa
+                    .OrderByDescending(c => c.UpdatedAt)  // ✅ Tomar la más reciente
+                    .FirstOrDefaultAsync();
 
                 Conversation conversation;
                 

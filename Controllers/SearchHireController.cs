@@ -212,8 +212,8 @@ namespace newApi.Controllers
                     .Include(c => c.Messages)
                         .ThenInclude(m => m.Attachments)
                     .Where(c => c.SearchServiceId == searchService.Id && 
-                               c.SearchHireId == null &&
-                               c.ClientId == search.UserId &&
+                                             c.SearchHireId == null &&
+                                             c.ClientId == search.UserId &&
                                c.ExpertId == dto.ExpertId.Value &&
                                c.IsActive == true)  // ✅ Asegurar que esté activa
                     .OrderByDescending(c => c.UpdatedAt)  // ✅ Tomar la más reciente

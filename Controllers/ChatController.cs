@@ -510,8 +510,8 @@ namespace newApi.Controllers
                     .Include(c => c.Expert)
                     .Where(c => c.SearchServiceId == searchServiceId &&
                                c.IsActive == true &&
-                               ((c.ClientId.HasValue && c.ClientId.Value == userId) || 
-                                (c.ExpertId.HasValue && c.ExpertId.Value == userId) || 
+                                             ((c.ClientId.HasValue && c.ClientId.Value == userId) || 
+                                              (c.ExpertId.HasValue && c.ExpertId.Value == userId) || 
                                 _authService.IsAdmin(User)))
                     .OrderByDescending(c => c.ClientId == userId) // ✅ Priorizar conversación del cliente si es cliente
                     .ThenByDescending(c => c.UpdatedAt) // Luego por más reciente
@@ -1445,7 +1445,7 @@ namespace newApi.Controllers
             // ✅ CORRECCIÓN: Solo cliente y experto pueden enviar mensajes
             // Los admins pueden VER conversaciones pero NO enviar mensajes
             // Si necesitas que admins puedan intervenir, debe ser explícito y con logging
-            
+
             if (conversation.ClientId.HasValue && conversation.ClientId.Value == userId)
             {
                 return true;

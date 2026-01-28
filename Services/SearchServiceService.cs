@@ -461,30 +461,73 @@ namespace newApi.Services
                 // ✅ Filtrar por bounds directamente en SQL (muy rápido)
                 if (hasBounds)
                 {
-                    // Usar SQL directo para filtrar por bounds (más eficiente que en memoria)
-                    var sqlQuery = $@"
+                    // ✅ CORREGIDO: Usar SQL directo con parámetros para filtrar por bounds (más eficiente y seguro)
+                    var sqlQuery = @"
                         SELECT ss.""Id"", ss.""Price"", ep.""Latitude"", ep.""Longitude""
                         FROM ""SearchServices"" ss
                         INNER JOIN ""ExpertProfiles"" ep ON ss.""ExpertProfileId"" = ep.""Id""
-                        WHERE ss.""CategoryId"" = {categoryId}
-                          AND ss.""ServiceTypeId"" = {serviceTypeId}
+                        WHERE ss.""CategoryId"" = @categoryId
+                          AND ss.""ServiceTypeId"" = @serviceTypeId
                           AND ss.""IsActive"" = true
                           AND ep.""IsOnVacation"" = false
-                          AND (ep.""StripeStatus"" = 1 AND ep.""OnboardingCompleted"" = true OR ep.""StripeStatus"" = 0)
+                          AND ((ep.""StripeStatus"" = 1 AND ep.""OnboardingCompleted"" = true) OR ep.""StripeStatus"" = 0 OR ep.""StripeStatus"" = 2)
                           AND ep.""Latitude"" IS NOT NULL
                           AND ep.""Latitude"" != ''
                           AND ep.""Longitude"" IS NOT NULL
                           AND ep.""Longitude"" != ''
-                          AND CAST(ep.""Latitude"" AS NUMERIC) >= {southwestLat}
-                          AND CAST(ep.""Latitude"" AS NUMERIC) <= {northeastLat}
-                          AND CAST(ep.""Longitude"" AS NUMERIC) >= {southwestLng}
-                          AND CAST(ep.""Longitude"" AS NUMERIC) <= {northeastLng}
-                        LIMIT {maxResults}";
+                          AND CAST(ep.""Latitude"" AS NUMERIC) >= @southwestLat
+                          AND CAST(ep.""Latitude"" AS NUMERIC) <= @northeastLat
+                          AND CAST(ep.""Longitude"" AS NUMERIC) >= @southwestLng
+                          AND CAST(ep.""Longitude"" AS NUMERIC) <= @northeastLng
+                        LIMIT @maxResults";
 
                     var markers = new List<MapMarkerDto>();
                     using (var command = _context.Database.GetDbConnection().CreateCommand())
                     {
                         command.CommandText = sqlQuery;
+                        
+                        // ✅ Agregar parámetros con tipos correctos
+                        var categoryIdParam = command.CreateParameter();
+                        categoryIdParam.ParameterName = "@categoryId";
+                        categoryIdParam.Value = categoryId;
+                        categoryIdParam.DbType = System.Data.DbType.Int32;
+                        command.Parameters.Add(categoryIdParam);
+                        
+                        var serviceTypeIdParam = command.CreateParameter();
+                        serviceTypeIdParam.ParameterName = "@serviceTypeId";
+                        serviceTypeIdParam.Value = serviceTypeId;
+                        serviceTypeIdParam.DbType = System.Data.DbType.Int32;
+                        command.Parameters.Add(serviceTypeIdParam);
+                        
+                        var southwestLatParam = command.CreateParameter();
+                        southwestLatParam.ParameterName = "@southwestLat";
+                        southwestLatParam.Value = southwestLat;
+                        southwestLatParam.DbType = System.Data.DbType.Decimal;
+                        command.Parameters.Add(southwestLatParam);
+                        
+                        var northeastLatParam = command.CreateParameter();
+                        northeastLatParam.ParameterName = "@northeastLat";
+                        northeastLatParam.Value = northeastLat;
+                        northeastLatParam.DbType = System.Data.DbType.Decimal;
+                        command.Parameters.Add(northeastLatParam);
+                        
+                        var southwestLngParam = command.CreateParameter();
+                        southwestLngParam.ParameterName = "@southwestLng";
+                        southwestLngParam.Value = southwestLng;
+                        southwestLngParam.DbType = System.Data.DbType.Decimal;
+                        command.Parameters.Add(southwestLngParam);
+                        
+                        var northeastLngParam = command.CreateParameter();
+                        northeastLngParam.ParameterName = "@northeastLng";
+                        northeastLngParam.Value = northeastLng;
+                        northeastLngParam.DbType = System.Data.DbType.Decimal;
+                        command.Parameters.Add(northeastLngParam);
+                        
+                        var maxResultsParam = command.CreateParameter();
+                        maxResultsParam.ParameterName = "@maxResults";
+                        maxResultsParam.Value = maxResults;
+                        maxResultsParam.DbType = System.Data.DbType.Int32;
+                        command.Parameters.Add(maxResultsParam);
                         _context.Database.OpenConnection();
                         using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                         {
@@ -701,10 +744,18 @@ namespace newApi.Services
                     throw new ArgumentException("CategoryId and ServiceTypeId must be greater than 0");
                 }
 
-                // Validar bounds
-                if (northeastLat <= southwestLat || northeastLng <= southwestLng)
+                // ✅ CORREGIDO: Validar bounds - permitir que northeastLng < southwestLng cuando cruza el meridiano
+                // Esto puede ocurrir cuando el área visible cruza el meridiano 180/-180
+                if (northeastLat <= southwestLat)
                 {
-                    throw new ArgumentException("Invalid bounds: northeast must be greater than southwest");
+                    throw new ArgumentException("Invalid bounds: northeastLat must be greater than southwestLat");
+                }
+                
+                // ✅ Validar que el ancho de bounds no sea excesivo (más de 360 grados sería inválido)
+                var boundsWidth = northeastLng - southwestLng;
+                if (boundsWidth > 360m)
+                {
+                    throw new ArgumentException("Invalid bounds: longitude range cannot exceed 360 degrees");
                 }
                 
                 // Validar rangos de coordenadas
@@ -715,22 +766,61 @@ namespace newApi.Services
                 {
                     throw new ArgumentException("Invalid coordinate ranges. Latitude must be between -90 and 90, Longitude between -180 and 180");
                 }
+                
+                // ✅ VALIDACIÓN ADICIONAL: Validar que los bounds sean razonables (no demasiado grandes)
+                // ✅ CORREGIDO: Calcular lngDiff correctamente cuando hay valores negativos y positivos
+                var latDiff = northeastLat - southwestLat;
+                var lngDiff = northeastLng - southwestLng;
+                // Si el resultado es negativo, significa que cruzamos el meridiano 180/-180
+                if (lngDiff < 0)
+                {
+                    lngDiff = lngDiff + 360m;
+                }
+                var lngDiffAbs = Math.Abs(lngDiff);
+                
+                // ✅ AUMENTADO EL LÍMITE: 50 grados es demasiado estricto para zoom bajo (zoom 6 puede tener ~11 grados de lat y ~8 de lng)
+                // Cambiar a 90 grados para permitir vistas continentales válidas
+                if (latDiff > 90m || lngDiffAbs > 90m)
+                {
+                    throw new ArgumentException($"Bounds demasiado grandes: latDiff={latDiff}, lngDiff={lngDiffAbs}. El área visible no puede exceder 90 grados.");
+                }
+                
+                // ✅ LOG PARA DEPURACIÓN: Ver qué bounds se reciben y cuántos servicios se filtran
+                Console.WriteLine($"🔍 Bounds recibidos: NE({northeastLat}, {northeastLng}), SW({southwestLat}, {southwestLng}), Zoom={zoom}, Área={latDiff}x{lngDiffAbs} grados");
 
                 // ✅ OPTIMIZACIÓN: Determinar límite según zoom (mejora performance con muchos datos)
                 // Zoom alto = área pequeña = más servicios necesarios
                 // Zoom bajo = área grande = menos servicios necesarios
                 int maxResults = limit;
+                bool isVeryLowZoom = false;
                 if (zoom.HasValue)
                 {
+                    isVeryLowZoom = zoom.Value < 8; // Zoom muy bajo: continente/mundo
                     maxResults = zoom.Value switch
                     {
                         >= 18 => Math.Min(limit, 500),  // Zoom muy alto: barrio específico
                         >= 15 => Math.Min(limit, 200),   // Zoom alto: área pequeña
                         >= 12 => Math.Min(limit, 100),   // Zoom medio: ciudad
                         >= 10 => Math.Min(limit, 50),    // Zoom bajo: región
-                        _ => Math.Min(limit, 30)         // Zoom muy bajo: país/continente
+                        >= 8 => Math.Min(limit, 30),     // Zoom muy bajo: país
+                        _ => Math.Min(limit, 50)         // Zoom extremadamente bajo: continente (aumentar límite)
                     };
                 }
+                
+                // ✅ CORREGIDO: Calcular ancho de bounds para detectar áreas muy grandes
+                // Si el ancho es > 180 grados, el área es tan grande que cubre casi todo el mundo
+                // En ese caso, solo filtrar por latitud, no por longitud
+                // ✅ CRÍTICO: Calcular correctamente cuando hay valores negativos y positivos
+                // Si southwestLng es negativo y northeastLng es positivo, la diferencia es correcta
+                // Ejemplo: 0.41 - (-7.82) = 8.23 grados (correcto)
+                var boundsWidthLng = northeastLng - southwestLng;
+                // ✅ Si el resultado es negativo, significa que cruzamos el meridiano 180/-180
+                // En ese caso, calcular el ancho correctamente sumando 360
+                if (boundsWidthLng < 0)
+                {
+                    boundsWidthLng = boundsWidthLng + 360m;
+                }
+                var isVeryLargeArea = boundsWidthLng > 180m;
 
                 // ✅ OPTIMIZACIÓN CRÍTICA: Filtrar por bounds directamente en SQL usando CAST
                 // Esto es 100-1000x más rápido que filtrar en memoria porque:
@@ -740,30 +830,101 @@ namespace newApi.Services
                 
                 // ✅ Paso 1: Obtener IDs de servicios que cumplen los criterios usando SQL directo
                 // Esto filtra por bounds directamente en SQL usando CAST
-                var sqlQuery = $@"
+                // ✅ CORREGIDO: Usar parámetros SQL para evitar problemas de formato decimal y SQL injection
+                // ✅ CORREGIDO: Manejar áreas muy grandes (zoom bajo) - solo filtrar por latitud si el ancho > 180 grados
+                var sqlQuery = isVeryLargeArea
+                    ? @"
                     SELECT ss.""Id""
                     FROM ""SearchServices"" ss
                     INNER JOIN ""ExpertProfiles"" ep ON ss.""ExpertProfileId"" = ep.""Id""
-                    WHERE ss.""CategoryId"" = {categoryId}
-                      AND ss.""ServiceTypeId"" = {serviceTypeId}
+                    WHERE ss.""CategoryId"" = @categoryId
+                      AND ss.""ServiceTypeId"" = @serviceTypeId
                       AND ss.""IsActive"" = true
                       AND ep.""IsOnVacation"" = false
-                      AND (ep.""StripeStatus"" = 1 AND ep.""OnboardingCompleted"" = true OR ep.""StripeStatus"" = 0)
+                      AND ((ep.""StripeStatus"" = 1 AND ep.""OnboardingCompleted"" = true) OR ep.""StripeStatus"" = 0 OR ep.""StripeStatus"" = 2)
                       AND ep.""Latitude"" IS NOT NULL
                       AND ep.""Latitude"" != ''
                       AND ep.""Longitude"" IS NOT NULL
                       AND ep.""Longitude"" != ''
-                      AND CAST(ep.""Latitude"" AS NUMERIC) >= {southwestLat}
-                      AND CAST(ep.""Latitude"" AS NUMERIC) <= {northeastLat}
-                      AND CAST(ep.""Longitude"" AS NUMERIC) >= {southwestLng}
-                      AND CAST(ep.""Longitude"" AS NUMERIC) <= {northeastLng}
-                    LIMIT {maxResults * 2}";
+                      AND CAST(ep.""Latitude"" AS NUMERIC) >= @southwestLat
+                      AND CAST(ep.""Latitude"" AS NUMERIC) <= @northeastLat
+                    LIMIT @maxResults"
+                    : @"
+                    SELECT ss.""Id""
+                    FROM ""SearchServices"" ss
+                    INNER JOIN ""ExpertProfiles"" ep ON ss.""ExpertProfileId"" = ep.""Id""
+                    WHERE ss.""CategoryId"" = @categoryId
+                      AND ss.""ServiceTypeId"" = @serviceTypeId
+                      AND ss.""IsActive"" = true
+                      AND ep.""IsOnVacation"" = false
+                      AND ((ep.""StripeStatus"" = 1 AND ep.""OnboardingCompleted"" = true) OR ep.""StripeStatus"" = 0 OR ep.""StripeStatus"" = 2)
+                      AND ep.""Latitude"" IS NOT NULL
+                      AND ep.""Latitude"" != ''
+                      AND ep.""Longitude"" IS NOT NULL
+                      AND ep.""Longitude"" != ''
+                      AND CAST(ep.""Latitude"" AS NUMERIC) >= @southwestLat
+                      AND CAST(ep.""Latitude"" AS NUMERIC) <= @northeastLat
+                      AND (
+                          -- Caso normal: bounds no cruza el meridiano
+                          (CAST(ep.""Longitude"" AS NUMERIC) >= @southwestLng AND CAST(ep.""Longitude"" AS NUMERIC) <= @northeastLng)
+                          OR
+                          -- Caso especial: bounds cruza el meridiano 180/-180 (southwestLng > northeastLng)
+                          (@southwestLng > @northeastLng AND (CAST(ep.""Longitude"" AS NUMERIC) >= @southwestLng OR CAST(ep.""Longitude"" AS NUMERIC) <= @northeastLng))
+                      )
+                    LIMIT @maxResults";
 
-                // ✅ Usar ExecuteSqlRaw para obtener IDs directamente
+                // ✅ Usar parámetros SQL para evitar problemas de formato y SQL injection
                 var serviceIds = new List<int>();
                 using (var command = _context.Database.GetDbConnection().CreateCommand())
                 {
                     command.CommandText = sqlQuery;
+                    
+                    // ✅ Agregar parámetros con tipos correctos
+                    var categoryIdParam = command.CreateParameter();
+                    categoryIdParam.ParameterName = "@categoryId";
+                    categoryIdParam.Value = categoryId;
+                    categoryIdParam.DbType = System.Data.DbType.Int32;
+                    command.Parameters.Add(categoryIdParam);
+                    
+                    var serviceTypeIdParam = command.CreateParameter();
+                    serviceTypeIdParam.ParameterName = "@serviceTypeId";
+                    serviceTypeIdParam.Value = serviceTypeId;
+                    serviceTypeIdParam.DbType = System.Data.DbType.Int32;
+                    command.Parameters.Add(serviceTypeIdParam);
+                    
+                    var southwestLatParam = command.CreateParameter();
+                    southwestLatParam.ParameterName = "@southwestLat";
+                    southwestLatParam.Value = southwestLat;
+                    southwestLatParam.DbType = System.Data.DbType.Decimal;
+                    command.Parameters.Add(southwestLatParam);
+                    
+                    var northeastLatParam = command.CreateParameter();
+                    northeastLatParam.ParameterName = "@northeastLat";
+                    northeastLatParam.Value = northeastLat;
+                    northeastLatParam.DbType = System.Data.DbType.Decimal;
+                    command.Parameters.Add(northeastLatParam);
+                    
+                    var southwestLngParam = command.CreateParameter();
+                    southwestLngParam.ParameterName = "@southwestLng";
+                    southwestLngParam.Value = southwestLng;
+                    southwestLngParam.DbType = System.Data.DbType.Decimal;
+                    command.Parameters.Add(southwestLngParam);
+                    
+                    var northeastLngParam = command.CreateParameter();
+                    northeastLngParam.ParameterName = "@northeastLng";
+                    northeastLngParam.Value = northeastLng;
+                    northeastLngParam.DbType = System.Data.DbType.Decimal;
+                    command.Parameters.Add(northeastLngParam);
+                    
+                    var maxResultsParam = command.CreateParameter();
+                    maxResultsParam.ParameterName = "@maxResults";
+                    maxResultsParam.Value = maxResults;
+                    maxResultsParam.DbType = System.Data.DbType.Int32;
+                    command.Parameters.Add(maxResultsParam);
+                    
+                    // ❌ ELIMINADO: No expandir bounds - solo devolver servicios dentro del área visible exacta
+                    // El usuario solo quiere ver los servicios que están realmente visibles en el mapa
+                    
                     _context.Database.OpenConnection();
                     using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                     {
@@ -806,6 +967,44 @@ namespace newApi.Services
                         .ToListAsync(cancellationToken)
                     : new List<SearchService>(); // Si no hay IDs, devolver lista vacía
 
+                // ✅ FILTRADO ADICIONAL EN MEMORIA: Asegurar que solo se devuelvan servicios dentro de los bounds exactos
+                // Esto corrige cualquier problema con el filtrado SQL o con servicios que se cargaron incorrectamente
+                var serviciosAntesFiltrado = services.Count;
+                services = services.Where(ss =>
+                {
+                    if (!decimal.TryParse(ss.ExpertProfile.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLat) ||
+                        !decimal.TryParse(ss.ExpertProfile.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLng))
+                    {
+                        return false; // Excluir servicios sin coordenadas válidas
+                    }
+
+                    // ✅ FILTRADO ESTRICTO: Solo servicios dentro de los bounds exactos
+                    bool latInBounds = expertLat >= southwestLat && expertLat <= northeastLat;
+                    
+                    // Manejar el caso de longitudes que cruzan el meridiano 180/-180
+                    bool lngInBounds;
+                    if (southwestLng > northeastLng) // Bounds cruza el meridiano
+                    {
+                        lngInBounds = expertLng >= southwestLng || expertLng <= northeastLng;
+                    }
+                    else // Caso normal
+                    {
+                        lngInBounds = expertLng >= southwestLng && expertLng <= northeastLng;
+                    }
+                    
+                    return latInBounds && lngInBounds;
+                }).ToList();
+                
+                // ✅ LOG PARA DEBUGGING: Ver cuántos servicios se filtraron
+                Console.WriteLine($"✅ FILTRADO POR BOUNDS - Servicios: {serviciosAntesFiltrado} antes, {services.Count} después. Bounds: NE({northeastLat}, {northeastLng}), SW({southwestLat}, {southwestLng})");
+
+                // ✅ TotalCount DESPUÉS del filtrado en memoria (solo servicios dentro de bounds)
+                // CRÍTICO: Este count debe reflejar SOLO los servicios que están realmente dentro de los bounds
+                var totalCount = services.Count; // Ya está filtrado por bounds arriba
+                
+                // ✅ LOG PARA VERIFICAR
+                Console.WriteLine($"✅ TotalCount después de filtrado: {totalCount} servicios dentro de bounds");
+
                 // ✅ Ordenar por distancia al centro del bounds
                 var centerLat = (northeastLat + southwestLat) / 2;
                 var centerLng = (northeastLng + southwestLng) / 2;
@@ -841,8 +1040,8 @@ namespace newApi.Services
                 if (page < 1) page = 1;
                 if (pageSize < 1 || pageSize > 100) pageSize = 50; // Máximo 100 por página
                 
-                // ✅ Total count antes de paginación (limitado por maxResults)
-                var totalCount = Math.Min(services.Count, maxResults);
+                // ✅ Total count ya calculado arriba después del filtrado estricto por bounds
+                // totalCount ya está definido arriba después del filtrado en memoria (línea ~1000)
                 
                 // ✅ Mapear a SearchServiceDetailDto (información completa)
                 var mappedServices = services.Select(ss => MapToDetailDto(ss, availabilityByExpert)).ToList();

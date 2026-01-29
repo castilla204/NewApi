@@ -2635,7 +2635,8 @@ namespace newApi.Services
                             || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)
                         && !string.IsNullOrEmpty(ss.ExpertProfile.Latitude) 
                         && !string.IsNullOrEmpty(ss.ExpertProfile.Longitude)
-                        && (categoryId == null || ss.CategoryId == categoryId))  // ✅ FILTRO POR CATEGORÍA
+                        && (categoryId == null || ss.CategoryId == categoryId)  // ✅ FILTRO POR CATEGORÍA
+                        && (string.IsNullOrWhiteSpace(countryCode) || ss.ExpertProfile.Country == countryCode))  // ✅ FILTRO POR PAÍS
                     .Select(ss => new
                     {
                         ServiceId = ss.Id,
@@ -2671,13 +2672,27 @@ namespace newApi.Services
                 var distanceCalcDuration = (DateTime.UtcNow - distanceCalcStartTime).TotalMilliseconds;
                 _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Distancias calculadas: {servicesWithDistance.Count} servicios, Duración: {distanceCalcDuration:F2}ms");
 
-                // Si hay servicios dentro del rango, usarlos. Si no, usar los más cercanos disponibles
-                var servicesInRange = servicesWithDistance.Where(x => x!.Distance <= locationRange).ToList();
-                _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Servicios en rango ({locationRange}km): {servicesInRange.Count}");
+                // ✅ LÓGICA MEJORADA: Si se usa countryCode sin coordenadas específicas (homepage-wall),
+                // devolver TODOS los servicios del país ordenados por distancia, no solo los del rango
+                // Esto es porque el usuario quiere ver servicios de todo el país, no solo de la capital
+                bool isCountryWideSearch = string.IsNullOrWhiteSpace(latitude) && string.IsNullOrWhiteSpace(longitude) && !string.IsNullOrWhiteSpace(countryCode);
                 
-                var servicesToUse = servicesInRange.Count > 0 
-                    ? servicesInRange 
-                    : servicesWithDistance; // Si no hay en rango, usar todos ordenados por distancia
+                var servicesInRange = servicesWithDistance.Where(x => x!.Distance <= locationRange).ToList();
+                
+                var servicesToUse = isCountryWideSearch
+                    ? servicesWithDistance // Para búsquedas por país, devolver TODOS ordenados por distancia
+                    : servicesInRange.Count > 0 
+                        ? servicesInRange // Si hay en rango, usar esos
+                        : servicesWithDistance; // Si no hay en rango, usar todos ordenados por distancia
+                
+                if (isCountryWideSearch)
+                {
+                    _logger.LogInformation($"[SERVICE] 🌍 GetNearbyServices - Búsqueda por país ({countryCode}), devolviendo TODOS los servicios ordenados por distancia: {servicesToUse.Count}");
+                }
+                else
+                {
+                    _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Servicios en rango ({locationRange}km): {servicesInRange.Count}");
+                }
 
                 var totalCount = servicesToUse.Count;
                 _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Total servicios a usar: {totalCount}");

@@ -2683,7 +2683,7 @@ namespace newApi.Services
                     ? servicesWithDistance // Para búsquedas por país, devolver TODOS ordenados por distancia
                     : servicesInRange.Count > 0 
                         ? servicesInRange // Si hay en rango, usar esos
-                        : servicesWithDistance; // Si no hay en rango, usar todos ordenados por distancia
+                    : servicesWithDistance; // Si no hay en rango, usar todos ordenados por distancia
                 
                 if (isCountryWideSearch)
                 {

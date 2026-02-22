@@ -33,7 +33,7 @@ cs = m.group(1)
 kv = dict(p.split("=", 1) for p in cs.split(";") if "=" in p)
 host, port = kv["Host"], kv.get("Port", "5432")
 user, pwd, db = kv["Username"], kv["Password"], kv["Database"]
-prod_uri = f"postgresql://{urllib.parse.quote(user)}:__REDACTED_URI_PASSWORD__@{host}:{port}/{db}?sslmode=require"
+prod_uri = f"postgresql://{urllib.parse.quote(user)}:{urllib.parse.quote(pwd)}@{host}:{port}/{db}?sslmode=require"
 print(f"[1/7] Prod: host={host} db={db} (password oculta)")
 
 # 2) Contenedor local persistente

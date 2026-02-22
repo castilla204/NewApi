@@ -4,7 +4,11 @@
 $host = "localhost"
 $port = 5435
 $username = "admin"
-$password = "__REDACTED_CREDENTIAL__"
+$password = $env:PGPASSWORD
+if ([string]::IsNullOrWhiteSpace($password)) {
+    Write-Host "Define PGPASSWORD antes de ejecutar este script." -ForegroundColor Red
+    exit 1
+}
 $database = "atrapo"
 
 Write-Host "=== Probando conexión a PostgreSQL ===" -ForegroundColor Cyan

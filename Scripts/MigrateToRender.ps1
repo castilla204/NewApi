@@ -6,19 +6,34 @@ Write-Host "Migración de Supabase a Render PostgreSQL" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Credenciales de Supabase
-$supabaseHost = "aws-1-eu-west-2.pooler.supabase.com"
-$supabasePort = 5432
-$supabaseUser = "postgres.rveqsehzlvbttlpmsbmi"
-$supabasePassword = "__REDACTED_CREDENTIAL__"
-$supabaseDatabase = "postgres"
+# Credenciales de Supabase (via variables de entorno)
+$supabaseHost = $env:SUPABASE_DB_HOST
+$supabasePort = if ($env:SUPABASE_DB_PORT) { [int]$env:SUPABASE_DB_PORT } else { 5432 }
+$supabaseUser = $env:SUPABASE_DB_USER
+$supabasePassword = $env:SUPABASE_DB_PASSWORD
+$supabaseDatabase = if ($env:SUPABASE_DB_NAME) { $env:SUPABASE_DB_NAME } else { "postgres" }
 
-# Credenciales de Render
-$renderHost = "dpg-d5kar5l6ubrc73espd5g-a.frankfurt-postgres.render.com"
-$renderPort = 5432
-$renderUser = "inspecciono_user"
-$renderPassword = "__REDACTED_URI_PASSWORD__"
-$renderDatabase = "inspecciono"
+# Credenciales de Render (via variables de entorno)
+$renderHost = $env:RENDER_DB_HOST
+$renderPort = if ($env:RENDER_DB_PORT) { [int]$env:RENDER_DB_PORT } else { 5432 }
+$renderUser = $env:RENDER_DB_USER
+$renderPassword = $env:RENDER_DB_PASSWORD
+$renderDatabase = $env:RENDER_DB_NAME
+
+foreach ($required in @(
+    @{ Name = "SUPABASE_DB_HOST"; Value = $supabaseHost },
+    @{ Name = "SUPABASE_DB_USER"; Value = $supabaseUser },
+    @{ Name = "SUPABASE_DB_PASSWORD"; Value = $supabasePassword },
+    @{ Name = "RENDER_DB_HOST"; Value = $renderHost },
+    @{ Name = "RENDER_DB_USER"; Value = $renderUser },
+    @{ Name = "RENDER_DB_PASSWORD"; Value = $renderPassword },
+    @{ Name = "RENDER_DB_NAME"; Value = $renderDatabase }
+)) {
+    if ([string]::IsNullOrWhiteSpace($required.Value)) {
+        Write-Host "Falta la variable de entorno $($required.Name)" -ForegroundColor Red
+        exit 1
+    }
+}
 
 # Archivos
 $dumpFile = "supabase_dump.dump"

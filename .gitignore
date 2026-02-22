@@ -160,3 +160,10 @@ docker-compose.override.yml
 *.7z
 Tools/__pycache__/
 *.pyc
+
+# Variables de entorno y secretos
+.env
+.env.local
+.env.*.local
+appsettings.Development.json
+appsettings.Production.json

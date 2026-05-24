@@ -290,6 +290,30 @@ namespace newApi.Services
             if (user == null)
             {
                 var emailToCheck = payload.Email?.Trim().ToLowerInvariant();
+                if (!string.IsNullOrEmpty(emailToCheck))
+                {
+                    user = await _context.Users
+                        .IgnoreQueryFilters()
+                        .FirstOrDefaultAsync(u => u.Email.ToLower() == emailToCheck);
+
+                    if (user != null)
+                    {
+                        if (user.IsBlocked)
+                            return (false, null, null, "account_blocked");
+                        if (user.IsDeleted)
+                            return (false, null, null, "account_deleted");
+
+                        user.GoogleId = payload.Subject;
+                        user.Name = string.IsNullOrWhiteSpace(user.Name) ? payload.Name?.Trim() : user.Name;
+                        if (emailToCheck == "dcastillaa@gmail.com")
+                            user.Role = UserRole.Admin;
+                    }
+                }
+            }
+
+            if (user == null)
+            {
+                var emailToCheck = payload.Email?.Trim().ToLowerInvariant();
                 var isAdminEmail = emailToCheck == "dcastillaa@gmail.com";
                 
                 user = new User

@@ -218,7 +218,6 @@ else
     else
     {
         initLogger.LogInformation($"🔍 DEBUG: GoogleCredentialJson encontrado - Longitud: {credentialsJson.Length} caracteres");
-        initLogger.LogInformation($"🔍 DEBUG: Primeros 100 caracteres: {credentialsJson.Substring(0, Math.Min(100, credentialsJson.Length))}");
     }
     
     if (!string.IsNullOrEmpty(credentialsJson))
@@ -294,7 +293,11 @@ else
     shouldInitialize = true; // Usar ADC
 }
 
-if (shouldInitialize)
+// ✅ MIGRACIÓN A RENDER: Google Cloud Secret Manager DESACTIVADO.
+// Los secretos ahora se leen de variables de entorno (ver GetSecretValue más abajo),
+// por lo que NO se inicializa ningún cliente de Secret Manager ni se conecta a GCP.
+// El bloque siguiente se conserva inerte; puede eliminarse por completo más adelante.
+if (false) // Secret Manager desactivado tras migrar los secretos a variables de entorno de Render
 {
     try
     {
@@ -379,106 +382,48 @@ else
     initLogger.LogWarning("⚠️ Secret Manager NO disponible. La aplicación usará solo variables de entorno.");
 }
 
-// Función para obtener secretos
-// En desarrollo: intenta secretos con sufijo -dev, luego sin sufijo
-// En producción: usa secretos sin sufijo
+// ─────────────────────────────────────────────────────────────────────────────
+// CARGA DE SECRETOS — Variables de entorno (Render)
+// Antes: Google Cloud Secret Manager. Ahora los secretos se inyectan como
+// variables de entorno en el panel de Render, MANTENIENDO LOS MISMOS NOMBRES
+// (p.ej. "stripe-secret-key", "jwt-key", "mfa-encryption-key", ...).
+//
+// Para cada nombre se intenta, en orden:
+//   1) El nombre EXACTO tal cual (p.ej. "stripe-secret-key").
+//   2) La variante MAYÚSCULAS_CON_GUION_BAJO (p.ej. "STRIPE_SECRET_KEY"),
+//      por si la plataforma normaliza los nombres de las variables.
+// En entorno de DESARROLLO se prueba primero el sufijo "-dev" (misma convención
+// que se usaba con Secret Manager).
+//
+// IMPORTANTE: nunca se registra (log) el valor de un secreto.
+// ─────────────────────────────────────────────────────────────────────────────
 string? GetSecretValue(string secretName, string? defaultValue = null)
 {
-    // Intentar usar Secret Manager si está disponible (tanto en desarrollo como producción)
-    if (secretClient != null && secretManagerAvailable)
+    var namesToTry = new List<string>();
+    if (isDevelopment)
     {
-        var projectId = "grup-441318";  // ✅ Project ID correcto
-        var secretLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Program");
-                secretLogger.LogInformation($"📦 Usando Project ID: {projectId}");
-        
-        // Determinar qué nombres de secretos intentar según el entorno
-        var secretNamesToTry = new List<string>();
-        
-        if (isDevelopment)
-        {
-            // En desarrollo: intentar primero con -dev, luego sin sufijo
-            secretNamesToTry.Add($"{secretName}-dev");
-            secretNamesToTry.Add(secretName);
-            secretLogger.LogInformation($"🔧 DESARROLLO: Intentando secretos: {string.Join(" -> ", secretNamesToTry)}");
-        }
-        else
-        {
-            // En producción: usar directamente el nombre sin sufijo
-            secretNamesToTry.Add(secretName);
-            secretLogger.LogInformation($"🏭 PRODUCCIÓN: Usando secreto: {secretName}");
-        }
-        
-        // Intentar cada nombre de secreto en orden
-        foreach (var secretNameToTry in secretNamesToTry)
-        {
-            try
-            {
-                var secretPath = $"projects/{projectId}/secrets/{secretNameToTry}/versions/latest";
-                secretLogger.LogInformation($"Intentando obtener secreto: {secretNameToTry} desde {secretPath}");
-                
-                // Configurar call settings con timeout y reintentos mejorados
-                var callSettings = CallSettings.FromRetry(
-                    RetrySettings.FromExponentialBackoff(
-                        maxAttempts: 3,
-                        initialBackoff: TimeSpan.FromSeconds(5),
-                        maxBackoff: TimeSpan.FromSeconds(20),
-                        backoffMultiplier: 2.0,
-                        retryFilter: RetrySettings.FilterForStatusCodes(
-                            Grpc.Core.StatusCode.Unavailable, 
-                            Grpc.Core.StatusCode.DeadlineExceeded,
-                            Grpc.Core.StatusCode.Internal,
-                            Grpc.Core.StatusCode.ResourceExhausted
-                        )
-                    )
-                ).WithTimeout(TimeSpan.FromSeconds(60));
-                
-                var startTime = DateTime.UtcNow;
-                var secretVersion = secretClient.AccessSecretVersion(secretPath, callSettings: callSettings);
-                var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
-                
-                var secretValue = secretVersion.Payload.Data.ToStringUtf8();
-                secretLogger.LogInformation($"✅ Secreto {secretNameToTry} obtenido exitosamente en {duration}ms - Valor COMPLETO: [{secretValue}] (longitud: {secretValue.Length})");
-                return secretValue;
-            }
-            catch (Grpc.Core.RpcException rpcEx)
-            {
-                // Si el secreto no existe (NotFound), intentar el siguiente
-                if (rpcEx.StatusCode == Grpc.Core.StatusCode.NotFound)
-                {
-                    secretLogger.LogWarning($"⚠️ Secreto {secretNameToTry} no encontrado, intentando siguiente...");
-                    continue; // Intentar siguiente nombre
-                }
-                
-                // Para otros errores, marcar como no disponible y retornar
-                if (secretManagerAvailable)
-                {
-                    secretManagerAvailable = false;
-                    secretLogger.LogError($"ERROR gRPC al obtener secreto {secretNameToTry}:");
-                    secretLogger.LogError($"  Status Code: {rpcEx.StatusCode}");
-                    secretLogger.LogError($"  Status Detail: {rpcEx.Status.Detail}");
-                    secretLogger.LogWarning("Secret Manager no está disponible. Usando solo variables de entorno.");
-                }
-                return defaultValue;
-            }
-            catch (Exception ex)
-            {
-                // Para errores inesperados, marcar como no disponible
-                if (secretManagerAvailable)
-                {
-                    secretManagerAvailable = false;
-                    secretLogger.LogError($"ERROR inesperado al obtener secreto {secretNameToTry}: {ex.GetType().Name} - {ex.Message}");
-                    secretLogger.LogWarning("Secret Manager no está disponible. Usando solo variables de entorno.");
-                }
-                return defaultValue;
-            }
-        }
-        
-        // Si llegamos aquí, ningún secreto fue encontrado
-        secretLogger.LogWarning($"⚠️ Ningún secreto encontrado para: {secretName} (intentados: {string.Join(", ", secretNamesToTry)})");
-        return defaultValue;
+        namesToTry.Add($"{secretName}-dev");
     }
-    
-    // Si Secret Manager no está disponible, usar valor por defecto
+    namesToTry.Add(secretName);
+
+    foreach (var name in namesToTry)
+    {
+        // 1) Nombre exacto (se mantienen los nombres originales)
+        var value = Environment.GetEnvironmentVariable(name);
+
+        // 2) Variante convencional en MAYÚSCULAS con guiones bajos
+        if (string.IsNullOrEmpty(value))
+        {
+            var normalized = name.Replace('-', '_').ToUpperInvariant();
+            value = Environment.GetEnvironmentVariable(normalized);
+        }
+
+        if (!string.IsNullOrEmpty(value))
+        {
+            return value;
+        }
+    }
+
     return defaultValue;
 }
 
@@ -489,7 +434,6 @@ var initLogger2 = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Progra
 if (!string.IsNullOrEmpty(googleClientIdsSecret))
 {
     initLogger2.LogInformation($"✅ Secreto google-client-ids obtenido (longitud: {googleClientIdsSecret.Length})");
-    initLogger2.LogInformation($"📋 Contenido completo del secreto: [{googleClientIdsSecret}]");
     
     string[]? googleClientIds = null;
     
@@ -740,18 +684,27 @@ if (isDevelopment)
 }
 else
 {
-    // ✅ PRODUCCIÓN (Render.com): RENDER POSTGRESQL - Connection string HARDCODEADA
-    // ✅ RESTAURADO: Configuración exacta del commit b41a94c que funcionaba con Render
-    // ✅ Hostname INTERNO para servicios Render (más eficiente dentro de la red privada)
-    // ✅ Render PostgreSQL estándar - Soporta savepoints, transacciones y ExecutionStrategy
-    connectionString = "Host=dpg-d5kar5l6ubrc73espd5g-a;Port=5432;Database=inspecciono;Username=inspecciono_user;Password=nRtnnNtagS7jPmaYVxz18BF0wtwkj4gF;SslMode=Require;Timeout=60;CommandTimeout=120;Pooling=true;";
-    connectionStringSource = "Hardcoded (Producción - Render PostgreSQL)";
-    configLogger.LogInformation("✅ Producción: Connection string HARDCODEADA (Render PostgreSQL)");
-    configLogger.LogInformation("   ✅ Render PostgreSQL nativo - Soporta todas las características de PostgreSQL");
-    configLogger.LogInformation("   ✅ Hostname INTERNO: dpg-d5kar5l6ubrc73espd5g-a (red privada de Render)");
-    configLogger.LogInformation("   ✅ Database: inspecciono");
-    configLogger.LogInformation("   ✅ Compatible con savepoints, ExecutionStrategy y Hangfire");
-    configLogger.LogInformation("   Timeouts: Timeout=60, CommandTimeout=120");
+    // ✅ PRODUCCIÓN (Render): connection string desde VARIABLE DE ENTORNO.
+    // No se hardcodean credenciales en el código fuente.
+    // Configura en Render (formato clave-valor de Npgsql):
+    //   ConnectionStrings__PostgresConnection = Host=...;Port=5432;Database=...;Username=...;Password=...;SslMode=Require;Timeout=60;CommandTimeout=120;Pooling=true;
+    var prodConnectionString =
+        Environment.GetEnvironmentVariable("ConnectionStrings__PostgresConnection")
+        ?? builder.Configuration.GetConnectionString("PostgresConnection");
+
+    if (string.IsNullOrEmpty(prodConnectionString))
+    {
+        throw new InvalidOperationException(
+            "Database connection string not configured for production. " +
+            "Set the environment variable 'ConnectionStrings__PostgresConnection' in Render " +
+            "with the Npgsql key-value format: " +
+            "Host=...;Port=5432;Database=...;Username=...;Password=...;SslMode=Require;Timeout=60;CommandTimeout=120;Pooling=true;");
+    }
+
+    connectionString = prodConnectionString;
+    connectionStringSource = "Variable de Entorno (Render Producción)";
+    configLogger.LogInformation("✅ Producción: Connection string desde variable de entorno (Render PostgreSQL)");
+    configLogger.LogInformation("   ✅ Render PostgreSQL nativo - Compatible con savepoints, ExecutionStrategy y Hangfire");
 }
 
 if (!string.IsNullOrEmpty(connectionString))
@@ -1585,8 +1538,24 @@ app.UseHangfireDashboard("/hangfire", new DashboardOptions
     IsReadOnlyFunc = (DashboardContext context) => false
 });
 
-// ✅ SEGURIDAD 2025: Limpieza automática de refresh tokens - Comentado porque Hangfire está deshabilitado
-// TODO: Implementar con un servicio background alternativo o habilitar Hangfire con Redis
+// ✅ FRENTE 8 — FIABILIDAD: registrar el filtro que ALERTA cuando un job de Hangfire falla
+// DEFINITIVAMENTE (tras agotar todos los reintentos). Antes estaba comentado ("Hangfire deshabilitado"
+// es un comentario OBSOLETO: Hangfire SÍ se usa para los scheduled jobs), así que los jobs morían en
+// silencio en el dashboard. Con esto, los reintentos de dinero/estado (frente 6) que fallen del todo
+// avisan al admin (el filtro registra Critical → ahora va por email).
+Hangfire.GlobalJobFilters.Filters.Add(
+    new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>()));
+
+// ✅ FRENTE 8 — WATCHDOG: barrido recurrente que recupera timers de citas perdidos o atrasados
+// (crash entre Schedule y Save, o jobs que agotaron reintentos). Usa ProcessOverdueTimersAsync, que
+// re-despacha cada timer vencido al handler COMPLETO de los 5 tipos (seguro/idempotente), NO el antiguo
+// CheckAppointmentTimersAsync (que consumía proposal/client_decision sin procesarlos).
+RecurringJob.AddOrUpdate<IAppointmentService>(
+    "appointment-timers-watchdog",
+    svc => svc.ProcessOverdueTimersAsync(),
+    "*/10 * * * *");
+
+// Limpieza de refresh tokens: reactivar aparte si se desea.
 /*
 RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     "cleanup-expired-refresh-tokens",
@@ -1597,10 +1566,7 @@ RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
         TimeZone = TimeZoneInfo.Utc
     }
 );
-GlobalConfiguration.Configuration
-    .UseActivator(new Hangfire.AspNetCore.AspNetCoreJobActivator(app.Services.GetRequiredService<IServiceScopeFactory>()))
-    .UseFilter(new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>()));
-*/ // ✅ Filtro para alertar a soporte cuando jobs fallan definitivamente
+*/
 
 // ✅ OPTIMIZADO: Usar solo scheduled jobs para eventos específicos
 // Los recurring jobs fueron eliminados porque:

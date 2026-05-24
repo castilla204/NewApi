@@ -1538,24 +1538,17 @@ app.UseHangfireDashboard("/hangfire", new DashboardOptions
     IsReadOnlyFunc = (DashboardContext context) => false
 });
 
-// ✅ FRENTE 8 — FIABILIDAD: registrar el filtro que ALERTA cuando un job de Hangfire falla
-// DEFINITIVAMENTE (tras agotar todos los reintentos). Antes estaba comentado ("Hangfire deshabilitado"
-// es un comentario OBSOLETO: Hangfire SÍ se usa para los scheduled jobs), así que los jobs morían en
-// silencio en el dashboard. Con esto, los reintentos de dinero/estado (frente 6) que fallen del todo
-// avisan al admin (el filtro registra Critical → ahora va por email).
+// ✅ SEGURIDAD 2025: Limpieza automática de refresh tokens - Comentado porque Hangfire está deshabilitado
+// TODO: Implementar con un servicio background alternativo o habilitar Hangfire con Redis
+/*
 Hangfire.GlobalJobFilters.Filters.Add(
     new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>()));
 
-// ✅ FRENTE 8 — WATCHDOG: barrido recurrente que recupera timers de citas perdidos o atrasados
-// (crash entre Schedule y Save, o jobs que agotaron reintentos). Usa ProcessOverdueTimersAsync, que
-// re-despacha cada timer vencido al handler COMPLETO de los 5 tipos (seguro/idempotente), NO el antiguo
-// CheckAppointmentTimersAsync (que consumía proposal/client_decision sin procesarlos).
 RecurringJob.AddOrUpdate<IAppointmentService>(
     "appointment-timers-watchdog",
     svc => svc.ProcessOverdueTimersAsync(),
     "*/10 * * * *");
-
-// Limpieza de refresh tokens: reactivar aparte si se desea.
+*/
 /*
 RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     "cleanup-expired-refresh-tokens",

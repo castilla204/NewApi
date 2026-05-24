@@ -1540,15 +1540,12 @@ app.UseHangfireDashboard("/hangfire", new DashboardOptions
 
 // ✅ SEGURIDAD 2025: Limpieza automática de refresh tokens - Comentado porque Hangfire está deshabilitado
 // TODO: Implementar con un servicio background alternativo o habilitar Hangfire con Redis
-/*
-Hangfire.GlobalJobFilters.Filters.Add(
-    new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>()));
-
-RecurringJob.AddOrUpdate<IAppointmentService>(
-    "appointment-timers-watchdog",
-    svc => svc.ProcessOverdueTimersAsync(),
-    "*/10 * * * *");
-*/
+// Hangfire.GlobalJobFilters.Filters.Add(
+//     new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>()));
+// RecurringJob.AddOrUpdate<IAppointmentService>(
+//     "appointment-timers-watchdog",
+//     svc => svc.ProcessOverdueTimersAsync(),
+//     Cron.MinuteInterval(10));
 /*
 RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     "cleanup-expired-refresh-tokens",

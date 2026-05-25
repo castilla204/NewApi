@@ -137,6 +137,68 @@ namespace newApi.Services
                 };
             }
 
+            // ✅ P3-4: Bloqueo HARD - disputas pendientes y PaymentIntents activos
+            // Antes de iniciar Fase 1 (procesamiento de dinero) verificamos invariantes que harían
+            // inseguro continuar con la eliminación de la cuenta.
+            var hasPendingDispute = await _context.Disputes
+                .AsNoTracking()
+                .AnyAsync(d => d.Status == "Pending"
+                               && (d.ReporterId == userId
+                                   || d.SearchHire.ClientId == userId
+                                   || d.SearchHire.ExpertId == userId),
+                          linkedCts.Token);
+
+            if (hasPendingDispute)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Account deletion blocked - pending dispute",
+                    details: $"User {userId} attempted account deletion while having at least one Dispute in Pending status.",
+                    userId: userId,
+                    source: "AccountDeletionService.DeleteAccountAsync",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId);
+
+                return new AccountDeletionResponseDto
+                {
+                    Success = false,
+                    Message = "No se puede eliminar la cuenta con disputas pendientes. Espera a que se resuelvan o contacta con soporte."
+                };
+            }
+
+            // FinancialTransaction no expone Stripe status, así que detectamos PIs activos a
+            // través de FinancialTransactions ServicePayment del usuario que apuntan a un
+            // SearchHire en estado "Pending" (PaymentIntent en deferred capture aún no liquidado).
+            var pendingHireStatusValue = SearchHireStatus.Pending.ToStringValue();
+            var hasActivePaymentIntent = await _context.FinancialTransactions
+                .AsNoTracking()
+                .AnyAsync(ft => ft.UserId == userId
+                                && ft.TransactionType == "ServicePayment"
+                                && ft.StripePaymentIntentId != null
+                                && !ft.IsRefunded
+                                && ft.RelatedEntityType == "SearchHire"
+                                && ft.RelatedEntityId != null
+                                && _context.SearchHires.Any(sh => sh.Id == ft.RelatedEntityId
+                                                                  && sh.Status != null
+                                                                  && sh.Status.StatusValue == pendingHireStatusValue),
+                          linkedCts.Token);
+
+            if (hasActivePaymentIntent)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Account deletion blocked - active PaymentIntents",
+                    details: $"User {userId} attempted account deletion with SearchHires in '{pendingHireStatusValue}' linked to a StripePaymentIntentId (deferred capture not finalized).",
+                    userId: userId,
+                    source: "AccountDeletionService.DeleteAccountAsync",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId);
+
+                return new AccountDeletionResponseDto
+                {
+                    Success = false,
+                    Message = "No se puede eliminar la cuenta con pagos en proceso. Espera a que los cobros pendientes se resuelvan o contacta con soporte."
+                };
+            }
+
             // 2. Obtener contrataciones activas (fuera de transacción)
             var activeContracts = await GetActiveContractsAsync(userId, linkedCts.Token);
             var disputesCreated = new List<DisputeCreatedInfo>();

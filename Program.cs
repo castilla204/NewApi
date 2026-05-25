@@ -1402,9 +1402,11 @@ builder.Services.AddScoped<SystemStatusService>();
 builder.Services.AddScoped<IAccountDeletionService, AccountDeletionService>();
 builder.Services.AddScoped<IAccountDeletionNotificationService, AccountDeletionNotificationService>();
 builder.Services.AddScoped<StripeRefundService>();
+builder.Services.AddScoped<IStripeReconciliationService, StripeReconciliationService>(); // P2-5: conciliación diaria BD↔Stripe
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<ILoggingService, LoggingService>();
+builder.Services.AddSingleton<IAlertChannelService, AlertChannelService>(); // P3-3: canal alternativo Slack/Telegram
 builder.Services.AddScoped<IInvoiceService, newApi.Services.InvoiceService>();
 builder.Services.AddScoped<IStripeValidationService, StripeValidationService>();
 builder.Services.AddScoped<RefreshTokenCleanupService>(); // ✅ SEGURIDAD 2025: Limpieza de refresh tokens
@@ -1412,6 +1414,7 @@ builder.Services.AddScoped<MfaService>(); // ✅ SEGURIDAD 2025: Autenticación 
 builder.Services.AddScoped<ITimezoneService, TimezoneService>(); // ✅ Servicio para detección de timezone y country desde coordenadas
 builder.Services.AddScoped<IFavoriteService, FavoriteService>(); // ✅ FAVORITOS: Gestión de servicios favoritos
 builder.Services.AddScoped<ISupabaseRealtimeService, SupabaseRealtimeService>(); // ✅ SUPABASE REALTIME: Reemplaza SignalR para chat en tiempo real
+builder.Services.AddScoped<IStripeReconciliationService, StripeReconciliationService>(); // P2-5: reconciliación diaria BD↔Stripe
 
 // Background services - AppointmentTimerBackgroundService migrated to Hangfire
 
@@ -1554,6 +1557,28 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IAppointmentService>(
     "appointment-timers-watchdog",
     svc => svc.ProcessOverdueTimersAsync(),
     "*/10 * * * *");
+
+// P2-5: Conciliación diaria BD ↔ Stripe a las 03:00 UTC. Detecta y reporta
+// (LogCritical → email admin) refunds/transfers que existen sólo en Stripe o
+// sólo en FinancialTransactions en las últimas 24h. NO muta nada por sí solo.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IStripeReconciliationService>(
+    "stripe-reconciliation-daily",
+    svc => svc.RunDailyReconciliationAsync(),
+    Cron.Daily(3, 0));
+
+// P3-2: Digest cada 30 min de alertas críticas suprimidas por dedup (count > umbral).
+// LoggingService dedupa email-spam de LogCriticalAsync; este job consolida lo suprimido.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.ILoggingService>(
+    "admin-alerts-digest",
+    svc => svc.EmitAdminDigestAsync(),
+    "*/30 * * * *");
+
+// P3-1 (versión mínima): Digest diario de SearchHires con RefundFailedAt en las últimas 24h.
+// El filtro Hangfire setea RefundFailedAt cuando RetryMoneyDistributionJobAsync agota los reintentos.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.ILoggingService>(
+    "refund-failed-digest",
+    svc => svc.EmitRefundFailedDigestAsync(),
+    Hangfire.Cron.Daily(7, 0));
 /*
 RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     "cleanup-expired-refresh-tokens",

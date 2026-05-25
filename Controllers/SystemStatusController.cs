@@ -16,16 +16,40 @@ namespace newApi.Controllers
         private readonly AppDbContext _context;
         private readonly SystemStatusService _systemStatusService;
         private readonly IAuthorizationServices _authService;
+        private readonly IAlertChannelService? _alertChannelService;
 
         public SystemStatusController(
             AppDbContext context, 
             SystemStatusService systemStatusService, 
 
-            IAuthorizationServices authService)
+            IAuthorizationServices authService,
+            IAlertChannelService? alertChannelService = null)
         {
             _context = context;
             _systemStatusService = systemStatusService;
             _authService = authService;
+            _alertChannelService = alertChannelService;
+        }
+
+        /// <summary>
+        /// P3-3: Health check del canal alternativo de alertas. Devuelve estado de configuración
+        /// (sin exponer tokens) para Slack y Telegram.
+        /// </summary>
+        [HttpGet("alert-channels")]
+        [Authorize(Roles = "Admin")]
+        public IActionResult GetAlertChannelsStatus()
+        {
+            if (_alertChannelService == null)
+            {
+                return Ok(new { configured = false, slack = false, telegram = false, message = "AlertChannelService no registrado." });
+            }
+            var status = _alertChannelService.GetStatus();
+            return Ok(new
+            {
+                configured = status.SlackConfigured || status.TelegramConfigured,
+                slack = status.SlackConfigured,
+                telegram = status.TelegramConfigured
+            });
         }
 
         /// <summary>

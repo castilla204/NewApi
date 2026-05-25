@@ -82,7 +82,11 @@ namespace newApi.Controllers
         }
 
         // POST: api/searchhire
+        // RESTRINGIDO A ADMIN: este endpoint crea SearchHire sin pasar por Stripe Checkout
+        // (Amount tomado directamente del Price del servicio, sin cobro). Los clientes deben
+        // usar el flujo normal por /api/Subscription/HireService que sí cobra.
         [HttpPost]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> CreateSearchHire([FromBody] CreateSearchHireDto dto)
         {
             try

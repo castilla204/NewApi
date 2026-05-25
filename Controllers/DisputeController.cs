@@ -86,7 +86,14 @@ namespace newApi.Controllers
         }
 
         /// <summary>
-        /// Crea una nueva disputa (usuarios normales)
+        /// Crea una nueva disputa (usuarios normales).
+        /// Estados de SearchHire/Appointment permitidos para abrir disputa:
+        ///   - SearchHire.Status = awaiting_client_decision (en cualquier momento)
+        ///   - SearchHire.Status = completed dentro de los 14 días posteriores a UpdatedAt
+        ///   - Appointment.Status = appointment_confirmed | appointment_awaiting_report | appointment_report_sent
+        /// Bloqueado: pending (todavía no aceptado; ahí cabe cancelación, no disputa),
+        /// disputed/dispute_resolved_* (ya disputado), cancelled* / transfer_failed,
+        /// completed con más de 14 días desde UpdatedAt.
         /// </summary>
         [HttpPost]
         public async Task<IActionResult> CreateDispute([FromBody] CreateDisputeDto request)
@@ -105,6 +112,9 @@ namespace newApi.Controllers
                 }
 
                 var searchHire = await _context.SearchHires
+                    .Include(sh => sh.Status)
+                    .Include(sh => sh.Appointment)
+                        .ThenInclude(a => a.Status)
                     .FirstOrDefaultAsync(sh => sh.Id == request.SearchHireId && sh.ClientId == userId);
 
                 if (searchHire == null)
@@ -112,9 +122,52 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Service not found or unauthorized" });
                 }
 
-                if (searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                var hireStatus = searchHire.Status?.StatusValue;
+                var appointmentStatus = searchHire.Appointment?.Status?.StatusValue;
+
+                if (hireStatus == SearchHireStatus.Pending.ToStringValue())
                 {
-                    return BadRequest(new { message = "Service is not awaiting client decision" });
+                    return BadRequest(new { message = "El servicio aún no ha sido aceptado por el experto. Puedes cancelarlo, pero todavía no se puede abrir disputa." });
+                }
+
+                var terminalStatuses = new[]
+                {
+                    SearchHireStatus.Disputed.ToStringValue(),
+                    SearchHireStatus.DisputeResolvedClient.ToStringValue(),
+                    SearchHireStatus.DisputeResolvedExpert.ToStringValue(),
+                    SearchHireStatus.Cancelled.ToStringValue(),
+                    SearchHireStatus.CancelledByClientAccountDelete.ToStringValue(),
+                    SearchHireStatus.CancelledByExpertAccountDelete.ToStringValue(),
+                    SearchHireStatus.TransferFailed.ToStringValue()
+                };
+                if (terminalStatuses.Contains(hireStatus))
+                {
+                    return BadRequest(new { message = "El servicio ya está finalizado o disputado y no admite una nueva disputa." });
+                }
+
+                bool isAwaiting = hireStatus == SearchHireStatus.AwaitingClientDecision.ToStringValue();
+                bool isCompletedRecently = hireStatus == SearchHireStatus.Completed.ToStringValue()
+                    && searchHire.UpdatedAt.HasValue
+                    && searchHire.UpdatedAt.Value.AddDays(14) >= DateTime.UtcNow;
+                var disputableAppointmentStatuses = new[]
+                {
+                    "appointment_confirmed",
+                    "appointment_awaiting_report",
+                    "appointment_report_sent"
+                };
+                bool isMidFlightAppointment = appointmentStatus != null
+                    && disputableAppointmentStatuses.Contains(appointmentStatus);
+
+                if (!isAwaiting && !isCompletedRecently && !isMidFlightAppointment)
+                {
+                    return BadRequest(new { message = "El servicio no se encuentra en un estado válido para abrir disputa (esperando decisión, cita en curso o completado en los últimos 14 días)." });
+                }
+
+                var existingDispute = await _context.Disputes
+                    .AnyAsync(d => d.SearchHireId == searchHire.Id && d.Status == "Pending");
+                if (existingDispute)
+                {
+                    return BadRequest(new { message = "Ya existe una disputa abierta para este servicio." });
                 }
 
                 // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
@@ -788,6 +841,33 @@ namespace newApi.Controllers
                         // la disputa en "Pending" y, por tanto, reintentable.)
                         dispute.Status = "Resolved";
                         await _context.SaveChangesAsync();
+
+                        // Si la disputa está vinculada a Stripe y la resolvemos a favor del experto,
+                        // enviar evidencia definitiva con Submit=true para no perder el chargeback.
+                        if (request.Action.ToLower() == "pay_expert" && !string.IsNullOrEmpty(dispute.StripeDisputeId))
+                        {
+                            try
+                            {
+                                var evidenceOptions = await BuildDisputeEvidenceAsync(dispute, dispute.ExpertResponse, new List<string>());
+                                await new Stripe.DisputeService().UpdateAsync(
+                                    dispute.StripeDisputeId,
+                                    new Stripe.DisputeUpdateOptions
+                                    {
+                                        Evidence = evidenceOptions,
+                                        Submit = true
+                                    },
+                                    new Stripe.RequestOptions { IdempotencyKey = $"dispute-submit-{dispute.Id}-{DateTime.UtcNow:yyyyMMddHHmm}" });
+                            }
+                            catch (Exception submitEx)
+                            {
+                                await _loggingService.LogCriticalAsync(
+                                    message: "Failed to submit dispute evidence to Stripe on resolution",
+                                    details: $"DisputeId {dispute.Id} StripeDisputeId {dispute.StripeDisputeId}: {submitEx.Message}",
+                                    source: "DisputeController.ResolveDispute",
+                                    relatedEntityType: "Dispute",
+                                    relatedEntityId: dispute.Id);
+                            }
+                        }
 
                         return Ok(new { message = "Dispute resolved successfully" });
                 }
@@ -2008,6 +2088,7 @@ namespace newApi.Controllers
                 }
 
                 // Handle file uploads if any (outside transaction for better performance)
+                var stripeFileIds = new List<string>();
                 if (request.Files != null && request.Files.Count > 0)
                 {
                     var bucketName = _configuration["GoogleCloud:BucketName"];
@@ -2070,6 +2151,38 @@ namespace newApi.Controllers
                                 UploadedByUserId = userId,
                                 FileCategory = "expert" // Archivos subidos en la respuesta del experto son del experto
                             });
+
+                            // Si la disputa está vinculada a Stripe, subir el archivo como evidencia.
+                            if (!string.IsNullOrEmpty(dispute.StripeDisputeId))
+                            {
+                                try
+                                {
+                                    memoryStream.Position = 0;
+                                    var stripeFile = await new Stripe.FileService().CreateAsync(new Stripe.FileCreateOptions
+                                    {
+                                        File = new Stripe.MultipartFileContent
+                                        {
+                                            Data = memoryStream,
+                                            Name = file.FileName,
+                                            Type = file.ContentType
+                                        },
+                                        Purpose = "dispute_evidence"
+                                    });
+                                    if (stripeFile != null && !string.IsNullOrEmpty(stripeFile.Id))
+                                    {
+                                        stripeFileIds.Add(stripeFile.Id);
+                                    }
+                                }
+                                catch (Exception stripeFileEx)
+                                {
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "Failed to upload dispute evidence file to Stripe",
+                                        details: $"DisputeId {disputeId} StripeDisputeId {dispute.StripeDisputeId} fileName {file.FileName}: {stripeFileEx.Message}",
+                                        source: "DisputeController.ExpertResponseToDispute",
+                                        relatedEntityType: "Dispute",
+                                        relatedEntityId: disputeId);
+                                }
+                            }
                         }
                         catch (Exception ex)
                         {
@@ -2083,12 +2196,68 @@ namespace newApi.Controllers
                         await _context.SaveChangesAsync();
                     }
                 }
+
+                // Push de evidencia a Stripe (no bloqueante: si falla, log critical y seguimos).
+                if (!string.IsNullOrEmpty(dispute.StripeDisputeId))
+                {
+                    try
+                    {
+                        var evidenceOptions = await BuildDisputeEvidenceAsync(dispute, request.Response, stripeFileIds);
+                        await new Stripe.DisputeService().UpdateAsync(
+                            dispute.StripeDisputeId,
+                            new Stripe.DisputeUpdateOptions { Evidence = evidenceOptions },
+                            new Stripe.RequestOptions { IdempotencyKey = $"dispute-evidence-{disputeId}-{DateTime.UtcNow:yyyyMMddHHmm}" });
+                    }
+                    catch (Exception stripeUpdateEx)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "Failed to push dispute evidence to Stripe",
+                            details: $"DisputeId {disputeId} StripeDisputeId {dispute.StripeDisputeId}: {stripeUpdateEx.Message}",
+                            source: "DisputeController.ExpertResponseToDispute",
+                            relatedEntityType: "Dispute",
+                            relatedEntityId: disputeId);
+                    }
+                }
+
                 return Ok(new { message = "Expert response submitted successfully" });
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new { message = ex.Message });
             }
+        }
+
+        /// <summary>
+        /// Construye el payload de evidencia para Stripe a partir de la disputa interna y los
+        /// archivos ya subidos a Stripe vía FileService. No bloquea si los archivos están vacíos:
+        /// envía al menos el texto disponible (UncategorizedText/CustomerCommunication).
+        /// </summary>
+        private Task<Stripe.DisputeEvidenceOptions> BuildDisputeEvidenceAsync(Dispute dispute, string? expertResponse, List<string> stripeFileIds)
+        {
+            var combinedText = string.Join(" | ",
+                new[]
+                {
+                    string.IsNullOrWhiteSpace(dispute.Reason) ? null : $"Reason: {dispute.Reason}",
+                    string.IsNullOrWhiteSpace(expertResponse) ? null : $"Expert response: {expertResponse}",
+                    string.IsNullOrWhiteSpace(dispute.ResolutionComments) ? null : $"Resolution: {dispute.ResolutionComments}"
+                }.Where(s => !string.IsNullOrEmpty(s)));
+
+            // Stripe limita UncategorizedText a 150_000 chars.
+            if (combinedText.Length > 150_000)
+            {
+                combinedText = combinedText.Substring(0, 150_000);
+            }
+
+            var evidence = new Stripe.DisputeEvidenceOptions
+            {
+                UncategorizedText = string.IsNullOrWhiteSpace(combinedText) ? null : combinedText,
+                CustomerCommunication = stripeFileIds.Count > 0 ? stripeFileIds[0] : null,
+                ServiceDocumentation = stripeFileIds.Count > 1 ? stripeFileIds[1] : null,
+                Receipt = stripeFileIds.Count > 2 ? stripeFileIds[2] : null,
+                UncategorizedFile = stripeFileIds.Count > 3 ? stripeFileIds[3] : null
+            };
+
+            return Task.FromResult(evidence);
         }
 
         private string ResolveDisputeFileUrl(DisputeFile? file)

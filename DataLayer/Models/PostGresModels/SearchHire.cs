@@ -58,6 +58,29 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// aunque el experto cambie su ubicación después
         /// </summary>
         public string? ExpertCountry { get; set; }
+
+        /// <summary>
+        /// Flag operativo: el hire requiere revisión manual del admin (p.ej. cuenta de experto
+        /// rechazada o desautorizada por Stripe tras prestar el servicio). NO se considera un
+        /// estado canónico — el estado canónico sigue en StatusId.
+        /// </summary>
+        public bool RequiresManualReview { get; set; }
+
+        /// <summary>
+        /// Estado de captura para el flujo "outbox" (P1-5). Valores: "Pending", "Captured", "Failed", null.
+        /// Cuando es null o "Captured", el hire es operable; cuando es "Pending" el watchdog Hangfire
+        /// debe reintentar la captura. No reemplaza al StatusId, lo complementa.
+        /// </summary>
+        public string? CaptureStatus { get; set; }
+
+        /// <summary>
+        /// P3-1 (versión mínima): marca temporal del momento en que la Fase 3 de RefundService
+        /// agotó todos los reintentos Hangfire sin lograr distribuir el dinero (transfer/refund).
+        /// Sigue en estado Completed/DisputeResolvedClient pero queda visible para el admin digest
+        /// diario. Null = no hay incidencia pendiente. La versión COMPLETA (RefundPending state +
+        /// PendingFinalStatusId + reescritura de Fase 2) se documenta en RESUMEN_P3_PENDIENTES.md.
+        /// </summary>
+        public DateTime? RefundFailedAt { get; set; }
     }
 
 }

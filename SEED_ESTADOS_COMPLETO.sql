@@ -84,6 +84,23 @@ FROM (VALUES
 JOIN "SystemStatuses" s ON s."StatusValue"=v."sv" AND s."StatusType"='SearchHireStatus'
 WHERE NOT EXISTS (SELECT 1 FROM "StatusConfigurations" sc WHERE sc."StatusId"=s."Id" AND sc."CategoryId" IS NULL AND sc."ServiceTypeCategoryId" IS NULL);
 
+-- ---------- 3b) StatusConfigurations ligadas a AppointmentStatus (cancelaciones por TIMER) ----------
+-- CRÍTICO: los timers llaman a ProcessMoneyDistributionAsync con el valor AppointmentStatus.
+-- La config debe estar ligada a la fila AppointmentStatus o la 1ª búsqueda falla y cae a un
+-- fallback roto (el enum SearchHireStatus no tiene estos estados granulares → resolvía a
+-- 'cancelled' 100/0/0 para TODOS). Sin esto: no_proposal pagaba 100/0/0 (experto 0%) y
+-- no_report pagaba 100/0/0 (plataforma 0%). NO cambia el estado final del hire, solo el dinero.
+INSERT INTO "StatusConfigurations" ("StatusId","CategoryId","ServiceTypeCategoryId","ClientPercentage","ExpertPercentage","PlatformPercentage","IsActive","CreatedAt","UpdatedAt")
+SELECT s."Id",NULL,NULL,v."cp",v."ep",v."pp",true,now(),now()
+FROM (VALUES
+  ('appointment_cancelled_by_client_no_proposal',   0, 100, 0),  -- culpa del cliente -> experto 100%
+  ('appointment_cancelled_by_expert_no_response', 100,   0, 0),  -- culpa del experto -> cliente 100%
+  ('appointment_cancelled_by_no_report',           95,   0, 5),  -- culpa del experto -> cliente 95% / plataforma 5%
+  ('appointment_completed_without_client_approval', 0,  95, 5)   -- auto-aprobado a favor del experto -> 95% / 5%
+) AS v("sv","cp","ep","pp")
+JOIN "SystemStatuses" s ON s."StatusValue"=v."sv" AND s."StatusType"='AppointmentStatus'
+WHERE NOT EXISTS (SELECT 1 FROM "StatusConfigurations" sc WHERE sc."StatusId"=s."Id" AND sc."CategoryId" IS NULL AND sc."ServiceTypeCategoryId" IS NULL);
+
 -- ---------- 4) StatusMappings (appointment -> hire) ----------
 INSERT INTO "StatusMappings" ("SourceStatusId","TargetStatusId","IsActive","CreatedAt")
 SELECT src."Id",tgt."Id",v."act",now()

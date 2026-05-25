@@ -15,6 +15,8 @@ using Google.Apis.Auth;
 [Route("api/[controller]")]
 [ApiController]
 [EnableRateLimiting("api")] // ✅ SEGURIDAD: 100 requests/minuto por IP
+// TODO P3-8: envolver con ConcurrencyRetryHelper los SaveChangesAsync de UpdateProfile y
+// endpoints UPDATE-heavy. Con xmin token activo (P2-4) un conflicto produce 500 directo.
 public class UserController : ControllerBase
 {
         private readonly UserService _userService;

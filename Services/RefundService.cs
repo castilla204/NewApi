@@ -929,8 +929,26 @@ namespace newApi.Services
                         bool refundAlreadyProcessed = existingRefund != null && !string.IsNullOrEmpty(existingRefund.StripeRefundId);
                         bool transferAlreadyProcessed = existingTransfer != null && !string.IsNullOrEmpty(existingTransfer.StripeTransferId);
                         
-                        // Si ambos ya est├ín procesados, retornar true (idempotencia)
-                        if (refundAlreadyProcessed && (transferAlreadyProcessed || expertAmount == 0))
+                        // 🔁 A2: ¿queda un CLAWBACK pendiente? (refund hecho + transfer al experto hecho,
+                        // pero su nueva parte es MENOR que lo transferido y aún NO se revirtió). Si lo hay, NO
+                        // cortocircuitar como "ya procesado" — antes el guard devolvía true y un clawback que
+                        // falló tras el refund quedaba ABANDONADO en el reintento → el experto se quedaba el
+                        // sobre-pago y la plataforma perdía ~85%.
+                        bool clawbackPending = false;
+                        if (transferAlreadyProcessed && existingTransfer != null
+                            && clientRefundAmount > 0
+                            && (Math.Abs(existingTransfer.Amount) - expertAmountForStripe) >= 0.01m)
+                        {
+                            var clawbackAlreadyDone = await _context.FinancialTransactions.AnyAsync(ft =>
+                                ft.RelatedEntityType == "SearchHire" &&
+                                ft.RelatedEntityId == searchHireId &&
+                                ft.TransactionType == "TransferReversal" &&
+                                ft.StripeTransferId == existingTransfer.StripeTransferId);
+                            clawbackPending = !clawbackAlreadyDone;
+                        }
+
+                        // Si ambos ya están procesados (y NO queda clawback pendiente), retornar true (idempotencia)
+                        if (refundAlreadyProcessed && (transferAlreadyProcessed || expertAmount == 0) && !clawbackPending)
                         {
                             await _loggingService.LogInfoAsync(
                                 message: "Money distribution already processed - idempotent call",
@@ -979,11 +997,38 @@ namespace newApi.Services
                             );
                         }
 
-                        // MODIFICACI├ôN: Usar UUID para idempotency key (mejor que string custom, seg├║n docs 2025)
-                        var idempotencyKey = Guid.NewGuid().ToString();
+                        // 🔑 IDEMPOTENCIA POR CONTRATACIÓN (frente 7 — anti doble-pago entre finalizaciones).
+                        // Clave estable por HIRE, NO por estado: si el mismo hire se finaliza dos veces por
+                        // motivos distintos (p.ej. un timer lo completa y a la vez una disputa lo resuelve),
+                        // ambas generan la MISMA clave de transfer/refund y Stripe DEDUPLICA → no hay doble
+                        // pago. (Antes incluía el statusValue, así que dos finalizaciones con estados
+                        // distintos producían claves distintas y Stripe NO deduplicaba.) Si los importes
+                        // difirieran, Stripe devuelve error de clave reutilizada → se registra Critical
+                        // (avisa) en vez de pagar dos veces. Cada operación añade su sufijo (-refund, etc.).
+                        var idempotencyKey = $"md-{searchHireId}";
+
+                        // 🔁 A3: si hubo un CHARGEBACK (contracargo) en este pago, Stripe YA devolvió el dinero
+                        // al cliente. NO crear un refund interno encima → evita el DOBLE reembolso (chargeback +
+                        // resolución interna de disputa). Si el experto ya fue pagado, su transfer aún debe
+                        // revertirse (alertado por el handler del chargeback / clawback manual).
+                        var hasChargeback = await _context.FinancialTransactions.AnyAsync(ft =>
+                            ft.RelatedEntityType == "SearchHire" &&
+                            ft.RelatedEntityId == searchHireId &&
+                            ft.TransactionType == "Chargeback" &&
+                            ft.StripePaymentIntentId == servicePayment.StripePaymentIntentId);
+                        if (hasChargeback && clientRefundAmount > 0)
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Chargeback present - skipping internal client refund to avoid double refund",
+                                details: $"SearchHire {searchHireId}: existe un marcador de chargeback para PaymentIntent {servicePayment.StripePaymentIntentId}. Stripe ya devolvió fondos al cliente vía el contracargo, así que el refund interno se OMITE (status {statusValue}). Si el experto ya cobró, su transfer aún necesita reversión (clawback/manual).",
+                                userId: initiatedByUserId ?? searchHire.ClientId,
+                                source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId);
+                        }
 
                         // Si hay refund y transfer, ejecutar primero la transferencia y despu├®s el refund; si el refund falla, revertir la transferencia
-                        var needsRefund = clientRefundAmount > 0 && !refundAlreadyProcessed;
+                        var needsRefund = clientRefundAmount > 0 && !refundAlreadyProcessed && !hasChargeback;
                         var needsTransfer = expertAmount > 0 && searchHire.ExpertId.HasValue && !transferAlreadyProcessed;
 
                         // Transfer primero (si aplica)
@@ -1220,6 +1265,93 @@ namespace newApi.Services
                         }
 
                         // Registrar en base de datos solo si Stripe tuvo ├®xito en ambos pasos necesarios
+                        // 🔁 C3: CLAWBACK (parcial) del transfer al experto cuando se reembolsa al cliente
+                        // y el experto YA fue pagado en una distribución previa. Caso típico: el servicio se
+                        // completó (Completed -> transfer 95% al experto) y DESPUÉS se resolvió una disputa a
+                        // favor del cliente (p.ej. dispute_resolved_client = 90/8/2). El experto debe quedarse
+                        // SOLO con su nueva parte (expertAmountForStripe, p.ej. 8%), así que se revierte la
+                        // DIFERENCIA entre lo ya transferido y lo que le corresponde ahora. Sin esto el cliente
+                        // cobra su reembolso pero el experto SE QUEDA el transfer íntegro y la plataforma asume
+                        // la pérdida (~85%). Importes en base (sin tax), igual que el transfer original.
+                        // Se activa si: hay refund al cliente + transfer previo NO revertido + lo ya
+                        // transferido SUPERA la nueva parte del experto (clawback = transferido - nueva parte).
+                        // Si la nueva parte >= lo transferido (p.ej. dispute_resolved_expert tras Completed),
+                        // clawbackAmountEur <= 0 y NO se revierte nada. (Antes solo disparaba con experto==0%,
+                        // por eso 90/8/2 dejaba al experto cobrado de más y la plataforma perdía ~85%.)
+                        var clawbackAmountEur = existingTransfer != null
+                            ? Math.Abs(existingTransfer.Amount) - expertAmountForStripe
+                            : 0m;
+                        // 🔁 A2: dispara también si el refund YA estaba hecho (reintento de un clawback que
+                        // falló antes), no solo cuando se acaba de crear el refund en esta ejecución.
+                        if (((needsRefund && !string.IsNullOrEmpty(createdRefundId)) || refundAlreadyProcessed)
+                            && transferAlreadyProcessed
+                            && existingTransfer != null
+                            && !string.IsNullOrEmpty(existingTransfer.StripeTransferId)
+                            && clawbackAmountEur >= 0.01m
+                            && !hasChargeback) // 🔁 R3: si hubo chargeback, la reversión TOTAL la hace ReverseExpertTransferForChargebackAsync → el clawback interno NO debe duplicarla (paths mutuamente excluyentes; evita doble-reversión en carrera)
+                        {
+                            var alreadyReversed = await _context.FinancialTransactions.AnyAsync(ft =>
+                                ft.RelatedEntityType == "SearchHire" &&
+                                ft.RelatedEntityId == searchHireId &&
+                                ft.TransactionType == "TransferReversal" &&
+                                ft.StripeTransferId == existingTransfer.StripeTransferId);
+
+                            if (!alreadyReversed)
+                            {
+                                try
+                                {
+                                    var clawbackSvc = new TransferReversalService();
+                                    var clawbackOptions = new TransferReversalCreateOptions
+                                    {
+                                        Amount = (long)Math.Round(clawbackAmountEur * 100),
+                                        Metadata = new Dictionary<string, string>
+                                        {
+                                            { "searchHireId", searchHireId.ToString() },
+                                            { "statusValue", statusValue },
+                                            { "reason", "clawback on client refund" }
+                                        }
+                                    };
+                                    // Clave determinista: protege contra doble reversión en reintentos/rollbacks.
+                                    var clawbackRequestOptions = new RequestOptions { IdempotencyKey = idempotencyKey + "-clawback" };
+                                    var clawbackReversal = await clawbackSvc.CreateAsync(existingTransfer.StripeTransferId, clawbackOptions, clawbackRequestOptions);
+
+                                    // Registrar la reversión en el ledger (importe negativo para el experto).
+                                    _context.FinancialTransactions.Add(new FinancialTransaction
+                                    {
+                                        UserId = searchHire.ExpertId,
+                                        Amount = -clawbackAmountEur,
+                                        TransactionType = "TransferReversal",
+                                        RelatedEntityType = "SearchHire",
+                                        RelatedEntityId = searchHireId,
+                                        StripeTransferId = existingTransfer.StripeTransferId,
+                                        StripePaymentIntentId = servicePayment.StripePaymentIntentId,
+                                        CreatedAt = DateTime.UtcNow
+                                    });
+
+                                    await _loggingService.LogInfoAsync(
+                                        message: "Expert transfer reversed on client refund (clawback)",
+                                        details: $"SearchHire {searchHireId}: reversed {clawbackAmountEur:F2}€ of expert transfer {existingTransfer.StripeTransferId} (originally {existingTransfer.Amount:F2}€) because the client was refunded (status {statusValue}). Expert keeps {expertAmountForStripe:F2}€ ({config.ExpertPercentage}%). ReversalId: {clawbackReversal.Id}.",
+                                        userId: searchHire.ExpertId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId);
+                                }
+                                catch (Exception clawbackEx)
+                                {
+                                    // No revertimos el refund al cliente (debe quedar reembolsado); alertamos para intervención manual.
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL: Failed to reverse prior expert transfer on client refund (clawback)",
+                                        details: $"SearchHire {searchHireId}: the client was refunded but {clawbackAmountEur:F2}€ of the prior expert transfer {existingTransfer.StripeTransferId} (originally {existingTransfer.Amount:F2}€) could NOT be reversed. " +
+                                                 $"The expert may keep overpaid funds for a refunded order — MANUAL INTERVENTION REQUIRED. Error: {clawbackEx.Message}",
+                                        userId: searchHire.ExpertId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId,
+                                        additionalData: new { TransferId = existingTransfer.StripeTransferId, OriginalAmount = existingTransfer.Amount, ClawbackAmount = clawbackAmountEur, Error = clawbackEx.Message });
+                                }
+                            }
+                        }
+
                         if (needsRefund && !string.IsNullOrEmpty(createdRefundId))
                         {
                             var refundTx = new FinancialTransaction
@@ -1446,6 +1578,121 @@ namespace newApi.Services
                     }
                 );
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Job de Hangfire para REINTENTAR la distribución de dinero de forma asíncrona cuando un
+        /// finalizador (completar/cancelar/resolver disputa) no pudo mover el dinero pero SÍ avanzó
+        /// el estado. Filosofía "el flujo continúa para el usuario; el dinero se reintenta y se avisa".
+        /// ProcessMoneyDistributionAsync es idempotente (claves de idempotencia + guardas en BD), así que
+        /// reintentar es seguro (no duplica pagos). Si sigue fallando se LANZA para que Hangfire reintente;
+        /// la causa ya se registró como Critical (que ahora avisa por email al admin).
+        /// </summary>
+        [Hangfire.AutomaticRetry(Attempts = 5, DelaysInSeconds = new[] { 120, 600, 1800, 3600, 7200 })]
+        public async Task RetryMoneyDistributionJobAsync(int searchHireId, string statusValue, string reason, int? initiatedByUserId)
+        {
+            // El estado ya fue finalizado por el llamador → updateState:false (solo mover dinero).
+            var ok = await ProcessMoneyDistributionAsync(searchHireId, statusValue, reason, initiatedByUserId, updateState: false);
+            if (!ok)
+            {
+                throw new InvalidOperationException(
+                    $"Money distribution still pending for SearchHire {searchHireId} (status {statusValue}). Hangfire will retry.");
+            }
+        }
+
+        /// <summary>
+        /// 🔁 A3 (R3): REVERSIÓN TOTAL del transfer al experto cuando hay un CHARGEBACK (contracargo).
+        /// Un chargeback revierte el cargo ENTERO (el banco devuelve el 100% al cliente y Stripe retira el
+        /// bruto de la plataforma), así que el experto NO debe quedarse su transfer — se revierte COMPLETO
+        /// (a diferencia del clawback por disputa interna, que usa el % de la config). Idempotente: no hace
+        /// nada si no hubo transfer o si ya se revirtió (fila TransferReversal para ese StripeTransferId).
+        /// Se encola desde HandleChargeDisputeCreated. Lanza si Stripe falla → Hangfire reintenta + el filtro avisa.
+        /// </summary>
+        [Hangfire.AutomaticRetry(Attempts = 5, DelaysInSeconds = new[] { 120, 600, 1800, 3600, 7200 })]
+        public async Task ReverseExpertTransferForChargebackAsync(int searchHireId, string reason)
+        {
+            var payout = await _context.FinancialTransactions
+                .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&
+                                           ft.RelatedEntityId == searchHireId &&
+                                           ft.TransactionType == "Payout" &&
+                                           !string.IsNullOrEmpty(ft.StripeTransferId));
+            if (payout == null || string.IsNullOrEmpty(payout.StripeTransferId))
+            {
+                await _loggingService.LogInfoAsync(
+                    message: "Chargeback reversal: no expert transfer to reverse",
+                    details: $"SearchHire {searchHireId}: no Payout transfer found — nothing to reverse (the client was made whole by the chargeback). Reason: {reason}.",
+                    userId: null,
+                    source: "StripeRefundService.ReverseExpertTransferForChargebackAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId);
+                return;
+            }
+
+            var alreadyReversed = await _context.FinancialTransactions.AnyAsync(ft =>
+                ft.RelatedEntityType == "SearchHire" &&
+                ft.RelatedEntityId == searchHireId &&
+                ft.TransactionType == "TransferReversal" &&
+                ft.StripeTransferId == payout.StripeTransferId);
+            if (alreadyReversed)
+            {
+                await _loggingService.LogInfoAsync(
+                    message: "Chargeback reversal: expert transfer already reversed (idempotent no-op)",
+                    details: $"SearchHire {searchHireId}: transfer {payout.StripeTransferId} already has a TransferReversal row.",
+                    userId: payout.UserId,
+                    source: "StripeRefundService.ReverseExpertTransferForChargebackAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId);
+                return;
+            }
+
+            var reverseAmount = Math.Abs(payout.Amount);
+            try
+            {
+                var reversalSvc = new TransferReversalService();
+                var reversalOptions = new TransferReversalCreateOptions
+                {
+                    Amount = (long)Math.Round(reverseAmount * 100),
+                    Metadata = new Dictionary<string, string>
+                    {
+                        { "searchHireId", searchHireId.ToString() },
+                        { "reason", "chargeback full reversal" }
+                    }
+                };
+                var requestOptions = new RequestOptions { IdempotencyKey = $"md-{searchHireId}-chargeback-reversal" };
+                var reversal = await reversalSvc.CreateAsync(payout.StripeTransferId, reversalOptions, requestOptions);
+
+                _context.FinancialTransactions.Add(new FinancialTransaction
+                {
+                    UserId = payout.UserId,
+                    Amount = -reverseAmount,
+                    TransactionType = "TransferReversal",
+                    RelatedEntityType = "SearchHire",
+                    RelatedEntityId = searchHireId,
+                    StripeTransferId = payout.StripeTransferId,
+                    StripePaymentIntentId = payout.StripePaymentIntentId,
+                    CreatedAt = DateTime.UtcNow
+                });
+                await _context.SaveChangesAsync();
+
+                await _loggingService.LogInfoAsync(
+                    message: "Expert transfer fully reversed on chargeback",
+                    details: $"SearchHire {searchHireId}: fully reversed expert transfer {payout.StripeTransferId} ({reverseAmount:F2}€) because the charge was charged back. ReversalId: {reversal.Id}. Reason: {reason}.",
+                    userId: payout.UserId,
+                    source: "StripeRefundService.ReverseExpertTransferForChargebackAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId);
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Failed to reverse expert transfer on chargeback",
+                    details: $"SearchHire {searchHireId}: could NOT reverse expert transfer {payout.StripeTransferId} ({reverseAmount:F2}€) after a chargeback. The expert may keep funds for a charged-back order — Hangfire will retry; MANUAL intervention if it keeps failing. Error: {ex.Message}",
+                    userId: payout.UserId,
+                    source: "StripeRefundService.ReverseExpertTransferForChargebackAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId);
+                throw; // Hangfire reintenta
             }
         }
 

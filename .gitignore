@@ -124,6 +124,7 @@ $RECYCLE.BIN/
 
 # Cursor/IDE specific
 .cursor/
+.cursor/mcp.json
 .cursorrules
 cursor-backend-logs/.env
 .cursor/.env

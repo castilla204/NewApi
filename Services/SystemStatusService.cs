@@ -489,8 +489,15 @@ namespace newApi.Services
                 AppointmentStatus.AppointmentCancelledByExpertRejection => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCancelledByNoReport => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCompletedWithoutClientApproval => SearchHireStatus.Completed,
-                AppointmentStatus.AppointmentCancelledByClientAccountDelete => SearchHireStatus.CancelledByClientAccountDelete,
-                AppointmentStatus.AppointmentCancelledByExpertAccountDelete => SearchHireStatus.CancelledByExpertAccountDelete,
+                // 🔁 Borrado de cuenta: se mapea a estados YA CONFIGURADOS en BD en vez de a los dedicados
+                // *_account_delete (que NO tienen StatusConfiguration → el dinero quedaba en no-op y el hire
+                // ATASCADO). Respeta la política ya codificada en AccountDeletionService:
+                //   cliente borra  → "dar el dinero al experto"  → Completed (0/95/5, experto cobra)
+                //   experto borra  → "reembolsar al cliente"     → Cancelled (100/0/0, cliente reembolsado)
+                // Reutiliza configs existentes (sin inventar porcentajes). Esto también desatasca el fallback
+                // EnsureStateChangedAsync, que resuelve el estado destino vía esta misma función.
+                AppointmentStatus.AppointmentCancelledByClientAccountDelete => SearchHireStatus.Completed,
+                AppointmentStatus.AppointmentCancelledByExpertAccountDelete => SearchHireStatus.Cancelled,
                 _ => null // Otros estados no tienen mapeo directo
             };
         }

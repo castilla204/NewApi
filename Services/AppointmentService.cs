@@ -2609,17 +2609,27 @@ namespace newApi.Services
                             updateState: false);
 
                         if (!distributionOk)
-
                         {
-
+                            // ✅ ALERTA: el estado YA se guardó arriba; el flujo continúa, solo avisamos.
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Money distribution failed on appointment cancellation",
+                                details: $"SearchHire {appointment.SearchHireId} cancelled (status {statusValue}) but money distribution returned false. State was committed; money needs retry/manual handling.",
+                                userId: userId,
+                                source: "AppointmentService.CancelAppointmentAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: appointment.SearchHireId);
                         }
-
                     }
-
                     catch (Exception distEx)
-
                     {
-
+                        // ✅ ALERTA: no relanzamos (el estado ya está guardado, el flujo continúa); avisamos.
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Exception during money distribution on appointment cancellation",
+                            details: $"SearchHire {appointment.SearchHireId} (status {statusValue}): {distEx.Message}. State was committed; money needs retry/manual handling.",
+                            userId: userId,
+                            source: "AppointmentService.CancelAppointmentAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: appointment.SearchHireId);
                     }
 
                 }
@@ -2996,6 +3006,64 @@ namespace newApi.Services
         }
 
 
+
+        /// <summary>
+        /// WATCHDOG (frente 8): re-despacha al handler COMPLETO (ProcessAppointmentTimerAsync) cada timer
+        /// vencido y no procesado. Pensado para ejecutarse periódicamente (Hangfire RecurringJob) y
+        /// recuperar timers perdidos (crash entre Schedule y Save) o atrasados — SIN el bug del antiguo
+        /// CheckAppointmentTimersAsync, que consumía los timers de proposal/client_decision sin
+        /// procesarlos. Es seguro/idempotente: ProcessAppointmentTimerAsync re-chequea el estado y la
+        /// distribución de dinero usa clave de idempotencia por hire, así que no duplica avances ni pagos.
+        /// </summary>
+        public async Task ProcessOverdueTimersAsync()
+        {
+            try
+            {
+                var overdueTimers = await _context.AppointmentTimers
+                    .Where(t => !t.IsExpired && t.EndTime <= DateTime.UtcNow)
+                    .Select(t => new { t.Id, t.TimerType, t.AppointmentId })
+                    .ToListAsync();
+
+                foreach (var timer in overdueTimers)
+                {
+                    try
+                    {
+                        // ⚠️ El timer "awaiting_report_transition" NO lo maneja ProcessAppointmentTimerAsync
+                        // (su switch cubre proposal/response/expert_report/client_decision y NO tiene default,
+                        // así que lo CONSUMIRÍA sin transicionar). Se re-despacha a su handler propio, que va
+                        // por appointmentId. El resto de tipos sí los maneja el handler por timerId.
+                        if (timer.TimerType == "awaiting_report_transition")
+                        {
+                            await ProcessAppointmentToAwaitingReportAsync(timer.AppointmentId);
+                        }
+                        else
+                        {
+                            await ProcessAppointmentTimerAsync(timer.Id);
+                        }
+                    }
+                    catch (Exception exTimer)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Watchdog failed to process an overdue appointment timer",
+                            details: $"ProcessOverdueTimersAsync could not process timer {timer.Id} (type {timer.TimerType}): {exTimer.Message}",
+                            userId: null,
+                            source: "AppointmentService.ProcessOverdueTimersAsync",
+                            relatedEntityType: "AppointmentTimer",
+                            relatedEntityId: timer.Id);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Appointment-timers watchdog failed",
+                    details: $"ProcessOverdueTimersAsync failed: {ex.Message}",
+                    userId: null,
+                    source: "AppointmentService.ProcessOverdueTimersAsync",
+                    relatedEntityType: "AppointmentTimer",
+                    relatedEntityId: null);
+            }
+        }
 
         public async Task CheckAppointmentTimersAsync()
 
@@ -3849,8 +3917,19 @@ namespace newApi.Services
                 }
 
                 // Ô£à VALIDACI├ôN CR├ìTICA: Verificar estado del SearchHire seg├║n el tipo de timer
-                var searchHireStatus = searchHire.Status?.StatusValue ?? string.Empty;
-                
+                // 🔒 FRENTE 7: re-leer el estado FRESCO de BD justo antes de los guards para reducir la
+                // ventana TOCTOU (una acción manual del cliente/experto pudo cambiar el estado entre la
+                // carga inicial del timer y este punto). El doble-PAGO ya lo evita la idempotencia por-hire;
+                // esto reduce además el doble-AVANCE de estado en la carrera timer-vs-acción-manual.
+                var freshStatusId = await _context.SearchHires
+                    .Where(sh => sh.Id == searchHire.Id)
+                    .Select(sh => sh.StatusId)
+                    .FirstOrDefaultAsync();
+                var searchHireStatus = await _context.SystemStatuses
+                    .Where(s => s.Id == freshStatusId)
+                    .Select(s => s.StatusValue)
+                    .FirstOrDefaultAsync() ?? (searchHire.Status?.StatusValue ?? string.Empty);
+
                 // Para timers de "proposal" y "response", solo procesar si SearchHire est├í en "pending"
                 if (timer.TimerType == "proposal" || timer.TimerType == "response")
                 {
@@ -4037,6 +4116,15 @@ namespace newApi.Services
                                         relatedEntityType: "AppointmentTimer",
                                         relatedEntityId: timerId
                                     );
+
+                                    // 🔁 FRENTE 11: encolar el reintento ASÍNCRONO del dinero (idempotente) en
+                                    // vez de dejar el reembolso al cliente pendiente de gestión manual.
+                                    await EnqueueTimerMoneyRetryAsync(
+                                        timer.Appointment.SearchHireId,
+                                        AppointmentStatus.AppointmentCancelledByClientNoProposal.ToStringValue(),
+                                        "Client did not propose within 24h - automatic cancellation",
+                                        "proposal",
+                                        timerId);
                                 }
                             }
                             catch (Exception ex)
@@ -4049,7 +4137,7 @@ namespace newApi.Services
                                     source: "AppointmentService.ProcessAppointmentTimerAsync",
                                     relatedEntityType: "AppointmentTimer",
                                     relatedEntityId: timerId,
-                                    additionalData: new { 
+                                    additionalData: new {
                                         TimerId = timerId,
                                         TimerType = "proposal",
                                         SearchHireId = timer.Appointment?.SearchHireId,
@@ -4058,6 +4146,17 @@ namespace newApi.Services
                                         StackTrace = ex.StackTrace
                                     }
                                 );
+
+                                // 🔁 FRENTE 11: aun con excepción, encolar el reintento async del dinero.
+                                if (timer.Appointment != null)
+                                {
+                                    await EnqueueTimerMoneyRetryAsync(
+                                        timer.Appointment.SearchHireId,
+                                        AppointmentStatus.AppointmentCancelledByClientNoProposal.ToStringValue(),
+                                        "Client did not propose within 24h - automatic cancellation",
+                                        "proposal",
+                                        timerId);
+                                }
                             }
                         }
                         break;
@@ -4169,6 +4268,14 @@ namespace newApi.Services
                                         relatedEntityType: "AppointmentTimer",
                                         relatedEntityId: timerId
                                     );
+
+                                    // 🔁 FRENTE 11: encolar el reintento ASÍNCRONO del dinero (idempotente).
+                                    await EnqueueTimerMoneyRetryAsync(
+                                        timer.Appointment.SearchHireId,
+                                        AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
+                                        "Expert did not respond within 24h - automatic cancellation",
+                                        "response",
+                                        timerId);
                                 }
                             }
                             catch (Exception ex)
@@ -4181,7 +4288,7 @@ namespace newApi.Services
                                     source: "AppointmentService.ProcessAppointmentTimerAsync",
                                     relatedEntityType: "AppointmentTimer",
                                     relatedEntityId: timerId,
-                                    additionalData: new { 
+                                    additionalData: new {
                                         TimerId = timerId,
                                         TimerType = "response",
                                         SearchHireId = timer.Appointment?.SearchHireId,
@@ -4190,6 +4297,17 @@ namespace newApi.Services
                                         StackTrace = ex.StackTrace
                                     }
                                 );
+
+                                // 🔁 FRENTE 11: aun con excepción, encolar el reintento async del dinero.
+                                if (timer.Appointment != null)
+                                {
+                                    await EnqueueTimerMoneyRetryAsync(
+                                        timer.Appointment.SearchHireId,
+                                        AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
+                                        "Expert did not respond within 24h - automatic cancellation",
+                                        "response",
+                                        timerId);
+                                }
                             }
                         }
                         break;
@@ -4211,16 +4329,83 @@ namespace newApi.Services
                             // Usa los % del AppointmentStatus (95/0/5) porque tiene configuraci├│n
                             try
                             {
-                                await _refundService.ProcessMoneyDistributionAsync(
+                                // 🔁 FRENTE 11: ANTES se ignoraba el valor de retorno → si devolvía false (p.ej.
+                                // balance Stripe insuficiente) el cliente se quedaba sin su reembolso 95% y nadie
+                                // se enteraba. Ahora capturamos el resultado y, si falló, encolamos el reintento.
+                                var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
                                     timer.Appointment.SearchHireId,
                                     AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue(),
                                     "Expert did not submit report within 24h - automatic cancellation",
                                     null,
                                     updateState: true); // Ô£à updateState: true para que haga el mapeo autom├ítico
+
+                                if (!moneySuccess)
+                                {
+                                    // 🔁 A9: si el dinero falló en fase 1/2 (antes del cambio de estado), avanzar
+                                    // SearchHire→cancelled a mano (las otras 3 ramas ya lo hacían; esta no). El
+                                    // no-report mapea a 'cancelled' (reembolso 100% al cliente). Evita hire atascado.
+                                    try
+                                    {
+                                        var currentSearchHire = await _context.SearchHires
+                                            .Include(sh => sh.Status)
+                                            .FirstOrDefaultAsync(sh => sh.Id == timer.Appointment.SearchHireId);
+                                        if (currentSearchHire != null && currentSearchHire.Status?.IsFinalizationStatus != true)
+                                        {
+                                            var cancelledStatusId = await GetStatusIdByValueAsync("cancelled", "SearchHireStatus");
+                                            currentSearchHire.StatusId = cancelledStatusId;
+                                            currentSearchHire.UpdatedAt = DateTime.UtcNow;
+                                            await _context.SaveChangesAsync();
+                                        }
+                                    }
+                                    catch (Exception fbEx)
+                                    {
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL: expert_report timer - fallback state update failed",
+                                            details: $"SearchHire {timer.Appointment.SearchHireId}: could not force 'cancelled' after money failure: {fbEx.Message}",
+                                            userId: null,
+                                            source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                            relatedEntityType: "SearchHire",
+                                            relatedEntityId: timer.Appointment.SearchHireId);
+                                    }
+
+                                    await _loggingService.LogWarningAsync(
+                                        message: "ProcessMoneyDistributionAsync returned false for timer expert_report",
+                                        details: $"Timer {timerId} (expert_report type) - money distribution returned false for SearchHire {timer.Appointment.SearchHireId}, Status: {AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue()}. Enqueuing async retry.",
+                                        userId: null,
+                                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                        relatedEntityType: "AppointmentTimer",
+                                        relatedEntityId: timerId);
+                                    await EnqueueTimerMoneyRetryAsync(
+                                        timer.Appointment.SearchHireId,
+                                        AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue(),
+                                        "Expert did not submit report within 24h - automatic cancellation",
+                                        "expert_report",
+                                        timerId);
+                                }
                             }
-                            catch
+                            catch (Exception reportEx)
                             {
-                                // Log error pero continuar
+                                // ✅ ALERTA (antes era un catch VACÍO silencioso): no relanzamos para no
+                                // romper el barrido de timers, pero AVISAMOS. El SearchHire depende de la
+                                // distribución de dinero, así que si esto falla puede quedar sin finalizar.
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Money distribution failed on expert_report timer (no-report auto-cancel)",
+                                    details: $"SearchHire {timer.Appointment?.SearchHireId}: expert_report timer fired but money distribution threw: {reportEx.Message}. The SearchHire may not have advanced — needs retry/manual handling.",
+                                    userId: null,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: timer.Appointment?.SearchHireId);
+
+                                // 🔁 FRENTE 11: aun con excepción, encolar el reintento async del dinero.
+                                if (timer.Appointment != null)
+                                {
+                                    await EnqueueTimerMoneyRetryAsync(
+                                        timer.Appointment.SearchHireId,
+                                        AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue(),
+                                        "Expert did not submit report within 24h - automatic cancellation",
+                                        "expert_report",
+                                        timerId);
+                                }
                             }
                         }
                         break;
@@ -4375,6 +4560,14 @@ namespace newApi.Services
                                         StateWasChanged = stateWasChanged
                                     }
                                 );
+
+                                // 🔁 FRENTE 11: encolar el reintento ASÍNCRONO del pago al experto (idempotente).
+                                await EnqueueTimerMoneyRetryAsync(
+                                    timer.Appointment.SearchHireId,
+                                    AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue(),
+                                    "Client did not respond within 24h - automatic completion in favor of expert",
+                                    "client_decision",
+                                    timerId);
                             }
                             else
                             {
@@ -4517,6 +4710,17 @@ namespace newApi.Services
                                     StackTrace = ex.StackTrace
                                 }
                             );
+
+                            // 🔁 FRENTE 11: aun con excepción, encolar el reintento async del dinero.
+                            if (timer.Appointment != null)
+                            {
+                                await EnqueueTimerMoneyRetryAsync(
+                                    timer.Appointment.SearchHireId,
+                                    AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue(),
+                                    "Client did not respond within 24h - automatic completion in favor of expert",
+                                    "client_decision",
+                                    timerId);
+                            }
                         }
                         break;
                 }
@@ -4569,6 +4773,49 @@ namespace newApi.Services
 
                 // No lanzar excepci├│n para evitar que Hangfire reintente indefinidamente
                 // El timer se procesar├í en el pr├│ximo CheckAppointmentTimersAsync si es necesario
+            }
+        }
+
+        /// <summary>
+        /// FRENTE 11 (timers no-bloqueantes): cuando un timer finaliza el servicio pero la distribución
+        /// de dinero NO se completó inline (ProcessMoneyDistributionAsync devolvió false o lanzó), encola
+        /// el reintento ASÍNCRONO del dinero (StripeRefundService.RetryMoneyDistributionJobAsync, que es
+        /// idempotente por-hire y lo reintenta Hangfire) para que el dinero se mueva solo, sin bloquear ni
+        /// dejar el servicio esperando intervención manual. El estado ya fue avanzado (por
+        /// ProcessMoneyDistributionAsync o por el fallback del propio timer); por eso el reintento usa
+        /// updateState:false. Se programa con 2 min de margen (igual que los finalizadores de los
+        /// controladores) para dar tiempo a que Stripe asiente el balance tras la captura.
+        /// 'statusValue' DEBE ser el MISMO que usó la llamada original (define el reparto/config); la clave
+        /// de idempotencia es por-hire, así que un doble-encolado NO duplica pagos.
+        /// Best-effort: si el propio encolado falla, se avisa con Critical (ahí sí requiere intervención).
+        /// </summary>
+        private async Task EnqueueTimerMoneyRetryAsync(int searchHireId, string statusValue, string reason, string timerType, int timerId)
+        {
+            try
+            {
+                var jobId = BackgroundJob.Schedule<StripeRefundService>(
+                    s => s.RetryMoneyDistributionJobAsync(searchHireId, statusValue, reason, null),
+                    TimeSpan.FromMinutes(2));
+                await _loggingService.LogInfoAsync(
+                    message: "Money distribution retry enqueued after timer",
+                    details: $"Timer {timerId} ({timerType}) finalized SearchHire {searchHireId} but money did not move inline; " +
+                             $"scheduled RetryMoneyDistributionJobAsync (job {jobId}, +2min) for status '{statusValue}'. " +
+                             $"Idempotent + Hangfire-retried, so the user is NOT blocked.",
+                    userId: null,
+                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId);
+            }
+            catch (Exception enqueueEx)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Failed to enqueue money distribution retry after timer",
+                    details: $"Timer {timerId} ({timerType}) finalized SearchHire {searchHireId} but money did NOT move inline AND the async retry could NOT be scheduled for status '{statusValue}'. " +
+                             $"Money is NOT scheduled — MANUAL INTERVENTION REQUIRED. Error: {enqueueEx.Message}",
+                    userId: null,
+                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId);
             }
         }
 

@@ -9,6 +9,7 @@ using newApi.DataLayer.Models.enums;
 
 namespace newApi.Services
 {
+    // TODO rename to SearchHireTimeoutService: el contenido real es ProcessAwaitingClientDecisionAsync (timeouts de 24h en SearchHires).
     public class SubscriptionService : ISubscriptionService
     {
         private readonly AppDbContext _context; 

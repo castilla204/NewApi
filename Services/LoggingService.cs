@@ -1,8 +1,12 @@
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Linq;
 
@@ -28,6 +32,8 @@ namespace newApi.Services
         Task LogDebugAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false);
         Task<LogType?> GetLogTypeAsync(string name);
         Task<LogType> CreateLogTypeAsync(string name, string? description = null, string? severityName = null, bool requiresAdminNotification = false, bool requiresEmailAlert = false, bool requiresSmsAlert = false);
+        Task EmitAdminDigestAsync();
+        Task EmitRefundFailedDigestAsync();
     }
 
     public class LoggingService : ILoggingService
@@ -35,12 +41,34 @@ namespace newApi.Services
         private readonly AppDbContext _context;
         private readonly IEmailService _emailService;
         private readonly IServiceScopeFactory _serviceScopeFactory;
+        private readonly IMemoryCache _cache;
 
-        public LoggingService(AppDbContext context, IEmailService emailService, IServiceScopeFactory serviceScopeFactory)
+        // P3-2: dedup/throttle de alertas de admin. Los primeros 3 hits con el mismo (source|message|entity)
+        // dentro de la ventana siempre van por email; los siguientes se reagrupan en un digest periódico.
+        // Mantenemos un ConcurrentDictionary paralelo a IMemoryCache porque MemoryCache no expone enumeración.
+        private static readonly ConcurrentDictionary<string, AlertDedupEntry> _alertDedupTracker = new();
+        private const int AdminAlertWindowMinutes = 15;
+        private const int AdminAlertImmediateEmailThreshold = 3;
+
+        private sealed class AlertDedupEntry
+        {
+            public int Count;
+            public DateTime FirstSeenUtc;
+            public DateTime LastSeenUtc;
+            public DateTime ExpiresUtc;
+            public string Source = string.Empty;
+            public string Message = string.Empty;
+            public string Details = string.Empty;
+            public string EntityType = string.Empty;
+            public int? EntityId;
+        }
+
+        public LoggingService(AppDbContext context, IEmailService emailService, IServiceScopeFactory serviceScopeFactory, IMemoryCache cache)
         {
             _context = context;
             _emailService = emailService;
             _serviceScopeFactory = serviceScopeFactory;
+            _cache = cache;
         }
 
         public async Task LogCriticalAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false)
@@ -755,19 +783,73 @@ namespace newApi.Services
 
                     if (adminEmails.Count > 0)
                     {
-                        var subject = $"🚨 {logType.Name.ToUpper()} ALERT - {log.Message}";
-                        var bodyHtml = $@"<html><body style='font-family:sans-serif;'>
-                            <h2 style='color:#b91c1c;'>🚨 {System.Net.WebUtility.HtmlEncode(logType.Name)} ALERT</h2>
-                            <p><strong>{System.Net.WebUtility.HtmlEncode(log.Message)}</strong></p>
-                            <p>{System.Net.WebUtility.HtmlEncode(log.Details ?? "")}</p>
-                            <p style='color:#6b7280;font-size:12px;'>Source: {System.Net.WebUtility.HtmlEncode(log.Source ?? "")} · {log.RelatedEntityType} #{log.RelatedEntityId} · {log.CreatedAt:yyyy-MM-dd HH:mm:ss} UTC</p>
-                            </body></html>";
-
-                        foreach (var adminEmail in adminEmails)
+                        // P3-2: dedup/throttle dentro de ventana de 15 min. Los primeros 3 hits del mismo
+                        // (source|message|entity) se envían siempre; del 4to en adelante se acumulan y los
+                        // resume EmitAdminDigestAsync (Hangfire cada 30 min).
+                        var dedupHash = ComputeAlertHash(log.Source, log.Message, log.RelatedEntityType, log.RelatedEntityId);
+                        var nowUtc = DateTime.UtcNow;
+                        var expiresUtc = nowUtc.AddMinutes(AdminAlertWindowMinutes);
+                        var entry = _alertDedupTracker.AddOrUpdate(
+                            dedupHash,
+                            _ => new AlertDedupEntry
+                            {
+                                Count = 1,
+                                FirstSeenUtc = nowUtc,
+                                LastSeenUtc = nowUtc,
+                                ExpiresUtc = expiresUtc,
+                                Source = log.Source ?? string.Empty,
+                                Message = log.Message ?? string.Empty,
+                                Details = log.Details ?? string.Empty,
+                                EntityType = log.RelatedEntityType ?? string.Empty,
+                                EntityId = log.RelatedEntityId
+                            },
+                            (_, existing) =>
+                            {
+                                if (existing.ExpiresUtc <= nowUtc)
+                                {
+                                    existing.Count = 1;
+                                    existing.FirstSeenUtc = nowUtc;
+                                    existing.ExpiresUtc = expiresUtc;
+                                }
+                                else
+                                {
+                                    existing.Count++;
+                                }
+                                existing.LastSeenUtc = nowUtc;
+                                existing.Details = log.Details ?? existing.Details;
+                                return existing;
+                            });
+                        _cache.Set(dedupHash, entry.Count, new MemoryCacheEntryOptions
                         {
-                            BackgroundJob.Enqueue<LoggingService>(s => s.SendEmailBackgroundJob(adminEmail!, subject, bodyHtml, null));
+                            AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(AdminAlertWindowMinutes)
+                        });
+
+                        // Severidades que NUNCA se suprimen (siempre van por email).
+                        bool isFatalSeverity = string.Equals(logType.Severity?.Name, "Fatal", StringComparison.OrdinalIgnoreCase);
+                        bool requiresEmailAlert = logType.RequiresEmailAlert;
+
+                        bool sendImmediateEmail = entry.Count <= AdminAlertImmediateEmailThreshold || isFatalSeverity || requiresEmailAlert;
+
+                        if (sendImmediateEmail)
+                        {
+                            var subject = $"🚨 {logType.Name.ToUpper()} ALERT - {log.Message}";
+                            var bodyHtml = $@"<html><body style='font-family:sans-serif;'>
+                                <h2 style='color:#b91c1c;'>🚨 {System.Net.WebUtility.HtmlEncode(logType.Name)} ALERT</h2>
+                                <p><strong>{System.Net.WebUtility.HtmlEncode(log.Message)}</strong></p>
+                                <p>{System.Net.WebUtility.HtmlEncode(log.Details ?? "")}</p>
+                                <p style='color:#6b7280;font-size:12px;'>Source: {System.Net.WebUtility.HtmlEncode(log.Source ?? "")} · {log.RelatedEntityType} #{log.RelatedEntityId} · {log.CreatedAt:yyyy-MM-dd HH:mm:ss} UTC · Hit {entry.Count}/{AdminAlertImmediateEmailThreshold} en ventana de {AdminAlertWindowMinutes} min</p>
+                                </body></html>";
+
+                            foreach (var adminEmail in adminEmails)
+                            {
+                                BackgroundJob.Enqueue<LoggingService>(s => s.SendEmailBackgroundJob(adminEmail!, subject, bodyHtml, null));
+                            }
+                            Console.WriteLine($"[LOGGING SERVICE] [ADMIN ALERT] Email de alerta encolado para {adminEmails.Count} admin(s) (hit {entry.Count}): {log.Message}");
                         }
-                        Console.WriteLine($"[LOGGING SERVICE] [ADMIN ALERT] Email de alerta encolado para {adminEmails.Count} admin(s): {log.Message}");
+                        else
+                        {
+                            Console.WriteLine($"[LOGGING SERVICE] [ADMIN ALERT] Alerta suprimida (hit {entry.Count} > {AdminAlertImmediateEmailThreshold}) hasta digest. Source={log.Source}, Message={log.Message}");
+                        }
                     }
                     else
                     {
@@ -778,6 +860,26 @@ namespace newApi.Services
                 {
                     // No interrumpir el flujo; dejar rastro DURABLE en consola como último recurso.
                     Console.Error.WriteLine($"[LOGGING SERVICE] ⚠️ [ADMIN ALERT] Error encolando email de alerta: {emailEx.Message}. Alerta original: {log.Message} - {log.Details}");
+
+                    // P3-3: fallback no bloqueante a canal alternativo (Slack/Telegram) si está configurado.
+                    try
+                    {
+                        using var scope = _serviceScopeFactory.CreateScope();
+                        var alertChannel = scope.ServiceProvider.GetService<IAlertChannelService>();
+                        if (alertChannel != null)
+                        {
+                            var fallbackMsg = $"[ADMIN ALERT fallback SMTP] {log.Message} | Details: {log.Details} | Source: {log.Source}";
+                            _ = Task.Run(async () =>
+                            {
+                                try { await alertChannel.SendCriticalAsync(fallbackMsg, new { log.Source, log.RelatedEntityType, log.RelatedEntityId }); }
+                                catch (Exception fbEx) { Console.Error.WriteLine($"[LOGGING SERVICE] [ALERT FALLBACK] {fbEx.Message}"); }
+                            });
+                        }
+                    }
+                    catch (Exception fallbackResolveEx)
+                    {
+                        Console.Error.WriteLine($"[LOGGING SERVICE] [ALERT FALLBACK] No se pudo resolver AlertChannelService: {fallbackResolveEx.Message}");
+                    }
                 }
             }
             catch (Exception ex)
@@ -1004,6 +1106,167 @@ namespace newApi.Services
                 "Debug" => ("🔍 Debug", "debug_notification"),
                 _ => ("📢 Notificación", "general_notification")
             };
+        }
+
+        private static string ComputeAlertHash(string? source, string? message, string? entityType, int? entityId)
+        {
+            var raw = $"{source}|{message}|{entityType}|{entityId}";
+            using var sha = SHA256.Create();
+            var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(raw));
+            return Convert.ToHexString(bytes);
+        }
+
+        /// <summary>
+        /// P3-2: Emite un email digest agrupando alertas suprimidas (count > umbral) dentro de la ventana
+        /// activa. Llamado por Hangfire RecurringJob cada 30 min. No emite nada si no hay suprimidas.
+        /// </summary>
+        [AutomaticRetry(Attempts = 2, DelaysInSeconds = new[] { 60, 300 })]
+        public async Task EmitAdminDigestAsync()
+        {
+            try
+            {
+                var nowUtc = DateTime.UtcNow;
+                var suppressed = new List<AlertDedupEntry>();
+                foreach (var kvp in _alertDedupTracker.ToArray())
+                {
+                    var entry = kvp.Value;
+                    if (entry.ExpiresUtc <= nowUtc)
+                    {
+                        _alertDedupTracker.TryRemove(kvp.Key, out _);
+                        continue;
+                    }
+                    if (entry.Count > AdminAlertImmediateEmailThreshold)
+                    {
+                        suppressed.Add(entry);
+                    }
+                }
+
+                if (suppressed.Count == 0)
+                {
+                    return;
+                }
+
+                using var scope = _serviceScopeFactory.CreateScope();
+                var ctx = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var adminEmails = await ctx.Users
+                    .AsNoTracking()
+                    .Where(u => u.Role == newApi.DataLayer.Models.PostGresModels.UserRole.Admin
+                                && u.Email != null && u.Email != "")
+                    .Select(u => u.Email)
+                    .ToListAsync();
+
+                if (adminEmails.Count == 0)
+                {
+                    Console.Error.WriteLine($"[LOGGING SERVICE] [ADMIN DIGEST] No hay admins con email; {suppressed.Count} grupos suprimidos no enviados.");
+                    return;
+                }
+
+                var rows = string.Join("", suppressed.OrderByDescending(e => e.Count).Select(e =>
+                    $"<tr><td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(e.Source)}</td>" +
+                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(e.Message)}</td>" +
+                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(e.EntityType)} #{e.EntityId}</td>" +
+                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right;'><strong>{e.Count}</strong></td>" +
+                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{e.FirstSeenUtc:HH:mm} → {e.LastSeenUtc:HH:mm} UTC</td></tr>"));
+
+                var subject = $"📊 Admin Digest - {suppressed.Count} grupo(s) de alertas críticas suprimidas";
+                var bodyHtml = $@"<html><body style='font-family:sans-serif;'>
+                    <h2 style='color:#b91c1c;'>📊 Digest de alertas admin</h2>
+                    <p>Ventana activa de {AdminAlertWindowMinutes} min. Solo se listan grupos con count &gt; {AdminAlertImmediateEmailThreshold}.</p>
+                    <table style='border-collapse:collapse;width:100%;font-size:13px;'>
+                        <thead><tr style='background:#f3f4f6;'><th style='padding:8px 10px;text-align:left;'>Source</th><th style='padding:8px 10px;text-align:left;'>Message</th><th style='padding:8px 10px;text-align:left;'>Entity</th><th style='padding:8px 10px;text-align:right;'>Count</th><th style='padding:8px 10px;text-align:left;'>Ventana</th></tr></thead>
+                        <tbody>{rows}</tbody>
+                    </table>
+                    </body></html>";
+
+                foreach (var adminEmail in adminEmails)
+                {
+                    BackgroundJob.Enqueue<LoggingService>(s => s.SendEmailBackgroundJob(adminEmail!, subject, bodyHtml, null));
+                }
+                Console.WriteLine($"[LOGGING SERVICE] [ADMIN DIGEST] Digest encolado con {suppressed.Count} grupos a {adminEmails.Count} admin(s).");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[LOGGING SERVICE] [ADMIN DIGEST] Error emitiendo digest: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// P3-1 (versión mínima): Digest diario de SearchHires marcados con RefundFailedAt en las
+        /// últimas 24h (el campo se setea en el filtro de Hangfire cuando RetryMoneyDistributionJobAsync
+        /// agota todos los reintentos). Envía un email a los admins listando los hires que requieren
+        /// reconciliación manual. No emite nada si no hay hires marcados.
+        /// </summary>
+        [AutomaticRetry(Attempts = 2, DelaysInSeconds = new[] { 300, 1800 })]
+        public async Task EmitRefundFailedDigestAsync()
+        {
+            try
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var ctx = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var since = DateTime.UtcNow.AddHours(-24);
+
+                var failedHires = await ctx.SearchHires
+                    .AsNoTracking()
+                    .Where(h => h.RefundFailedAt != null && h.RefundFailedAt >= since)
+                    .OrderByDescending(h => h.RefundFailedAt)
+                    .Select(h => new
+                    {
+                        h.Id,
+                        h.ClientId,
+                        h.ExpertId,
+                        h.Amount,
+                        h.RefundFailedAt,
+                        StatusValue = h.Status != null ? h.Status.StatusValue : null
+                    })
+                    .Take(200)
+                    .ToListAsync();
+
+                if (failedHires.Count == 0)
+                {
+                    return;
+                }
+
+                var adminEmails = await ctx.Users
+                    .AsNoTracking()
+                    .Where(u => u.Role == newApi.DataLayer.Models.PostGresModels.UserRole.Admin
+                                && u.Email != null && u.Email != "")
+                    .Select(u => u.Email)
+                    .ToListAsync();
+
+                if (adminEmails.Count == 0)
+                {
+                    Console.Error.WriteLine($"[LOGGING SERVICE] [REFUND-FAILED-DIGEST] No hay admins con email; {failedHires.Count} hires con RefundFailedAt sin notificar.");
+                    return;
+                }
+
+                var rows = string.Join("", failedHires.Select(h =>
+                    $"<tr><td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>#{h.Id}</td>" +
+                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(h.StatusValue ?? string.Empty)}</td>" +
+                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>C:{h.ClientId} / E:{h.ExpertId}</td>" +
+                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right;'>{h.Amount:0.00} €</td>" +
+                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{h.RefundFailedAt:yyyy-MM-dd HH:mm} UTC</td></tr>"));
+
+                var subject = $"⚠️ Refund-failed digest — {failedHires.Count} hire(s) requieren reconciliación manual";
+                var bodyHtml = $@"<html><body style='font-family:sans-serif;'>
+                    <h2 style='color:#b91c1c;'>⚠️ SearchHires con distribución de dinero fallida</h2>
+                    <p>Hires marcados con RefundFailedAt en las últimas 24h (Hangfire agotó reintentos en RetryMoneyDistributionJobAsync).</p>
+                    <table style='border-collapse:collapse;width:100%;font-size:13px;'>
+                        <thead><tr style='background:#f3f4f6;'><th style='padding:8px 10px;text-align:left;'>SearchHireId</th><th style='padding:8px 10px;text-align:left;'>Estado</th><th style='padding:8px 10px;text-align:left;'>Cliente/Experto</th><th style='padding:8px 10px;text-align:right;'>Importe</th><th style='padding:8px 10px;text-align:left;'>RefundFailedAt</th></tr></thead>
+                        <tbody>{rows}</tbody>
+                    </table>
+                    <p style='color:#6b7280;font-size:12px;'>Acción: revisar manualmente cada hire (transfer/refund) y, al resolverlo, poner RefundFailedAt a NULL.</p>
+                    </body></html>";
+
+                foreach (var adminEmail in adminEmails)
+                {
+                    BackgroundJob.Enqueue<LoggingService>(s => s.SendEmailBackgroundJob(adminEmail!, subject, bodyHtml, null));
+                }
+                Console.WriteLine($"[LOGGING SERVICE] [REFUND-FAILED-DIGEST] Digest encolado con {failedHires.Count} hires a {adminEmails.Count} admin(s).");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[LOGGING SERVICE] [REFUND-FAILED-DIGEST] Error emitiendo digest: {ex.Message}");
+            }
         }
     }
 }

@@ -70,9 +70,9 @@ namespace newApi.Services
             var clientEmail = searchHire.Client.Email ?? "email@eliminado.com";
             var serviceName = searchHire.SearchService.ServiceType.Name ?? "Servicio eliminado";
             var serviceCategory = searchHire.SearchService.Category.Name ?? "Categoría eliminada";
-            var amount = searchHire.Amount;
-            var iva = searchHire.TaxAmount ?? (amount * 0.21m); // Usar tax real o fallback 21%
-            var total = amount + iva;
+            var total = searchHire.Amount; // bruto con IVA incluido
+            var iva = searchHire.TaxAmount ?? Math.Round(total - (total / 1.21m), 2);
+            var baseSinIva = Math.Round(total - iva, 2);
 
             // Generar PDF con QuestPDF
             var pdfBytes = Document.Create(container =>
@@ -140,7 +140,7 @@ namespace newApi.Services
                                     });
 
                                     table.Cell().Element(CellStyle).Text($"Servicio: {serviceName}");
-                                    table.Cell().Element(CellStyle).AlignRight().Text($"{amount:N2} €");
+                                    table.Cell().Element(CellStyle).AlignRight().Text($"{baseSinIva:N2} €");
 
                                     table.Cell().Element(CellStyle).Text($"Categoría: {serviceCategory}");
                                     table.Cell().Element(CellStyle).AlignRight().Text("");
@@ -170,8 +170,8 @@ namespace newApi.Services
                                         columns.RelativeColumn();
                                     });
 
-                                    table.Cell().Element(CellStyle).Text("Subtotal:").FontSize(11);
-                                    table.Cell().Element(CellStyle).AlignRight().Text($"{amount:N2} €").FontSize(11);
+                                    table.Cell().Element(CellStyle).Text("Base imponible:").FontSize(11);
+                                    table.Cell().Element(CellStyle).AlignRight().Text($"{baseSinIva:N2} €").FontSize(11);
 
                                     table.Cell().Element(CellStyle).Text("IVA (21%):").FontSize(11);
                                     table.Cell().Element(CellStyle).AlignRight().Text($"{iva:N2} €").FontSize(11);

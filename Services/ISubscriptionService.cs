@@ -1,5 +1,6 @@
 ﻿namespace newApi.Services
 {
+    // TODO rename to ISearchHireTimeoutService: la lógica real procesa SearchHires en awaiting_client_decision tras 24h.
     public interface ISubscriptionService
     {
         Task<SubscriptionLimits> GetUserSubscriptionLimits(int userId);

@@ -4,7 +4,9 @@ using Hangfire.Common;
 using Hangfire.Server;
 using Hangfire.States;
 using Hangfire.Storage;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using newApi.DataLayer.Models;
 
 namespace newApi.Services
 {
@@ -51,16 +53,63 @@ namespace newApi.Services
                 // Determinar si es un job crítico (procesa dinero o estados)
                 var isCriticalJob = IsCriticalJob(jobMethod, jobType);
                 
-                // Usar scope para acceder a servicios scoped
-                using (var scope = _serviceScopeFactory.CreateScope())
+                // P3-1 (versión mínima): si el job que agotó retries es RetryMoneyDistributionJobAsync,
+                // marcamos el SearchHire con RefundFailedAt para que el digest diario lo recoja.
+                if (jobMethod == nameof(StripeRefundService.RetryMoneyDistributionJobAsync)
+                    && job.Job.Args.Count > 0 && job.Job.Args[0] is int failedHireId)
                 {
-                    var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+                    var capturedHireId = failedHireId;
+                    var capturedExceptionMessage = exception?.Message;
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            using var refundScope = _serviceScopeFactory.CreateScope();
+                            var dbCtx = refundScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                            var hire = await dbCtx.SearchHires.FirstOrDefaultAsync(h => h.Id == capturedHireId);
+                            if (hire != null && hire.RefundFailedAt == null)
+                            {
+                                hire.RefundFailedAt = DateTime.UtcNow;
+                                await dbCtx.SaveChangesAsync();
+
+                                var logSvc = refundScope.ServiceProvider.GetRequiredService<ILoggingService>();
+                                await logSvc.LogCriticalAsync(
+                                    message: "CRITICAL: Money distribution exhausted retries — SearchHire flagged RefundFailedAt",
+                                    details: $"SearchHire {capturedHireId} has RefundFailedAt set after exhausting Hangfire retries on RetryMoneyDistributionJobAsync. Last exception: {capturedExceptionMessage}. Action: manual reconciliation required (refund or transfer).",
+                                    userId: null,
+                                    source: $"Hangfire.{jobType}.{jobMethod}",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: capturedHireId,
+                                    additionalData: new
+                                    {
+                                        event_type = "refund_money_distribution_permanently_failed",
+                                        SearchHireId = capturedHireId,
+                                        HangfireJobId = jobId,
+                                        ExceptionMessage = capturedExceptionMessage
+                                    });
+                            }
+                        }
+                        catch (Exception flagEx)
+                        {
+                            Console.Error.WriteLine($"[HANGFIRE FILTER] Failed to flag RefundFailedAt for SearchHire {capturedHireId}: {flagEx.Message}");
+                        }
+                    });
+                }
+
+                // El scope se crea DENTRO del Task.Run para que el ILoggingService scoped
+                // (que envuelve un DbContext) siga vivo mientras corre la tarea en segundo plano.
+                // Antes un `using` externo liberaba el scope antes de ejecutarse la tarea, lo que
+                // provocaba ObjectDisposedException y la pérdida silenciosa del log crítico.
+                {
                     
                     // Crear log crítico para alertar a soporte
                     _ = Task.Run(async () =>
                     {
                         try
                         {
+                            using var scope = _serviceScopeFactory.CreateScope();
+                            var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
+
                             var logMessage = isCriticalJob
                                 ? "CRITICAL: Hangfire job failed definitively after all retries - CRITICAL JOB"
                                 : "CRITICAL: Hangfire job failed definitively after all retries";

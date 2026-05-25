@@ -643,7 +643,8 @@ namespace newApi.Controllers
                     };
 
                     var serviceStripe = new SessionService();
-                    var session = await serviceStripe.CreateAsync(options);
+                    var idempotencyKey = $"checkout-{userId}-{service.Id}-none-{DateTime.UtcNow:yyyyMMddHHmm}";
+                    var session = await serviceStripe.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
 
                     await _loggingService.LogInfoAsync(
                         message: "Sesión de pago Stripe creada exitosamente para búsqueda con contratación",

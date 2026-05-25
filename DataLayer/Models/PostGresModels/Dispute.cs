@@ -26,6 +26,9 @@
         // Indica si el experto puede aún responder (dentro de las 48h)
         public bool CanExpertRespond => ExpertResponseDeadline.HasValue && DateTime.UtcNow <= ExpertResponseDeadline.Value && ExpertResponseAt == null;
 
+        // ID de la disputa equivalente en Stripe (charge.dispute.created). Permite enviar evidencia.
+        public string? StripeDisputeId { get; set; }
+
         // Relación con la contratación
         public virtual SearchHire SearchHire { get; set; } = null!;
         // Relación con el usuario que reporta

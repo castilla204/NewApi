@@ -72,10 +72,16 @@ namespace newApi.Controllers
             
             if (systemStatus == null)
             {
-                // Default to "pending" (ID = 1)
+                // ⚠️ FRENTE 8: estado no encontrado → AVISAR en vez de rebobinar a "pending" en silencio.
+                // (Antes devolvía 1 sin avisar, causando misroutes silenciosos, p.ej. con estados sin sembrar.)
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: SearchHireStatus value not found - defaulting to 'pending'",
+                    details: $"GetStatusIdByValueAsync could not resolve StatusValue '{statusValue}' (SearchHireStatus). Defaulting to pending (1); verify the status is seeded. This can silently misroute a hire.",
+                    source: "DisputeController.GetStatusIdByValueAsync",
+                    relatedEntityType: "SearchHire");
                 return 1;
             }
-            
+
             return systemStatus.Id;
         }
 
@@ -208,11 +214,21 @@ namespace newApi.Controllers
                     catch (Exception ex)
                     {
                         await transaction.RollbackAsync();
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Failed to open dispute",
+                            details: $"Dispute creation failed and was rolled back: {ex.Message}",
+                            source: "DisputeController.CreateDispute",
+                            relatedEntityType: "Dispute");
                         return StatusCode(500, new { message = "Failed to open dispute" });
                     }
             }
             catch (Exception ex)
             {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Failed to open dispute",
+                    details: $"Dispute creation failed: {ex.Message}",
+                    source: "DisputeController.CreateDispute",
+                    relatedEntityType: "Dispute");
                 return StatusCode(500, new { message = "Failed to open dispute" });
             }
         }
@@ -445,9 +461,22 @@ namespace newApi.Controllers
                 // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
                 try
                 {
-                    dispute.Status = "Resolved";
+                    // ⚠️ A6: NO marcar "Resolved" todavía. Antes se commiteaba aquí, ANTES de mover
+                    // el dinero; si el dinero fallaba (o saltaba el catch de recuperación) la disputa
+                    // quedaba "Resolved" SIN pagar, y el guard != "Pending" bloqueaba el reintento.
+                    // Ahora se marca "Resolved" al final, solo tras mover el dinero con éxito.
                     dispute.ResolutionComments = request.ResolutionComments;
                     await _context.SaveChangesAsync();
+
+                        // ✅ FRENTE 8: validar la acción ANTES de mutar estado. Antes, una acción inválida
+                        // caía al default del switch (400) PERO ya se había finalizado el hire (a
+                        // DisputeResolvedExpert por el ternario por defecto) y la cita → quedaban finalizados
+                        // sin mover dinero ni marcar la disputa Resuelta.
+                        var resolveAction = request.Action?.ToLower();
+                        if (resolveAction != "refund_client" && resolveAction != "pay_expert")
+                        {
+                            return BadRequest(new { message = "Invalid action. Valid actions: refund_client, pay_expert" });
+                        }
 
                         // ✅ FIX: Actualizar el estado del SearchHire ANTES de procesar dinero
                         // Esto asegura que el estado se actualice incluso si falla el procesamiento de dinero
@@ -464,6 +493,23 @@ namespace newApi.Controllers
                             dispute.SearchHire.StatusId = targetStatusRow.Id;
                             dispute.SearchHire.UpdatedAt = DateTime.UtcNow;
                             await _context.SaveChangesAsync();
+                        }
+
+                        // ✅ FRENTE 8 (c): finalizar también la CITA al resolver la disputa, para que no
+                        // quede abierta mientras el hire pasa a DisputeResolved* (desincronización cita↔hire).
+                        var disputeAppointment = await _context.Appointments
+                            .FirstOrDefaultAsync(a => a.SearchHireId == dispute.SearchHire.Id);
+                        if (disputeAppointment != null)
+                        {
+                            var apptCompletedRow = await _context.SystemStatuses
+                                .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus"
+                                                          && s.StatusValue == "appointment_completed");
+                            if (apptCompletedRow != null && disputeAppointment.StatusId != apptCompletedRow.Id)
+                            {
+                                disputeAppointment.StatusId = apptCompletedRow.Id;
+                                disputeAppointment.UpdatedAt = DateTime.UtcNow;
+                                await _context.SaveChangesAsync();
+                            }
                         }
 
                         switch (request.Action.ToLower())
@@ -526,15 +572,16 @@ namespace newApi.Controllers
                                                 ? $"Failed to process client refund: {lastCriticalLog.Message}. Check logs for details (LogId: {lastCriticalLog.Id})"
                                                 : $"Failed to process client refund. Possible causes: Missing money distribution config for status '{SearchHireStatus.DisputeResolvedClient.ToStringValue()}', Stripe payment intent not found, or insufficient balance. Check logs for details.";
                                             
-                                            return StatusCode(500, new { 
-                                                message = errorMessage,
-                                                errorCode = "CLIENT_REFUND_FAILED",
-                                                searchHireId = dispute.SearchHire.Id,
-                                                status = SearchHireStatus.DisputeResolvedClient.ToStringValue(),
-                                                amount = dispute.SearchHire.Amount,
-                                                clientId = dispute.SearchHire.ClientId,
-                                                logId = lastCriticalLog?.Id
-                                            });
+                                            // 🔁 FRENTE 6: NO bloquear. El estado ya avanzó a DisputeResolvedClient;
+                                            // encolamos el reintento del dinero (idempotente) y CONTINUAMOS para
+                                            // marcar la disputa Resuelta y devolver 200. El admin ya fue avisado (Critical).
+                                            Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                                                s => s.RetryMoneyDistributionJobAsync(
+                                                    dispute.SearchHire.Id,
+                                                    SearchHireStatus.DisputeResolvedClient.ToStringValue(),
+                                                    "Retry client refund after dispute resolution (money pending)",
+                                                    null),
+                                                TimeSpan.FromMinutes(2));
                                         }
                                     }
                                     catch (Exception ex)
@@ -561,12 +608,14 @@ namespace newApi.Controllers
                                                 InnerException = ex.InnerException?.Message
                                             }
                                         );
-                                        return StatusCode(500, new { 
-                                            message = $"Failed to process client refund: {ex.Message}",
-                                            errorCode = "CLIENT_REFUND_EXCEPTION",
-                                            errorType = ex.GetType().Name,
-                                            searchHireId = dispute.SearchHire.Id
-                                        });
+                                        // 🔁 FRENTE 6: NO bloquear. Encolar reintento del dinero (idempotente) y CONTINUAR.
+                                        Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                                            s => s.RetryMoneyDistributionJobAsync(
+                                                dispute.SearchHire.Id,
+                                                SearchHireStatus.DisputeResolvedClient.ToStringValue(),
+                                                "Retry client refund after dispute resolution (exception)",
+                                                null),
+                                            TimeSpan.FromMinutes(2));
                                     }
                                     break;
                                 }
@@ -630,14 +679,16 @@ namespace newApi.Controllers
                                                 ? $"Failed to process expert transfer: {lastCriticalLog.Message}. Check logs for details (LogId: {lastCriticalLog.Id})"
                                                 : $"Failed to process expert transfer. Possible causes: Missing money distribution config for status '{SearchHireStatus.DisputeResolvedExpert.ToStringValue()}', Stripe account not configured, or insufficient balance. Check logs for details.";
                                             
-                                            return StatusCode(500, new { 
-                                                message = errorMessage,
-                                                errorCode = "EXPERT_TRANSFER_FAILED",
-                                                searchHireId = dispute.SearchHire.Id,
-                                                status = SearchHireStatus.DisputeResolvedExpert.ToStringValue(),
-                                                expertStripeAccountId = dispute.SearchHire.Expert?.ExpertProfile?.StripeAccountId ?? "NOT_SET",
-                                                logId = lastCriticalLog?.Id
-                                            });
+                                            // 🔁 FRENTE 6: NO bloquear. El estado ya avanzó a DisputeResolvedExpert;
+                                            // encolamos el reintento del dinero (idempotente) y CONTINUAMOS para
+                                            // marcar la disputa Resuelta y devolver 200. El admin ya fue avisado (Critical).
+                                            Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                                                s => s.RetryMoneyDistributionJobAsync(
+                                                    dispute.SearchHire.Id,
+                                                    SearchHireStatus.DisputeResolvedExpert.ToStringValue(),
+                                                    "Retry expert transfer after dispute resolution (money pending)",
+                                                    null),
+                                                TimeSpan.FromMinutes(2));
                                         }
                                     }
                                     catch (Exception ex)
@@ -664,12 +715,14 @@ namespace newApi.Controllers
                                                 InnerException = ex.InnerException?.Message
                                             }
                                         );
-                                        return StatusCode(500, new { 
-                                            message = $"Failed to process expert transfer: {ex.Message}",
-                                            errorCode = "EXPERT_TRANSFER_EXCEPTION",
-                                            errorType = ex.GetType().Name,
-                                            searchHireId = dispute.SearchHire.Id
-                                        });
+                                        // 🔁 FRENTE 6: NO bloquear. Encolar reintento del dinero (idempotente) y CONTINUAR.
+                                        Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                                            s => s.RetryMoneyDistributionJobAsync(
+                                                dispute.SearchHire.Id,
+                                                SearchHireStatus.DisputeResolvedExpert.ToStringValue(),
+                                                "Retry expert transfer after dispute resolution (exception)",
+                                                null),
+                                            TimeSpan.FromMinutes(2));
                                     }
                                     break;
                                 }
@@ -730,6 +783,12 @@ namespace newApi.Controllers
                             );
                         }
 
+                        // ✅ A6: marcar "Resolved" SOLO ahora, tras mover el dinero con éxito.
+                        // (Si el dinero hubiera fallado, ya se habría retornado 500 más arriba dejando
+                        // la disputa en "Pending" y, por tanto, reintentable.)
+                        dispute.Status = "Resolved";
+                        await _context.SaveChangesAsync();
+
                         return Ok(new { message = "Dispute resolved successfully" });
                 }
                 catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
@@ -745,14 +804,13 @@ namespace newApi.Controllers
                         
                         if (recoveryDispute != null)
                         {
-                            recoveryDispute.Status = "Resolved";
-                            recoveryDispute.ResolutionComments = request.ResolutionComments;
+                            // ⚠️ A6: NO marcar "Resolved" aquí — no se puede confirmar que el dinero se movió
+                            // (la excepción pudo ocurrir antes/durante la distribución). Dejar la disputa en
+                            // "Pending" para que sea reintentable de forma segura (la distribución es idempotente)
+                            // en vez de cerrarla sin pagar y bloquear el reintento.
+                            recoveryDispute.Status = "Pending";
                             await recoveryContext.SaveChangesAsync();
-                            
-                            // Continuar con el procesamiento de dinero (si aplica)
-                            // Nota: El procesamiento de dinero se maneja fuera de este bloque
-                            // Por ahora, retornar éxito ya que el estado se guardó correctamente
-                            return Ok(new { message = "Dispute resolved successfully (recovered from connection error)" });
+                            return StatusCode(500, new { message = "Dispute resolution interrupted by a connection error and was NOT completed. It remains pending; please retry." });
                         }
                         else
                         {
@@ -778,12 +836,12 @@ namespace newApi.Controllers
                         
                         if (recoveryDispute != null)
                         {
-                            recoveryDispute.Status = "Resolved";
-                            recoveryDispute.ResolutionComments = request.ResolutionComments;
+                            // ⚠️ A6: NO marcar "Resolved" aquí — no se puede confirmar que el dinero se movió.
+                            // Dejar la disputa en "Pending" para que sea reintentable de forma segura
+                            // (la distribución de dinero es idempotente) en vez de cerrarla sin pagar.
+                            recoveryDispute.Status = "Pending";
                             await recoveryContext.SaveChangesAsync();
-                            
-                            // Retornar éxito ya que el estado se guardó correctamente
-                            return Ok(new { message = "Dispute resolved successfully (recovered from connection error)" });
+                            return StatusCode(500, new { message = "Dispute resolution interrupted by a connection error and was NOT completed. It remains pending; please retry." });
                         }
                         else
                         {

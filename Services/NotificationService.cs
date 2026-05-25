@@ -163,7 +163,7 @@ namespace newApi.Services
 
             var actionUrl = $"https://inspecciono.com/detalles/{searchHireId}";
             var htmlBody = GenerateEmailTemplate(title, content, "Ver detalles", actionUrl, "📅");
-            await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true);
+            await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }
 
         /// <summary>
@@ -185,7 +185,7 @@ namespace newApi.Services
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Los perfiles completos obtienen mejores resultados.</p>";
 
             var htmlBody = GenerateEmailTemplate(title, content, "Completar perfil", "https://inspecciono.com/profile", "👋");
-            await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true);
+            await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }
 
         /// <summary>
@@ -202,7 +202,7 @@ namespace newApi.Services
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas más información, accede a tu cuenta.</p>";
 
             var htmlBody = GenerateEmailTemplate(title, content, actionText, actionUrl, "📢");
-            await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true);
+            await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }
 
         /// <summary>
@@ -222,7 +222,7 @@ namespace newApi.Services
 
             var actionUrl = $"https://inspecciono.com/detalles/{searchHireId}";
             var htmlBody = GenerateEmailTemplate(title, content, "Dejar valoración", actionUrl, "⭐");
-            await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true);
+            await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }
 
         #endregion

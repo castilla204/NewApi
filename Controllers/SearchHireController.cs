@@ -69,10 +69,15 @@ namespace newApi.Controllers
             
             if (systemStatus == null)
             {
-                // Default to "pending" (ID = 1)
+                // ⚠️ FRENTE 8: estado no encontrado → AVISAR en vez de rebobinar a "pending" en silencio.
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: SearchHireStatus value not found - defaulting to 'pending'",
+                    details: $"GetStatusIdByValueAsync could not resolve StatusValue '{statusValue}' (SearchHireStatus). Defaulting to pending (1); verify the status is seeded. This can silently misroute a hire.",
+                    source: "SearchHireController.GetStatusIdByValueAsync",
+                    relatedEntityType: "SearchHire");
                 return 1;
             }
-            
+
             return systemStatus.Id;
         }
 
@@ -728,19 +733,70 @@ namespace newApi.Controllers
                     };
                 }
 
+                // ✅ SearchHire siempre se expone (aunque Search haya sido eliminado)
+                SearchHireDto? searchHireDto = searchHire.Status != null ? new SearchHireDto
+                {
+                    Id = searchHire.Id,
+                    ExpertId = searchHire.ExpertId ?? 0,
+                    Status = searchHire.Status.StatusValue,
+                    StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(searchHire.Status.StatusValue),
+                    CreatedAt = searchHire.CreatedAt,
+                    Amount = searchHire.Amount,
+                    BaseAmount = searchHire.BaseAmount,
+                    TaxAmount = searchHire.TaxAmount,
+                    ExpertTimezone = searchHire.ExpertTimezone,
+                    ExpertCountry = searchHire.ExpertCountry,
+                    Expert = searchHire.ExpertId.HasValue && searchHire.Expert != null ? new UserDto
+                    {
+                        Id = searchHire.Expert.Id,
+                        Name = searchHire.Expert.Name,
+                        Email = searchHire.Expert.Email,
+                        ProfilePictureUrl = ResolveProfilePictureUrl(searchHire.SearchService?.ExpertProfile)
+                    } : null,
+                    Service = searchHire.SearchService != null ? new ServiceInfo
+                    {
+                        Id = searchHire.SearchService.Id,
+                        ServiceTypeId = searchHire.SearchService.ServiceTypeId,
+                        ServiceTypeName = searchHire.SearchService.ServiceType?.Name ?? string.Empty,
+                        ServiceTypeCategoryId = searchHire.SearchService.ServiceType?.ServiceTypeCategoryId,
+                        ServiceTypeCategoryName = searchHire.SearchService.ServiceType?.ServiceTypeCategory?.Name,
+                        RequiresAppointment = false,
+                        Price = searchHire.SearchService.Price,
+                        ExpertLatitude = searchHire.SearchService.ExpertProfile?.Latitude,
+                        ExpertLongitude = searchHire.SearchService.ExpertProfile?.Longitude,
+                        LocationRange = searchHire.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50
+                    } : null,
+                    StatusInfo = new SystemStatusDto
+                    {
+                        Id = searchHire.Status.Id,
+                        StatusType = searchHire.Status.StatusType,
+                        StatusName = searchHire.Status.StatusName,
+                        StatusValue = searchHire.Status.StatusValue,
+                        DisplayName = searchHire.Status.DisplayName,
+                        Description = searchHire.Status.Description,
+                        Color = searchHire.Status.Color,
+                        IsActive = searchHire.Status.IsActive,
+                        IsFinalizationStatus = searchHire.Status.IsFinalizationStatus,
+                        SortOrder = searchHire.Status.SortOrder,
+                        CreatedAt = searchHire.Status.CreatedAt,
+                        UpdatedAt = searchHire.Status.UpdatedAt
+                    }
+                } : null;
+
                 // Crear respuesta completa
                 var searchDetailsComplete = new SearchDetailsCompleteResponseDto
                 {
-                    Search = searchHire.Search != null ? new SearchListDto
+                    // ✅ Incluir SearchHire aunque la entidad Search haya sido eliminada
+                    Search = searchHireDto != null ? new SearchListDto
                     {
-                        Id = searchHire.Search.Id,
-                        UserId = searchHire.Search.UserId,
-                        Title = searchHire.Search.Title,
-                        Description = searchHire.Search.Description,
-                        Frequency = searchHire.Search.Frequency,
-                        IsActive = searchHire.Search.IsActive,
-                        IsRevised = searchHire.Search.IsRevised,
-                        CreatedAt = searchHire.Search.CreatedAt,
+                        Id = searchHire.Search?.Id ?? 0,
+                        UserId = searchHire.Search?.UserId ?? searchHire.ClientId ?? 0,
+                        Title = searchHire.Search?.Title ?? string.Empty,
+                        Description = searchHire.Search?.Description ?? string.Empty,
+                        Frequency = searchHire.Search?.Frequency ?? 0,
+                        IsActive = searchHire.Search?.IsActive ?? false,
+                        IsRevised = searchHire.Search?.IsRevised ?? false,
+                        CreatedAt = searchHire.Search?.CreatedAt ?? searchHire.CreatedAt,
                         User = searchHire.ClientId.HasValue && searchHire.Client != null ? new UserDto
                         {
                             Id = searchHire.Client.Id,
@@ -748,56 +804,8 @@ namespace newApi.Controllers
                             Email = searchHire.Client.Email,
                             ProfilePictureUrl = null
                         } : null,
-                        // ✅ CORRECCIÓN: Mapear SearchHire dentro del SearchListDto
-                        SearchHire = searchHire.Status != null ? new SearchHireDto
-                        {
-                            Id = searchHire.Id,
-                            ExpertId = searchHire.ExpertId ?? 0,
-                            Status = searchHire.Status.StatusValue,
-                            StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(searchHire.Status.StatusValue),
-                            CreatedAt = searchHire.CreatedAt,
-                            Amount = searchHire.Amount,
-                            BaseAmount = searchHire.BaseAmount,
-                            TaxAmount = searchHire.TaxAmount,
-                            ExpertTimezone = searchHire.ExpertTimezone,
-                            ExpertCountry = searchHire.ExpertCountry,
-                            Expert = searchHire.ExpertId.HasValue && searchHire.Expert != null ? new UserDto
-                            {
-                                Id = searchHire.Expert.Id,
-                                Name = searchHire.Expert.Name,
-                                Email = searchHire.Expert.Email,
-                                ProfilePictureUrl = ResolveProfilePictureUrl(searchHire.SearchService?.ExpertProfile)
-                            } : null,
-                            Service = searchHire.SearchService != null ? new ServiceInfo
-                            {
-                                Id = searchHire.SearchService.Id,
-                                ServiceTypeId = searchHire.SearchService.ServiceTypeId,
-                                ServiceTypeName = searchHire.SearchService.ServiceType?.Name ?? string.Empty,
-                                ServiceTypeCategoryId = searchHire.SearchService.ServiceType?.ServiceTypeCategoryId,
-                                ServiceTypeCategoryName = searchHire.SearchService.ServiceType?.ServiceTypeCategory?.Name,
-                                RequiresAppointment = false,
-                                Price = searchHire.SearchService.Price,
-                                ExpertLatitude = searchHire.SearchService.ExpertProfile?.Latitude,
-                                ExpertLongitude = searchHire.SearchService.ExpertProfile?.Longitude,
-                                LocationRange = searchHire.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50
-                            } : null,
-                            StatusInfo = searchHire.Status != null ? new SystemStatusDto
-                            {
-                                Id = searchHire.Status.Id,
-                                StatusType = searchHire.Status.StatusType,
-                                StatusName = searchHire.Status.StatusName,
-                                StatusValue = searchHire.Status.StatusValue,
-                                DisplayName = searchHire.Status.DisplayName,
-                                Description = searchHire.Status.Description,
-                                Color = searchHire.Status.Color,
-                                IsActive = searchHire.Status.IsActive,
-                                IsFinalizationStatus = searchHire.Status.IsFinalizationStatus,
-                                SortOrder = searchHire.Status.SortOrder,
-                                CreatedAt = searchHire.Status.CreatedAt,
-                                UpdatedAt = searchHire.Status.UpdatedAt
-                            } : null
-                        } : null
-                    } : null, // ✅ Search puede ser null si cliente borró cuenta
+                        SearchHire = searchHireDto
+                    } : null,
                     MoneyDistribution = moneyDistribution != null ? new MoneyDistributionConfigDto
                     {
                         ClientPercentage = moneyDistribution.ClientPercentage,
@@ -1076,46 +1084,49 @@ namespace newApi.Controllers
                         }
                         else
                         {
-                            var ok = await _refundService.ProcessMoneyDistributionAsync(
-                                searchHire.Id,
-                                SearchHireStatus.Completed.ToStringValue(),
-                                "Client approved service",
-                                userId);
+                            bool ok;
+                            try
+                            {
+                                ok = await _refundService.ProcessMoneyDistributionAsync(
+                                    searchHire.Id,
+                                    SearchHireStatus.Completed.ToStringValue(),
+                                    "Client approved service",
+                                    userId);
+                            }
+                            catch (Exception moneyEx)
+                            {
+                                // 🔁 A4: si la distribución LANZA (no solo devuelve false) NO propagar al catch
+                                // externo (rollback+500 dejaría al cliente atascado tras aprobar). Se trata
+                                // igual que ok==false: se completa y se reintenta el dinero async (idempotente).
+                                ok = false;
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Money distribution threw on service completion - completing anyway, retry enqueued",
+                                    details: $"SearchHire {searchHire.Id}: ProcessMoneyDistributionAsync threw ({moneyEx.GetType().Name}: {moneyEx.Message}); marking Completed and retrying expert payment asynchronously.",
+                                    userId: userId,
+                                    source: "SearchHireController.CompleteService",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHire.Id);
+                            }
                             if (!ok)
                             {
-                                await transaction.RollbackAsync();
-                                // ✅ MEJORA: NO duplicar log crítico - ProcessMoneyDistributionAsync ya lo registró
-                                // 🔍 Buscar el último log crítico relacionado DESPUÉS del rollback
-                                // IMPORTANTE: El log se crea ANTES de la transacción del controller
-                                // Limpiar el change tracker para forzar lectura fresca de la BD
-                                _context.ChangeTracker.Clear();
-                                
-                                // Usar FromSqlRaw con AsNoTracking para leer directamente de BD sin cache
-                                var lastCriticalLog = await _context.Logs
-                                    .FromSqlRaw("SELECT * FROM \"Logs\" WHERE \"RelatedEntityType\" = {0} " +
-                                               "AND \"RelatedEntityId\" = {1} " +
-                                               "AND \"Source\" = {2} " +
-                                               "AND \"CreatedAt\" >= NOW() - INTERVAL '5 minutes' " +
-                                               "ORDER BY \"CreatedAt\" DESC LIMIT 1",
-                                               "SearchHire", searchHire.Id, "StripeRefundService.ProcessMoneyDistributionAsync")
-                                    .AsNoTracking()
-                                    .FirstOrDefaultAsync();
-                                
-                                if (lastCriticalLog != null)
-                                {
-                                }
-                                else
-                                {
-                                    // Si no encontramos el log, puede ser un problema de timing o el log no se creó
-                                    // En este caso, logueamos un warning pero no duplicamos el log crítico
-                                }
-                                
-                                return StatusCode(500, new { 
-                                    message = "Failed to process payment to expert",
-                                    logId = lastCriticalLog?.Id,
-                                    errorMessage = lastCriticalLog?.Message,
-                                    searchHireId = searchHire.Id
-                                });
+                                // 🔁 FRENTE 6: NO bloquear ni hacer rollback. El cliente aprobó: el servicio se
+                                // marca Completed igualmente y se encola el reintento del pago al experto
+                                // (idempotente). Así el usuario NO queda atascado por un fallo de Stripe; el
+                                // admin ya fue avisado (Critical → email) por el servicio de dinero.
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Expert payment failed on service completion - completing anyway, money retry enqueued",
+                                    details: $"SearchHire {searchHire.Id} approved by client but money distribution failed; marking Completed and retrying the expert payment asynchronously.",
+                                    userId: userId,
+                                    source: "SearchHireController.CompleteService",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHire.Id);
+                                Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                                    s => s.RetryMoneyDistributionJobAsync(
+                                        searchHire.Id,
+                                        SearchHireStatus.Completed.ToStringValue(),
+                                        "Retry expert payment on service completion (money pending)",
+                                        userId),
+                                    TimeSpan.FromMinutes(2));
                             }
 
                             var completedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Completed.ToStringValue());
@@ -1152,6 +1163,22 @@ namespace newApi.Controllers
                                     {
                                         timer.HangfireJobId = null;
                                     }
+                                }
+                            }
+
+                            // ✅ FRENTE 8 (c): si el cliente APROBÓ, la cita también termina → marcarla
+                            // completada para que cita y contratación no queden desincronizadas (antes el
+                            // hire pasaba a 'completed' pero la cita se quedaba abierta). En rechazo NO se
+                            // toca (se abre disputa y la cita se cierra al resolverla).
+                            if (searchHire.ClientApproved.Value)
+                            {
+                                var apptCompleted = await _context.SystemStatuses
+                                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus"
+                                                              && s.StatusValue == "appointment_completed");
+                                if (apptCompleted != null)
+                                {
+                                    appointment.StatusId = apptCompleted.Id;
+                                    appointment.UpdatedAt = DateTime.UtcNow;
                                 }
                             }
                         }

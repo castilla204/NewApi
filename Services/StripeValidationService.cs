@@ -34,13 +34,34 @@ namespace newApi.Services
                 return (true, string.Empty, stripeStatus.ToString(), false, false);
             }
 
-            // ✅ FIX: Permitir PendingVerification si charges_enabled: true
-            // PendingVerification es informativo, no bloqueante si Stripe permite operar
+            // ✅ A4: PendingVerification solo es aceptable si Stripe confirma EN VIVO que la cuenta
+            // puede cobrar. Antes se permitía SIEMPRE (el flag local podía estar obsoleto), de modo
+            // que se podía cobrar al cliente por un experto cuyos pagos estaban deshabilitados:
+            // el dinero entraba pero el payout al experto quedaba bloqueado (intervención manual).
+            // Esta validación se usa solo en los puntos de cobro (crear sesión de pago), por lo que
+            // ante la duda fallamos CERRADO (no cobrar) en lugar de confiar en un flag potencialmente viejo.
             if (stripeStatus == StripeStatus.PendingVerification)
             {
-                // PendingVerification no bloquea si la cuenta puede operar
-                // El estado se actualizará en el próximo webhook account.updated
-                return (true, string.Empty, stripeStatus.ToString(), false, false);
+                if (string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                {
+                    return (false, $"No se puede realizar {operation}. El experto no ha completado la configuración de su cuenta de pagos.", stripeStatus.ToString(), true, true);
+                }
+
+                try
+                {
+                    var account = await new Stripe.AccountService().GetAsync(expertProfile.StripeAccountId);
+                    if (account.ChargesEnabled && account.PayoutsEnabled)
+                    {
+                        return (true, string.Empty, stripeStatus.ToString(), false, false);
+                    }
+
+                    return (false, $"No se puede realizar {operation}. La cuenta de pagos del experto aún no está habilitada para recibir pagos.", stripeStatus.ToString(), false, true);
+                }
+                catch (Exception)
+                {
+                    // Fail-closed: si no podemos verificar el estado en vivo, no permitir el cobro.
+                    return (false, $"No se puede verificar la cuenta de pagos del experto en este momento. Inténtalo de nuevo en unos minutos.", stripeStatus.ToString(), false, true);
+                }
             }
 
             // Bloquear cuentas rechazadas y desautorizadas

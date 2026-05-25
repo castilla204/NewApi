@@ -34,7 +34,16 @@ namespace newApi.Services
                 var jobType = job.Job.Type.Name;
                 var jobId = job.Id;
                 var jobArgs = string.Join(", ", job.Job.Args.Select(a => a?.ToString() ?? "null"));
-                
+
+                // ⚠️ ANTI-BUCLE: si el job que falló es el PROPIO envío de email de alertas, NO crear otro
+                // log crítico (que volvería a encolar emails). Si no, un SMTP caído genera un bucle
+                // amplificador: filtro → LogCritical → SendEmailBackgroundJob → falla → filtro → ...
+                if (jobMethod == "SendEmailBackgroundJob" || jobType == "LoggingService")
+                {
+                    Console.Error.WriteLine($"[HANGFIRE FILTER] Alert-email job {jobId} ({jobMethod}) failed definitively; skipping critical-log to avoid an email storm. Exception: {exception?.Message}");
+                    return;
+                }
+
                 // Obtener información de reintentos
                 var retryCount = context.GetJobParameter<int>("RetryCount");
                 var maxRetryAttempts = GetMaxRetryAttempts(job);

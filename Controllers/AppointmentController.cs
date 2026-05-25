@@ -828,7 +828,12 @@ namespace newApi.Controllers
                 {
                     return Forbid("Admin access required");
                 }
-                await _appointmentService.CheckAppointmentTimersAsync();
+                // 🔁 FRENTE 11: se repunta al watchdog ProcessOverdueTimersAsync (re-despacha cada timer
+                // vencido a ProcessAppointmentTimerAsync, que YA encola el reintento de dinero idempotente),
+                // en vez del antiguo CheckAppointmentTimersAsync (deprecado: consumía mal proposal/
+                // client_decision y NO reintentaba el dinero al fallar). Así el disparo manual del admin
+                // usa exactamente el mismo camino fiable que los timers automáticos.
+                await _appointmentService.ProcessOverdueTimersAsync();
                 return Ok(new { message = "Appointment timers checked successfully" });
             }
             catch (Exception ex)

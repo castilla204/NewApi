@@ -74,10 +74,15 @@ namespace newApi.Controllers
             
             if (systemStatus == null)
             {
-                // Default to "pending" (ID = 1)
+                // ⚠️ FRENTE 8: estado no encontrado → AVISAR en vez de rebobinar a "pending" en silencio.
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: SearchHireStatus value not found - defaulting to 'pending'",
+                    details: $"GetStatusIdByValueAsync could not resolve StatusValue '{statusValue}' (SearchHireStatus). Defaulting to pending (1); verify the status is seeded. This can silently misroute a hire.",
+                    source: "SearchController.GetStatusIdByValueAsync",
+                    relatedEntityType: "SearchHire");
                 return 1;
             }
-            
+
             return systemStatus.Id;
         }
 
@@ -545,6 +550,27 @@ namespace newApi.Controllers
                 if (service.ExpertProfile != null && service.ExpertProfile.UserId == userId)
                 {
                     return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
+                }
+
+                // 🚨 A2: PROTECCIÓN CONTRA CONTRATACIONES DUPLICADAS (anti doble-submit).
+                // Antes este endpoint (el principal de contratación) NO comprobaba si el cliente ya
+                // tenía una contratación activa para el servicio, a diferencia de HireService/LoadMoneyService.
+                // Sin esto, un doble clic / reintento creaba DOS checkout sessions -> DOS PaymentIntents,
+                // pudiendo cobrar dos veces al cliente. (Mismo patrón que SubscriptionController.HireService.)
+                var pendingStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Pending.ToStringValue());
+                var awaitingStatusId = await GetStatusIdByValueAsync(SearchHireStatus.AwaitingClientDecision.ToStringValue());
+                var disputedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
+
+                var existingHire = await _context.SearchHires
+                    .FirstOrDefaultAsync(sh => sh.ClientId == userId &&
+                                              sh.SearchServiceId == service.Id &&
+                                              (sh.StatusId == pendingStatusId ||
+                                               sh.StatusId == awaitingStatusId ||
+                                               sh.StatusId == disputedStatusId));
+
+                if (existingHire != null)
+                {
+                    return BadRequest(new { message = "Ya tienes una contratación activa para este servicio" });
                 }
 
                 // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer

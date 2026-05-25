@@ -320,7 +320,9 @@ namespace newApi.Controllers
                 // Usa el mismo patrón que GetSecretValue en Program.cs
                 Func<string, string?, string?> getSecretValue = (secretName, defaultValue) =>
                 {
-                    // Primero intentar desde Secret Manager (si está disponible)
+                    // Secret Manager RETIRADO: los secretos se leen SOLO de variables de entorno de Render.
+                    // Bloque conservado inerte (if(false)) para minimizar el cambio; nunca se ejecuta.
+                    if (false)
                     try
                     {
                         var projectId = "grup-441318";

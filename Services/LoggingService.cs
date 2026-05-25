@@ -739,9 +739,51 @@ namespace newApi.Services
 
                 context.Notifications.Add(notification);
                 await context.SaveChangesAsync();
+
+                // ✅ ALERTA REAL: además del aviso in-app, enviar EMAIL a los administradores.
+                // Antes esto solo creaba la fila in-app (UserId=null) y nadie se enteraba si no
+                // miraba el panel. Ahora cualquier log que requiera notificación de admin (todos los
+                // Critical) avisa por email vía el mismo job de Hangfire con reintentos.
+                try
+                {
+                    var adminEmails = await context.Users
+                        .AsNoTracking()
+                        .Where(u => u.Role == newApi.DataLayer.Models.PostGresModels.UserRole.Admin
+                                    && u.Email != null && u.Email != "")
+                        .Select(u => u.Email)
+                        .ToListAsync();
+
+                    if (adminEmails.Count > 0)
+                    {
+                        var subject = $"🚨 {logType.Name.ToUpper()} ALERT - {log.Message}";
+                        var bodyHtml = $@"<html><body style='font-family:sans-serif;'>
+                            <h2 style='color:#b91c1c;'>🚨 {System.Net.WebUtility.HtmlEncode(logType.Name)} ALERT</h2>
+                            <p><strong>{System.Net.WebUtility.HtmlEncode(log.Message)}</strong></p>
+                            <p>{System.Net.WebUtility.HtmlEncode(log.Details ?? "")}</p>
+                            <p style='color:#6b7280;font-size:12px;'>Source: {System.Net.WebUtility.HtmlEncode(log.Source ?? "")} · {log.RelatedEntityType} #{log.RelatedEntityId} · {log.CreatedAt:yyyy-MM-dd HH:mm:ss} UTC</p>
+                            </body></html>";
+
+                        foreach (var adminEmail in adminEmails)
+                        {
+                            BackgroundJob.Enqueue<LoggingService>(s => s.SendEmailBackgroundJob(adminEmail!, subject, bodyHtml, null));
+                        }
+                        Console.WriteLine($"[LOGGING SERVICE] [ADMIN ALERT] Email de alerta encolado para {adminEmails.Count} admin(s): {log.Message}");
+                    }
+                    else
+                    {
+                        Console.Error.WriteLine($"[LOGGING SERVICE] ⚠️ [ADMIN ALERT] No hay admins con email para alertar. Alerta: {log.Message} - {log.Details}");
+                    }
+                }
+                catch (Exception emailEx)
+                {
+                    // No interrumpir el flujo; dejar rastro DURABLE en consola como último recurso.
+                    Console.Error.WriteLine($"[LOGGING SERVICE] ⚠️ [ADMIN ALERT] Error encolando email de alerta: {emailEx.Message}. Alerta original: {log.Message} - {log.Details}");
+                }
             }
             catch (Exception ex)
             {
+                // ✅ Antes era un catch VACÍO → la alerta se perdía en silencio. Dejar rastro DURABLE.
+                Console.Error.WriteLine($"[LOGGING SERVICE] 🔴 [ADMIN ALERT] No se pudo crear la notificación de administrador: {ex.Message}. Alerta original: {log?.Message} - {log?.Details}");
             }
         }
 
@@ -924,7 +966,7 @@ namespace newApi.Services
                 
                 // EmailService tiene timeout de 60 segundos configurado internamente
                 // Si Hostinger tarda más, lanzará TimeoutException y Hangfire reintentará
-                await _emailService.SendEmailAsync(toEmail, subject, body, isHtml: true);
+                await _emailService.SendEmailAsync(toEmail, subject, body, isHtml: true, throwOnError: true);
                 
                 Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE SUCCESS] Email enviado exitosamente a: {toEmail}, UserId: {userId}");
                 System.Diagnostics.Debug.WriteLine($"[LOGGING SERVICE] HANGFIRE SUCCESS: Email sent to {toEmail}");

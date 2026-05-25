@@ -351,6 +351,23 @@ namespace newApi.DataLayer.Models
                 .HasForeignKey(ft => ft.UserId)
                 .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull en lugar de Cascade para preservar transacciones al eliminar usuario
 
+            // 🔁 C1: índices únicos PARCIALES en el ledger = última línea de defensa anti doble-pago/
+            // doble-reembolso (además de las claves de idempotencia de Stripe + los guardas en código).
+            // (1) Cada refund de Stripe se registra UNA vez. (2) Cada transfer: un Payout y una
+            // TransferReversal como máximo. (3) Un ServicePayment por contratación (anti doble-cobro).
+            modelBuilder.Entity<FinancialTransaction>()
+                .HasIndex(ft => ft.StripeRefundId)
+                .IsUnique()
+                .HasFilter("\"StripeRefundId\" IS NOT NULL");
+            modelBuilder.Entity<FinancialTransaction>()
+                .HasIndex(ft => new { ft.StripeTransferId, ft.TransactionType })
+                .IsUnique()
+                .HasFilter("\"StripeTransferId\" IS NOT NULL");
+            modelBuilder.Entity<FinancialTransaction>()
+                .HasIndex(ft => new { ft.RelatedEntityType, ft.RelatedEntityId })
+                .IsUnique()
+                .HasFilter("\"TransactionType\" = 'ServicePayment'");
+
             modelBuilder.Entity<ServiceType>(entity =>
             {
                 entity.Property(e => e.Name)

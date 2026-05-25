@@ -6,7 +6,7 @@ namespace newApi.Services
 {
     public interface IEmailService
     {
-        Task SendEmailAsync(string toEmail, string subject, string body, bool isHtml = true);
+        Task SendEmailAsync(string toEmail, string subject, string body, bool isHtml = true, bool throwOnError = false);
         Task SendEmailWithAttachmentAsync(string toEmail, string subject, string body, byte[] attachmentBytes, string attachmentFileName, string attachmentContentType = "application/pdf", bool isHtml = true);
     }
 
@@ -32,7 +32,7 @@ namespace newApi.Services
             _fromName = _configuration["Email:FromName"] ?? "Inspecciono";
         }
 
-        public async Task SendEmailAsync(string toEmail, string subject, string body, bool isHtml = true)
+        public async Task SendEmailAsync(string toEmail, string subject, string body, bool isHtml = true, bool throwOnError = false)
         {
             try
             {
@@ -172,7 +172,14 @@ namespace newApi.Services
                 }
                 // También usar System.Diagnostics para asegurar que se vea
                 System.Diagnostics.Debug.WriteLine($"[EMAIL SERVICE] ERROR: {ex.Message}");
-                // No lanzar excepción para no interrumpir el flujo principal
+                // ✅ FIX: si el llamador lo pide (jobs de Hangfire), PROPAGAR el fallo para que el job
+                // pueda reintentar/escalar. Antes se tragaba SIEMPRE → las alertas por email se perdían
+                // en silencio y los reintentos quedaban muertos. Llamadores fire-and-forget (default
+                // throwOnError=false) conservan el comportamiento de no interrumpir su flujo.
+                if (throwOnError)
+                {
+                    throw;
+                }
             }
         }
 

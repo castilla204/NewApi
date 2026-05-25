@@ -1538,14 +1538,22 @@ app.UseHangfireDashboard("/hangfire", new DashboardOptions
     IsReadOnlyFunc = (DashboardContext context) => false
 });
 
-// ✅ SEGURIDAD 2025: Limpieza automática de refresh tokens - Comentado porque Hangfire está deshabilitado
-// TODO: Implementar con un servicio background alternativo o habilitar Hangfire con Redis
-// Hangfire.GlobalJobFilters.Filters.Add(
-//     new HangfireFailedJobNotificationFilter(app.Services.GetRequiredService<IServiceScopeFactory>()));
-// RecurringJob.AddOrUpdate<IAppointmentService>(
-//     "appointment-timers-watchdog",
-//     svc => svc.ProcessOverdueTimersAsync(),
-//     Cron.MinuteInterval(10));
+// 🔁 FRENTE 5 + 8 (RE-ACTIVADO): el comentario antiguo decía "Hangfire deshabilitado", pero el SERVIDOR
+// de Hangfire SÍ está habilitado (enableHangfireServer = true más arriba). Estos dos registros estaban
+// apagados por error, dejando sin efecto el AVISO de jobs fallidos (frente 5) y el WATCHDOG de timers
+// (frente 8) pese a que el servidor procesa jobs con normalidad.
+// (1) Filtro global: avisa (LogCritical → email al admin) cuando un job agota TODOS sus reintentos.
+//     Tiene guarda anti-bucle para no re-encolar emails si el que falla es el propio job de email.
+Hangfire.GlobalJobFilters.Filters.Add(
+    new newApi.Services.HangfireFailedJobNotificationFilter(
+        app.Services.GetRequiredService<IServiceScopeFactory>()));
+// (2) Watchdog cada 10 min: recupera timers vencidos no procesados (job perdido por crash/reinicio entre
+//     Schedule y Save). Solo toca timers con EndTime <= ahora y !IsExpired (no dispara antes de tiempo) y
+//     es idempotente (ProcessAppointmentTimerAsync re-chequea estado; el dinero usa clave por-hire).
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IAppointmentService>(
+    "appointment-timers-watchdog",
+    svc => svc.ProcessOverdueTimersAsync(),
+    "*/10 * * * *");
 /*
 RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     "cleanup-expired-refresh-tokens",

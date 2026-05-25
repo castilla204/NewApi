@@ -106,10 +106,15 @@ namespace newApi.Controllers
             
             if (systemStatus == null)
             {
-                // Default to "pending" (ID = 1)
+                // ⚠️ FRENTE 8: estado no encontrado → AVISAR en vez de rebobinar a "pending" en silencio.
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: SearchHireStatus value not found - defaulting to 'pending'",
+                    details: $"GetStatusIdByValueAsync could not resolve StatusValue '{statusValue}' (SearchHireStatus). Defaulting to pending (1); verify the status is seeded. This can silently misroute a hire.",
+                    source: "SubscriptionController.GetStatusIdByValueAsync",
+                    relatedEntityType: "SearchHire");
                 return 1;
             }
-            
+
             return systemStatus.Id;
         }
 
@@ -1710,6 +1715,7 @@ namespace newApi.Controllers
 
         [HttpPost("webhook")]
         [AllowAnonymous]
+        [DisableRateLimiting] // 🔁 webhook autenticado por firma de Stripe; NO limitar — un 429 hace que Stripe reintente/encole y en una ráfaga (todas las entregas comparten la IP del proxy de Render) se perderían eventos
         public async Task<IActionResult> HandleStripeWebhook()
         {
             // ✅ LOG DIAGNÓSTICO: Inicio del webhook
@@ -1875,11 +1881,12 @@ namespace newApi.Controllers
                 currentEventType = stripeEvent.Type;
                 currentAccountId = stripeEvent.Account;
 
-                // 🔒 IDEMPOTENCIA COMPLETA: Verificar si el evento ya fue procesado
-                if (await IsEventProcessedAsync(stripeEvent.Id))
+                // 🔒 IDEMPOTENCIA ATÓMICA: reclamar el evento (insert-first con índice único en EventId).
+                if (!await TryBeginProcessingEventAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account))
                 {
                     return Ok(new { message = "Event already processed" });
                 }
+                eventMarkedProcessing = true;
 
                 // ✅ LOG DIAGNÓSTICO: Evento recibido
                 var originalColor1 = Console.ForegroundColor;
@@ -1900,10 +1907,7 @@ namespace newApi.Controllers
                 }
                 catch { }
                 
-                // ✅ CORRECCIÓN CRÍTICA: Marcar idempotencia ANTES de procesar (Stripe Best Practices)
-                // Esto previene procesamiento duplicado si hay error durante el procesamiento
-                await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account, null, "Processing");
-                eventMarkedProcessing = true;
+                // (La idempotencia ya se reclamó de forma atómica más arriba con TryBeginProcessingEventAsync)
 
                 switch (stripeEvent.Type)
                 {
@@ -2296,7 +2300,11 @@ namespace newApi.Controllers
                                     ex.Message);
                                 eventMarkedProcessing = false;
                             }
-                            return Ok(new { message = "Event processed with errors" });
+                            // ✅ FRENTE 8: devolver NO-2xx para que Stripe REINTENTE en vez de perder la
+                            // transición de estado del experto. El evento queda en "Error", y
+                            // TryBeginProcessingEventAsync lo re-reclama en el reintento; account.updated es
+                            // idempotente (solo fija el estado Stripe desde la cuenta), así que reprocesar es seguro.
+                            return StatusCode(500, new { message = "Error processing account.updated; Stripe will retry" });
                         }
 
                         break;
@@ -2524,7 +2532,12 @@ namespace newApi.Controllers
                         e.Message);
                     eventMarkedProcessing = false;
                 }
-                return BadRequest(new { error = e.Message });
+                // 🔁 A5: error de Stripe NO-firma (api_connection, rate_limit, lock_timeout, etc.) es
+                // transitorio → devolver 500 para que Stripe REINTENTE la entrega. Antes devolvía 400, que
+                // Stripe trata como permanente y NO reintenta → el evento se perdía. (La firma inválida sí
+                // devuelve 400 más arriba.) El evento quedó marcado "Failed" → TryBeginProcessingEvent lo
+                // re-reclama en la reentrega.
+                return StatusCode(500, new { error = e.Message });
             }
             catch (Exception e)
             {
@@ -2580,6 +2593,7 @@ namespace newApi.Controllers
 
         [HttpPost("webhook-general")]
         [AllowAnonymous]
+        [DisableRateLimiting] // 🔁 webhook autenticado por firma de Stripe; NO limitar (igual que /webhook)
         public async Task<IActionResult> HandleGeneralStripeWebhook()
         {
             // ✅ LOG DIAGNÓSTICO: Inicio del webhook general
@@ -2688,13 +2702,12 @@ namespace newApi.Controllers
                 currentEventId = stripeEvent.Id;
                 currentEventType = stripeEvent.Type;
                 currentAccountId = stripeEvent.Account;
-                // 🔒 IDEMPOTENCIA COMPLETA: Verificar si el evento ya fue procesado
-                if (await IsEventProcessedAsync(stripeEvent.Id))
+                // 🔒 IDEMPOTENCIA ATÓMICA: reclamar el evento (insert-first con índice único en EventId).
+                // Elimina la carrera "comprobar y luego insertar" entre entregas concurrentes de Stripe.
+                if (!await TryBeginProcessingEventAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account))
                 {
                     return Ok(new { message = "Event already processed" });
                 }
-
-                await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account, null, "Processing");
                 eventMarkedProcessing = true;
 
                 switch (stripeEvent.Type)
@@ -2818,6 +2831,31 @@ namespace newApi.Controllers
                         }
                         break;
 
+                    // ⚖️ DISPUTAS (chargebacks): antes caían en default y se ignoraban en silencio,
+                    // dejando a la plataforma con la pérdida (Stripe retira el cargo + comisión) sin
+                    // revertir el transfer ya pagado al experto. Ahora se detectan, registran y alertan.
+                    case "charge.dispute.created":
+                        await HandleChargeDisputeCreated(stripeEvent.Data.Object as Stripe.Dispute);
+                        break;
+
+                    case "charge.dispute.closed":
+                        await HandleChargeDisputeClosed(stripeEvent.Data.Object as Stripe.Dispute);
+                        break;
+
+                    case "charge.dispute.funds_withdrawn":
+                    case "charge.dispute.funds_reinstated":
+                        await HandleChargeDisputeFundsEvent(stripeEvent.Type, stripeEvent.Data.Object as Stripe.Dispute);
+                        break;
+
+                    case "charge.refunded":
+                        await HandleChargeRefunded(stripeEvent.Data.Object as Charge);
+                        break;
+
+                    case "payout.paid":
+                    case "payout.failed":
+                        await HandlePayoutEvent(stripeEvent.Type, stripeEvent.Data.Object as Payout, stripeEvent.Account);
+                        break;
+
                     case "invoice.payment_succeeded":
                     case "invoice.payment_failed":
                     case "customer.subscription.created":
@@ -2905,7 +2943,12 @@ namespace newApi.Controllers
                         e.Message);
                     eventMarkedProcessing = false;
                 }
-                return BadRequest(new { error = e.Message });
+                // 🔁 A5: error de Stripe NO-firma (api_connection, rate_limit, lock_timeout, etc.) es
+                // transitorio → devolver 500 para que Stripe REINTENTE la entrega. Antes devolvía 400, que
+                // Stripe trata como permanente y NO reintenta → el evento se perdía. (La firma inválida sí
+                // devuelve 400 más arriba.) El evento quedó marcado "Failed" → TryBeginProcessingEvent lo
+                // re-reclama en la reentrega.
+                return StatusCode(500, new { error = e.Message });
             }
             catch (Exception e)
             {
@@ -4134,7 +4177,14 @@ namespace newApi.Controllers
                 }
 
                 var refundService = new RefundService();
-                var refund = await refundService.CreateAsync(refundOptions);
+                // 🔑 IDEMPOTENCIA DETERMINISTA (A3): antes no había clave, así que un reintento/doble
+                // llamada creaba un SEGUNDO refund en Stripe. La clave estable por (PaymentIntent + tipo)
+                // hace que Stripe deduplique los reintentos del mismo reembolso lógico.
+                var refundRequestOptions = new RequestOptions
+                {
+                    IdempotencyKey = $"generic-refund-{paymentIntentId}-{refundType}"
+                };
+                var refund = await refundService.CreateAsync(refundOptions, refundRequestOptions);
                 // 💾 Registrar refund en base de datos
                 var refundAmount = (decimal)refund.Amount / 100; // Convertir de céntimos a euros
                 var refundTransaction = new FinancialTransaction
@@ -4506,20 +4556,22 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Invalid cancellation status" });
                 }
 
-                // Solo procesar distribución de dinero si es estado de finalización
-                bool refundSuccess = true;
-                if (cancelledStatus.IsFinalizationStatus)
-                {
-                    // 💳 Orquestador central: refund/transfer según configuración
-                    refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
-                        searchHire.Id,
-                        statusValue,
-                        $"Expert cancelled service {searchHire.Id}",
-                        userId);
-                }
-                else
-                {
-                }
+                // 🔁 cancel-service es una cancelación TERMINAL del servicio pendiente (NO reprogramable, a
+                // diferencia de CancelAppointmentAsync) → el cliente SIEMPRE debe ser reembolsado. Antes el
+                // reembolso se gateaba con cancelledStatus.IsFinalizationStatus, pero tras el fix de 1ª
+                // cancelación ese subestado (appointment_cancelled_by_expert) es false → el hire quedaba
+                // cancelado SIN reembolsar al cliente. Se distribuye con el estado SearchHire 'cancelled'
+                // (100/0/0) SIEMPRE; updateState:false porque el hire se marca Cancelled abajo y la cita aquí.
+                appointment.StatusId = cancelledStatus.Id;
+                appointment.UpdatedAt = DateTime.UtcNow;
+
+                var distributionStatusValue = SearchHireStatus.Cancelled.ToStringValue();
+                bool refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                    searchHire.Id,
+                    distributionStatusValue,
+                    $"Expert cancelled pending service {searchHire.Id}",
+                    userId,
+                    updateState: false);
 
                 if (!refundSuccess)
                 {
@@ -4531,10 +4583,18 @@ namespace newApi.Controllers
                         "SubscriptionController.CancelService",
                         "SearchHire",
                         searchHire.Id,
-                        new { SearchHireId = searchHire.Id, ClientId = searchHire.ClientId, StatusValue = statusValue }
+                        new { SearchHireId = searchHire.Id, ClientId = searchHire.ClientId, StatusValue = distributionStatusValue }
                     );
-                    
-                    return StatusCode(500, new { message = "Failed to process money distribution" });
+
+                    // 🔁 FRENTE 6: NO bloquear. Encolar reintento del dinero (idempotente) y CONTINUAR;
+                    // el estado se marca Cancelled justo abajo y devolvemos 200. Admin ya avisado (Critical).
+                    Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                        s => s.RetryMoneyDistributionJobAsync(
+                            searchHire.Id,
+                            distributionStatusValue,
+                            $"Retry money distribution for cancelled service {searchHire.Id}",
+                            userId),
+                        TimeSpan.FromMinutes(2));
                 }
 
                 // Actualizar estado del SearchHire a cancelado
@@ -4608,10 +4668,41 @@ namespace newApi.Controllers
 
                     if (!success)
                     {
-                        return StatusCode(500, new { message = "Failed to process client refund" });
+                        // 🔁 FRENTE 6: NO bloquear. Avisar, encolar reintento (idempotente) y CONTINUAR.
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Force-finalize money distribution failed - state advanced, money retry enqueued",
+                            details: $"SearchHire {searchHire.Id} force-finalized in favor of client but money distribution failed; retry enqueued, needs monitoring.",
+                            userId: int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"),
+                            source: "SubscriptionController.ForceFinalize",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHire.Id);
+                        Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                            s => s.RetryMoneyDistributionJobAsync(
+                                searchHire.Id,
+                                "dispute_resolved_client",
+                                "Retry force-finalize client refund (money pending)",
+                                null),
+                            TimeSpan.FromMinutes(2));
                     }
 
                     searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedClient.ToStringValue());
+                    await _context.SaveChangesAsync();
+
+                    // ✅ FRENTE 8 (c): finalizar también la cita (no dejarla abierta tras finalizar el hire).
+                    var ffAppointment = await _context.Appointments
+                        .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
+                    if (ffAppointment != null)
+                    {
+                        var ffApptCompleted = await _context.SystemStatuses
+                            .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_completed");
+                        if (ffApptCompleted != null && ffAppointment.StatusId != ffApptCompleted.Id)
+                        {
+                            ffAppointment.StatusId = ffApptCompleted.Id;
+                            ffAppointment.UpdatedAt = DateTime.UtcNow;
+                            await _context.SaveChangesAsync();
+                        }
+                    }
+
                     await _loggingService.LogWarningAsync(
                         message: "FORCE_FINALIZE_CLIENT_REFUND",
                         details: $"Finalizó forzadamente servicio {searchHire.Id} a favor del cliente con orquestador",
@@ -4691,7 +4782,9 @@ namespace newApi.Controllers
                     return NotFound(new { message = "No pending dispute found" });
                 }
 
-                dispute.Status = "Resolved";
+                // ✅ FIX (consistencia A6): NO marcar "Resolved" aquí, ANTES de mover el dinero. Se marca
+                // al final, tras el intento de distribución (igual que DisputeController.ResolveDispute),
+                // para no dejar la disputa cerrada-sin-pagar si algo falla entre este punto y el reparto.
                 dispute.ResolutionComments = request.Resolution;
                 await _context.SaveChangesAsync();
 
@@ -4725,13 +4818,38 @@ namespace newApi.Controllers
                         ? $"Failed to process money distribution: {lastCriticalLog.Message}. Check logs for details (LogId: {lastCriticalLog.Id})"
                         : "Failed to process money distribution. Check ProcessMoneyDistributionAsync logs for details.";
 
-                    return StatusCode(500, new
+                    // 🔁 FRENTE 6: NO bloquear. La disputa ya está Resuelta y el estado avanza por el
+                    // servicio de dinero; avisar, encolar reintento (idempotente) y CONTINUAR (200).
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Dispute resolution money distribution failed - state advanced, money retry enqueued",
+                        details: errorMessage,
+                        userId: adminUserId,
+                        source: "SubscriptionController.ResolveDispute",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHire.Id);
+                    Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                        s => s.RetryMoneyDistributionJobAsync(
+                            searchHire.Id,
+                            statusValue,
+                            "Retry dispute resolution money distribution (money pending)",
+                            adminUserId),
+                        TimeSpan.FromMinutes(2));
+                }
+
+                // ✅ FRENTE 8 (c): finalizar también la cita al resolver la disputa (no dejarla abierta
+                // mientras el hire pasa a DisputeResolved*). Mismo arreglo que DisputeController.ResolveDispute.
+                var rdAppointment = await _context.Appointments
+                    .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
+                if (rdAppointment != null)
+                {
+                    var rdApptCompleted = await _context.SystemStatuses
+                        .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_completed");
+                    if (rdApptCompleted != null && rdAppointment.StatusId != rdApptCompleted.Id)
                     {
-                        message = errorMessage,
-                        searchHireId = searchHire.Id,
-                        status = statusValue,
-                        logId = lastCriticalLog?.Id
-                    });
+                        rdAppointment.StatusId = rdApptCompleted.Id;
+                        rdAppointment.UpdatedAt = DateTime.UtcNow;
+                        await _context.SaveChangesAsync();
+                    }
                 }
 
                 if (request.ResolveInFavorOfClient)
@@ -4756,6 +4874,11 @@ namespace newApi.Controllers
                         relatedEntityId: searchHire.Id
                     );
                 }
+
+                // ✅ FIX (consistencia A6): marcar "Resolved" SOLO ahora, tras el intento de dinero
+                // (en fallo de dinero ya se encoló el reintento más arriba; en éxito el dinero ya se movió).
+                dispute.Status = "Resolved";
+                await _context.SaveChangesAsync();
 
                 return Ok(new { message = "Dispute resolved" });
             }
@@ -4987,6 +5110,84 @@ namespace newApi.Controllers
 
             // Por defecto: Bloquear por seguridad (valores nuevos/desconocidos requieren revisión)
             return true;
+        }
+
+        /// <summary>
+        /// Reclama un evento de webhook de forma ATÓMICA para procesarlo una sola vez.
+        /// Devuelve true si ESTA llamada debe procesar el evento; false si ya está
+        /// procesado, en curso reciente, o lo reclamó otra entrega concurrente.
+        ///
+        /// Usa el índice único en EventId: el INSERT actúa como cerrojo atómico, lo que
+        /// elimina la condición de carrera del patrón anterior "comprobar y luego insertar"
+        /// (dos entregas concurrentes de Stripe podían pasar ambas la comprobación).
+        ///
+        /// Los eventos en estado Failed/Error (o Processing obsoleto) SÍ se reintentan,
+        /// porque Stripe reenvía el mismo evento ante una respuesta no-2xx; la idempotencia
+        /// a nivel de pago (FinancialTransaction por StripePaymentIntentId) evita el doble
+        /// cumplimiento al reprocesar.
+        /// </summary>
+        private async Task<bool> TryBeginProcessingEventAsync(string eventId, string eventType, string? stripeAccountId)
+        {
+            var processingCutoff = DateTime.UtcNow.AddMinutes(-5);
+
+            var existing = await _context.ProcessedWebhookEvents
+                .FirstOrDefaultAsync(e => e.EventId == eventId);
+
+            if (existing != null)
+            {
+                // Ya terminado con éxito, omitido, o en curso reciente => NO reprocesar.
+                if (existing.Status == "Success"
+                    || existing.Status == "Skipped"
+                    || (existing.Status == "Processing" && existing.ProcessedAt >= processingCutoff))
+                {
+                    return false;
+                }
+
+                // Failed/Error o Processing obsoleto (cuelgue previo) => reclamar para reintentar.
+                existing.Status = "Processing";
+                existing.ProcessedAt = DateTime.UtcNow;
+                existing.ErrorMessage = null;
+                await _context.SaveChangesAsync();
+                return true;
+            }
+
+            // No existe: insertar "Processing". El índice único en EventId hace el cerrojo atómico.
+            _context.ProcessedWebhookEvents.Add(new ProcessedWebhookEvent
+            {
+                EventId = eventId,
+                EventType = eventType,
+                StripeAccountId = stripeAccountId,
+                Status = "Processing",
+                ProcessedAt = DateTime.UtcNow
+            });
+
+            try
+            {
+                await _context.SaveChangesAsync();
+                return true;
+            }
+            catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+            {
+                // Otra entrega concurrente insertó el mismo EventId primero => ya reclamado.
+                // Desadjuntar la entidad fallida para que no se reintente en SaveChanges posteriores.
+                var entry = _context.ChangeTracker.Entries<ProcessedWebhookEvent>()
+                    .FirstOrDefault(e => e.State == EntityState.Added && e.Entity.EventId == eventId);
+                if (entry != null)
+                {
+                    entry.State = EntityState.Detached;
+                }
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Detecta si una DbUpdateException corresponde a una violación de índice único
+        /// de PostgreSQL (SQLSTATE 23505).
+        /// </summary>
+        private static bool IsUniqueViolation(DbUpdateException ex)
+        {
+            return ex.InnerException is Npgsql.PostgresException pg
+                && pg.SqlState == "23505";
         }
 
         /// <summary>
@@ -5461,19 +5662,275 @@ namespace newApi.Controllers
         {
             try
             {
-                // Aquí puedes agregar lógica específica para cuando un pago se completa exitosamente
-                // Por ejemplo, actualizar el estado de una orden, enviar confirmación por email, etc.
-                
-                if (paymentIntent.Metadata != null && paymentIntent.Metadata.Count > 0)
+                // 🔎 RECONCILIACIÓN (antes era un no-op): la creación de la contratación la dispara
+                // checkout.session.completed. Si un pago tiene éxito pero NO existe el FinancialTransaction
+                // de tipo "ServicePayment" para este PaymentIntent, podría haberse cobrado dinero sin
+                // crear la contratación (evento perdido). Aquí solo detectamos y avisamos la discrepancia;
+                // no creamos nada para no duplicar (la creación es responsabilidad del otro evento).
+                var servicePayment = await _context.FinancialTransactions
+                    .FirstOrDefaultAsync(ft => ft.StripePaymentIntentId == paymentIntent.Id
+                                               && ft.TransactionType == "ServicePayment");
+
+                if (servicePayment != null)
                 {
+                    return; // Ya reconciliado: existe el pago/contratación local.
                 }
 
-                // Si tienes un sistema de órdenes, podrías actualizar el estado aquí
-                // await UpdateOrderStatus(paymentIntent.Metadata["order_id"], "paid");
+                var indicatesHire = paymentIntent.Metadata != null
+                    && (paymentIntent.Metadata.GetValueOrDefault("pendingHire") == "true"
+                        || paymentIntent.Metadata.ContainsKey("serviceId"));
+
+                var amount = paymentIntent.Amount / 100m;
+                int? userId = paymentIntent.Metadata != null
+                    && paymentIntent.Metadata.TryGetValue("userId", out var uid)
+                    && int.TryParse(uid, out var parsedUid) ? parsedUid : (int?)null;
+
+                await _loggingService.LogWarningAsync(
+                    message: "Payment succeeded without local ServicePayment record",
+                    details: $"PaymentIntent {paymentIntent.Id} succeeded ({amount}€) but no ServicePayment FinancialTransaction exists. " +
+                             (indicatesHire
+                                ? "Metadata indicates a pending hire — verify checkout.session.completed was processed (possible event ordering issue or dropped event). Money may be collected without a hire."
+                                : "No hire metadata present — likely a non-hire payment, informational only."),
+                    userId: userId,
+                    source: "SubscriptionController.HandlePaymentIntentSucceeded",
+                    relatedEntityType: "Payment",
+                    relatedEntityId: null,
+                    additionalData: new
+                    {
+                        PaymentIntentId = paymentIntent.Id,
+                        Amount = amount,
+                        Currency = paymentIntent.Currency,
+                        IndicatesHire = indicatesHire
+                    }
+                );
             }
             catch (Exception ex)
             {
+                await _loggingService.LogWarningAsync(
+                    message: "Error during payment_intent.succeeded reconciliation",
+                    details: $"PaymentIntent {paymentIntent?.Id}: {ex.Message}",
+                    userId: null,
+                    source: "SubscriptionController.HandlePaymentIntentSucceeded",
+                    relatedEntityType: "Payment",
+                    relatedEntityId: null
+                );
             }
+        }
+
+        /// <summary>
+        /// charge.dispute.created — un comprador ha abierto un contracargo (chargeback).
+        /// Stripe retira de inmediato el importe + la comisión de disputa del saldo de la
+        /// plataforma. Detectamos, localizamos la contratación/experto si es posible, y
+        /// alertamos (LogCritical) para que se actúe (p.ej. revertir el transfer al experto).
+        /// No mueve dinero automáticamente — esa lógica de clawback se aborda por separado.
+        /// </summary>
+        private async Task HandleChargeDisputeCreated(Stripe.Dispute? dispute)
+        {
+            if (dispute == null)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "charge.dispute.created received with null Dispute object",
+                    source: "SubscriptionController.HandleChargeDisputeCreated",
+                    relatedEntityType: "Dispute");
+                return;
+            }
+
+            var amount = dispute.Amount / 100m;
+            var (hireId, expertId, clientId) = await FindHireForPaymentIntentAsync(dispute.PaymentIntentId);
+
+            await _loggingService.LogCriticalAsync(
+                message: "CRITICAL: Chargeback (dispute) opened on a payment",
+                details: $"Dispute {dispute.Id} created for {amount}€ (reason: {dispute.Reason}, status: {dispute.Status}). " +
+                         $"ChargeId: {dispute.ChargeId}, PaymentIntentId: {dispute.PaymentIntentId}. " +
+                         (hireId.HasValue
+                            ? $"Related SearchHire: {hireId}, ExpertId: {expertId}, ClientId: {clientId}. ACTION REQUIRED: if the expert was already paid via transfer, reverse that transfer to avoid double loss."
+                            : "No related SearchHire found locally for this PaymentIntent."),
+                userId: clientId,
+                source: "SubscriptionController.HandleChargeDisputeCreated",
+                relatedEntityType: "Dispute",
+                relatedEntityId: hireId,
+                additionalData: new
+                {
+                    DisputeId = dispute.Id,
+                    dispute.ChargeId,
+                    dispute.PaymentIntentId,
+                    Amount = amount,
+                    dispute.Reason,
+                    dispute.Status,
+                    SearchHireId = hireId,
+                    ExpertId = expertId
+                },
+                notifyUser: false);
+
+            // 🔁 A3: registrar un marcador "Chargeback" para que la distribución interna NO vuelva a
+            // reembolsar al cliente (Stripe YA le devolvió el dinero vía el contracargo) → evita doble reembolso.
+            // Idempotente. (La reversión del transfer al experto sigue alertándose para acción manual/clawback.)
+            if (hireId.HasValue && !string.IsNullOrEmpty(dispute.PaymentIntentId))
+            {
+                var alreadyMarked = await _context.FinancialTransactions.AnyAsync(ft =>
+                    ft.RelatedEntityType == "SearchHire" && ft.RelatedEntityId == hireId.Value &&
+                    ft.TransactionType == "Chargeback" && ft.StripePaymentIntentId == dispute.PaymentIntentId);
+                if (!alreadyMarked)
+                {
+                    _context.FinancialTransactions.Add(new FinancialTransaction
+                    {
+                        UserId = clientId,
+                        Amount = -amount,
+                        TransactionType = "Chargeback",
+                        RelatedEntityType = "SearchHire",
+                        RelatedEntityId = hireId.Value,
+                        StripePaymentIntentId = dispute.PaymentIntentId,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                    await _context.SaveChangesAsync();
+
+                    // 🔁 R3: encolar la reversión TOTAL del transfer al experto (idempotente; no-op si no hubo
+                    // transfer). Un chargeback revierte el cargo ENTERO → el experto no debe quedarse su pago.
+                    Hangfire.BackgroundJob.Enqueue<StripeRefundService>(
+                        s => s.ReverseExpertTransferForChargebackAsync(hireId.Value, $"Chargeback {dispute.Id} on PI {dispute.PaymentIntentId}"));
+                }
+            }
+        }
+
+        /// <summary>
+        /// charge.dispute.closed — el contracargo se resolvió. Si se perdió (lost), la plataforma
+        /// pierde los fondos de forma definitiva; se alerta como crítico para clawback al experto.
+        /// </summary>
+        private async Task HandleChargeDisputeClosed(Stripe.Dispute? dispute)
+        {
+            if (dispute == null) return;
+
+            var amount = dispute.Amount / 100m;
+            var (hireId, expertId, clientId) = await FindHireForPaymentIntentAsync(dispute.PaymentIntentId);
+            var lost = string.Equals(dispute.Status, "lost", StringComparison.OrdinalIgnoreCase);
+
+            if (lost)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Chargeback LOST — platform funds withdrawn",
+                    details: $"Dispute {dispute.Id} closed as LOST for {amount}€. PaymentIntentId: {dispute.PaymentIntentId}. " +
+                             (hireId.HasValue
+                                ? $"SearchHire: {hireId}, ExpertId: {expertId}. ACTION REQUIRED: reverse the expert transfer if already paid."
+                                : "No related SearchHire found locally."),
+                    userId: clientId,
+                    source: "SubscriptionController.HandleChargeDisputeClosed",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: hireId,
+                    additionalData: new { DisputeId = dispute.Id, dispute.PaymentIntentId, Amount = amount, dispute.Status, ExpertId = expertId });
+            }
+            else
+            {
+                await _loggingService.LogInfoAsync(
+                    message: "Chargeback resolved",
+                    details: $"Dispute {dispute.Id} closed with status '{dispute.Status}' for {amount}€. PaymentIntentId: {dispute.PaymentIntentId}.",
+                    userId: clientId,
+                    source: "SubscriptionController.HandleChargeDisputeClosed",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: hireId);
+            }
+        }
+
+        /// <summary>
+        /// charge.dispute.funds_withdrawn / funds_reinstated — movimiento de fondos por una disputa.
+        /// </summary>
+        private async Task HandleChargeDisputeFundsEvent(string eventType, Stripe.Dispute? dispute)
+        {
+            if (dispute == null) return;
+            var amount = dispute.Amount / 100m;
+            await _loggingService.LogWarningAsync(
+                message: $"Dispute funds event: {eventType}",
+                details: $"Dispute {dispute.Id} ({eventType}) for {amount}€. PaymentIntentId: {dispute.PaymentIntentId}, Status: {dispute.Status}.",
+                source: "SubscriptionController.HandleChargeDisputeFundsEvent",
+                relatedEntityType: "Dispute");
+        }
+
+        /// <summary>
+        /// charge.refunded — se reembolsó un cargo. Si no existe un FinancialTransaction de tipo
+        /// "Refund" local para este PaymentIntent, fue un reembolso externo (Dashboard de Stripe)
+        /// y se avisa para reconciliar el ledger.
+        /// </summary>
+        private async Task HandleChargeRefunded(Charge? charge)
+        {
+            if (charge == null) return;
+
+            var refundedAmount = charge.AmountRefunded / 100m;
+            var paymentIntentId = charge.PaymentIntentId;
+
+            var localRefund = !string.IsNullOrEmpty(paymentIntentId) && await _context.FinancialTransactions
+                .AnyAsync(ft => ft.StripePaymentIntentId == paymentIntentId && ft.TransactionType == "Refund");
+
+            if (localRefund)
+            {
+                await _loggingService.LogInfoAsync(
+                    message: "Charge refunded (reconciled with local refund)",
+                    details: $"Charge {charge.Id} refunded {refundedAmount}€. PaymentIntentId: {paymentIntentId}.",
+                    source: "SubscriptionController.HandleChargeRefunded",
+                    relatedEntityType: "Payment");
+            }
+            else
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "External refund detected (no local Refund record)",
+                    details: $"Charge {charge.Id} refunded {refundedAmount}€ but no local Refund FinancialTransaction exists for PaymentIntent {paymentIntentId}. " +
+                             "Likely a Stripe Dashboard refund — reconcile the ledger and check whether the expert transfer needs reversing.",
+                    source: "SubscriptionController.HandleChargeRefunded",
+                    relatedEntityType: "Payment");
+            }
+        }
+
+        /// <summary>
+        /// payout.paid / payout.failed — estado de los pagos de Stripe a la cuenta bancaria.
+        /// </summary>
+        private async Task HandlePayoutEvent(string eventType, Payout? payout, string? accountId)
+        {
+            if (payout == null) return;
+            var amount = payout.Amount / 100m;
+
+            if (string.Equals(eventType, "payout.failed", StringComparison.OrdinalIgnoreCase))
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Payout failed",
+                    details: $"Payout {payout.Id} of {amount}€ failed for account '{accountId ?? "platform"}'. Reason: {payout.FailureMessage} ({payout.FailureCode}).",
+                    source: "SubscriptionController.HandlePayoutEvent",
+                    relatedEntityType: "Payout");
+            }
+            else
+            {
+                await _loggingService.LogInfoAsync(
+                    message: "Payout paid",
+                    details: $"Payout {payout.Id} of {amount}€ paid for account '{accountId ?? "platform"}'.",
+                    source: "SubscriptionController.HandlePayoutEvent",
+                    relatedEntityType: "Payout");
+            }
+        }
+
+        /// <summary>
+        /// Localiza la SearchHire (y experto/cliente) asociada a un PaymentIntent, vía el
+        /// FinancialTransaction de tipo "ServicePayment". Devuelve nulls si no se encuentra.
+        /// </summary>
+        private async Task<(int? hireId, int? expertId, int? clientId)> FindHireForPaymentIntentAsync(string? paymentIntentId)
+        {
+            if (string.IsNullOrEmpty(paymentIntentId))
+            {
+                return (null, null, null);
+            }
+
+            var ft = await _context.FinancialTransactions
+                .FirstOrDefaultAsync(t => t.StripePaymentIntentId == paymentIntentId
+                                          && t.TransactionType == "ServicePayment");
+            if (ft == null || ft.RelatedEntityId == null)
+            {
+                return (null, null, null);
+            }
+
+            var hire = await _context.SearchHires
+                .FirstOrDefaultAsync(h => h.Id == ft.RelatedEntityId);
+            if (hire == null)
+            {
+                return (ft.RelatedEntityId, null, null);
+            }
+
+            return (hire.Id, hire.ExpertId, hire.ClientId);
         }
 
         private async Task HandlePaymentIntentFailed(PaymentIntent paymentIntent)

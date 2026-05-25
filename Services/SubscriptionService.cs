@@ -32,10 +32,15 @@ namespace newApi.Services
             
             if (systemStatus == null)
             {
-                // Default to "pending" (ID = 1)
+                // ⚠️ FRENTE 8: estado no encontrado → AVISAR en vez de rebobinar a "pending" en silencio.
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: SearchHireStatus value not found - defaulting to 'pending'",
+                    details: $"GetStatusIdByValueAsync could not resolve StatusValue '{statusValue}' (SearchHireStatus). Defaulting to pending (1); verify the status is seeded. This can silently misroute a hire.",
+                    source: "SubscriptionService.GetStatusIdByValueAsync",
+                    relatedEntityType: "SearchHire");
                 return 1;
             }
-            
+
             return systemStatus.Id;
         }
 
@@ -174,7 +179,11 @@ namespace newApi.Services
                         {
                             await _refundService.ProcessMoneyDistributionAsync(
                                 searchHireId,
-                                "completed_without_client_approval",
+                                // 🔁 FIX: faltaba el prefijo "appointment_" → sin él NO había config ni mapeo
+                                // (money no-op silencioso) y el hire se marcaba completado sin pagar al experto.
+                                // Con el prefijo resuelve por GetDefaultMapping → completed (0/95/5). (Ruta hoy
+                                // latente: la auto-finalización viva la hace el timer client_decision de AppointmentService.)
+                                "appointment_completed_without_client_approval",
                                 "Auto transfer after client timeout (24h)",
                                 null);
                         }

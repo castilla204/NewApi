@@ -17,6 +17,7 @@ namespace newApi.Services
         Task<AppointmentDto> CancelAppointmentAsync(CancelAppointmentDto dto, int userId);
         Task<object> GetAppointmentMetricsAsync();
         Task CheckAppointmentTimersAsync();
+        Task ProcessOverdueTimersAsync();
         Task ProcessAppointmentTimerAsync(int timerId);
         
         [JobDisplayName("⏰ Timer Propuesta Cliente (Penaliza Cliente) - Timer #{0}")]

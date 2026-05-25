@@ -646,8 +646,8 @@ namespace newApi.Controllers
                     var existingAccountLinkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.StripeAccountId,
-                        RefreshUrl = "https://inspecciono.com/refresh-onboarding",
-                        ReturnUrl = "https://inspecciono.com/complete-onboarding",
+                        RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
+                        ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
                         Type = "account_onboarding"
                     };
                     
@@ -699,8 +699,8 @@ namespace newApi.Controllers
                     var pendingAccountLinkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.PendingStripeAccountId,
-                        RefreshUrl = "https://inspecciono.com/refresh-onboarding",
-                        ReturnUrl = "https://inspecciono.com/complete-onboarding",
+                        RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
+                        ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
                         Type = "account_onboarding",
                         Collect = "eventually_due"
                     };
@@ -887,8 +887,8 @@ namespace newApi.Controllers
                 var linkOptions = new AccountLinkCreateOptions
                 {
                     Account = account.Id,
-                    RefreshUrl = "https://inspecciono.com/refresh-onboarding",
-                    ReturnUrl = "https://inspecciono.com/complete-onboarding",
+                    RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
+                    ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
                     Type = "account_onboarding",
                     Collect = "eventually_due"
                 };
@@ -997,8 +997,8 @@ namespace newApi.Controllers
                 var accountLinkOptions = new Stripe.AccountLinkCreateOptions
                 {
                     Account = expertProfile.StripeAccountId,
-                    RefreshUrl = "https://inspecciono.com/expert-panel?refresh=true", // URL si necesita refrescar
-                    ReturnUrl = "https://inspecciono.com/expert-panel", // URL de retorno después de actualizar datos
+                    RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert-panel?refresh=true", // URL si necesita refrescar
+                    ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert-panel", // URL de retorno después de actualizar datos
                     Type = linkType // ✅ account_update para cuentas aprobadas, account_onboarding para requirements pendientes
                 };
 
@@ -1344,8 +1344,8 @@ namespace newApi.Controllers
                     var restartLinkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.StripeAccountId,
-                        RefreshUrl = "https://inspecciono.com/refresh-onboarding",
-                        ReturnUrl = "https://inspecciono.com/complete-onboarding",
+                        RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
+                        ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
                         Type = "account_onboarding"
                     };
                     
@@ -1372,8 +1372,8 @@ namespace newApi.Controllers
                 var pendingLinkOptions = new AccountLinkCreateOptions
                 {
                     Account = expertProfile.PendingStripeAccountId,
-                    RefreshUrl = "https://inspecciono.com/refresh-onboarding",
-                    ReturnUrl = "https://inspecciono.com/complete-onboarding",
+                    RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
+                    ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
                     Type = "account_onboarding",
                     Collect = "eventually_due"
                 };
@@ -1439,7 +1439,7 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "User account is blocked" });
                 }
 
-                var domain = "https://inspecciono.com";
+                var domain = _configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com";
                 var options = new SessionCreateOptions
                 {
                     PaymentMethodTypes = new List<string> { "card" },
@@ -1630,7 +1630,7 @@ namespace newApi.Controllers
                 // 💳 SIEMPRE PAGAR CON STRIPE - NO USAR SALDO INTERNO
                 var amountToCharge = service.Price;
 
-                var domain = "https://inspecciono.com";
+                var domain = _configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com";
                 var options = new SessionCreateOptions
                 {
                     PaymentMethodTypes = new List<string> { "card" },
@@ -4484,7 +4484,7 @@ namespace newApi.Controllers
                 }
 
                 // 💳 SIEMPRE PAGAR CON STRIPE - NO USAR SALDO INTERNO
-                var domain = "https://inspecciono.com";
+                var domain = _configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com";
                 var options = new SessionCreateOptions
                 {
                     PaymentMethodTypes = new List<string> { "card" },

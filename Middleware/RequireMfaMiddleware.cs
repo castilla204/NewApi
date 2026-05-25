@@ -158,12 +158,18 @@ namespace newApi.Middleware
             }
             catch (Exception ex)
             {
-                // ✅ CORRECCIÓN: Si hay error en la consulta, loguear pero permitir acceso
-                // No bloquear todas las peticiones por un error en MFA
-                _logger.LogError(ex, $"[MFA Middleware] ❌ ERROR checking MFA for user {userId} on path {path}. Allowing access to prevent blocking all requests.");
-                _logger.LogError($"[MFA Middleware]    Exception: {ex.Message}");
-                _logger.LogError($"[MFA Middleware]    StackTrace: {ex.StackTrace}");
-                await _next(context);
+                // FAIL-CLOSED: si la consulta de MFA falla, NO permitimos acceso al recurso
+                // protegido (sería un bypass de MFA). Devolvemos 503 para que el cliente
+                // reintente y los administradores lo vean en monitorización.
+                _logger.LogCritical(ex, $"[MFA Middleware] ❌ CRITICAL: error consultando MFA para user {userId} en path {path}. Bloqueando request (fail-closed) para no permitir bypass.");
+
+                if (!context.Response.HasStarted)
+                {
+                    context.Response.StatusCode = 503;
+                    context.Response.ContentType = "application/json";
+                    await context.Response.WriteAsync("{\"error\":\"MFA verification service temporarily unavailable\"}");
+                }
+                return;
             }
         }
     }

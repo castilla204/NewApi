@@ -566,6 +566,14 @@ namespace newApi.Controllers
                         }
                         catch (StripeException ex)
                         {
+                            // P0-4: no tragar el error en silencio. Mantener flujo (la rama
+                            // de fallback usa expertProfile.StripeStatusDetails) pero dejar traza.
+                            await _loggingService.LogWarningAsync(
+                                message: "Stripe error consultando estado de cuenta de experto (rejection/disabled reason)",
+                                details: $"StripeException al recuperar Account.Requirements.DisabledReason. ExpertProfileId: {expertProfile?.Id}, StripeAccountId: {expertProfile?.StripeAccountId}, StripeCode: {ex.StripeError?.Code}, StripeType: {ex.StripeError?.Type}, Message: {ex.Message}",
+                                source: "SubscriptionController." + nameof(CreateExpertOnboarding),
+                                relatedEntityType: "ExpertProfile",
+                                relatedEntityId: expertProfile?.Id);
                         }
                     }
                     
@@ -792,7 +800,26 @@ namespace newApi.Controllers
                 }
                 catch (StripeException ex)
                 {
-                    return StatusCode(500, new { message = "Failed to create Stripe account" });
+                    // Antes este catch se tragaba el error (500 genérico, sin log) → la causa real de
+                    // por qué falla accounts.create se perdía. Ahora lo registramos y lo devolvemos.
+                    await _loggingService.LogErrorAsync(
+                        message: "Failed to create Stripe Connect account",
+                        details: $"AccountService.CreateAsync threw for user {userId}. StripeError: Code={ex.StripeError?.Code}, Type={ex.StripeError?.Type}, DeclineCode={ex.StripeError?.DeclineCode}, Message={ex.Message}",
+                        userId: userId > 0 ? userId : null,
+                        source: "SubscriptionController.CreateExpertOnboarding",
+                        relatedEntityType: "ExpertProfile",
+                        additionalData: new {
+                            ExceptionType = ex.GetType().Name,
+                            StripeErrorCode = ex.StripeError?.Code,
+                            StripeErrorType = ex.StripeError?.Type,
+                            ExceptionMessage = ex.Message
+                        });
+                    return StatusCode(500, new {
+                        message = "Failed to create Stripe account",
+                        error = ex.Message,
+                        code = ex.StripeError?.Code,
+                        type = ex.StripeError?.Type
+                    });
                 }
 
                 // ✅ FIX CRÍTICO: NO usar transacciones manuales con ExecutionStrategy habilitado
@@ -1077,6 +1104,14 @@ namespace newApi.Controllers
                         }
                         catch (StripeException ex)
                         {
+                            // P0-4: no tragar el error en silencio. Mantener flujo (la rama
+                            // de fallback usa expertProfile.StripeStatusDetails) pero dejar traza.
+                            await _loggingService.LogWarningAsync(
+                                message: "Stripe error consultando estado de cuenta de experto (rejection/disabled reason)",
+                                details: $"StripeException al recuperar Account.Requirements.DisabledReason. ExpertProfileId: {expertProfile?.Id}, StripeAccountId: {expertProfile?.StripeAccountId}, StripeCode: {ex.StripeError?.Code}, StripeType: {ex.StripeError?.Type}, Message: {ex.Message}",
+                                source: "SubscriptionController." + nameof(GetExpertStatus),
+                                relatedEntityType: "ExpertProfile",
+                                relatedEntityId: expertProfile?.Id);
                         }
                     }
                     
@@ -1246,6 +1281,14 @@ namespace newApi.Controllers
                         }
                         catch (StripeException ex)
                         {
+                            // P0-4: no tragar el error en silencio. Mantener flujo (la rama
+                            // de fallback usa expertProfile.StripeStatusDetails) pero dejar traza.
+                            await _loggingService.LogWarningAsync(
+                                message: "Stripe error consultando estado de cuenta de experto (rejection/disabled reason)",
+                                details: $"StripeException al recuperar Account.Requirements.DisabledReason. ExpertProfileId: {expertProfile?.Id}, StripeAccountId: {expertProfile?.StripeAccountId}, StripeCode: {ex.StripeError?.Code}, StripeType: {ex.StripeError?.Type}, Message: {ex.Message}",
+                                source: "SubscriptionController." + nameof(RestartOnboarding),
+                                relatedEntityType: "ExpertProfile",
+                                relatedEntityId: expertProfile?.Id);
                         }
                     }
                     
@@ -1370,25 +1413,12 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Amount must be between 0.01 and 1000" });
                 }
 
-                // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                User? user = null;
-                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
-                {
-                    try
-                    {
-                        user = await _context.Users
-                            .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
-                            .FirstOrDefaultAsync();
-                        
-                        await lockTransaction.CommitAsync();
-                    }
-                    catch
-                    {
-                        try { await lockTransaction.RollbackAsync(); } catch { }
-                        throw;
-                    }
-                }
+                // P2-2: pre-check de Users (IsBlocked) ANTES de crear la sesión Stripe.
+                // El FOR UPDATE + commit inmediato anterior NO bloqueaba nada útil:
+                // no había mutación posterior sobre Users dentro de esta ruta, así que
+                // el lock se liberaba sin proteger nada. Se reduce a una lectura normal.
+                var user = await _context.Users
+                    .FirstOrDefaultAsync(u => u.Id == userId);
                 
                 if (user == null)
                 {
@@ -1452,7 +1482,8 @@ namespace newApi.Controllers
                 Session session;
                 try
                 {
-                    session = await service.CreateAsync(options);
+                    var idempotencyKey = $"loadmoney-{userId}-{request.Amount:F2}-{DateTime.UtcNow:yyyyMMddHHmm}";
+                    session = await service.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
                 }
                 catch (StripeException e)
                 {
@@ -1547,25 +1578,12 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
                 }
 
-                // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                User? user = null;
-                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
-                {
-                    try
-                    {
-                        user = await _context.Users
-                            .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
-                            .FirstOrDefaultAsync();
-                        
-                        await lockTransaction.CommitAsync();
-                    }
-                    catch
-                    {
-                        try { await lockTransaction.RollbackAsync(); } catch { }
-                        throw;
-                    }
-                }
+                // P2-2: pre-check de Users (IsBlocked) ANTES de crear la sesión Stripe.
+                // El FOR UPDATE + commit inmediato anterior NO protegía mutación alguna
+                // dentro de esta ruta (la creación de SearchHire se hace en el webhook).
+                // Se reduce a una lectura normal.
+                var user = await _context.Users
+                    .FirstOrDefaultAsync(u => u.Id == userId);
                 
                 if (user == null)
                 {
@@ -1663,7 +1681,8 @@ namespace newApi.Controllers
                 Session session;
                 try
                 {
-                    session = await stripeService.CreateAsync(options);
+                    var idempotencyKey = $"checkout-{userId}-{request.ServiceId}-none-{DateTime.UtcNow:yyyyMMddHHmm}";
+                    session = await stripeService.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
                 }
                 catch (StripeException ex)
                 {
@@ -2256,6 +2275,13 @@ namespace newApi.Controllers
                                         state,
                                         "SubscriptionController.account.updated");
                                 }
+
+                                // Approved -> Rejected: el experto operativo pasa a rechazado.
+                                // Activar manejo de hires activos (refund de los no prestados, manual review de los ya prestados).
+                                if (currentPreviousStatus == StripeStatus.Approved && state.Status == StripeStatus.Rejected)
+                                {
+                                    await HandleApprovedAccountRejection(profileToUpdate.Id, state.DisabledReason ?? "rejected");
+                                }
                                 
                                 await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, profileToUpdate.UserId);
                         }
@@ -2433,6 +2459,49 @@ namespace newApi.Controllers
                         break;
 
                     // Los eventos de suscripción y facturas se manejan en el webhook general
+
+                    case "capability.updated":
+                        {
+                            var capability = stripeEvent.Data.Object as Stripe.Capability;
+                            if (capability != null)
+                            {
+                                var capabilityAccountId = capability.AccountId ?? stripeEvent.Account;
+                                if (!string.IsNullOrEmpty(capabilityAccountId) &&
+                                    (string.Equals(capability.Id, "card_payments", StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(capability.Id, "transfers", StringComparison.OrdinalIgnoreCase)) &&
+                                    string.Equals(capability.Status, "inactive", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var capabilityProfile = await _context.ExpertProfiles
+                                        .FirstOrDefaultAsync(ep => ep.StripeAccountId == capabilityAccountId);
+                                    if (capabilityProfile != null)
+                                    {
+                                        var activeStatusValues = new[]
+                                        {
+                                            SearchHireStatus.Pending.ToStringValue(),
+                                            SearchHireStatus.AwaitingClientDecision.ToStringValue(),
+                                            SearchHireStatus.Disputed.ToStringValue()
+                                        };
+                                        var activeHiresCount = await _context.SearchHires
+                                            .Include(sh => sh.Status)
+                                            .Where(sh => sh.ExpertId == capabilityProfile.UserId && activeStatusValues.Contains(sh.Status.StatusValue))
+                                            .CountAsync();
+                                        if (activeHiresCount > 0)
+                                        {
+                                            await _loggingService.LogCriticalAsync(
+                                                message: "CRITICAL: Stripe capability inactive on expert with active hires",
+                                                details: $"Capability '{capability.Id}' became inactive on account {capabilityAccountId}. ExpertId={capabilityProfile.UserId}, active hires={activeHiresCount}. Triggering HandleApprovedAccountRejection.",
+                                                userId: capabilityProfile.UserId,
+                                                source: "SubscriptionController.capability.updated",
+                                                relatedEntityType: "ExpertProfile",
+                                                relatedEntityId: capabilityProfile.Id,
+                                                additionalData: new { capability.Id, capability.Status, AccountId = capabilityAccountId, ActiveHires = activeHiresCount });
+                                            await HandleApprovedAccountRejection(capabilityProfile.Id, $"capability_{capability.Id}_inactive");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        break;
 
                     default:
                         break;
@@ -2980,6 +3049,13 @@ namespace newApi.Controllers
             }
         }
 
+        // TODO P3-9 (DEFERRED): Reemplazar EnsurePaymentCapturedAsync síncrono por outbox completo.
+        // 1) Marcar SearchHire.CaptureStatus = "Pending" en la misma transacción que crea el hire.
+        // 2) Tras commit, BackgroundJob.Enqueue<IPaymentCaptureService>(s => s.CaptureForHireAsync(hire.Id)).
+        // 3) PaymentCaptureService usa FOR UPDATE + IdempotencyKey = $"capture-{hireId}" y marca Captured/Failed.
+        // 4) Watchdog RecurringJob cada 30 min recoge CaptureStatus="Pending" antiguos (>1h) y reencola.
+        // P1-5 ya cubre happy path + compensación; queda pendiente la reescritura por riesgo alto
+        // (HandlePendingHireCompleted tiene cientos de líneas y depende del webhook flow).
         private async Task HandlePendingHireCompleted(int userId, decimal amount, int serviceId, Dictionary<string, string> metadata, Session session)
         {
             // ✅ VALIDACIÓN: Verificar que session y PaymentIntentId no sean null
@@ -3013,10 +3089,12 @@ namespace newApi.Controllers
                 );
                 return;
             }
-            // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
+            // P2-2: lectura simple de Users. No hay mutación posterior sobre la fila
+            // que dependa de un lock pesimista (sólo se usa user.Email para envío
+            // de factura más abajo). El FOR UPDATE con commit inmediato anterior no
+            // protegía nada — el lock se liberaba antes de cualquier mutación.
             var user = await _context.Users
-                        .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
-                        .FirstOrDefaultAsync();
+                .FirstOrDefaultAsync(u => u.Id == userId);
             if (user == null)
             {
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
@@ -3636,7 +3714,57 @@ namespace newApi.Controllers
 
                 await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHireId); // ✅ FIX: Usar searchHireId guardado
 
-                await transaction.CommitAsync();
+                try
+                {
+                    await transaction.CommitAsync();
+                }
+                catch (Exception commitEx)
+                {
+                    // Compensación: la captura YA pasó a Stripe pero el commit local falló.
+                    // Refund/cancel el PI para no quedarse con dinero capturado sin SearchHire.
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Commit failed after Stripe capture - compensating",
+                        details: $"PaymentIntent {session.PaymentIntentId} ya capturado en Stripe pero CommitAsync local falló (SearchHire {searchHireId}). Iniciando compensación. Commit error: {commitEx.Message}",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { PaymentIntentId = session.PaymentIntentId, SearchHireId = searchHireId, CommitError = commitEx.Message });
+
+                    try
+                    {
+                        var piService = new PaymentIntentService();
+                        var pi = await piService.GetAsync(session.PaymentIntentId);
+                        if (pi.Status == "succeeded")
+                        {
+                            // Ya capturado: refund total inmediato (idempotente por IdempotencyKey).
+                            var refundService = new RefundService();
+                            await refundService.CreateAsync(new RefundCreateOptions
+                            {
+                                PaymentIntent = session.PaymentIntentId,
+                                Reason = "requested_by_customer"
+                            }, new RequestOptions { IdempotencyKey = $"compensate-{searchHireId}" });
+                        }
+                        else if (pi.Status == "requires_capture")
+                        {
+                            // PI todavía cancelable.
+                            await piService.CancelAsync(session.PaymentIntentId);
+                        }
+                    }
+                    catch (Exception compensationEx)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Failed to compensate Stripe capture after commit failure",
+                            details: $"PaymentIntent {session.PaymentIntentId}, SearchHire {searchHireId}: {compensationEx.Message}. ACTION REQUIRED: refund manual desde Stripe Dashboard.",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId,
+                            additionalData: new { PaymentIntentId = session.PaymentIntentId, SearchHireId = searchHireId, CompensationError = compensationEx.Message });
+                    }
+
+                    throw;
+                }
 
                 // ✅ Crear automáticamente la cita en estado "awaiting_appointment" con timer de 24h
                 // Esto asegura que el cliente tenga 24 horas para proponer una fecha/hora
@@ -3924,7 +4052,10 @@ namespace newApi.Controllers
             {
                 try
                 {
-                    await paymentIntentService.CaptureAsync(paymentIntentId);
+                    await paymentIntentService.CaptureAsync(
+                        paymentIntentId,
+                        null,
+                        new RequestOptions { IdempotencyKey = $"capture-{searchHireId}" });
                 }
                 catch (StripeException ex)
                 {
@@ -3944,13 +4075,17 @@ namespace newApi.Controllers
             }
         }
 
-        private async Task LogPaymentCaptureFailureAsync(string paymentIntentId, int userId, int serviceId, string failureReason, int? searchHireId = null, Exception? exception = null)
+        private async Task LogPaymentCaptureFailureAsync(string paymentIntentId, int userId, int serviceId, string failureReason, int? searchHireId = null, Exception? exception = null, [System.Runtime.CompilerServices.CallerMemberName] string callerMember = "")
         {
+            var resolvedSource = string.IsNullOrEmpty(callerMember)
+                ? "SubscriptionController.HandlePendingHireCompleted"
+                : $"SubscriptionController.{callerMember}";
+
             await _loggingService.LogCriticalAsync(
                 message: "CRITICAL: Payment capture failure",
                 details: $"Failed to capture PaymentIntent {paymentIntentId}. Reason: {failureReason}",
                 userId: null,
-                source: "SubscriptionController.HandlePendingHireCompleted",
+                source: resolvedSource,
                 relatedEntityType: "Payment",
                 relatedEntityId: serviceId,
                 additionalData: new
@@ -3967,7 +4102,7 @@ namespace newApi.Controllers
         /// <summary>
         /// Registra fallos críticos de refund para alertar a administradores
         /// </summary>
-        private async Task LogCriticalRefundFailure(string paymentIntentId, int userId, int serviceId, Exception error)
+        private async Task LogCriticalRefundFailure(string paymentIntentId, int userId, int serviceId, Exception error, [System.Runtime.CompilerServices.CallerMemberName] string callerMember = "")
         {
             // 💾 Registrar fallo crítico en base de datos para seguimiento
             var criticalError = new FinancialTransaction
@@ -3984,12 +4119,15 @@ namespace newApi.Controllers
             _context.FinancialTransactions.Add(criticalError);
             await _context.SaveChangesAsync();
 
-            // 🚨 Registrar en sistema de logs con tipo específico
+            var resolvedSource = string.IsNullOrEmpty(callerMember)
+                ? "SubscriptionController.LogCriticalRefundFailure"
+                : $"SubscriptionController.{callerMember}";
+
             await _loggingService.LogCriticalAsync(
                 $"Critical refund failure - PaymentIntentId: {paymentIntentId}",
                 error.Message,
                 userId,
-                "SubscriptionController.LogCriticalRefundFailure",
+                resolvedSource,
                 "Payment",
                 serviceId,
                 new { PaymentIntentId = paymentIntentId, ServiceId = serviceId, Error = error.Message }
@@ -4274,26 +4412,13 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
                 }
 
-                // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                User? user = null;
-                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
-                {
-                    try
-                    {
-                        user = await _context.Users
-                            .FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"Id\" = {userId} FOR UPDATE")
-                            .Include(u => u.ExpertProfile)
-                            .FirstOrDefaultAsync();
-                        
-                        await lockTransaction.CommitAsync();
-                    }
-                    catch
-                    {
-                        try { await lockTransaction.RollbackAsync(); } catch { }
-                        throw;
-                    }
-                }
+                // P2-2: pre-check de Users (Role/ExpertProfile) ANTES de crear la sesión
+                // Stripe. El FOR UPDATE + commit inmediato anterior no bloqueaba nada
+                // útil; ninguna mutación posterior dentro de esta ruta dependía del lock
+                // (la contratación se materializa en el webhook). Se reduce a lectura.
+                var user = await _context.Users
+                    .Include(u => u.ExpertProfile)
+                    .FirstOrDefaultAsync(u => u.Id == userId);
                 
                 if (user == null)
                 {
@@ -4411,7 +4536,8 @@ namespace newApi.Controllers
                 Session session;
                 try
                 {
-                    session = await stripeService.CreateAsync(options);
+                    var idempotencyKey = $"checkout-{userId}-{service.Id}-{request.SearchId}-{DateTime.UtcNow:yyyyMMddHHmm}";
+                    session = await stripeService.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
                     
                     await _loggingService.LogInfoAsync(
                         message: "Sesión de pago Stripe creada exitosamente",
@@ -4493,125 +4619,145 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                SearchHire? searchHire = null;
-                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
+                // P2-1: una sola transacción envolvente (ExecutionStrategy + BeginTransaction)
+                // cubre FOR UPDATE, distribución de dinero y SaveChanges. ProcessMoneyDistributionAsync
+                // detecta CurrentTransaction y reutiliza la tx ambiente (no abre otra anidada).
+                // El lock pesimista se mantiene hasta el commit final, evitando el antipatrón
+                // FOR UPDATE + commit inmediato que liberaba el lock antes de la mutación.
+                var distributionStatusValue = SearchHireStatus.Cancelled.ToStringValue();
+                bool enqueueRetry = false;
+                int retryHireId = 0;
+                int successHireId = 0;
+
+                var strategy = _context.Database.CreateExecutionStrategy();
+                var actionResult = await strategy.ExecuteAsync<IActionResult>(async () =>
                 {
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+
+                    var searchHire = await _context.SearchHires
+                        .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} AND \"ExpertId\" = {userId} FOR UPDATE")
+                        .Include(sh => sh.Status)
+                        .Include(sh => sh.Client)
+                        .Include(sh => sh.Appointment)
+                        .Include(sh => sh.SearchService)
+                            .ThenInclude(ss => ss.ServiceType)
+                                .ThenInclude(st => st.ServiceTypeCategory)
+                        .FirstOrDefaultAsync();
+
+                    if (searchHire == null)
+                    {
+                        await transaction.RollbackAsync();
+                        return (IActionResult)NotFound(new { message = "Service not found or unauthorized" });
+                    }
+
+                    if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue())
+                    {
+                        await transaction.RollbackAsync();
+                        return BadRequest(new { message = "Service is not pending" });
+                    }
+
+                    var appointment = searchHire.Appointment;
+                    if (appointment == null)
+                    {
+                        await transaction.RollbackAsync();
+                        return BadRequest(new { message = "No appointment found" });
+                    }
+
+                    string statusValue = appointment.ExpertCancellationCount >= 1
+                        ? "appointment_cancelled_by_expert_second"
+                        : "appointment_cancelled_by_expert";
+
+                    var cancelledStatus = await _context.SystemStatuses
+                        .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && s.StatusValue == statusValue);
+
+                    if (cancelledStatus == null)
+                    {
+                        await transaction.RollbackAsync();
+                        return BadRequest(new { message = "Invalid cancellation status" });
+                    }
+
+                    // cancel-service es terminal: el cliente SIEMPRE se reembolsa con el estado
+                    // SearchHire 'cancelled' (100/0/0). updateState:false → el hire se marca abajo
+                    // dentro de esta MISMA tx; la cita se marca aquí.
+                    appointment.StatusId = cancelledStatus.Id;
+                    appointment.UpdatedAt = DateTime.UtcNow;
+
+                    bool refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
+                        searchHire.Id,
+                        distributionStatusValue,
+                        $"Expert cancelled pending service {searchHire.Id}",
+                        userId,
+                        updateState: false);
+
+                    if (!refundSuccess)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            $"Failed to process money distribution - SearchHireId: {searchHire.Id}",
+                            $"Money distribution failed for search hire",
+                            searchHire.ClientId,
+                            "SubscriptionController.CancelService",
+                            "SearchHire",
+                            searchHire.Id,
+                            new { SearchHireId = searchHire.Id, ClientId = searchHire.ClientId, StatusValue = distributionStatusValue }
+                        );
+                        // Marca para encolar el retry FUERA y DESPUÉS del commit (no encolamos
+                        // jobs huérfanos si el commit termina haciendo rollback).
+                        enqueueRetry = true;
+                        retryHireId = searchHire.Id;
+                    }
+
+                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
+                    searchHire.UpdatedAt = DateTime.UtcNow;
+
                     try
                     {
-                        searchHire = await _context.SearchHires
-                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} AND \"ExpertId\" = {userId} FOR UPDATE")
-                            .Include(sh => sh.Status)
-                            .Include(sh => sh.Client)
-                            .Include(sh => sh.Appointment)
-                            .Include(sh => sh.SearchService)
-                                .ThenInclude(ss => ss.ServiceType)
-                                    .ThenInclude(st => st.ServiceTypeCategory)
-                            .FirstOrDefaultAsync();
-                        
-                        await lockTransaction.CommitAsync();
+                        await ConcurrencyRetryHelper.SaveChangesWithRetryAsync(_context,
+                            () => _context.SaveChangesAsync());
                     }
-                    catch
+                    catch (DbUpdateConcurrencyException concEx)
                     {
-                        try { await lockTransaction.RollbackAsync(); } catch { }
-                        throw;
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: CancelService concurrency conflict after retry - state NOT advanced; money may already be moved",
+                            details: $"SearchHire {searchHire.Id} concurrency conflict after retry: {concEx.Message}",
+                            userId: userId,
+                            source: "SubscriptionController.CancelService",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHire.Id);
+                        await transaction.RollbackAsync();
+                        // No encolar retry: cancelamos la marca pendiente
+                        enqueueRetry = false;
+                        return Conflict(new { message = "Service state changed concurrently, please retry" });
                     }
-                }
 
-                if (searchHire == null)
+                    await transaction.CommitAsync();
+                    successHireId = searchHire.Id;
+                    return Ok(new { message = "Service cancelled and refunded via Stripe" });
+                });
+
+                if (enqueueRetry)
                 {
-                    return NotFound(new { message = "Service not found or unauthorized" });
-                }
-
-                if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue())
-                {
-                    return BadRequest(new { message = "Service is not pending" });
-                }
-
-                // Verificar contador de cancelaciones del experto
-                var appointment = searchHire.Appointment;
-                if (appointment == null)
-                {
-                    return BadRequest(new { message = "No appointment found" });
-                }
-
-                // Determinar si es primera o segunda cancelación del experto
-                string statusValue;
-                if (appointment.ExpertCancellationCount >= 1)
-                {
-                    statusValue = "appointment_cancelled_by_expert_second";
-                }
-                else
-                {
-                    statusValue = "appointment_cancelled_by_expert";
-                }
-
-                // Obtener información del estado para verificar si es de finalización
-                var cancelledStatus = await _context.SystemStatuses
-                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && s.StatusValue == statusValue);
-
-                if (cancelledStatus == null)
-                {
-                    return BadRequest(new { message = "Invalid cancellation status" });
-                }
-
-                // 🔁 cancel-service es una cancelación TERMINAL del servicio pendiente (NO reprogramable, a
-                // diferencia de CancelAppointmentAsync) → el cliente SIEMPRE debe ser reembolsado. Antes el
-                // reembolso se gateaba con cancelledStatus.IsFinalizationStatus, pero tras el fix de 1ª
-                // cancelación ese subestado (appointment_cancelled_by_expert) es false → el hire quedaba
-                // cancelado SIN reembolsar al cliente. Se distribuye con el estado SearchHire 'cancelled'
-                // (100/0/0) SIEMPRE; updateState:false porque el hire se marca Cancelled abajo y la cita aquí.
-                appointment.StatusId = cancelledStatus.Id;
-                appointment.UpdatedAt = DateTime.UtcNow;
-
-                var distributionStatusValue = SearchHireStatus.Cancelled.ToStringValue();
-                bool refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
-                    searchHire.Id,
-                    distributionStatusValue,
-                    $"Expert cancelled pending service {searchHire.Id}",
-                    userId,
-                    updateState: false);
-
-                if (!refundSuccess)
-                {
-                    // 🚨 Registrar fallo crítico de distribución
-                    await _loggingService.LogCriticalAsync(
-                        $"Failed to process money distribution - SearchHireId: {searchHire.Id}",
-                        $"Money distribution failed for search hire",
-                        searchHire.ClientId,
-                        "SubscriptionController.CancelService",
-                        "SearchHire",
-                        searchHire.Id,
-                        new { SearchHireId = searchHire.Id, ClientId = searchHire.ClientId, StatusValue = distributionStatusValue }
-                    );
-
-                    // 🔁 FRENTE 6: NO bloquear. Encolar reintento del dinero (idempotente) y CONTINUAR;
-                    // el estado se marca Cancelled justo abajo y devolvemos 200. Admin ya avisado (Critical).
                     Hangfire.BackgroundJob.Schedule<StripeRefundService>(
                         s => s.RetryMoneyDistributionJobAsync(
-                            searchHire.Id,
+                            retryHireId,
                             distributionStatusValue,
-                            $"Retry money distribution for cancelled service {searchHire.Id}",
+                            $"Retry money distribution for cancelled service {retryHireId}",
                             userId),
                         TimeSpan.FromMinutes(2));
                 }
 
-                // Actualizar estado del SearchHire a cancelado
-                searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
-                    searchHire.UpdatedAt = DateTime.UtcNow;
-                    await _context.SaveChangesAsync();
-
-                    // 📝 LOGGING: Registrar acción de cancelación
+                if (successHireId > 0)
+                {
                     await _loggingService.LogInfoAsync(
                         message: "CANCEL_SERVICE",
-                        details: $"Canceló servicio {searchHire.Id} como experto con refund real de Stripe",
+                        details: $"Canceló servicio {successHireId} como experto con refund real de Stripe",
                         userId: userId,
                         source: "UserAction",
                         relatedEntityType: "SearchHire",
-                        relatedEntityId: searchHire.Id
+                        relatedEntityId: successHireId
                     );
-                return Ok(new { message = "Service cancelled and refunded via Stripe" });
+                }
+
+                return actionResult;
             }
             catch (Exception ex)
             {
@@ -4630,65 +4776,59 @@ namespace newApi.Controllers
             }
             try
             {
-                // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                SearchHire? searchHire = null;
-                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
+                if (!request.ResolveInFavorOfClient)
                 {
-                    try
-                    {
-                        searchHire = await _context.SearchHires
-                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
-                            .Include(sh => sh.Status)
-                            .Include(sh => sh.Client)
-                            .Include(sh => sh.Expert)
-                            .ThenInclude(e => e.ExpertProfile)
-                            .FirstOrDefaultAsync();
-                        
-                        await lockTransaction.CommitAsync();
-                    }
-                    catch
-                    {
-                        try { await lockTransaction.RollbackAsync(); } catch { }
-                        throw;
-                    }
+                    return BadRequest(new { message = "Force finalize in favor of expert is no longer supported. Use dispute resolution instead." });
                 }
 
-                if (searchHire == null)
+                var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+
+                // P2-1: ExecutionStrategy + tx envolvente. FOR UPDATE, Stripe call y
+                // SaveChanges comparten transacción → el lock se mantiene hasta el commit.
+                bool enqueueRetry = false;
+                int retryHireId = 0;
+                int successHireId = 0;
+
+                var strategy = _context.Database.CreateExecutionStrategy();
+                var actionResult = await strategy.ExecuteAsync<IActionResult>(async () =>
                 {
-                    return NotFound(new { message = "Service not found" });
-                }
-                if (request.ResolveInFavorOfClient)
-                {
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+
+                    var searchHire = await _context.SearchHires
+                        .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                        .Include(sh => sh.Status)
+                        .Include(sh => sh.Client)
+                        .Include(sh => sh.Expert)
+                        .ThenInclude(e => e.ExpertProfile)
+                        .FirstOrDefaultAsync();
+
+                    if (searchHire == null)
+                    {
+                        await transaction.RollbackAsync();
+                        return (IActionResult)NotFound(new { message = "Service not found" });
+                    }
+
                     var success = await _refundService.ProcessMoneyDistributionAsync(
                         searchHire.Id,
                         "dispute_resolved_client",
                         "Force finalize in favor of client",
-                        int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"));
+                        adminUserId);
 
                     if (!success)
                     {
-                        // 🔁 FRENTE 6: NO bloquear. Avisar, encolar reintento (idempotente) y CONTINUAR.
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Force-finalize money distribution failed - state advanced, money retry enqueued",
                             details: $"SearchHire {searchHire.Id} force-finalized in favor of client but money distribution failed; retry enqueued, needs monitoring.",
-                            userId: int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"),
+                            userId: adminUserId,
                             source: "SubscriptionController.ForceFinalize",
                             relatedEntityType: "SearchHire",
                             relatedEntityId: searchHire.Id);
-                        Hangfire.BackgroundJob.Schedule<StripeRefundService>(
-                            s => s.RetryMoneyDistributionJobAsync(
-                                searchHire.Id,
-                                "dispute_resolved_client",
-                                "Retry force-finalize client refund (money pending)",
-                                null),
-                            TimeSpan.FromMinutes(2));
+                        enqueueRetry = true;
+                        retryHireId = searchHire.Id;
                     }
 
                     searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.DisputeResolvedClient.ToStringValue());
-                    await _context.SaveChangesAsync();
 
-                    // ✅ FRENTE 8 (c): finalizar también la cita (no dejarla abierta tras finalizar el hire).
                     var ffAppointment = await _context.Appointments
                         .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
                     if (ffAppointment != null)
@@ -4699,25 +4839,57 @@ namespace newApi.Controllers
                         {
                             ffAppointment.StatusId = ffApptCompleted.Id;
                             ffAppointment.UpdatedAt = DateTime.UtcNow;
-                            await _context.SaveChangesAsync();
                         }
                     }
 
+                    try
+                    {
+                        await ConcurrencyRetryHelper.SaveChangesWithRetryAsync(_context,
+                            () => _context.SaveChangesAsync());
+                    }
+                    catch (DbUpdateConcurrencyException concEx)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: ForceFinalize concurrency conflict after retry - state NOT advanced; money may already be moved",
+                            details: $"SearchHire {searchHire.Id} concurrency conflict after retry: {concEx.Message}",
+                            userId: adminUserId,
+                            source: "SubscriptionController.ForceFinalize",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHire.Id);
+                        await transaction.RollbackAsync();
+                        enqueueRetry = false;
+                        return Conflict(new { message = "Service state changed concurrently, please retry" });
+                    }
+
+                    await transaction.CommitAsync();
+                    successHireId = searchHire.Id;
+                    return Ok(new { message = "Service finalized successfully in favor of client" });
+                });
+
+                if (enqueueRetry)
+                {
+                    Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                        s => s.RetryMoneyDistributionJobAsync(
+                            retryHireId,
+                            "dispute_resolved_client",
+                            "Retry force-finalize client refund (money pending)",
+                            null),
+                        TimeSpan.FromMinutes(2));
+                }
+
+                if (successHireId > 0)
+                {
                     await _loggingService.LogWarningAsync(
                         message: "FORCE_FINALIZE_CLIENT_REFUND",
-                        details: $"Finalizó forzadamente servicio {searchHire.Id} a favor del cliente con orquestador",
-                        userId: int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"),
+                        details: $"Finalizó forzadamente servicio {successHireId} a favor del cliente con orquestador",
+                        userId: adminUserId,
                         source: "AdminAction",
                         relatedEntityType: "SearchHire",
-                        relatedEntityId: searchHire.Id
+                        relatedEntityId: successHireId
                     );
+                }
 
-                    return Ok(new { message = "Service finalized successfully in favor of client" });
-                }
-                else
-                {
-                    return BadRequest(new { message = "Force finalize in favor of expert is no longer supported. Use dispute resolution instead." });
-                }
+                return actionResult;
             }
             catch (Exception ex)
             {
@@ -4740,147 +4912,175 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Resolution reason is required" });
                 }
 
-                // ✅ FIX CRÍTICO: FOR UPDATE requiere una transacción activa en PostgreSQL
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                SearchHire? searchHire = null;
-                await using (var lockTransaction = await _context.Database.BeginTransactionAsync())
-                {
-                    try
-                    {
-                        searchHire = await _context.SearchHires
-                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
-                            .Include(sh => sh.Status)
-                            .Include(sh => sh.Client)
-                            .Include(sh => sh.Expert)
-                            .ThenInclude(e => e.ExpertProfile)
-                            .FirstOrDefaultAsync();
-                        
-                        await lockTransaction.CommitAsync();
-                    }
-                    catch
-                    {
-                        try { await lockTransaction.RollbackAsync(); } catch { }
-                        throw;
-                    }
-                }
-
-                if (searchHire == null)
-                {
-                    return NotFound(new { message = "Service not found" });
-                }
-
-                if (searchHire.Status.StatusValue != SearchHireStatus.Disputed.ToStringValue())
-                {
-                    return BadRequest(new { message = "Service is not disputed" });
-                }
-
-                var dispute = await _context.Disputes
-                    .FirstOrDefaultAsync(d => d.SearchHireId == searchHire.Id && d.Status == "Pending");
-
-                if (dispute == null)
-                {
-                    return NotFound(new { message = "No pending dispute found" });
-                }
-
-                // ✅ FIX (consistencia A6): NO marcar "Resolved" aquí, ANTES de mover el dinero. Se marca
-                // al final, tras el intento de distribución (igual que DisputeController.ResolveDispute),
-                // para no dejar la disputa cerrada-sin-pagar si algo falla entre este punto y el reparto.
-                dispute.ResolutionComments = request.Resolution;
-                await _context.SaveChangesAsync();
-
                 var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
                 var statusValue = request.ResolveInFavorOfClient
                     ? SearchHireStatus.DisputeResolvedClient.ToStringValue()
                     : SearchHireStatus.DisputeResolvedExpert.ToStringValue();
 
-                var success = await _refundService.ProcessMoneyDistributionAsync(
-                    searchHire.Id,
-                    statusValue,
-                    request.ResolveInFavorOfClient
-                        ? $"Dispute resolved in favor of client: {request.Resolution}"
-                        : $"Dispute resolved in favor of expert: {request.Resolution}",
-                    adminUserId);
+                // P2-1: ExecutionStrategy + tx envolvente. FOR UPDATE, mutaciones, Stripe
+                // y SaveChanges en la misma transacción. ProcessMoneyDistributionAsync detecta
+                // CurrentTransaction y reutiliza la tx ambiente (no abre tx anidada).
+                // El A6 mantiene el orden: dispute.Status="Resolved" SÓLO al final, después
+                // de que el dinero se haya intentado mover (si el dinero falla la disputa
+                // queda Pending y el retry encolado lo termina).
+                bool enqueueRetry = false;
+                int retryHireId = 0;
+                int successHireId = 0;
 
-                if (!success)
+                var strategy = _context.Database.CreateExecutionStrategy();
+                var actionResult = await strategy.ExecuteAsync<IActionResult>(async () =>
                 {
-                    var lastCriticalLog = await _context.Logs
-                        .Include(l => l.LogType)
-                        .Where(l => l.RelatedEntityType == "SearchHire" &&
-                                    l.RelatedEntityId == searchHire.Id &&
-                                    l.LogType != null &&
-                                    l.LogType.Name == "Critical" &&
-                                    l.Source != null &&
-                                    l.Source.Contains("ProcessMoneyDistributionAsync"))
-                        .OrderByDescending(l => l.CreatedAt)
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+
+                    var searchHire = await _context.SearchHires
+                        .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                        .Include(sh => sh.Status)
+                        .Include(sh => sh.Client)
+                        .Include(sh => sh.Expert)
+                        .ThenInclude(e => e.ExpertProfile)
                         .FirstOrDefaultAsync();
 
-                    var errorMessage = lastCriticalLog != null
-                        ? $"Failed to process money distribution: {lastCriticalLog.Message}. Check logs for details (LogId: {lastCriticalLog.Id})"
-                        : "Failed to process money distribution. Check ProcessMoneyDistributionAsync logs for details.";
+                    if (searchHire == null)
+                    {
+                        await transaction.RollbackAsync();
+                        return (IActionResult)NotFound(new { message = "Service not found" });
+                    }
 
-                    // 🔁 FRENTE 6: NO bloquear. La disputa ya está Resuelta y el estado avanza por el
-                    // servicio de dinero; avisar, encolar reintento (idempotente) y CONTINUAR (200).
-                    await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: Dispute resolution money distribution failed - state advanced, money retry enqueued",
-                        details: errorMessage,
-                        userId: adminUserId,
-                        source: "SubscriptionController.ResolveDispute",
-                        relatedEntityType: "SearchHire",
-                        relatedEntityId: searchHire.Id);
+                    if (searchHire.Status.StatusValue != SearchHireStatus.Disputed.ToStringValue())
+                    {
+                        await transaction.RollbackAsync();
+                        return BadRequest(new { message = "Service is not disputed" });
+                    }
+
+                    var dispute = await _context.Disputes
+                        .FirstOrDefaultAsync(d => d.SearchHireId == searchHire.Id && d.Status == "Pending");
+
+                    if (dispute == null)
+                    {
+                        await transaction.RollbackAsync();
+                        return NotFound(new { message = "No pending dispute found" });
+                    }
+
+                    dispute.ResolutionComments = request.Resolution;
+
+                    var success = await _refundService.ProcessMoneyDistributionAsync(
+                        searchHire.Id,
+                        statusValue,
+                        request.ResolveInFavorOfClient
+                            ? $"Dispute resolved in favor of client: {request.Resolution}"
+                            : $"Dispute resolved in favor of expert: {request.Resolution}",
+                        adminUserId);
+
+                    if (!success)
+                    {
+                        var lastCriticalLog = await _context.Logs
+                            .Include(l => l.LogType)
+                            .Where(l => l.RelatedEntityType == "SearchHire" &&
+                                        l.RelatedEntityId == searchHire.Id &&
+                                        l.LogType != null &&
+                                        l.LogType.Name == "Critical" &&
+                                        l.Source != null &&
+                                        l.Source.Contains("ProcessMoneyDistributionAsync"))
+                            .OrderByDescending(l => l.CreatedAt)
+                            .FirstOrDefaultAsync();
+
+                        var errorMessage = lastCriticalLog != null
+                            ? $"Failed to process money distribution: {lastCriticalLog.Message}. Check logs for details (LogId: {lastCriticalLog.Id})"
+                            : "Failed to process money distribution. Check ProcessMoneyDistributionAsync logs for details.";
+
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Dispute resolution money distribution failed - state advanced, money retry enqueued",
+                            details: errorMessage,
+                            userId: adminUserId,
+                            source: "SubscriptionController.ResolveDispute",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHire.Id);
+                        enqueueRetry = true;
+                        retryHireId = searchHire.Id;
+                    }
+
+                    var rdAppointment = await _context.Appointments
+                        .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
+                    if (rdAppointment != null)
+                    {
+                        var rdApptCompleted = await _context.SystemStatuses
+                            .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_completed");
+                        if (rdApptCompleted != null && rdAppointment.StatusId != rdApptCompleted.Id)
+                        {
+                            rdAppointment.StatusId = rdApptCompleted.Id;
+                            rdAppointment.UpdatedAt = DateTime.UtcNow;
+                        }
+                    }
+
+                    // Sólo marcar Resolved si el dinero se movió. Si falló, la queue lo intenta
+                    // de nuevo y un siguiente paso (manual o automático) lo cerrará.
+                    if (success)
+                    {
+                        dispute.Status = "Resolved";
+                    }
+
+                    try
+                    {
+                        await ConcurrencyRetryHelper.SaveChangesWithRetryAsync(_context,
+                            () => _context.SaveChangesAsync());
+                    }
+                    catch (DbUpdateConcurrencyException concEx)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: ResolveDispute concurrency conflict after retry - state NOT advanced; money may already be moved",
+                            details: $"Dispute {dispute.Id} concurrency conflict after retry: {concEx.Message}",
+                            userId: adminUserId,
+                            source: "SubscriptionController.ResolveDispute",
+                            relatedEntityType: "Dispute",
+                            relatedEntityId: dispute.Id);
+                        await transaction.RollbackAsync();
+                        enqueueRetry = false;
+                        return Conflict(new { message = "Dispute state changed concurrently, please retry" });
+                    }
+
+                    await transaction.CommitAsync();
+                    successHireId = searchHire.Id;
+                    return Ok(new { message = "Dispute resolved" });
+                });
+
+                if (enqueueRetry)
+                {
                     Hangfire.BackgroundJob.Schedule<StripeRefundService>(
                         s => s.RetryMoneyDistributionJobAsync(
-                            searchHire.Id,
+                            retryHireId,
                             statusValue,
                             "Retry dispute resolution money distribution (money pending)",
                             adminUserId),
                         TimeSpan.FromMinutes(2));
                 }
 
-                // ✅ FRENTE 8 (c): finalizar también la cita al resolver la disputa (no dejarla abierta
-                // mientras el hire pasa a DisputeResolved*). Mismo arreglo que DisputeController.ResolveDispute.
-                var rdAppointment = await _context.Appointments
-                    .FirstOrDefaultAsync(a => a.SearchHireId == searchHire.Id);
-                if (rdAppointment != null)
+                if (successHireId > 0)
                 {
-                    var rdApptCompleted = await _context.SystemStatuses
-                        .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_completed");
-                    if (rdApptCompleted != null && rdAppointment.StatusId != rdApptCompleted.Id)
+                    if (request.ResolveInFavorOfClient)
                     {
-                        rdAppointment.StatusId = rdApptCompleted.Id;
-                        rdAppointment.UpdatedAt = DateTime.UtcNow;
-                        await _context.SaveChangesAsync();
+                        await _loggingService.LogWarningAsync(
+                            message: "RESOLVE_DISPUTE_CLIENT_REFUND",
+                            details: $"Resolvió disputa {successHireId} a favor del cliente con orquestador: {request.Resolution}",
+                            userId: adminUserId,
+                            source: "AdminAction",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: successHireId
+                        );
+                    }
+                    else
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "RESOLVE_DISPUTE_EXPERT",
+                            details: $"Resolvió disputa {successHireId} a favor del experto con orquestador: {request.Resolution}",
+                            userId: adminUserId,
+                            source: "AdminAction",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: successHireId
+                        );
                     }
                 }
 
-                if (request.ResolveInFavorOfClient)
-                {
-                    await _loggingService.LogWarningAsync(
-                        message: "RESOLVE_DISPUTE_CLIENT_REFUND",
-                        details: $"Resolvió disputa {searchHire.Id} a favor del cliente con orquestador: {request.Resolution}",
-                        userId: adminUserId,
-                        source: "AdminAction",
-                        relatedEntityType: "SearchHire",
-                        relatedEntityId: searchHire.Id
-                    );
-                }
-                else
-                {
-                    await _loggingService.LogWarningAsync(
-                        message: "RESOLVE_DISPUTE_EXPERT",
-                        details: $"Resolvió disputa {searchHire.Id} a favor del experto con orquestador: {request.Resolution}",
-                        userId: adminUserId,
-                        source: "AdminAction",
-                        relatedEntityType: "SearchHire",
-                        relatedEntityId: searchHire.Id
-                    );
-                }
-
-                // ✅ FIX (consistencia A6): marcar "Resolved" SOLO ahora, tras el intento de dinero
-                // (en fallo de dinero ya se encoló el reintento más arriba; en éxito el dinero ya se movió).
-                dispute.Status = "Resolved";
-                await _context.SaveChangesAsync();
-
-                return Ok(new { message = "Dispute resolved" });
+                return actionResult;
             }
             catch (Exception ex)
             {
@@ -4962,34 +5162,6 @@ namespace newApi.Controllers
             public string Resolution { get; set; }
         }
 
-        public class CreateSubscriptionDto
-        {
-            public int PlanId { get; set; }
-            public bool IsYearly { get; set; }
-        }
-
-        public class SubscriptionPlanDto
-        {
-            public int Id { get; set; }
-            public string Name { get; set; }
-            public string Description { get; set; }
-            public decimal PriceMonthly { get; set; }
-            public decimal PriceYearly { get; set; }
-            public int MaxSearches { get; set; }
-            public int MinSearchInterval { get; set; }
-            public bool IsActive { get; set; }
-        }
-
-        public class SubscriptionDetailsDto
-        {
-            public bool IsYearly { get; set; }
-            public DateTime? StartDate { get; set; }
-            public DateTime? EndDate { get; set; }
-            public string Status { get; set; }
-            public decimal Price { get; set; }
-            public string BillingPeriod { get; set; }
-            public DateTime? NextBillingDate { get; set; }
-        }
     }
 
     // MEJORA: Métodos auxiliares para idempotencia de webhooks
@@ -5789,6 +5961,17 @@ namespace newApi.Controllers
                     Hangfire.BackgroundJob.Enqueue<StripeRefundService>(
                         s => s.ReverseExpertTransferForChargebackAsync(hireId.Value, $"Chargeback {dispute.Id} on PI {dispute.PaymentIntentId}"));
                 }
+
+                // Vincular la Dispute interna (si existe) con la disputa de Stripe para poder enviar evidencia.
+                var internalDispute = await _context.Disputes
+                    .Where(d => d.SearchHireId == hireId.Value)
+                    .OrderByDescending(d => d.CreatedAt)
+                    .FirstOrDefaultAsync();
+                if (internalDispute != null && string.IsNullOrEmpty(internalDispute.StripeDisputeId))
+                {
+                    internalDispute.StripeDisputeId = dispute.Id;
+                    await _context.SaveChangesAsync();
+                }
             }
         }
 
@@ -5888,11 +6071,21 @@ namespace newApi.Controllers
 
             if (string.Equals(eventType, "payout.failed", StringComparison.OrdinalIgnoreCase))
             {
-                await _loggingService.LogWarningAsync(
-                    message: "Payout failed",
-                    details: $"Payout {payout.Id} of {amount}€ failed for account '{accountId ?? "platform"}'. Reason: {payout.FailureMessage} ({payout.FailureCode}).",
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Payout failed",
+                    details: $"Payout {payout.Id} of {amount}€ failed for account '{accountId ?? "platform"}'. Reason: {payout.FailureMessage} ({payout.FailureCode}). ACTION REQUIRED: revisar saldo, configuración bancaria y reintentar el payout manualmente.",
+                    userId: null,
                     source: "SubscriptionController.HandlePayoutEvent",
-                    relatedEntityType: "Payout");
+                    relatedEntityType: "Payout",
+                    additionalData: new
+                    {
+                        PayoutId = payout.Id,
+                        Amount = amount,
+                        AccountId = accountId,
+                        payout.FailureMessage,
+                        payout.FailureCode,
+                        payout.Status
+                    });
             }
             else
             {
@@ -5939,10 +6132,10 @@ namespace newApi.Controllers
             {
                 // 🚨 LOG CRÍTICO: Pago fallido - afecta dinero
                 var amount = paymentIntent.Amount / 100m; // Convertir de céntimos a euros
-                var userId = paymentIntent.Metadata?.ContainsKey("userId") == true && 
-                            int.TryParse(paymentIntent.Metadata["userId"], out int parsedUserId) 
+                var userId = paymentIntent.Metadata?.ContainsKey("userId") == true &&
+                            int.TryParse(paymentIntent.Metadata["userId"], out int parsedUserId)
                             ? parsedUserId : (int?)null;
-                
+
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Payment intent failed",
                     details: $"Payment intent {paymentIntent.Id} failed. Amount: {amount}€ {paymentIntent.Currency?.ToUpper()}. Error: {paymentIntent.LastPaymentError?.Message ?? "No error details"}, Code: {paymentIntent.LastPaymentError?.Code}, Type: {paymentIntent.LastPaymentError?.Type}, DeclineCode: {paymentIntent.LastPaymentError?.DeclineCode}",
@@ -5950,7 +6143,8 @@ namespace newApi.Controllers
                     source: "SubscriptionController.HandlePaymentIntentFailed",
                     relatedEntityType: "Payment",
                     relatedEntityId: null,
-                    additionalData: new { 
+                    additionalData: new {
+                        event_type = "payment_intent_failed",
                         PaymentIntentId = paymentIntent.Id,
                         Amount = amount,
                         Currency = paymentIntent.Currency,
@@ -5964,13 +6158,181 @@ namespace newApi.Controllers
                         Metadata = paymentIntent.Metadata
                     }
                 );
-                
-                if (paymentIntent.Metadata != null && paymentIntent.Metadata.Count > 0)
+
+                // P0-6: localizar el SearchHire asociado y, si no está finalizado, cancelarlo
+                // (incluyendo Appointment y timers Hangfire). No se emite refund: no hubo cobro.
+                var hireFt = await _context.FinancialTransactions
+                    .FirstOrDefaultAsync(t => t.StripePaymentIntentId == paymentIntent.Id
+                                              && t.TransactionType == "ServicePayment");
+
+                if (hireFt == null || hireFt.RelatedEntityId == null)
                 {
+                    // Sin hire local: mantener sólo el log crítico ya emitido. El webhook
+                    // devolverá 200 al caller para no provocar reintentos infinitos de Stripe.
+                    return;
                 }
 
-                // Si tienes un sistema de órdenes, podrías actualizar el estado aquí
-                // await UpdateOrderStatus(paymentIntent.Metadata["order_id"], "payment_failed");
+                int hireId = hireFt.RelatedEntityId.Value;
+
+                var cancelledHireStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
+                var pendingHireStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Pending.ToStringValue());
+                var awaitingHireStatusId = await GetStatusIdByValueAsync(SearchHireStatus.AwaitingClientDecision.ToStringValue());
+                var disputedHireStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
+
+                var appointmentCancelledStatusId = (await _context.SystemStatuses
+                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus"
+                                              && s.StatusValue == "appointment_cancelled_by_client"))?.Id;
+
+                var strategy = _context.Database.CreateExecutionStrategy();
+                int? expertIdForNotif = null;
+                int? clientIdForNotif = null;
+                bool hireWasCancelledNow = false;
+
+                await strategy.ExecuteAsync(async () =>
+                {
+                    await using var tx = await _context.Database.BeginTransactionAsync();
+
+                    var hire = await _context.SearchHires
+                        .Include(h => h.Appointment)
+                        .FirstOrDefaultAsync(h => h.Id == hireId);
+
+                    if (hire == null)
+                    {
+                        await tx.CommitAsync();
+                        return;
+                    }
+
+                    expertIdForNotif = hire.ExpertId;
+                    clientIdForNotif = hire.ClientId;
+
+                    bool isActive = hire.StatusId == pendingHireStatusId
+                                    || hire.StatusId == awaitingHireStatusId
+                                    || hire.StatusId == disputedHireStatusId;
+
+                    if (!isActive)
+                    {
+                        await tx.CommitAsync();
+                        return;
+                    }
+
+                    hire.StatusId = cancelledHireStatusId;
+                    hire.UpdatedAt = DateTime.UtcNow;
+                    hireWasCancelledNow = true;
+
+                    if (hire.Appointment != null && appointmentCancelledStatusId.HasValue)
+                    {
+                        hire.Appointment.StatusId = appointmentCancelledStatusId.Value;
+                        hire.Appointment.UpdatedAt = DateTime.UtcNow;
+
+                        var activeTimers = await _context.AppointmentTimers
+                            .Where(t => t.AppointmentId == hire.Appointment.Id
+                                        && !t.IsExpired
+                                        && t.HangfireJobId != null)
+                            .ToListAsync();
+
+                        foreach (var timer in activeTimers)
+                        {
+                            try
+                            {
+                                if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                                {
+                                    BackgroundJob.Delete(timer.HangfireJobId);
+                                }
+                            }
+                            catch (Exception delEx)
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "Failed to cancel Hangfire job after payment_intent.payment_failed",
+                                    details: $"AppointmentTimerId: {timer.Id}, HangfireJobId: {timer.HangfireJobId}, Error: {delEx.Message}",
+                                    source: "SubscriptionController.HandlePaymentIntentFailed",
+                                    relatedEntityType: "AppointmentTimer",
+                                    relatedEntityId: timer.Id);
+                            }
+
+                            timer.IsExpired = true;
+                            timer.ExpiredAt = DateTime.UtcNow;
+                            timer.Notes = (timer.Notes ?? string.Empty)
+                                + $" | Cancelled by HandlePaymentIntentFailed (PI: {paymentIntent.Id})";
+                        }
+                    }
+
+                    await _context.SaveChangesAsync();
+                    await tx.CommitAsync();
+                });
+
+                if (hireWasCancelledNow)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: SearchHire cancelled due to payment_intent.payment_failed (deferred capture)",
+                        details: $"SearchHire {hireId} cancelled because PaymentIntent {paymentIntent.Id} failed at capture time. No refund issued (no funds captured). Hangfire timers cancelled and Appointment marked as cancelled_by_client when present.",
+                        userId: clientIdForNotif,
+                        source: "SubscriptionController.HandlePaymentIntentFailed",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hireId,
+                        additionalData: new {
+                            // P3-11: tags estructurados para dashboard de métricas (Prometheus/AppInsights pendiente).
+                            metric_name = "payment_intent_failed_hire_cancelled_total",
+                            metric_kind = "counter",
+                            event_type = "payment_intent_failed_hire_cancelled",
+                            severity = "critical",
+                            PaymentIntentId = paymentIntent.Id,
+                            SearchHireId = hireId,
+                            ExpertId = expertIdForNotif,
+                            ClientId = clientIdForNotif,
+                            LastPaymentErrorCode = paymentIntent.LastPaymentError?.Code,
+                            LastPaymentErrorType = paymentIntent.LastPaymentError?.Type,
+                            TimestampUtc = DateTime.UtcNow
+                        });
+
+                    var stripeErrorMsg = paymentIntent.LastPaymentError?.Message ?? "el cobro no pudo completarse";
+                    var notifications = new List<Notification>();
+
+                    if (clientIdForNotif.HasValue)
+                    {
+                        notifications.Add(new Notification
+                        {
+                            Id = Guid.NewGuid(),
+                            Title = "Pago no completado",
+                            Message = $"Tu pago para la contratación #{hireId} no pudo completarse ({stripeErrorMsg}). La contratación ha sido cancelada y no se te ha cobrado. Puedes intentarlo de nuevo desde tu panel.",
+                            Type = "payment_failed",
+                            UserId = clientIdForNotif.Value,
+                            Read = false,
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    }
+
+                    if (expertIdForNotif.HasValue)
+                    {
+                        notifications.Add(new Notification
+                        {
+                            Id = Guid.NewGuid(),
+                            Title = "Contratación cancelada por pago fallido",
+                            Message = $"La contratación #{hireId} se ha cancelado porque el pago del cliente no pudo completarse. No es necesario que realices ninguna acción.",
+                            Type = "hire_cancelled_payment_failed",
+                            UserId = expertIdForNotif.Value,
+                            Read = false,
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    }
+
+                    if (notifications.Count > 0)
+                    {
+                        try
+                        {
+                            _context.Notifications.AddRange(notifications);
+                            await _context.SaveChangesAsync();
+                        }
+                        catch (Exception notifEx)
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "Failed to persist in-app notifications after payment_intent.payment_failed",
+                                details: $"SearchHireId: {hireId}, Error: {notifEx.Message}",
+                                source: "SubscriptionController.HandlePaymentIntentFailed",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: hireId);
+                        }
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -5981,7 +6343,7 @@ namespace newApi.Controllers
                     source: "SubscriptionController.HandlePaymentIntentFailed",
                     relatedEntityType: "Payment",
                     relatedEntityId: null,
-                    additionalData: new { 
+                    additionalData: new {
                         PaymentIntentId = paymentIntent.Id,
                         Exception = ex.Message,
                         StackTrace = ex.StackTrace
@@ -6091,6 +6453,19 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
+                // P0-4: no tragar el error en silencio. Se preserva el comportamiento (no se relanza)
+                // pero se deja traza para detectar fallos de notificación/persistencia.
+                try
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Excepción silenciada en helper de notificación de cuenta Stripe",
+                        details: $"Exception: {ex.GetType().Name}: {ex.Message}. Stack: {(ex.StackTrace ?? string.Empty).Substring(0, Math.Min(800, (ex.StackTrace ?? string.Empty).Length))}",
+                        source: "SubscriptionController." + nameof(HandleAccountRejection));
+                }
+                catch
+                {
+                    Console.Error.WriteLine($"[CATCH-P0-4] {ex.GetType().Name}: {ex.Message}");
+                }
             }
         }
 
@@ -6124,6 +6499,19 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
+                // P0-4: no tragar el error en silencio. Se preserva el comportamiento (no se relanza)
+                // pero se deja traza para detectar fallos de notificación/persistencia.
+                try
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Excepción silenciada en helper de notificación de cuenta Stripe",
+                        details: $"Exception: {ex.GetType().Name}: {ex.Message}. Stack: {(ex.StackTrace ?? string.Empty).Substring(0, Math.Min(800, (ex.StackTrace ?? string.Empty).Length))}",
+                        source: "SubscriptionController." + nameof(NotifyExpertOfAccountRejection));
+                }
+                catch
+                {
+                    Console.Error.WriteLine($"[CATCH-P0-4] {ex.GetType().Name}: {ex.Message}");
+                }
             }
         }
 
@@ -6136,11 +6524,20 @@ namespace newApi.Controllers
             try
             {
                 // 1. Verificar si el experto tiene contrataciones activas
-                var activeHires = await _context.SearchHires
+                var activeStatusValues = new[]
+                {
+                    SearchHireStatus.Pending.ToStringValue(),
+                    SearchHireStatus.AwaitingClientDecision.ToStringValue(),
+                    SearchHireStatus.Disputed.ToStringValue()
+                };
+                var activeHiresList = await _context.SearchHires
                     .Include(sh => sh.Status)
-                    .Where(sh => sh.ExpertId == expertId && 
-                                sh.Status.StatusValue == "pending")
-                    .CountAsync();
+                    .Include(sh => sh.Appointment)
+                        .ThenInclude(a => a.Status)
+                    .Where(sh => sh.ExpertId == expertId && activeStatusValues.Contains(sh.Status.StatusValue))
+                    .ToListAsync();
+                var activeHires = activeHiresList.Count;
+
                 // 2. Crear log crítico (esto automáticamente notifica al admin)
                 await _loggingService.LogCriticalAsync(
                     $"Expert account deauthorized - ExpertId: {expertId}",
@@ -6156,12 +6553,217 @@ namespace newApi.Controllers
                         Timestamp = DateTime.UtcNow
                     }
                 );
+
+                // 3. Cancelar (con refund total) los hires futuros aún no prestados.
+                var servicedAppointmentStatuses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "appointment_awaiting_report",
+                    "appointment_report_sent",
+                    "appointment_completed",
+                    "appointment_completed_without_client_approval"
+                };
+                foreach (var hire in activeHiresList)
+                {
+                    var appointmentStatus = hire.Appointment?.Status?.StatusValue;
+                    var alreadyServiced = appointmentStatus != null && servicedAppointmentStatuses.Contains(appointmentStatus);
+                    if (alreadyServiced)
+                    {
+                        hire.RequiresManualReview = true;
+                        hire.UpdatedAt = DateTime.UtcNow;
+                        await _context.SaveChangesAsync();
+                        continue;
+                    }
+                    try
+                    {
+                        await _refundService.ProcessMoneyDistributionAsync(
+                            hire.Id,
+                            SearchHireStatus.CancelledByExpertAccountDelete.ToStringValue(),
+                            $"Stripe account deauthorized ({deauthorizationReason}); appointment not yet served.",
+                            initiatedByUserId: -1,
+                            updateState: true);
+                    }
+                    catch (Exception refundEx)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Failed to refund after deauthorization",
+                            details: $"SearchHire {hire.Id}, ExpertId {expertId}, Error: {refundEx.Message}",
+                            userId: expertId,
+                            source: "SubscriptionController.HandleAccountDeauthorization",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: hire.Id);
+                    }
+                }
                 
-                // 3. Crear notificación para el experto
+                // 4. Crear notificación para el experto
                 await NotifyExpertOfAccountDeauthorization(expertId, deauthorizationReason, activeHires);
             }
             catch (Exception ex)
             {
+                // P0-4: no tragar el error en silencio. Se preserva el comportamiento (no se relanza)
+                // pero se deja traza para detectar fallos de notificación/persistencia.
+                try
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Excepción silenciada en helper de notificación de cuenta Stripe",
+                        details: $"Exception: {ex.GetType().Name}: {ex.Message}. Stack: {(ex.StackTrace ?? string.Empty).Substring(0, Math.Min(800, (ex.StackTrace ?? string.Empty).Length))}",
+                        source: "SubscriptionController." + nameof(HandleAccountDeauthorization));
+                }
+                catch
+                {
+                    Console.Error.WriteLine($"[CATCH-P0-4] {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Maneja la transición Approved -> Rejected de una cuenta de experto con hires activos.
+        /// - Hires cuya cita ya se prestó (appointment_awaiting_report / appointment_report_sent / appointment_completed_*):
+        ///   marca RequiresManualReview = true y emite LogCriticalAsync para que el admin lo revise.
+        /// - Hires cuya cita aún no se prestó: cancela y emite refund total al cliente via _refundService.
+        /// - Notifica al experto y a los clientes afectados.
+        /// </summary>
+        private async Task HandleApprovedAccountRejection(int expertProfileId, string disabledReason)
+        {
+            try
+            {
+                var expertProfile = await _context.ExpertProfiles
+                    .Include(ep => ep.User)
+                    .FirstOrDefaultAsync(ep => ep.Id == expertProfileId);
+                if (expertProfile == null)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "HandleApprovedAccountRejection: expert profile not found",
+                        details: $"expertProfileId={expertProfileId}",
+                        source: "SubscriptionController.HandleApprovedAccountRejection",
+                        relatedEntityType: "ExpertProfile");
+                    return;
+                }
+
+                var expertId = expertProfile.UserId;
+
+                var activeStatusValues = new[]
+                {
+                    SearchHireStatus.Pending.ToStringValue(),
+                    SearchHireStatus.AwaitingClientDecision.ToStringValue(),
+                    SearchHireStatus.Disputed.ToStringValue()
+                };
+
+                var activeHires = await _context.SearchHires
+                    .Include(sh => sh.Status)
+                    .Include(sh => sh.Appointment)
+                        .ThenInclude(a => a.Status)
+                    .Where(sh => sh.ExpertId == expertId && activeStatusValues.Contains(sh.Status.StatusValue))
+                    .ToListAsync();
+
+                if (activeHires.Count == 0)
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "Expert account rejected with no active hires",
+                        details: $"ExpertId={expertId}, Reason={disabledReason}",
+                        userId: expertId,
+                        source: "SubscriptionController.HandleApprovedAccountRejection",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: expertProfile.Id);
+                    return;
+                }
+
+                var servicedAppointmentStatuses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "appointment_awaiting_report",
+                    "appointment_report_sent",
+                    "appointment_completed",
+                    "appointment_completed_without_client_approval"
+                };
+
+                foreach (var hire in activeHires)
+                {
+                    var appointmentStatus = hire.Appointment?.Status?.StatusValue;
+                    var alreadyServiced = appointmentStatus != null && servicedAppointmentStatuses.Contains(appointmentStatus);
+
+                    if (alreadyServiced)
+                    {
+                        hire.RequiresManualReview = true;
+                        hire.UpdatedAt = DateTime.UtcNow;
+                        await _context.SaveChangesAsync();
+
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Expert account rejected after service performed",
+                            details: $"SearchHire {hire.Id} flagged for manual review. Expert {expertId} account rejected ({disabledReason}). Appointment status: {appointmentStatus}.",
+                            userId: expertId,
+                            source: "SubscriptionController.HandleApprovedAccountRejection",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: hire.Id,
+                            additionalData: new
+                            {
+                                SearchHireId = hire.Id,
+                                ExpertId = expertId,
+                                ClientId = hire.ClientId,
+                                AppointmentStatus = appointmentStatus,
+                                DisabledReason = disabledReason,
+                                RequiresManualReview = true
+                            });
+                    }
+                    else
+                    {
+                        try
+                        {
+                            var refundReason = $"Expert account rejected by Stripe ({disabledReason}); appointment not yet served.";
+                            await _refundService.ProcessMoneyDistributionAsync(
+                                hire.Id,
+                                SearchHireStatus.CancelledByExpertAccountDelete.ToStringValue(),
+                                refundReason,
+                                initiatedByUserId: -1,
+                                updateState: true);
+                        }
+                        catch (Exception refundEx)
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Failed to refund client after expert account rejection",
+                                details: $"SearchHire {hire.Id}, ExpertId {expertId}, Error: {refundEx.Message}",
+                                userId: expertId,
+                                source: "SubscriptionController.HandleApprovedAccountRejection",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: hire.Id);
+                        }
+                    }
+
+                    if (hire.ClientId.HasValue)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Servicio afectado por cierre de cuenta del experto",
+                            details: $"El experto del servicio #{hire.Id} ya no puede operar. Si la cita no se prestó, se procesará un reembolso completo automáticamente.",
+                            userId: hire.ClientId.Value,
+                            source: "SubscriptionController.HandleApprovedAccountRejection",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: hire.Id,
+                            notifyUser: true);
+                    }
+                }
+
+                await _loggingService.LogErrorAsync(
+                    message: "Tu cuenta de pagos fue rechazada por Stripe",
+                    details: $"Stripe rechazó tu cuenta. Motivo: {disabledReason}. {activeHires.Count} servicios activos han sido procesados (reembolso o revisión manual).",
+                    userId: expertId,
+                    source: "SubscriptionController.HandleApprovedAccountRejection",
+                    relatedEntityType: "ExpertProfile",
+                    relatedEntityId: expertProfile.Id,
+                    notifyUser: true);
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Exception in HandleApprovedAccountRejection",
+                        details: $"ExpertProfileId {expertProfileId}, DisabledReason {disabledReason}: {ex.GetType().Name}: {ex.Message}",
+                        source: "SubscriptionController.HandleApprovedAccountRejection",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: expertProfileId);
+                }
+                catch
+                {
+                    Console.Error.WriteLine($"[HandleApprovedAccountRejection] {ex.GetType().Name}: {ex.Message}");
+                }
             }
         }
 
@@ -6195,6 +6797,19 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
+                // P0-4: no tragar el error en silencio. Se preserva el comportamiento (no se relanza)
+                // pero se deja traza para detectar fallos de notificación/persistencia.
+                try
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Excepción silenciada en helper de notificación de cuenta Stripe",
+                        details: $"Exception: {ex.GetType().Name}: {ex.Message}. Stack: {(ex.StackTrace ?? string.Empty).Substring(0, Math.Min(800, (ex.StackTrace ?? string.Empty).Length))}",
+                        source: "SubscriptionController." + nameof(NotifyExpertOnly));
+                }
+                catch
+                {
+                    Console.Error.WriteLine($"[CATCH-P0-4] {ex.GetType().Name}: {ex.Message}");
+                }
             }
         }
 
@@ -6228,6 +6843,19 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
+                // P0-4: no tragar el error en silencio. Se preserva el comportamiento (no se relanza)
+                // pero se deja traza para detectar fallos de notificación/persistencia.
+                try
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Excepción silenciada en helper de notificación de cuenta Stripe",
+                        details: $"Exception: {ex.GetType().Name}: {ex.Message}. Stack: {(ex.StackTrace ?? string.Empty).Substring(0, Math.Min(800, (ex.StackTrace ?? string.Empty).Length))}",
+                        source: "SubscriptionController." + nameof(NotifyExpertOfAccountDeauthorization));
+                }
+                catch
+                {
+                    Console.Error.WriteLine($"[CATCH-P0-4] {ex.GetType().Name}: {ex.Message}");
+                }
             }
         }
 

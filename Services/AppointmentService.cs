@@ -20,6 +20,12 @@ namespace newApi.Services
 
 {
 
+    // TODO P3-8: envolver SaveChangesAsync con ConcurrencyRetryHelper.SaveChangesWithRetryAsync(_context, ...)
+    // en los 5 métodos críticos: ProposeAppointmentAsync, ConfirmAppointmentAsync, RejectAppointmentAsync,
+    // CancelAppointmentAsync, SubmitExpertReportAsync. Cada uno usa transacción manual con múltiples ramas
+    // (Hangfire schedule + commit/rollback) y exige tests dedicados antes de tocar. Tras P2-4 (xmin como
+    // concurrency token en Appointment/FinancialTransaction/SearchHire/User/ExpertProfile), un conflicto
+    // lanza DbUpdateConcurrencyException → HTTP 500. Pendiente de iteración futura con tests E2E.
     public class AppointmentService : IAppointmentService
 
     {

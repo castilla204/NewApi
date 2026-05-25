@@ -368,6 +368,33 @@ namespace newApi.DataLayer.Models
                 .IsUnique()
                 .HasFilter("\"TransactionType\" = 'ServicePayment'");
 
+            // P2-3: índices parciales únicos sobre StripePaymentIntentId.
+            // Última línea de defensa anti doble PaymentIntent / doble Chargeback
+            // por mismo PaymentIntent en el ledger.
+            modelBuilder.Entity<FinancialTransaction>()
+                .HasIndex(ft => ft.StripePaymentIntentId)
+                .HasDatabaseName("IX_FT_StripePaymentIntent_ServicePayment_uq")
+                .IsUnique()
+                .HasFilter("\"StripePaymentIntentId\" IS NOT NULL AND \"TransactionType\" = 'ServicePayment'");
+            modelBuilder.Entity<FinancialTransaction>()
+                .HasIndex(ft => ft.StripePaymentIntentId)
+                .HasDatabaseName("IX_FT_StripePaymentIntent_Chargeback_uq")
+                .IsUnique()
+                .HasFilter("\"StripePaymentIntentId\" IS NOT NULL AND \"TransactionType\" = 'Chargeback'");
+
+            // P2-3: defensa anti doble-cobro y doble-chargeback a nivel BD, complementando
+            // las claves de idempotencia de Stripe. Ver SQL_UNIQUE_INDEXES_INTEGRITY.sql.
+            modelBuilder.Entity<FinancialTransaction>()
+                .HasIndex(ft => ft.StripePaymentIntentId)
+                .IsUnique()
+                .HasDatabaseName("IX_FT_StripePaymentIntent_ServicePayment_uq")
+                .HasFilter("\"StripePaymentIntentId\" IS NOT NULL AND \"TransactionType\" = 'ServicePayment'");
+            modelBuilder.Entity<FinancialTransaction>()
+                .HasIndex(ft => ft.StripePaymentIntentId)
+                .IsUnique()
+                .HasDatabaseName("IX_FT_StripePaymentIntent_Chargeback_uq")
+                .HasFilter("\"StripePaymentIntentId\" IS NOT NULL AND \"TransactionType\" = 'Chargeback'");
+
             modelBuilder.Entity<ServiceType>(entity =>
             {
                 entity.Property(e => e.Name)
@@ -817,6 +844,30 @@ namespace newApi.DataLayer.Models
                 entity.HasIndex(e => e.SearchServiceId);
                 entity.HasIndex(e => e.CreatedAt);
             });
+
+            // P2-4: concurrency token basado en la pseudo-columna xmin de PostgreSQL.
+            // EF Core añadirá WHERE xmin = @originalXmin a cada UPDATE/DELETE de estas
+            // entidades; si otro proceso modificó la fila entre Load y SaveChanges, se
+            // lanzará DbUpdateConcurrencyException. NO requiere migración SQL (xmin es
+            // una pseudo-columna implícita de cada tabla en Postgres).
+            // En Npgsql.EntityFrameworkCore.PostgreSQL 10 el helper UseXminAsConcurrencyToken
+            // no está disponible como extension de EntityTypeBuilder; usamos la API canónica
+            // de EF Core (shadow property + IsConcurrencyToken + ValueGeneratedOnAddOrUpdate).
+            ConfigureXminConcurrencyToken<Appointment>(modelBuilder);
+            ConfigureXminConcurrencyToken<FinancialTransaction>(modelBuilder);
+            ConfigureXminConcurrencyToken<SearchHire>(modelBuilder);
+            ConfigureXminConcurrencyToken<User>(modelBuilder);
+            ConfigureXminConcurrencyToken<ExpertProfile>(modelBuilder);
+        }
+
+        private static void ConfigureXminConcurrencyToken<TEntity>(ModelBuilder modelBuilder) where TEntity : class
+        {
+            modelBuilder.Entity<TEntity>()
+                .Property<uint>("xmin")
+                .HasColumnName("xmin")
+                .HasColumnType("xid")
+                .ValueGeneratedOnAddOrUpdate()
+                .IsConcurrencyToken();
         }
     }
 }

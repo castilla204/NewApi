@@ -45,7 +45,7 @@ namespace newApi.Services
             {
                 // Bloqueo a nivel de fila para consistencia
                 var searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {searchHireId} FOR UPDATE")
+                    .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {searchHireId} FOR UPDATE")
                     .Include(sh => sh.Status)
                     .Include(sh => sh.Client)
                     .Include(sh => sh.Expert)
@@ -997,15 +997,22 @@ namespace newApi.Services
                             );
                         }
 
-                        // 🔑 IDEMPOTENCIA POR CONTRATACIÓN (frente 7 — anti doble-pago entre finalizaciones).
-                        // Clave estable por HIRE, NO por estado: si el mismo hire se finaliza dos veces por
-                        // motivos distintos (p.ej. un timer lo completa y a la vez una disputa lo resuelve),
-                        // ambas generan la MISMA clave de transfer/refund y Stripe DEDUPLICA → no hay doble
-                        // pago. (Antes incluía el statusValue, así que dos finalizaciones con estados
-                        // distintos producían claves distintas y Stripe NO deduplicaba.) Si los importes
-                        // difirieran, Stripe devuelve error de clave reutilizada → se registra Critical
-                        // (avisa) en vez de pagar dos veces. Cada operación añade su sufijo (-refund, etc.).
+                        // 🔑 IDEMPOTENCIA (frente 7). El anti-doble-pago REAL lo dan: (1) el FOR UPDATE sobre
+                        // el hire (línea ~48, serializa finalizaciones concurrentes del MISMO hire) y (2) el guard
+                        // de fila Payout/Refund de arriba (líneas ~916-951, corta como "ya procesado"). La clave
+                        // de Stripe es defensa SECUNDARIA contra reintentos del MISMO movimiento.
+                        // 🔧 FIX (hallazgo E): clave de transfer/refund discriminada por estado+importe. Antes era
+                        // fija "md-{hire}", así que tras un revert (refund falló → transfer revertido, SIN fila
+                        // Payout) un reintento LEGÍTIMO con OTRO importe reusaba la misma clave y Stripe la
+                        // RECHAZABA (idempotency_error) → la distribución quedaba atascada. Con la clave por
+                        // estado+importe, un reintento idéntico produce la MISMA clave (sigue deduplicando, sin
+                        // doble pago) y uno con importe distinto usa clave nueva (ya no se bloquea). El clawback
+                        // conserva su propia clave estable (-clawback) con su guard de TransferReversal.
                         var idempotencyKey = $"md-{searchHireId}";
+                        var expertCentsForKey = checked((long)Math.Round(expertAmountForStripe * 100));
+                        var clientCentsForKey = checked((long)Math.Round(clientRefundAmountForStripe * 100));
+                        var transferIdempotencyKey = $"md-{searchHireId}-transfer-{statusValue}-{expertCentsForKey}";
+                        var refundIdempotencyKey = $"md-{searchHireId}-refund-{statusValue}-{clientCentsForKey}";
 
                         // 🔁 A3: si hubo un CHARGEBACK (contracargo) en este pago, Stripe YA devolvió el dinero
                         // al cliente. NO crear un refund interno encima → evita el DOBLE reembolso (chargeback +
@@ -1093,7 +1100,7 @@ namespace newApi.Services
 
                         var transferOptions = new TransferCreateOptions
                         {
-                            Amount = (long)(expertAmountForStripe * 100), // ✅ Usar monto base (sin tax) - transfers no incluyen tax
+                            Amount = checked((long)Math.Round(expertAmountForStripe * 100)), // ✅ Usar monto base (sin tax) - transfers no incluyen tax. Round (no truncar) para no perder céntimos ni descuadrar el ledger.
                                 Currency = "eur",
                                 Destination = expertStripeAccountId,
                                 Metadata = new Dictionary<string, string>
@@ -1112,7 +1119,7 @@ namespace newApi.Services
                             // MODIFICACI├ôN: Idempotency correcta con RequestOptions (antes estaba en metadata, lo cual no funciona)
                             var transferRequestOptions = new RequestOptions
                             {
-                                IdempotencyKey = idempotencyKey
+                                IdempotencyKey = transferIdempotencyKey // 🔧 FIX E: discriminada por estado+importe
                             };
 
                             var transferSvc = new TransferService();
@@ -1138,12 +1145,37 @@ namespace newApi.Services
                         }
 
                         // Refund despu├®s (si aplica)
+                        // 🔧 FIX (#2, carrera chargeback): re-verificar el marcador Chargeback JUSTO antes del
+                        // refund interno. Entre la lectura inicial de hasChargeback (~l.1021) y este punto hay
+                        // llamadas de red a Stripe (balance, transfer...), abriendo una ventana de segundos. Si un
+                        // charge.dispute.created se dio de alta en ese hueco, omitimos el refund para evitar la
+                        // DOBLE devolución al cliente (contracargo de Stripe + refund interno).
+                        if (needsRefund)
+                        {
+                            var chargebackAppeared = await _context.FinancialTransactions.AnyAsync(ft =>
+                                ft.RelatedEntityType == "SearchHire" &&
+                                ft.RelatedEntityId == searchHireId &&
+                                ft.TransactionType == "Chargeback" &&
+                                ft.StripePaymentIntentId == servicePayment.StripePaymentIntentId);
+                            if (chargebackAppeared)
+                            {
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Chargeback detectado justo antes del refund interno - OMITIDO para evitar doble devolución",
+                                    details: $"SearchHire {searchHireId}: apareció un Chargeback (PaymentIntent {servicePayment.StripePaymentIntentId}) entre la comprobación inicial y la emisión del refund. Se OMITE el refund interno (status {statusValue}). Si el experto cobró, lo revierte el handler del chargeback.",
+                                    userId: initiatedByUserId ?? searchHire.ClientId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId);
+                                needsRefund = false;
+                            }
+                        }
+
                         if (needsRefund)
                         {
                             var refundOptions = new RefundCreateOptions
                             {
                                 PaymentIntent = servicePayment.StripePaymentIntentId,
-                                Amount = (long)(clientRefundAmountForStripe * 100), // ✅ Usar monto con tax proporcional para Stripe
+                                Amount = checked((long)Math.Round(clientRefundAmountForStripe * 100)), // ✅ Usar monto con tax proporcional para Stripe. Round (no truncar) para no devolver de menos ni descuadrar el ledger.
                                 Reason = RefundReasons.RequestedByCustomer,
                                 Metadata = new Dictionary<string, string>
                                 {
@@ -1161,7 +1193,7 @@ namespace newApi.Services
                             // MODIFICACI├ôN: Idempotency correcta con RequestOptions
                             var refundRequestOptions = new RequestOptions
                             {
-                                IdempotencyKey = idempotencyKey + "-refund" // Unique por operaci├│n para evitar colisiones
+                                IdempotencyKey = refundIdempotencyKey // 🔧 FIX E: discriminada por estado+importe
                             };
 
                             try
@@ -1196,8 +1228,8 @@ namespace newApi.Services
                                     {
                                         var reversalSvc = new TransferReversalService();
                                         // MODIFICACI├ôN: Agregar idempotency a reversal tambi├®n
-                                        var reversalOptions = new TransferReversalCreateOptions { Amount = (long)(expertAmountForStripe * 100) }; // ✅ Revertir el monto real enviado a Stripe (base, sin tax)
-                                        var reversalRequestOptions = new RequestOptions { IdempotencyKey = idempotencyKey + "-reversal" };
+                                        var reversalOptions = new TransferReversalCreateOptions { Amount = checked((long)Math.Round(expertAmountForStripe * 100)) }; // ✅ Revertir el monto real enviado a Stripe (base, sin tax). Round para casar con el transfer.
+                                        var reversalRequestOptions = new RequestOptions { IdempotencyKey = transferIdempotencyKey + "-reversal" };
                                         await reversalSvc.CreateAsync(createdTransferId, reversalOptions, reversalRequestOptions);
                                     }
                                     catch (Exception revEx)

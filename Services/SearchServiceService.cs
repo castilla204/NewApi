@@ -20,6 +20,7 @@ namespace newApi.Services
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
         private readonly ISignedUrlService _signedUrlService;
+        private readonly ISupabaseStorageService _supabaseStorage;
         private readonly ILogger<SearchServiceService> _logger;
         private readonly IServiceScopeFactory _serviceScopeFactory;
 
@@ -28,6 +29,7 @@ namespace newApi.Services
             IConfiguration configuration,
             StorageClient storageClient,
             ISignedUrlService signedUrlService,
+            ISupabaseStorageService supabaseStorage,
             ILogger<SearchServiceService> logger,
             IServiceScopeFactory serviceScopeFactory)
         {
@@ -35,6 +37,7 @@ namespace newApi.Services
             _configuration = configuration;
             _storageClient = storageClient;
             _signedUrlService = signedUrlService;
+            _supabaseStorage = supabaseStorage;
             _logger = logger;
             _serviceScopeFactory = serviceScopeFactory;
         }
@@ -1519,18 +1522,15 @@ namespace newApi.Services
                                 outputStream.Position = 0;
                                 // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
                                 // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
-                                await _storageClient.UploadObjectAsync(
-                                    bucketName,
+                                await _supabaseStorage.UploadAsync(
+                                    _supabaseStorage.ImagesBucket,
                                     objectName,
-                                    "image/jpeg",
-                                    outputStream
-                                    // ✅ REMOVIDO: PredefinedAcl no es compatible con uniform bucket-level access
-                                    // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
-                                );
+                                    outputStream,
+                                    "image/jpeg");
                             }
                         }
 
-                        var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
+                        var imageUrl = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
                         uploadedImages.Add((imageUrl, objectName));
                         
                         var searchServiceImage = new SearchServiceImage
@@ -2260,18 +2260,15 @@ namespace newApi.Services
                                 outputStream.Position = 0;
                                 // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
                                 // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
-                                await _storageClient.UploadObjectAsync(
-                                    bucketName,
+                                await _supabaseStorage.UploadAsync(
+                                    _supabaseStorage.ImagesBucket,
                                     objectName,
-                                    "image/jpeg",
-                                    outputStream
-                                    // ✅ REMOVIDO: PredefinedAcl no es compatible con uniform bucket-level access
-                                    // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
-                                );
+                                    outputStream,
+                                    "image/jpeg");
                             }
                         }
 
-                        var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
+                        var imageUrl = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
                         uploadedImages.Add((imageUrl, objectName));
                         
                         var searchServiceImage = new SearchServiceImage

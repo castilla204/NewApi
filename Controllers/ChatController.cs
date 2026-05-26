@@ -29,6 +29,7 @@ namespace newApi.Controllers
         private readonly AppDbContext _context;
         private readonly ISupabaseRealtimeService _realtimeService; // ✅ Supabase Realtime en lugar de SignalR
         private readonly StorageClient _storageClient;
+        private readonly ISupabaseStorageService _supabaseStorage;
         private readonly IConfiguration _configuration;
         private readonly IAuthorizationServices _authService;
         private readonly ILoggingService _loggingService;
@@ -43,6 +44,7 @@ namespace newApi.Controllers
             AppDbContext context,
             ISupabaseRealtimeService realtimeService, // ✅ Supabase Realtime en lugar de IHubContext
             StorageClient storageClient,
+            ISupabaseStorageService supabaseStorage,
             IConfiguration configuration,
             IAuthorizationServices authService,
             ILoggingService loggingService,
@@ -51,6 +53,7 @@ namespace newApi.Controllers
             _context = context;
             _realtimeService = realtimeService;
             _storageClient = storageClient;
+            _supabaseStorage = supabaseStorage;
             _configuration = configuration;
             _authService = authService;
             _loggingService = loggingService;
@@ -471,7 +474,9 @@ namespace newApi.Controllers
         /// Permite chatear antes de contratar el servicio
         /// </summary>
         [HttpGet("conversation-by-service")]
-        public async Task<ActionResult<ConversationDto>> GetConversationBySearchServiceId([FromQuery] int searchServiceId)
+        public async Task<ActionResult<ConversationDto>> GetConversationBySearchServiceId(
+            [FromQuery] int searchServiceId,
+            [FromQuery] int? conversationId = null)
         {
             try
             {
@@ -497,6 +502,40 @@ namespace newApi.Controllers
                 var expertUserId = searchService.ExpertProfile?.User?.Id;
                 var isExpert = expertUserId.HasValue && expertUserId.Value == userId;
                 var isAdmin = _authService.IsAdmin(User);
+
+                // Privacidad: el experto debe indicar conversationId para no devolver el hilo de otro cliente
+                if (isExpert && !isAdmin && !conversationId.HasValue)
+                {
+                    return BadRequest(new { message = "conversationId is required for experts to open a pre-hire chat" });
+                }
+
+                // Experto/admin: abrir conversación concreta por ID (evita mezclar clientes del mismo servicio)
+                if (conversationId.HasValue)
+                {
+                    var byId = await _context.Conversations
+                        .Include(c => c.Messages)
+                            .ThenInclude(m => m.Sender)
+                        .Include(c => c.Messages)
+                            .ThenInclude(m => m.Attachments)
+                        .Include(c => c.Client)
+                        .Include(c => c.Expert)
+                        .FirstOrDefaultAsync(c =>
+                            c.Id == conversationId.Value &&
+                            c.SearchServiceId == searchServiceId &&
+                            c.IsActive &&
+                            ((c.ClientId.HasValue && c.ClientId.Value == userId) ||
+                             (c.ExpertId.HasValue && c.ExpertId.Value == userId) ||
+                             isAdmin));
+
+                    if (byId == null)
+                    {
+                        return NotFound(new { message = "Conversation not found for this service" });
+                    }
+
+                    var byIdDto = ConversationDto.FromConversation(byId);
+                    PopulateSignedAttachmentUrls(byId, byIdDto);
+                    return Ok(byIdDto);
+                }
 
                 // ✅ CORRECCIÓN: Buscar conversación existente por SearchServiceId
                 // Priorizar conversación del cliente si el usuario es cliente
@@ -670,7 +709,30 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid or missing user ID in token" });
                 }
 
-                // Buscar conversación directamente por SearchHireId (no depende de SearchId)
+                var searchHire = await _context.SearchHires
+                    .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+
+                if (searchHire == null)
+                {
+                    return NotFound(new { message = "Search hire not found" });
+                }
+
+                var isClient = searchHire.ClientId.HasValue && searchHire.ClientId.Value == userId;
+                var isExpert = searchHire.ExpertId.HasValue && searchHire.ExpertId.Value == userId;
+                var isAdmin = _authService.IsAdmin(User);
+
+                if (!isClient && !isExpert && !isAdmin)
+                {
+                    return Unauthorized(new { message = "You are not authorized to access this conversation" });
+                }
+
+                if (searchHire.ClientId.HasValue && searchHire.ExpertId.HasValue &&
+                    searchHire.ClientId.Value == searchHire.ExpertId.Value)
+                {
+                    return BadRequest(new { message = "Client and expert cannot be the same user" });
+                }
+
+                // Una conversación por contratación; autorización por SearchHire, no por IDs desactualizados en Conversation
                 var conversation = await _context.Conversations
                     .Include(c => c.Messages)
                         .ThenInclude(m => m.Sender)
@@ -679,48 +741,17 @@ namespace newApi.Controllers
                     .Include(c => c.Client)
                     .Include(c => c.Expert)
                     .Include(c => c.SearchHire)
-                    .FirstOrDefaultAsync(c => c.SearchHireId == searchHireId &&
-                                             ((c.ClientId.HasValue && c.ClientId.Value == userId) || 
-                                              (c.ExpertId.HasValue && c.ExpertId.Value == userId) || 
-                                              _authService.IsAdmin(User)));
+                    .Where(c => c.SearchHireId == searchHireId)
+                    .OrderByDescending(c => c.UpdatedAt)
+                    .FirstOrDefaultAsync();
 
                 if (conversation == null)
                 {
-                    // Verificar si el SearchHire existe y crear conversación si no existe
-                    var searchHire = await _context.SearchHires
-                        .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
-
-                    if (searchHire == null)
-                    {
-                        return NotFound(new { message = "Search hire not found" });
-                    }
-
-                    // Verificar autorización
-                    var isClient = searchHire.ClientId.HasValue && searchHire.ClientId.Value == userId;
-                    var isExpert = searchHire.ExpertId.HasValue && searchHire.ExpertId.Value == userId;
-                    var isAdmin = _authService.IsAdmin(User);
-                    
-                    if (!isClient && !isExpert && !isAdmin)
-                    {
-                        return Unauthorized(new { message = "You are not authorized to access this conversation" });
-                    }
-
-                    // ✅ VALIDACIÓN: Asegurar que cliente y experto sean diferentes (si ambos existen)
-                    if (searchHire.ClientId.HasValue && searchHire.ExpertId.HasValue && 
-                        searchHire.ClientId.Value == searchHire.ExpertId.Value)
-                    {
-                        return BadRequest(new { message = "Client and expert cannot be the same user" });
-                    }
-
-                    // ✅ CORRECCIÓN: Permitir crear conversación incluso si ExpertId es NULL (experto borró cuenta)
-                    // La conversación debe preservarse para que el cliente pueda ver el historial
-                    // ✅ GARANTÍA: Solo 2 participantes (cliente y experto, o solo cliente si experto borró cuenta)
-                    // Crear nueva conversación
                     conversation = new Conversation
                     {
                         SearchHireId = searchHireId,
                         ClientId = searchHire.ClientId,
-                        ExpertId = searchHire.ExpertId, // ✅ Puede ser NULL si experto borró cuenta
+                        ExpertId = searchHire.ExpertId,
                         IsActive = true,
                         CreatedAt = DateTime.UtcNow,
                         UpdatedAt = DateTime.UtcNow,
@@ -729,7 +760,7 @@ namespace newApi.Controllers
 
                     _context.Conversations.Add(conversation);
                     await _context.SaveChangesAsync();
-                    
+
                     await _loggingService.LogInfoAsync(
                         message: "New conversation created by SearchHireId",
                         details: $"New conversation created for SearchHireId {searchHireId}. ConversationId: {conversation.Id}, ClientId: {conversation.ClientId}, ExpertId: {conversation.ExpertId}",
@@ -737,7 +768,8 @@ namespace newApi.Controllers
                         source: "ChatController.GetConversationBySearchHireId",
                         relatedEntityType: "Conversation",
                         relatedEntityId: conversation.Id,
-                        additionalData: new { 
+                        additionalData: new
+                        {
                             Action = "CreateConversation",
                             SearchHireId = searchHireId,
                             ConversationId = conversation.Id,
@@ -745,6 +777,25 @@ namespace newApi.Controllers
                             ExpertId = conversation.ExpertId
                         }
                     );
+                }
+                else
+                {
+                    var syncNeeded = false;
+                    if (conversation.ClientId != searchHire.ClientId)
+                    {
+                        conversation.ClientId = searchHire.ClientId;
+                        syncNeeded = true;
+                    }
+                    if (conversation.ExpertId != searchHire.ExpertId)
+                    {
+                        conversation.ExpertId = searchHire.ExpertId;
+                        syncNeeded = true;
+                    }
+                    if (syncNeeded)
+                    {
+                        conversation.UpdatedAt = DateTime.UtcNow;
+                        await _context.SaveChangesAsync();
+                    }
                 }
 
                 var conversationDto = ConversationDto.FromConversation(conversation);
@@ -897,7 +948,52 @@ namespace newApi.Controllers
                 conversation.UpdatedAt = DateTime.UtcNow;
                 await _context.SaveChangesAsync();
 
-                    var attachmentUrls = new List<string>();
+                var attachmentUrls = new List<string>();
+                string? senderName = null;
+                if (message.SenderId.HasValue)
+                {
+                    var sender = await _context.Users
+                        .IgnoreQueryFilters()
+                        .FirstOrDefaultAsync(u => u.Id == message.SenderId.Value);
+                    senderName = sender?.Name ?? "[Usuario eliminado]";
+                }
+                else
+                {
+                    senderName = "[Usuario eliminado]";
+                }
+
+                MessageDto BuildMessageDto() => new MessageDto
+                {
+                    Id = message.Id,
+                    ConversationId = message.ConversationId,
+                    SenderId = message.SenderId,
+                    Content = message.Content ?? "[Mensaje eliminado]",
+                    SentAt = message.SentAt,
+                    IsRead = message.IsRead,
+                    SenderName = senderName ?? "[Usuario eliminado]",
+                    LocationLatitude = message.LocationLatitude,
+                    LocationLongitude = message.LocationLongitude,
+                    AttachmentUrls = attachmentUrls
+                };
+
+                var messageDto = BuildMessageDto();
+                try
+                {
+                    await _realtimeService.NotifyNewMessageAsync(dto.ConversationId, messageDto);
+                }
+                catch (Exception realtimeEx)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Supabase Realtime early broadcast warning",
+                        details: $"Message {message.Id} saved but broadcast failed: {realtimeEx.Message}",
+                        userId: userId,
+                        source: "ChatController.SendMessage",
+                        relatedEntityType: "Message",
+                        relatedEntityId: message.Id,
+                        notifyUser: false
+                    );
+                }
+
                 if (dto.Attachments != null && dto.Attachments.Any())
                 {
                     // ✅ LOG: Inicio del proceso de subida de archivos
@@ -916,12 +1012,12 @@ namespace newApi.Controllers
                         notifyUser: false
                     );
 
-                    // ✅ CORRECCIÓN: Validar que StorageClient esté disponible
-                    if (_storageClient == null)
+                    // ✅ MIGRACIÓN: validar que Supabase Storage esté configurado (antes se validaba StorageClient de GCS).
+                    if (!_supabaseStorage.IsConfigured)
                     {
                         await _loggingService.LogErrorAsync(
-                            message: "StorageClient not available for file upload",
-                            details: "Google Cloud Storage client is not configured. Cannot upload attachments.",
+                            message: "Supabase Storage not available for file upload",
+                            details: "Supabase Storage is not configured. Cannot upload attachments.",
                             userId: userId,
                             source: "ChatController.SendMessage",
                             relatedEntityType: "Message",
@@ -1048,76 +1144,23 @@ namespace newApi.Controllers
                         }
                     }
                     await _context.SaveChangesAsync();
-                }
-
-                // ✅ MEJORA: Manejar SenderId nullable y obtener nombre del sender si existe
-                string? senderName = null;
-                if (message.SenderId.HasValue)
-                {
-                    var sender = await _context.Users
-                        .IgnoreQueryFilters() // Ignorar query filter para poder acceder a usuarios eliminados si es necesario
-                        .FirstOrDefaultAsync(u => u.Id == message.SenderId.Value);
-                    senderName = sender?.Name ?? "[Usuario eliminado]";
-                }
-                else
-                {
-                    senderName = "[Usuario eliminado]";
-                }
-                
-                var messageDto = new MessageDto
-                {
-                    Id = message.Id,
-                    ConversationId = message.ConversationId,
-                    SenderId = message.SenderId, // ✅ Ahora es nullable, asignación directa
-                    Content = message.Content ?? "[Mensaje eliminado]",
-                    SentAt = message.SentAt,
-                    IsRead = message.IsRead,
-                    SenderName = senderName ?? "[Usuario eliminado]",
-                    LocationLatitude = message.LocationLatitude,
-                    LocationLongitude = message.LocationLongitude,
-                    AttachmentUrls = attachmentUrls
-                };
-
-                // ✅ 2026: Notificar nuevo mensaje via Supabase Realtime (reemplaza SignalR)
-                // El mensaje ya está en la BD, Postgres Changes notificará automáticamente
-                // Este broadcast es adicional para typing indicators y notificaciones inmediatas
-                try
-                {
-                    await _realtimeService.NotifyNewMessageAsync(dto.ConversationId, messageDto);
-                    
-                    await _loggingService.LogInfoAsync(
-                        message: "Message notification sent via Supabase Realtime",
-                        details: $"Message {messageDto.Id} notification sent to conversation {dto.ConversationId}",
-                        userId: userId,
-                        source: "ChatController.SendMessage",
-                        relatedEntityType: "Message",
-                        relatedEntityId: messageDto.Id,
-                        additionalData: new { 
-                            MessageId = messageDto.Id,
-                            ConversationId = dto.ConversationId,
-                            HasAttachments = messageDto.AttachmentUrls.Any()
-                        },
-                        notifyUser: false
-                    );
-                }
-                catch (Exception realtimeEx)
-                {
-                    // El mensaje ya está guardado en la BD, Postgres Changes lo notificará
-                    // Este error solo afecta al broadcast adicional
-                    await _loggingService.LogWarningAsync(
-                        message: "Supabase Realtime broadcast warning",
-                        details: $"Message {messageDto.Id} saved but optional broadcast failed: {realtimeEx.Message}",
-                        userId: userId,
-                        source: "ChatController.SendMessage",
-                        relatedEntityType: "Message",
-                        relatedEntityId: messageDto.Id,
-                        additionalData: new { 
-                            MessageId = messageDto.Id,
-                            ConversationId = dto.ConversationId,
-                            Exception = realtimeEx.Message
-                        }
-                    );
-                    // No lanzar excepción - el mensaje ya está guardado y Postgres Changes lo notificará
+                    messageDto = BuildMessageDto();
+                    try
+                    {
+                        await _realtimeService.NotifyMessageUpdatedAsync(dto.ConversationId, messageDto);
+                    }
+                    catch (Exception realtimeEx)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Supabase Realtime attachment update broadcast warning",
+                            details: realtimeEx.Message,
+                            userId: userId,
+                            source: "ChatController.SendMessage",
+                            relatedEntityType: "Message",
+                            relatedEntityId: message.Id,
+                            notifyUser: false
+                        );
+                    }
                 }
 
                 return Ok(messageDto);
@@ -1164,6 +1207,11 @@ namespace newApi.Controllers
                 }
 
                 var isAdmin = _authService.IsAdmin(User);
+                if (isAdmin)
+                {
+                    return BadRequest(new { message = "Admins cannot mark messages as read" });
+                }
+
                 if (message.Conversation == null || !UserBelongsToConversation(message.Conversation, userId, isAdmin))
                 {
                     return Unauthorized(new { message = "You are not authorized to read this message" });
@@ -1249,21 +1297,19 @@ namespace newApi.Controllers
 
                         using (var inputStream = file.OpenReadStream())
                         {
-                            // ✅ CORRECCIÓN: No usar PredefinedAcl si el bucket tiene uniform bucket-level access habilitado
-                            // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
-                            await _storageClient.UploadObjectAsync(
-                                bucket: bucketName,
-                                objectName: objectName,
-                                contentType: contentType,
-                                source: inputStream);
+                            // ✅ MIGRACIÓN: subir a Supabase Storage (bucket privado de ficheros) en vez de GCS.
+                            await _supabaseStorage.UploadAsync(
+                                _supabaseStorage.FilesBucket,
+                                objectName,
+                                inputStream,
+                                contentType);
                         }
 
-                        var deliverableUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-
+                        // ✅ MIGRACIÓN: URL firmada inicial; las lecturas la regeneran vía ResolveDeliverableUrl.
                         var deliverable = new SearchHireDeliverable
                         {
                             SearchHireId = searchHireId,
-                            Url = deliverableUrl,
+                            Url = _signedUrlService.GetSignedUrl(objectName) ?? string.Empty,
                             ObjectName = objectName,
                             Type = extension == ".pdf" ? "pdf" : "video",
                             CreatedAt = DateTime.UtcNow
@@ -1415,7 +1461,22 @@ namespace newApi.Controllers
                 }
 
                 var isAdmin = _authService.IsAdmin(User);
-                if (!UserBelongsToConversation(conversation, userId, isAdmin))
+                var belongsToConversation = UserBelongsToConversation(conversation, userId, isAdmin);
+                if (!belongsToConversation && conversation.SearchHireId.HasValue)
+                {
+                    var searchHire = await _context.SearchHires
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(sh => sh.Id == conversation.SearchHireId.Value);
+                    if (searchHire != null)
+                    {
+                        belongsToConversation =
+                            (searchHire.ClientId.HasValue && searchHire.ClientId.Value == userId) ||
+                            (searchHire.ExpertId.HasValue && searchHire.ExpertId.Value == userId) ||
+                            isAdmin;
+                    }
+                }
+
+                if (!belongsToConversation)
                 {
                     return Unauthorized(new { message = "You are not authorized for this conversation" });
                 }
@@ -1633,14 +1694,15 @@ namespace newApi.Controllers
                 contentType = providedContentType; // No debería llegar aquí, pero por seguridad
             }
 
-            // ✅ CORRECCIÓN: Validar que StorageClient esté disponible
-            if (_storageClient == null)
+            // ✅ MIGRACIÓN: validar que Supabase Storage esté configurado (antes se validaba StorageClient de GCS).
+            if (!_supabaseStorage.IsConfigured)
             {
                 throw new InvalidOperationException("File upload service is not available. Please contact support.");
             }
 
             var uniqueFileName = $"{Guid.NewGuid()}{extension}";
-            var objectName = $"messages/{uniqueFileName}";
+            // ✅ MIGRACIÓN: prefijo 'chat/' para que las lecturas se enruten al bucket PRIVADO (URL firmada).
+            var objectName = $"chat/{uniqueFileName}";
 
             // ✅ LOG: Preparando subida a Google Cloud Storage
             await _loggingService.LogInfoAsync(
@@ -1675,14 +1737,13 @@ namespace newApi.Controllers
                     notifyUser: false
                 );
 
-                // ✅ CORRECCIÓN: No usar PredefinedAcl si el bucket tiene uniform bucket-level access habilitado
-                // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
-                await _storageClient.UploadObjectAsync(
-                    bucket: bucketName,
-                    objectName: objectName,
-                    contentType: contentType,
-                    source: inputStream);
-                
+                // ✅ MIGRACIÓN: subir a Supabase Storage (bucket privado de ficheros) en vez de GCS.
+                await _supabaseStorage.UploadAsync(
+                    _supabaseStorage.FilesBucket,
+                    objectName,
+                    inputStream,
+                    contentType);
+
                 // ✅ LOG: Upload completado exitosamente
                 await _loggingService.LogInfoAsync(
                     message: "Google Cloud Storage upload completed",
@@ -1722,7 +1783,8 @@ namespace newApi.Controllers
                 throw new InvalidOperationException($"Failed to upload file {file.FileName}: {ex.Message}");
             }
 
-            var url = $"https://storage.googleapis.com/{bucketName}/{objectName}";
+            // ✅ MIGRACIÓN: URL firmada inicial; las lecturas la regeneran vía ResolveAttachmentUrl.
+            var url = _signedUrlService.GetSignedUrl(objectName) ?? string.Empty;
             return (url, objectName, isVideo ? "video" : "image");
         }
 

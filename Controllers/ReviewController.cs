@@ -26,6 +26,7 @@ namespace newApi.Controllers
         private readonly AppDbContext _context;
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
+        private readonly ISupabaseStorageService _supabaseStorage;
         private readonly ILoggingService _loggingService;
         private readonly ISignedUrlService _signedUrlService;
 
@@ -33,12 +34,14 @@ namespace newApi.Controllers
             AppDbContext context,
             IConfiguration configuration,
             StorageClient storageClient,
+            ISupabaseStorageService supabaseStorage,
             ILoggingService loggingService,
             ISignedUrlService signedUrlService)
         {
             _context = context;
             _configuration = configuration;
             _storageClient = storageClient;
+            _supabaseStorage = supabaseStorage;
             _loggingService = loggingService;
             _signedUrlService = signedUrlService;
         }
@@ -137,20 +140,17 @@ namespace newApi.Controllers
                             {
                                 image.SaveAsJpeg(outputStream);
                                 outputStream.Position = 0;
-                                // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
-                                // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
-                                await _storageClient.UploadObjectAsync(
-                                    bucket: bucketName,
-                                    objectName: objectName,
-                                    contentType: "image/jpeg",
-                                    source: outputStream
-                                    // ✅ REMOVIDO: PredefinedAcl no es compatible con uniform bucket-level access
-                                    // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
+                                // ✅ MIGRACIÓN: subir a Supabase Storage (bucket público de imágenes) en vez de GCS.
+                                await _supabaseStorage.UploadAsync(
+                                    _supabaseStorage.ImagesBucket,
+                                    objectName,
+                                    outputStream,
+                                    "image/jpeg"
                                 );
                             }
                         }
 
-                        var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
+                        var imageUrl = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
 
                         var reviewImage = new ReviewImage
                         {

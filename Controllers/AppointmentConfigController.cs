@@ -222,32 +222,44 @@ namespace newApi.Controllers
 
                         if (existingConfig == null)
                         {
-                            // Crear nueva configuración por categoría
-                            var newConfig = new StatusConfiguration
+                            // 🔧 FIX (hallazgo G): NO usar porcentajes hardcodeados. Divergían del SEED y el
+                            // catch-all (20/20/60) podía ROBAR el reparto, porque las filas por categoría tienen
+                            // PRIORIDAD sobre la global en GetMoneyDistributionAsync. Sembramos la fila por
+                            // categoría ESPEJANDO la config GLOBAL ya existente del estado; si no hay global de
+                            // referencia, NO creamos fila (no inventamos porcentajes que distorsionen el reparto).
+                            var globalConfig = await _context.StatusConfigurations
+                                .FirstOrDefaultAsync(sc => sc.StatusId == status.Id &&
+                                                           sc.CategoryId == null &&
+                                                           sc.ServiceTypeCategoryId == null &&
+                                                           sc.IsActive);
+                            if (globalConfig != null)
                             {
-                                StatusId = status.Id,
-                                CategoryId = category.Id,
-                                ServiceTypeCategoryId = null, // Nivel 3 - Granularidad Básica
-                                ClientPercentage = GetDefaultClientPercentage(status.StatusValue),
-                                ExpertPercentage = GetDefaultExpertPercentage(status.StatusValue),
-                                PlatformPercentage = GetDefaultPlatformPercentage(status.StatusValue),
-                                IsActive = true,
-                                CreatedAt = DateTime.UtcNow,
-                                UpdatedAt = DateTime.UtcNow
-                            };
+                                var newConfig = new StatusConfiguration
+                                {
+                                    StatusId = status.Id,
+                                    CategoryId = category.Id,
+                                    ServiceTypeCategoryId = null, // Nivel 3 - Granularidad Básica
+                                    ClientPercentage = globalConfig.ClientPercentage,
+                                    ExpertPercentage = globalConfig.ExpertPercentage,
+                                    PlatformPercentage = globalConfig.PlatformPercentage,
+                                    IsActive = true,
+                                    CreatedAt = DateTime.UtcNow,
+                                    UpdatedAt = DateTime.UtcNow
+                                };
 
-                            _context.StatusConfigurations.Add(newConfig);
-                            await _context.SaveChangesAsync();
+                                _context.StatusConfigurations.Add(newConfig);
+                                await _context.SaveChangesAsync();
 
-                            createdConfigs.Add(new
-                            {
-                                Id = newConfig.Id,
-                                StatusName = status.DisplayName,
-                                CategoryName = category.Name,
-                                ClientPercentage = newConfig.ClientPercentage,
-                                ExpertPercentage = newConfig.ExpertPercentage,
-                                PlatformPercentage = newConfig.PlatformPercentage
-                            });
+                                createdConfigs.Add(new
+                                {
+                                    Id = newConfig.Id,
+                                    StatusName = status.DisplayName,
+                                    CategoryName = category.Name,
+                                    ClientPercentage = newConfig.ClientPercentage,
+                                    ExpertPercentage = newConfig.ExpertPercentage,
+                                    PlatformPercentage = newConfig.PlatformPercentage
+                                });
+                            }
                         }
                     }
                 }
@@ -1138,62 +1150,10 @@ namespace newApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Métodos auxiliares para obtener porcentajes por defecto
-        /// </summary>
-        private int GetDefaultClientPercentage(string statusValue)
-        {
-            return statusValue switch
-            {
-                "appointment_awaiting_report" => 0,
-                "appointment_cancelled_by_client" => 20,
-                "appointment_cancelled_by_client_second" => 100,
-                "appointment_cancelled_by_expert" => 100,
-                "appointment_cancelled_by_no_response" => 100,
-                "appointment_cancelled_by_expert_rejection" => 100,
-                "appointment_rejected" => 20,
-                "appointment_proposed" => 20,
-                "appointment_confirmed" => 30,
-                "awaiting_appointment" => 20,
-                _ => 20
-            };
-        }
-
-        private int GetDefaultExpertPercentage(string statusValue)
-        {
-            return statusValue switch
-            {
-                "appointment_awaiting_report" => 80,
-                "appointment_cancelled_by_client" => 20,
-                "appointment_cancelled_by_client_second" => 0,
-                "appointment_cancelled_by_expert" => 0,
-                "appointment_cancelled_by_no_response" => 0,
-                "appointment_cancelled_by_expert_rejection" => 0,
-                "appointment_rejected" => 20,
-                "appointment_proposed" => 20,
-                "appointment_confirmed" => 30,
-                "awaiting_appointment" => 20,
-                _ => 20
-            };
-        }
-
-        private int GetDefaultPlatformPercentage(string statusValue)
-        {
-            return statusValue switch
-            {
-                "appointment_awaiting_report" => 20,
-                "appointment_cancelled_by_client" => 60,
-                "appointment_cancelled_by_client_second" => 0,
-                "appointment_cancelled_by_expert" => 0,
-                "appointment_cancelled_by_no_response" => 0,
-                "appointment_cancelled_by_expert_rejection" => 0,
-                "appointment_rejected" => 60,
-                "appointment_proposed" => 60,
-                "appointment_confirmed" => 40,
-                "awaiting_appointment" => 60,
-                _ => 60
-            };
-        }
+        // 🔧 FIX (hallazgo G): ELIMINADOS GetDefaultClientPercentage/ExpertPercentage/PlatformPercentage.
+        // Eran porcentajes hardcodeados que divergían del SEED oficial e incluían un catch-all 20/20/60 que
+        // podía robar el reparto (las filas por categoría tienen prioridad sobre la global). El seeder por
+        // categoría (CreateCategoryConfigurations) ahora ESPEJA la config global existente de cada estado.
 
         /// <summary>
         /// Obtiene TODOS los estados del sistema para gestión administrativa

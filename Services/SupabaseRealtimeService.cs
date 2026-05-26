@@ -19,6 +19,8 @@ namespace newApi.Services
         /// Envía notificación de nuevo mensaje a una conversación
         /// </summary>
         Task NotifyNewMessageAsync(int conversationId, object messageData);
+
+        Task NotifyMessageUpdatedAsync(int conversationId, object messageData);
         
         /// <summary>
         /// Envía notificación de usuario escribiendo
@@ -49,7 +51,7 @@ namespace newApi.Services
             // Obtener configuración de Supabase
             _supabaseUrl = configuration["Supabase:Url"] 
                 ?? Environment.GetEnvironmentVariable("SUPABASE_URL")
-                ?? "https://rveqsehzlvbttlpmsbmi.supabase.co";
+                ?? "https://cckrnifvbrwuagzlsrbj.supabase.co";
             
             _supabaseServiceKey = configuration["Supabase:ServiceRoleKey"] 
                 ?? configuration["Supabase:ServiceKey"] // Mantener compatibilidad
@@ -134,6 +136,12 @@ namespace newApi.Services
             }
             
             await BroadcastToChannelAsync(channel, "new_message", messageData);
+        }
+
+        public async Task NotifyMessageUpdatedAsync(int conversationId, object messageData)
+        {
+            var channel = $"conversation:{conversationId}";
+            await BroadcastToChannelAsync(channel, "message_updated", messageData);
         }
 
         /// <summary>

@@ -24,6 +24,7 @@ namespace newApi.Services
         private readonly AppDbContext _context;
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
+        private readonly ISupabaseStorageService _supabaseStorage;
         private readonly ILoggingService _loggingService;
         private readonly ITimezoneService _timezoneService;
         private readonly INotificationService _notificationService;
@@ -36,6 +37,7 @@ namespace newApi.Services
      IConfiguration configuration,
 
      StorageClient storageClient,
+     ISupabaseStorageService supabaseStorage,
      ILoggingService loggingService,
      ITimezoneService timezoneService,
      INotificationService notificationService,
@@ -44,6 +46,7 @@ namespace newApi.Services
             _context = context;
             _configuration = configuration;
             _storageClient = storageClient;
+            _supabaseStorage = supabaseStorage;
             _loggingService = loggingService;
             _timezoneService = timezoneService;
             _notificationService = notificationService;
@@ -532,7 +535,8 @@ namespace newApi.Services
             }
             var bucketName = _configuration["GoogleCloud:BucketName"];
             var uniqueFileName = $"{Guid.NewGuid()}{extension}";
-            var objectName = $"experts/{uniqueFileName}";
+            // ✅ MIGRACIÓN: prefijo 'profiles/' para que las lecturas se enruten al bucket PÚBLICO de imágenes.
+            var objectName = $"profiles/{uniqueFileName}";
 
             try
             {
@@ -549,13 +553,14 @@ namespace newApi.Services
                     {
                         image.SaveAsJpeg(outputStream);
                         outputStream.Position = 0;
-                        await _storageClient.UploadObjectAsync(
-                            bucket: bucketName,
-                            objectName: objectName,
-                            contentType: "image/jpeg",
-                            source: outputStream
+                        // ✅ MIGRACIÓN: subir a Supabase Storage (bucket público de imágenes) en vez de GCS.
+                        await _supabaseStorage.UploadAsync(
+                            _supabaseStorage.ImagesBucket,
+                            objectName,
+                            outputStream,
+                            "image/jpeg"
                         );
-                        
+
                         // 🚨 LOG CRÍTICO: Imagen subida exitosamente
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Profile picture uploaded successfully",
@@ -620,8 +625,8 @@ namespace newApi.Services
                 return (false, null, null, null);
             }
 
-            var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-            
+            var imageUrl = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
+
             // ✅ CRÍTICO: NO cambiar el rol hasta que el ExpertProfile se guarde exitosamente
             // Si falla después, el usuario quedará con rol Expert pero sin perfil
             // El rol se cambiará DESPUÉS de guardar el ExpertProfile
@@ -1251,7 +1256,8 @@ namespace newApi.Services
 
                     var bucketName = _configuration["GoogleCloud:BucketName"];
                     var uniqueFileName = $"{Guid.NewGuid()}{extension}";
-                    var objectName = $"experts/{uniqueFileName}";
+                    // ✅ MIGRACIÓN: prefijo 'profiles/' para que las lecturas se enruten al bucket PÚBLICO de imágenes.
+                    var objectName = $"profiles/{uniqueFileName}";
 
                     try
                     {
@@ -1268,21 +1274,22 @@ namespace newApi.Services
                             {
                                 image.SaveAsJpeg(outputStream);
                                 outputStream.Position = 0;
-                                await _storageClient.UploadObjectAsync(
-                                    bucket: bucketName,
-                                    objectName: objectName,
-                                    contentType: "image/jpeg",
-                                    source: outputStream
+                                // ✅ MIGRACIÓN: subir a Supabase Storage (bucket público de imágenes) en vez de GCS.
+                                await _supabaseStorage.UploadAsync(
+                                    _supabaseStorage.ImagesBucket,
+                                    objectName,
+                                    outputStream,
+                                    "image/jpeg"
                                 );
                             }
                         }
 
-                        // Eliminar la imagen anterior si existe
+                        // Eliminar la imagen anterior si existe (ahora en Supabase Storage)
                         if (!string.IsNullOrEmpty(expertProfile.ProfilePictureObjectName))
                         {
                             try
                             {
-                                await _storageClient.DeleteObjectAsync(bucketName, expertProfile.ProfilePictureObjectName);
+                                await _supabaseStorage.DeleteAsync(_supabaseStorage.ImagesBucket, expertProfile.ProfilePictureObjectName);
                             }
                             catch (Exception ex)
                             {
@@ -1290,7 +1297,7 @@ namespace newApi.Services
                         }
 
                         // Actualizar URLs de la nueva imagen
-                        var imageUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
+                        var imageUrl = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
                         expertProfile.ProfilePictureUrl = imageUrl;
                         expertProfile.ProfilePictureObjectName = objectName;
                     }

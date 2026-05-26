@@ -1,4 +1,7 @@
 # Secrets and sensitive files
+# Script de arranque local con secretos (MFA/JWT/Stripe) — NO subir
+run-local.ps1
+**/run-local.ps1
 **/appsettings.Development.json
 **/appsettings.Production.json
 **/appsettings.Local.json

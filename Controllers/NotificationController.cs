@@ -23,6 +23,51 @@ namespace newApi.Controllers
         _authService = authService;
         }
 
+        /// <summary>
+        /// Historial completo del sistema (solo administradores). Debe ir antes de rutas con {id}.
+        /// </summary>
+        [HttpGet("admin")]
+        public async Task<IActionResult> GetAllNotificationsForAdmin([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+        {
+            try
+            {
+                if (!_authService.IsAdmin(User))
+                {
+                    return Unauthorized(new { message = "Admin access required" });
+                }
+
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 50) pageSize = 20;
+
+                var query = _context.Notifications.AsQueryable();
+                var totalCount = await query.CountAsync();
+
+                var notifications = await query
+                    .OrderByDescending(n => n.CreatedAt)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    notifications,
+                    pagination = new
+                    {
+                        page,
+                        pageSize,
+                        totalCount,
+                        totalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+                        hasNextPage = page * pageSize < totalCount,
+                        hasPreviousPage = page > 1
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
         [HttpGet]
         public async Task<IActionResult> GetUserNotifications([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
@@ -83,12 +128,19 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
+                if (string.IsNullOrWhiteSpace(request.Title) || string.IsNullOrWhiteSpace(request.Message))
+                {
+                    return BadRequest(new { message = "Title and Message are required" });
+                }
+
                 var notification = new Notification
                 {
-                    Title = request.Title,
-                    Message = request.Message,
-                    Type = request.Type,
+                    Title = request.Title.Trim(),
+                    Message = request.Message.Trim(),
+                    Type = string.IsNullOrWhiteSpace(request.Type) ? "info" : request.Type.Trim(),
                     UserId = request.UserId, // null for broadcast
+                    Url = string.IsNullOrWhiteSpace(request.Url) ? null : request.Url.Trim(),
+                    ImageUrl = string.IsNullOrWhiteSpace(request.ImageUrl) ? null : request.ImageUrl.Trim(),
                     CreatedAt = DateTime.UtcNow
                 };
 
@@ -103,7 +155,7 @@ namespace newApi.Controllers
             }
         }
 
-        [HttpPut("{id}/read")]
+        [HttpPut("{id:guid}/read")]
         public async Task<IActionResult> MarkAsRead(Guid id)
         {
             try
@@ -217,7 +269,7 @@ namespace newApi.Controllers
             }
         }
 
-        [HttpDelete("{id}")]
+        [HttpDelete("{id:guid}")]
         [Authorize]
         public async Task<IActionResult> DeleteNotification(Guid id)
         {
@@ -249,9 +301,11 @@ namespace newApi.Controllers
 
     public class CreateNotificationDto
     {
-        public string Title { get; set; }
-        public string Message { get; set; }
-        public string Type { get; set; }
+        public string? Title { get; set; }
+        public string? Message { get; set; }
+        public string? Type { get; set; }
         public int? UserId { get; set; }
+        public string? Url { get; set; }
+        public string? ImageUrl { get; set; }
     }
 }

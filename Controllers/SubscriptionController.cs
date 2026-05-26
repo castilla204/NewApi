@@ -714,7 +714,48 @@ namespace newApi.Controllers
                     }
                     catch (StripeException ex)
                     {
-                        return StatusCode(500, new { message = "Failed to create onboarding link" });
+                        // ✅ LOG DETALLADO: capturar el error EXACTO de Stripe (antes se ocultaba)
+                        await _loggingService.LogErrorAsync(
+                            message: "Failed to create onboarding link for pending account",
+                            details: $"StripeException creating account link for PendingStripeAccountId: {expertProfile.PendingStripeAccountId}, Error: {ex.Message}, StripeErrorCode: {ex.StripeError?.Code}, StripeErrorType: {ex.StripeError?.Type}",
+                            userId: userId,
+                            source: "SubscriptionController.CreateExpertOnboarding",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: expertProfile.Id,
+                            additionalData: new {
+                                PendingStripeAccountId = expertProfile.PendingStripeAccountId,
+                                StripeErrorCode = ex.StripeError?.Code,
+                                StripeErrorType = ex.StripeError?.Type,
+                                StripeErrorMessage = ex.Message
+                            });
+
+                        // ✅ AUTO-RECUPERACIÓN: si la cuenta pendiente ya no existe en el modo/clave
+                        // actual (creada en otro modo test/live, clave rotada, o cuenta borrada),
+                        // limpiarla en memoria y dejar que el flujo de abajo cree una cuenta nueva.
+                        // Así el usuario deja de quedarse atascado en "Continuar verificación".
+                        // Stripe a veces devuelve este caso con Code=null y Type=invalid_request_error
+                        // (mensaje: "...account that is not connected to your platform or does not exist"),
+                        // típico cuando la cuenta pendiente se creó en otra cuenta/modo (live vs test).
+                        var pendingMsg = ex.Message ?? "";
+                        var pendingAccountUnusable =
+                            ex.StripeError?.Code == "resource_missing"
+                            || ex.StripeError?.Code == "account_invalid"
+                            || pendingMsg.Contains("does not exist", StringComparison.OrdinalIgnoreCase)
+                            || pendingMsg.Contains("not connected to your platform", StringComparison.OrdinalIgnoreCase);
+                        if (pendingAccountUnusable)
+                        {
+                            expertProfile.PendingStripeAccountId = null;
+                            // Sin return: cae al flujo de creación de cuenta nueva más abajo
+                        }
+                        else
+                        {
+                            return StatusCode(500, new {
+                                message = "Failed to create onboarding link",
+                                error = ex.Message,
+                                stripeErrorCode = ex.StripeError?.Code,
+                                stripeErrorType = ex.StripeError?.Type
+                            });
+                        }
                     }
                 }
 
@@ -1397,7 +1438,10 @@ namespace newApi.Controllers
             }
         }
 
-        [HttpPost("load-money")]
+        // 🔧 FIX (#4): la funcionalidad "cargar saldo" fue ELIMINADA (el webhook ignora estas sesiones). Se
+        // quita la ruta HTTP y se marca [NonAction] para que NADIE pueda iniciar un cobro que se auto-captura
+        // (mode=payment sin captura manual) SIN contrapartida ni registro en BD. El frontend no la invoca.
+        [NonAction]
         public async Task<IActionResult> LoadMoney([FromBody] LoadMoneyDto request)
         {
             try
@@ -1774,23 +1818,13 @@ namespace newApi.Controllers
                 // 🔍 DIAGNÓSTICO: Determinar qué webhook secret usar
                 string? webhookSecretToUse = WebhookSecret;
                 
-                // ✅ FALLBACK: Si el webhook secret principal está vacío, intentar usar el general
-                // Esto es útil en desarrollo cuando solo se configura un webhook secret
-                if (string.IsNullOrEmpty(webhookSecretToUse))
-                {
-                    webhookSecretToUse = GeneralWebhookSecret;
-                    if (!string.IsNullOrEmpty(webhookSecretToUse))
-                    {
-                        await _loggingService.LogWarningAsync(
-                            message: "Using general webhook secret as fallback for Connect webhook",
-                            details: "Webhook secret for Connect events is not configured, using general webhook secret as fallback. This should be fixed in production.",
-                            userId: null,
-                            source: "SubscriptionController.HandleStripeWebhook",
-                            relatedEntityType: "Webhook"
-                        );
-                    }
-                }
-                
+                // 🔧 FIX (hallazgo D): SIN fallback al GeneralWebhookSecret. Son secretos de firma de
+                // ENDPOINTS DISTINTOS de Stripe; verificar un evento de Connect con el secret general hace
+                // fallar la firma (400) y, tras los reintentos, Stripe descarta el evento (p.ej. account.updated)
+                // → estado de cuentas conectadas desincronizado, además enmascarando un fallo de config como
+                // "firma inválida / posible ataque". Si falta el secret de Connect, caemos directos al log
+                // CRÍTICO + 400 de abajo (accionable y con alerta a admin).
+
                 if (string.IsNullOrEmpty(webhookSecretToUse))
                 {
                     // 🚨 LOG CRÍTICO: Webhook secret no configurado
@@ -2094,8 +2128,12 @@ namespace newApi.Controllers
                         }
                         catch { }
 
-                        var idempotencyKey = stripeEvent.Request?.IdempotencyKey;
-                        var eventIdToCheck = !string.IsNullOrEmpty(idempotencyKey) ? idempotencyKey : stripeEvent.Id;
+                        var idempotencyKey = stripeEvent.Request?.IdempotencyKey; // (solo para trazas)
+                        // 🔧 FIX (#7b): usar SIEMPRE stripeEvent.Id como clave de idempotencia, igual que
+                        // TryBeginProcessingEventAsync. Antes, si idempotencyKey venía poblado, account.updated
+                        // marcaba el evento con req_... creando una fila DUPLICADA (evt_... + req_...) en
+                        // ProcessedWebhookEvents.
+                        var eventIdToCheck = stripeEvent.Id;
                         if (await IsEventProcessedAsync(eventIdToCheck))
                         {
                             // ✅ LOG DIAGNÓSTICO: Evento ya procesado
@@ -2338,10 +2376,25 @@ namespace newApi.Controllers
                         var transfer = stripeEvent.Data.Object as Transfer;
                         if (transfer != null)
                         {
-                            var searchHire = await _context.SearchHires
-                                .Include(sh => sh.Status)
-                                .Include(sh => sh.Client)
-                                .FirstOrDefaultAsync(sh => sh.ExpertTransferId == transfer.Id);
+                            // 🔧 FIX: SearchHire.ExpertTransferId NUNCA se escribe (era código muerto: este
+                            // handler nunca encontraba el hire, así que los fallos de pago al experto quedaban
+                            // sin detectar ni reintentar). El ID del transfer SÍ se persiste en
+                            // FinancialTransaction.StripeTransferId (RefundService.ProcessMoneyDistributionAsync).
+                            // Resolvemos el Payout por ese campo y de ahí el SearchHire.
+                            var payoutTx = await _context.FinancialTransactions
+                                .FirstOrDefaultAsync(ft => ft.StripeTransferId == transfer.Id
+                                                        && ft.TransactionType == "Payout"
+                                                        && ft.RelatedEntityType == "SearchHire");
+
+                            SearchHire? searchHire = null;
+                            if (payoutTx != null && payoutTx.RelatedEntityId.HasValue)
+                            {
+                                searchHire = await _context.SearchHires
+                                    .Include(sh => sh.Status)
+                                    .Include(sh => sh.Client)
+                                    .FirstOrDefaultAsync(sh => sh.Id == payoutTx.RelatedEntityId.Value);
+                            }
+
                             if (searchHire != null)
                             {
                                 // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
@@ -2454,6 +2507,17 @@ namespace newApi.Controllers
                             }
                             else
                             {
+                                // 🔧 FIX: antes este caso quedaba en SILENCIO. Si llega transfer.failed pero no
+                                // localizamos el Payout/SearchHire por StripeTransferId, lo registramos como
+                                // crítico para revisión manual en vez de perder el fallo.
+                                await _loggingService.LogCriticalAsync(
+                                    message: "transfer.failed sin Payout/SearchHire asociado",
+                                    details: $"Transfer {transfer.Id} falló pero no se encontró FinancialTransaction Payout con ese StripeTransferId. Requiere revisión manual del pago al experto.",
+                                    userId: null,
+                                    source: "SubscriptionController.transfer.failed",
+                                    relatedEntityType: "Transfer",
+                                    relatedEntityId: null,
+                                    additionalData: new { TransferId = transfer.Id });
                             }
                         }
                         break;
@@ -3306,64 +3370,9 @@ namespace newApi.Controllers
                     CreatedAt = DateTime.UtcNow
                 };
                 await _context.Searches.AddAsync(search);
-                try
-                {
-                    await _context.SaveChangesAsync();
-                }
-                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
-                {
-                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
-                    try
-                    {
-                        await transaction.RollbackAsync();
-                    }
-                    catch { }
-                    
-                    using var recoveryScope = _serviceScopeFactory.CreateScope();
-                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    // Re-crear la búsqueda en el nuevo contexto
-                    var recoverySearch = new Search
-                    {
-                        UserId = userId,
-                        Frequency = searchDto.Frequency,
-                        Title = searchDto.Title,
-                        Description = searchDto.Description,
-                        IsActive = searchDto.IsActive,
-                        NextExecution = DateTime.UtcNow,
-                        StartDate = searchDto.StartDate,
-                        CreatedAt = DateTime.UtcNow
-                    };
-                    recoveryContext.Searches.Add(recoverySearch);
-                    await recoveryContext.SaveChangesAsync();
-                    search = recoverySearch; // Actualizar referencia
-                }
-                catch (ObjectDisposedException disposedEx)
-                {
-                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
-                    try
-                    {
-                        await transaction.RollbackAsync();
-                    }
-                    catch { }
-                    
-                    using var recoveryScope = _serviceScopeFactory.CreateScope();
-                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    // Re-crear la búsqueda en el nuevo contexto
-                    var recoverySearch = new Search
-                    {
-                        UserId = userId,
-                        Frequency = searchDto.Frequency,
-                        Title = searchDto.Title,
-                        Description = searchDto.Description,
-                        IsActive = searchDto.IsActive,
-                        NextExecution = DateTime.UtcNow,
-                        StartDate = searchDto.StartDate,
-                        CreatedAt = DateTime.UtcNow
-                    };
-                    recoveryContext.Searches.Add(recoverySearch);
-                    await recoveryContext.SaveChangesAsync();
-                    search = recoverySearch; // Actualizar referencia
-                }
+                // 🔧 FIX (hallazgo C): sin recovery con autocommit (rompía la atomicidad). Si la conexión se
+                // cae aquí, la excepción sube al catch externo → rollback total + 500 → Stripe reintenta idempotente.
+                await _context.SaveChangesAsync();
 
                 // Create search parameters
                 var searchParameter = new SearchParameter
@@ -3385,78 +3394,9 @@ namespace newApi.Controllers
                     SearchId = search.Id
                 };
                 await _context.SearchParameters.AddAsync(searchParameter);
-                try
-                {
-                    await _context.SaveChangesAsync();
-                }
-                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
-                {
-                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
-                    try
-                    {
-                        await transaction.RollbackAsync();
-                    }
-                    catch { }
-                    
-                    using var recoveryScope = _serviceScopeFactory.CreateScope();
-                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    // Re-crear el parámetro de búsqueda en el nuevo contexto
-                    var recoverySearchParameter = new SearchParameter
-                    {
-                        Keywords = parameterDto.Keywords,
-                        UserSearch = parameterDto.UserSearch,
-                        Latitude = parameterDto.Latitude,
-                        Longitude = parameterDto.Longitude,
-                        LocationName = parameterDto.LocationName,
-                        ShippingAvailable = parameterDto.ShippingAvailable,
-                        StrictMatchOnly = parameterDto.StrictMatchOnly,
-                        Category = parameterDto.Category,
-                        LocationRange = parameterDto.LocationRange,
-                        MinPrice = parameterDto.MinPrice,
-                        MaxPrice = parameterDto.MaxPrice,
-                        BrandId = parameterDto.BrandId,
-                        ModelId = parameterDto.ModelId,
-                        ServiceTypeId = parameterDto.ServiceTypeId,
-                        SearchId = search.Id
-                    };
-                    recoveryContext.SearchParameters.Add(recoverySearchParameter);
-                    await recoveryContext.SaveChangesAsync();
-                    searchParameter = recoverySearchParameter; // Actualizar referencia
-                }
-                catch (ObjectDisposedException disposedEx)
-                {
-                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
-                    try
-                    {
-                        await transaction.RollbackAsync();
-                    }
-                    catch { }
-                    
-                    using var recoveryScope = _serviceScopeFactory.CreateScope();
-                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    // Re-crear el parámetro de búsqueda en el nuevo contexto
-                    var recoverySearchParameter = new SearchParameter
-                    {
-                        Keywords = parameterDto.Keywords,
-                        UserSearch = parameterDto.UserSearch,
-                        Latitude = parameterDto.Latitude,
-                        Longitude = parameterDto.Longitude,
-                        LocationName = parameterDto.LocationName,
-                        ShippingAvailable = parameterDto.ShippingAvailable,
-                        StrictMatchOnly = parameterDto.StrictMatchOnly,
-                        Category = parameterDto.Category,
-                        LocationRange = parameterDto.LocationRange,
-                        MinPrice = parameterDto.MinPrice,
-                        MaxPrice = parameterDto.MaxPrice,
-                        BrandId = parameterDto.BrandId,
-                        ModelId = parameterDto.ModelId,
-                        ServiceTypeId = parameterDto.ServiceTypeId,
-                        SearchId = search.Id
-                    };
-                    recoveryContext.SearchParameters.Add(recoverySearchParameter);
-                    await recoveryContext.SaveChangesAsync();
-                    searchParameter = recoverySearchParameter; // Actualizar referencia
-                }
+                // 🔧 FIX (hallazgo C): sin recovery con autocommit. Si la conexión se cae, sube al catch externo
+                // → rollback total + 500 → Stripe reintenta idempotente.
+                await _context.SaveChangesAsync();
 
                 // Create platform associations (platforms ya obtenidos antes de la transacción)
                 if (platforms.Any())
@@ -3562,82 +3502,34 @@ namespace newApi.Controllers
                     // ✅ REMOVED: Balance deduction eliminated - all payments are direct Stripe
                 
                 _context.SearchHires.Add(searchHire);
+                // 🔧 FIX (hallazgo C): sin recovery con autocommit (era lo que dejaba un SearchHire huérfano sin
+                // ServicePayment, o filas zombi descorrelacionadas, al cascadear hasta capturar y commitear sobre
+                // una transacción muerta). Si la conexión se cae, sube al catch externo → rollback total + 500 →
+                // Stripe reintenta idempotente (guard de ServicePayment por PaymentIntentId + clave capture-{hireId}).
+                await _context.SaveChangesAsync(); // ✅ SAVE FIRST to get the real ID
+                searchHireId = searchHire.Id;
+
+                // Migrar chat pre-contratación → conversación post-hire
                 try
                 {
-                    await _context.SaveChangesAsync(); // ✅ SAVE FIRST to get the real ID
-                    searchHireId = searchHire.Id;
+                    await ConversationMigrationHelper.EnsurePostHireConversationAsync(
+                        _context, searchHire, _loggingService);
                 }
-                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                catch (Exception migrateEx)
                 {
-                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
-                    try
-                    {
-                        await transaction.RollbackAsync();
-                    }
-                    catch { }
-                    
-                    using var recoveryScope = _serviceScopeFactory.CreateScope();
-                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    // Re-crear el SearchHire en el nuevo contexto
-                    var recoverySearchHire = new SearchHire
-                    {
-                        ClientId = userId,
-                        ExpertId = expertuserid,
-                        SearchServiceId = service.Id,
-                        SearchId = search.Id,
-                        StatusId = pendingStatusId,
-                        Amount = totalAmount,
-                        BaseAmount = baseAmount,
-                        TaxAmount = taxAmount,
-                        CreatedAt = DateTime.UtcNow,
-                        CompletionDeadline = DateTime.UtcNow.AddDays(7),
-                        ExpertAvailabilityId = currentAvailabilityId,
-                        ExpertTimezone = expertTimezone,
-                        ExpertCountry = expertCountry
-                    };
-                    recoveryContext.SearchHires.Add(recoverySearchHire);
-                    await recoveryContext.SaveChangesAsync();
-                    searchHireId = recoverySearchHire.Id;
-                    searchHire = recoverySearchHire; // Actualizar referencia
-                }
-                catch (ObjectDisposedException disposedEx)
-                {
-                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
-                    try
-                    {
-                        await transaction.RollbackAsync();
-                    }
-                    catch { }
-                    
-                    using var recoveryScope = _serviceScopeFactory.CreateScope();
-                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    // Re-crear el SearchHire en el nuevo contexto
-                    var recoverySearchHire = new SearchHire
-                    {
-                        ClientId = userId,
-                        ExpertId = expertuserid,
-                        SearchServiceId = service.Id,
-                        SearchId = search.Id,
-                        StatusId = pendingStatusId,
-                        Amount = totalAmount,
-                        BaseAmount = baseAmount,
-                        TaxAmount = taxAmount,
-                        CreatedAt = DateTime.UtcNow,
-                        CompletionDeadline = DateTime.UtcNow.AddDays(7),
-                        ExpertAvailabilityId = currentAvailabilityId,
-                        ExpertTimezone = expertTimezone,
-                        ExpertCountry = expertCountry
-                    };
-                    recoveryContext.SearchHires.Add(recoverySearchHire);
-                    await recoveryContext.SaveChangesAsync();
-                    searchHireId = recoverySearchHire.Id;
-                    searchHire = recoverySearchHire; // Actualizar referencia
+                    await _loggingService.LogErrorAsync(
+                        message: "Error migrating pre-hire conversation after Stripe payment",
+                        details: migrateEx.Message,
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId);
                 }
 
                 var paymentTransaction = new FinancialTransaction
                 {
                     UserId = userId,
-                    Amount = -service.Price,
+                    Amount = -totalAmount, // 🔧 FIX (#3): registrar lo REALMENTE cobrado (con IVA), coherente con SearchHire.Amount. Antes -service.Price (base) descuadraba el ledger interno con tax exclusive y mostraba un importe erróneo al usuario.
                     TransactionType = "ServicePayment",
                     RelatedEntityType = "SearchHire",
                         RelatedEntityId = searchHireId, // ✅ FIX: Usar searchHireId guardado
@@ -3646,60 +3538,10 @@ namespace newApi.Controllers
                 };
                 _context.FinancialTransactions.Add(paymentTransaction);
 
-                try
-                {
-                    await _context.SaveChangesAsync();
-                }
-                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
-                {
-                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
-                    try
-                    {
-                        await transaction.RollbackAsync();
-                    }
-                    catch { }
-                    
-                    using var recoveryScope = _serviceScopeFactory.CreateScope();
-                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    // Re-crear la transacción financiera en el nuevo contexto
-                    var recoveryPaymentTransaction = new FinancialTransaction
-                    {
-                        UserId = userId,
-                        Amount = -service.Price,
-                        TransactionType = "ServicePayment",
-                        RelatedEntityType = "SearchHire",
-                        RelatedEntityId = searchHireId,
-                        StripePaymentIntentId = session.PaymentIntentId,
-                        CreatedAt = DateTime.UtcNow
-                    };
-                    recoveryContext.FinancialTransactions.Add(recoveryPaymentTransaction);
-                    await recoveryContext.SaveChangesAsync();
-                }
-                catch (ObjectDisposedException disposedEx)
-                {
-                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
-                    try
-                    {
-                        await transaction.RollbackAsync();
-                    }
-                    catch { }
-                    
-                    using var recoveryScope = _serviceScopeFactory.CreateScope();
-                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    // Re-crear la transacción financiera en el nuevo contexto
-                    var recoveryPaymentTransaction = new FinancialTransaction
-                    {
-                        UserId = userId,
-                        Amount = -service.Price,
-                        TransactionType = "ServicePayment",
-                        RelatedEntityType = "SearchHire",
-                        RelatedEntityId = searchHireId,
-                        StripePaymentIntentId = session.PaymentIntentId,
-                        CreatedAt = DateTime.UtcNow
-                    };
-                    recoveryContext.FinancialTransactions.Add(recoveryPaymentTransaction);
-                    await recoveryContext.SaveChangesAsync();
-                }
+                // 🔧 FIX (hallazgo C): sin recovery con autocommit. El ServicePayment debe commitear ATÓMICAMENTE
+                // con el SearchHire (misma transacción, commit en CommitAsync). Si la conexión se cae, sube al
+                // catch externo → rollback total + 500 → Stripe reintenta idempotente.
+                await _context.SaveChangesAsync();
 
                 if (string.IsNullOrEmpty(session.PaymentIntentId))
                 {
@@ -3972,6 +3814,9 @@ namespace newApi.Controllers
                         Error = dbEx.Message
                     }
                 );
+                // 🔧 FIX (hallazgo C): RELANZAR para que el webhook devuelva 500 y Stripe REINTENTE el evento.
+                // Antes se tragaba el error (200 OK) y la compra se perdía. El reintento es idempotente.
+                throw;
             }
             catch (ObjectDisposedException disposedEx)
             {
@@ -4000,6 +3845,8 @@ namespace newApi.Controllers
                         Error = disposedEx.Message
                     }
                 );
+                // 🔧 FIX (hallazgo C): RELANZAR → 500 → Stripe reintenta idempotente (antes se perdía la compra).
+                throw;
             }
             catch (Exception ex)
             {
@@ -4635,7 +4482,7 @@ namespace newApi.Controllers
                     using var transaction = await _context.Database.BeginTransactionAsync();
 
                     var searchHire = await _context.SearchHires
-                        .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} AND \"ExpertId\" = {userId} FOR UPDATE")
+                        .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} AND \"ExpertId\" = {userId} FOR UPDATE")
                         .Include(sh => sh.Status)
                         .Include(sh => sh.Client)
                         .Include(sh => sh.Appointment)
@@ -4795,7 +4642,7 @@ namespace newApi.Controllers
                     using var transaction = await _context.Database.BeginTransactionAsync();
 
                     var searchHire = await _context.SearchHires
-                        .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                        .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
                         .Include(sh => sh.Status)
                         .Include(sh => sh.Client)
                         .Include(sh => sh.Expert)
@@ -4933,7 +4780,7 @@ namespace newApi.Controllers
                     using var transaction = await _context.Database.BeginTransactionAsync();
 
                     var searchHire = await _context.SearchHires
-                        .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                        .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
                         .Include(sh => sh.Status)
                         .Include(sh => sh.Client)
                         .Include(sh => sh.Expert)

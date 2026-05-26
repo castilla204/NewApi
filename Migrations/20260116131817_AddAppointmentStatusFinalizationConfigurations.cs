@@ -43,9 +43,9 @@ namespace newApi.Migrations
             // 1. appointment_cancelled_by_client_no_proposal - Cliente no propuso en 24h
             migrationBuilder.Sql(@"
                 INSERT INTO ""StatusConfigurations"" (""StatusId"", ""CategoryId"", ""ServiceTypeCategoryId"", ""ClientPercentage"", ""ExpertPercentage"", ""PlatformPercentage"", ""IsActive"", ""CreatedAt"", ""UpdatedAt"")
-                SELECT s.""Id"", NULL, NULL, 100, 0, 0, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                SELECT s.""Id"", NULL, NULL, 0, 100, 0, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 FROM ""SystemStatuses"" s
-                WHERE s.""StatusType"" = 'AppointmentStatus' 
+                WHERE s.""StatusType"" = 'AppointmentStatus'
                 AND s.""StatusValue"" = 'appointment_cancelled_by_client_no_proposal'
                 AND NOT EXISTS (
                     SELECT 1 FROM ""StatusConfigurations"" sc 
@@ -88,9 +88,9 @@ namespace newApi.Migrations
             // 4. appointment_completed_without_client_approval - Cliente no decidió en 24h (a favor del experto)
             migrationBuilder.Sql(@"
                 INSERT INTO ""StatusConfigurations"" (""StatusId"", ""CategoryId"", ""ServiceTypeCategoryId"", ""ClientPercentage"", ""ExpertPercentage"", ""PlatformPercentage"", ""IsActive"", ""CreatedAt"", ""UpdatedAt"")
-                SELECT s.""Id"", NULL, NULL, 0, 100, 0, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                SELECT s.""Id"", NULL, NULL, 0, 95, 5, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 FROM ""SystemStatuses"" s
-                WHERE s.""StatusType"" = 'AppointmentStatus' 
+                WHERE s.""StatusType"" = 'AppointmentStatus'
                 AND s.""StatusValue"" = 'appointment_completed_without_client_approval'
                 AND NOT EXISTS (
                     SELECT 1 FROM ""StatusConfigurations"" sc 

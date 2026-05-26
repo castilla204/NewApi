@@ -1070,6 +1070,18 @@ namespace newApi.Controllers
                     return BadRequest(new { error = "ClientApproved is required" });
                 }
 
+                // 🔧 FIX (medio-alto): este endpoint SOLO aprueba/completa. El rechazo/disputa NO se gestiona aquí.
+                // Antes, ClientApproved=false ponía el hire en 'disputed' SIN crear la fila Disputes → hire zombi
+                // (dinero capturado congelado, invisible para el admin que resuelve desde la tabla Disputes) que
+                // ADEMÁS bloqueaba la disputa real: CreateDisputeWithFiles exige estado Completed/AwaitingClientDecision
+                // y rechaza 'disputed'. El frontend nunca llama con false (usa POST /api/Dispute/dispute-service,
+                // que sí crea la disputa con motivo + adjuntos); este guard cierra la trampa ante llamadas directas
+                // a la API. La rama if(!ClientApproved) de abajo queda inalcanzable a propósito.
+                if (!request.ClientApproved.Value)
+                {
+                    return BadRequest(new { error = "Para rechazar o disputar el servicio, usa el endpoint de disputa (POST /api/Dispute/dispute-service)." });
+                }
+
                 // ✅ USAR EXECUTION STRATEGY para compatibilidad con NpgsqlRetryingExecutionStrategy
                 var strategy = _context.Database.CreateExecutionStrategy();
                 return await strategy.ExecuteAsync(async () =>

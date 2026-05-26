@@ -371,7 +371,7 @@ namespace newApi.Services
 
                         var searchHire = await _context.SearchHires
 
-                            .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {dto.SearchHireId} FOR UPDATE")
+                            .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {dto.SearchHireId} FOR UPDATE")
 
                             .Include(sh => sh.Appointment)
 
@@ -622,7 +622,7 @@ namespace newApi.Services
 
                 var appointment = await _context.Appointments
 
-                            .FromSqlInterpolated($"SELECT * FROM \"Appointments\" WHERE \"SearchHireId\" = {searchHireId} FOR UPDATE")
+                            .FromSqlInterpolated($"SELECT *, xmin FROM \"Appointments\" WHERE \"SearchHireId\" = {searchHireId} FOR UPDATE")
 
                     .Include(a => a.SearchHire)
 
@@ -650,7 +650,7 @@ namespace newApi.Services
 
                     // Ô£à CORRECCI├ôN: Cargar SearchHire con FOR UPDATE para mantener consistencia en la transacci├│n
                     var searchHire = await _context.SearchHires
-                        .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {searchHireId} FOR UPDATE")
+                        .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {searchHireId} FOR UPDATE")
                         .Include(sh => sh.SearchService)
                             .ThenInclude(ss => ss.ExpertProfile)
                         .Include(sh => sh.Status)
@@ -746,7 +746,7 @@ namespace newApi.Services
                     // Ô£à Recargar la cita con las relaciones usando FOR UPDATE para mantener el bloqueo
                     // Esto asegura que el estado se carga correctamente y se mantiene el bloqueo de fila
                     appointment = await _context.Appointments
-                        .FromSqlInterpolated($"SELECT * FROM \"Appointments\" WHERE \"Id\" = {appointment.Id} FOR UPDATE")
+                        .FromSqlInterpolated($"SELECT *, xmin FROM \"Appointments\" WHERE \"Id\" = {appointment.Id} FOR UPDATE")
                         .Include(a => a.SearchHire)
                             .ThenInclude(sh => sh.Status)
                         .Include(a => a.Status)
@@ -1104,7 +1104,7 @@ namespace newApi.Services
                         {
                             // Ô£à PROTECCI├ôN: Usar row-level locking DENTRO de la transacci├│n para evitar doble procesamiento
                             var appointment = await _context.Appointments
-                                .FromSqlInterpolated($"SELECT * FROM \"Appointments\" WHERE \"Id\" = {dto.AppointmentId} FOR UPDATE")
+                                .FromSqlInterpolated($"SELECT *, xmin FROM \"Appointments\" WHERE \"Id\" = {dto.AppointmentId} FOR UPDATE")
                                 .Include(a => a.SearchHire)
                                     .ThenInclude(sh => sh.Status)
                                 .Include(a => a.Status)
@@ -1242,6 +1242,17 @@ namespace newApi.Services
                                 // Guardar el JobId en el timer
                                 awaitingReportTransitionTimer.HangfireJobId = jobId;
                                 await _context.SaveChangesAsync();
+                                }
+                                else
+                                {
+                                    // 🔧 FIX (#1, defensa en profundidad): la cita se confirmó con su hora+3h ya
+                                    // pasada (solo posible bajo un retraso prolongado de los workers de Hangfire,
+                                    // ya que ProposeAppointment exige ≥24h de antelación). No hay ventana para
+                                    // programar el timer, así que encolamos la transición INMEDIATA para no dejar
+                                    // los fondos atascados en appointment_confirmed. ProcessAppointmentToAwaitingReportAsync
+                                    // revalida estado (idempotente) y es seguro sin timer previo.
+                                    BackgroundJob.Enqueue<IAppointmentService>(
+                                        s => s.ProcessAppointmentToAwaitingReportAsync(appointment.Id));
                                 }
                             }
 
@@ -1622,7 +1633,7 @@ namespace newApi.Services
 
                 var appointment = await _context.Appointments
 
-                            .FromSqlInterpolated($"SELECT * FROM \"Appointments\" WHERE \"Id\" = {dto.AppointmentId} FOR UPDATE")
+                            .FromSqlInterpolated($"SELECT *, xmin FROM \"Appointments\" WHERE \"Id\" = {dto.AppointmentId} FOR UPDATE")
 
                     .Include(a => a.SearchHire)
 
@@ -2273,7 +2284,7 @@ namespace newApi.Services
 
                 var appointment = await _context.Appointments
 
-                            .FromSqlInterpolated($"SELECT * FROM \"Appointments\" WHERE \"Id\" = {dto.AppointmentId} FOR UPDATE")
+                            .FromSqlInterpolated($"SELECT *, xmin FROM \"Appointments\" WHERE \"Id\" = {dto.AppointmentId} FOR UPDATE")
 
                     .Include(a => a.SearchHire)
 
@@ -5001,7 +5012,7 @@ namespace newApi.Services
 
                 var appointment = await _context.Appointments
 
-                            .FromSqlInterpolated($"SELECT * FROM \"Appointments\" WHERE \"Id\" = {appointmentId} FOR UPDATE")
+                            .FromSqlInterpolated($"SELECT *, xmin FROM \"Appointments\" WHERE \"Id\" = {appointmentId} FOR UPDATE")
 
                     .Include(a => a.SearchHire)
 

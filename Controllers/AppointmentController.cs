@@ -22,16 +22,18 @@ namespace newApi.Controllers
         private readonly AppDbContext _context;
         private readonly SystemStatusService _systemStatusService;
         private readonly StorageClient _storageClient;
+        private readonly ISupabaseStorageService _supabaseStorage;
         private readonly IConfiguration _configuration;
         private readonly ISignedUrlService _signedUrlService;
         private readonly ILoggingService _loggingService;
 
         public AppointmentController(
-            IAppointmentService appointmentService, 
+            IAppointmentService appointmentService,
             IAuthorizationServices authService,
             AppDbContext context,
             SystemStatusService systemStatusService,
             StorageClient storageClient,
+            ISupabaseStorageService supabaseStorage,
             IConfiguration configuration,
             ISignedUrlService signedUrlService,
             ILoggingService loggingService)
@@ -41,6 +43,7 @@ namespace newApi.Controllers
             _context = context;
             _systemStatusService = systemStatusService;
             _storageClient = storageClient;
+            _supabaseStorage = supabaseStorage;
             _configuration = configuration;
             _signedUrlService = signedUrlService;
             _loggingService = loggingService;
@@ -631,13 +634,12 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Archivo no encontrado" });
                 }
 
-                // Eliminar del Google Cloud Storage
+                // ✅ MIGRACIÓN: eliminar del Supabase Storage (bucket privado de ficheros) en vez de GCS.
                 try
                 {
-                    var bucketName = _configuration["GoogleCloud:BucketName"];
-                    if (!string.IsNullOrEmpty(bucketName) && !string.IsNullOrEmpty(deliverable.ObjectName))
+                    if (!string.IsNullOrEmpty(deliverable.ObjectName))
                     {
-                        await _storageClient.DeleteObjectAsync(bucketName, deliverable.ObjectName);
+                        await _supabaseStorage.DeleteAsync(_supabaseStorage.FilesBucket, deliverable.ObjectName);
                     }
                 }
                 catch (Exception ex)
@@ -911,22 +913,20 @@ namespace newApi.Controllers
                         {
                             using (var inputStream = file.OpenReadStream())
                             {
-                                await _storageClient.UploadObjectAsync(
-                                    bucket: bucketName,
-                                    objectName: objectName,
-                                    contentType: contentType,
-                                    source: inputStream
-                                    // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
-                                    // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
-                                    // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
+                                // ✅ MIGRACIÓN: subir a Supabase Storage (bucket privado de ficheros) en vez de GCS.
+                                await _supabaseStorage.UploadAsync(
+                                    _supabaseStorage.FilesBucket,
+                                    objectName,
+                                    inputStream,
+                                    contentType
                                 );
                             }
 
-                            var deliverableUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
+                            // ✅ MIGRACIÓN: URL firmada inicial; las lecturas la regeneran vía ResolveDeliverableUrl.
                             var deliverable = new SearchHireDeliverable
                             {
                                 SearchHireId = searchHireId,
-                                Url = deliverableUrl,
+                                Url = _signedUrlService.GetSignedUrl(objectName) ?? string.Empty,
                                 ObjectName = objectName,
                                 Type = extension == ".pdf" ? "pdf" : "video",
                                 CreatedAt = DateTime.UtcNow

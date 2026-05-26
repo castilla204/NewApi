@@ -26,6 +26,7 @@ namespace newApi.Controllers
         private readonly AppDbContext _context;
         private readonly IConfiguration _configuration;
         private readonly StorageClient _storageClient;
+        private readonly ISupabaseStorageService _supabaseStorage;
         private readonly IAuthorizationServices _authService;
         private readonly SystemStatusService _systemStatusService;
         private readonly StripeRefundService _refundService;
@@ -44,6 +45,7 @@ namespace newApi.Controllers
             AppDbContext context,
             IConfiguration configuration,
             StorageClient storageClient,
+            ISupabaseStorageService supabaseStorage,
             IAuthorizationServices authService,
             SystemStatusService systemStatusService,
             StripeRefundService refundService,
@@ -54,6 +56,7 @@ namespace newApi.Controllers
             _context = context;
             _configuration = configuration;
             _storageClient = storageClient;
+            _supabaseStorage = supabaseStorage;
             _authService = authService;
             _systemStatusService = systemStatusService;
             _refundService = refundService;
@@ -1606,24 +1609,22 @@ namespace newApi.Controllers
                             {
                                 using (var inputStream = file.OpenReadStream())
                                 {
-                                    await _storageClient.UploadObjectAsync(
-                                        bucket: bucketName,
-                                        objectName: objectName,
-                                        contentType: file.ContentType,
-                                        source: inputStream
-                                        // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
-                                        // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
-                                        // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
+                                    // ✅ MIGRACIÓN: subir a Supabase Storage (bucket privado de ficheros) en vez de GCS.
+                                    await _supabaseStorage.UploadAsync(
+                                        _supabaseStorage.FilesBucket,
+                                        objectName,
+                                        inputStream,
+                                        file.ContentType
                                     );
                                 }
 
-                                var fileUrl = $"https://storage.googleapis.com/{bucketName}/{objectName}";
-
+                                // ✅ MIGRACIÓN: DisputeFile no tiene columna ObjectName; guardamos el objectPath
+                                // ('disputes/...') en FilePath. ResolveDisputeFileUrl lo firma al leer.
                                 disputeFiles.Add(new DisputeFile
                                 {
                                     DisputeId = disputeId,
                                     FileName = file.FileName,
-                                    FilePath = fileUrl,
+                                    FilePath = objectName,
                                     FileType = fileExtension,
                                     FileSize = file.Length,
                                     CreatedAt = DateTime.UtcNow,
@@ -2126,25 +2127,21 @@ namespace newApi.Controllers
                             await file.CopyToAsync(memoryStream);
                             memoryStream.Position = 0;
 
-                            await _storageClient.UploadObjectAsync(
-                                bucketName,
+                            // ✅ MIGRACIÓN: subir a Supabase Storage (bucket privado de ficheros) en vez de GCS.
+                            await _supabaseStorage.UploadAsync(
+                                _supabaseStorage.FilesBucket,
                                 fileName,
-                                file.ContentType,
-                                memoryStream
-                                // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
-                                // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
-                                // options: new UploadObjectOptions { PredefinedAcl = PredefinedObjectAcl.Private }
+                                memoryStream,
+                                file.ContentType
                                 );
 
-                            // Crear URL del archivo
-                            var fileUrl = $"https://storage.googleapis.com/{bucketName}/{fileName}";
-
+                            // ✅ MIGRACIÓN: guardamos el objectPath ('disputes/...') en FilePath (no hay columna ObjectName).
                             // Crear registro del archivo
                             disputeFiles.Add(new DisputeFile
                             {
                                 DisputeId = disputeId,
                                 FileName = file.FileName,
-                                FilePath = fileUrl,
+                                FilePath = fileName,
                                 FileType = fileExtension,
                                 FileSize = file.Length,
                                 CreatedAt = DateTime.UtcNow,
@@ -2284,8 +2281,18 @@ namespace newApi.Controllers
                 return null;
             }
 
+            // ✅ MIGRACIÓN: tras pasar a Supabase, FilePath guarda el objectPath directamente (p.ej.
+            // 'disputes/dispute-1/client-files/abc.jpg'), sin prefijo de URL absoluta. Si no es una
+            // URL http(s), devolverlo tal cual como objectName (GetSignedUrl lo enruta por prefijo).
+            if (!filePath.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                !filePath.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                return filePath.Replace("\\", "/").TrimStart('/');
+            }
+
             try
             {
+                // Compatibilidad hacia atrás: registros antiguos con URL completa de GCS.
                 var bucketName = _configuration["GoogleCloud:BucketName"];
                 if (!string.IsNullOrWhiteSpace(bucketName))
                 {

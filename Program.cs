@@ -785,6 +785,8 @@ builder.Services.AddControllers()
         options.JsonSerializerOptions.WriteIndented = false;
         // ✅ MEJORA: Configurar para mejor rendimiento
         options.JsonSerializerOptions.PropertyNamingPolicy = null; // Mantener nombres de propiedades como están
+        // Permite binding de bodies camelCase desde el frontend (title → Title)
+        options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
     });
 
 // Configure request size limits for file uploads
@@ -1211,7 +1213,10 @@ builder.Services.AddSingleton<StorageClient>(sp =>
     }
 });
 
-builder.Services.AddSingleton<ISignedUrlService, GoogleSignedUrlService>();
+// Supabase Storage (reemplaza a GCS para multimedia). HttpClient tipado.
+builder.Services.AddHttpClient<ISupabaseStorageService, SupabaseStorageService>();
+// ISignedUrlService ahora resuelve URLs desde Supabase (público/firmado por prefijo).
+builder.Services.AddScoped<ISignedUrlService, SupabaseSignedUrlService>();
 
 
 // Configure CORS
@@ -1467,16 +1472,25 @@ _ = Task.Run(async () =>
             
             bgLogger.LogInformation($"[BACKGROUND] ✅ Claves obtenidas - SecretKey: {!string.IsNullOrEmpty(secretKey)}, WebhookSecret: {!string.IsNullOrEmpty(webhookSecret)}");
             
-            builder.Configuration["Stripe:SecretKey"] = secretKey;
-            builder.Configuration["Stripe:WebhookSecret"] = webhookSecret;
-            builder.Configuration["Stripe:GeneralWebhookSecret"] = generalWebhookSecret;
-            
-            StripeConfiguration.ApiKey = secretKey;
+            // ✅ Solo sobrescribir si las ENV VARS traen valor. En LOCAL no hay env vars de
+            // Stripe, así que se CONSERVA lo de appsettings.Development.json (Stripe:SecretKey,
+            // WebhookSecret, ...). En Render las env vars SÍ están y tienen prioridad.
+            // (Mismo patrón guardado que AdminController.ReloadStripeKeysAsync, antes esto
+            // machacaba la clave con "" y dejaba a Stripe sin API key en local.)
+            if (!string.IsNullOrEmpty(secretKey))
+                builder.Configuration["Stripe:SecretKey"] = secretKey;
+            if (!string.IsNullOrEmpty(webhookSecret))
+                builder.Configuration["Stripe:WebhookSecret"] = webhookSecret;
+            if (!string.IsNullOrEmpty(generalWebhookSecret))
+                builder.Configuration["Stripe:GeneralWebhookSecret"] = generalWebhookSecret;
+
+            // Clave efectiva: ENV (prod) o appsettings.Development.json (local)
+            StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"];
             
             var stripeLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
             stripeLogger.LogInformation($"✅ Claves Stripe cargadas en modo: {mode}");
-            stripeLogger.LogInformation($"   SecretKey presente: {!string.IsNullOrEmpty(secretKey)}");
-            stripeLogger.LogInformation($"   WebhookSecret presente: {!string.IsNullOrEmpty(webhookSecret)}");
+            stripeLogger.LogInformation($"   SecretKey presente: {!string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"])} (env: {!string.IsNullOrEmpty(secretKey)})");
+            stripeLogger.LogInformation($"   WebhookSecret presente: {!string.IsNullOrEmpty(builder.Configuration["Stripe:WebhookSecret"])} (env: {!string.IsNullOrEmpty(webhookSecret)})");
             
             bgLogger.LogInformation("[BACKGROUND] 📝 Guardando log en base de datos...");
             

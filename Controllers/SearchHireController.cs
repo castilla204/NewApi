@@ -1042,7 +1042,7 @@ namespace newApi.Controllers
 
                 // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
                 var searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT * FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                    .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
                     .Include(sh => sh.Status)
                     .Include(sh => sh.Expert)
                         .ThenInclude(e => e.ExpertProfile)

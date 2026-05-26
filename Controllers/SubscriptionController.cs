@@ -2134,18 +2134,15 @@ namespace newApi.Controllers
                         // marcaba el evento con req_... creando una fila DUPLICADA (evt_... + req_...) en
                         // ProcessedWebhookEvents.
                         var eventIdToCheck = stripeEvent.Id;
-                        if (await IsEventProcessedAsync(eventIdToCheck))
-                        {
-                            // ✅ LOG DIAGNÓSTICO: Evento ya procesado
-                            try
-                            {
-                                Console.ForegroundColor = ConsoleColor.Green;
-                                Console.WriteLine($"✅ Evento ya procesado anteriormente: {eventIdToCheck}");
-                                Console.ForegroundColor = originalColor2;
-                            }
-                            catch { }
-                            break;
-                        }
+                        // 🔧 FIX (regresión introducida por #7b): ELIMINADO el guard
+                        //   `if (await IsEventProcessedAsync(eventIdToCheck)) break;`
+                        // Era redundante Y estaba roto: la idempotencia YA se reclama atómicamente arriba con
+                        // TryBeginProcessingEventAsync(stripeEvent.Id) (línea ~1938, que devuelve 200 si el evento
+                        // ya estaba procesado). Ese reclamo inserta una fila Status="Processing", de modo que este
+                        // guard encontraba su PROPIA fila (dentro de la ventana de 5 min) y hacía break SIEMPRE
+                        // → account.updated NO se procesaba nunca (incluido el rechazo de cuenta del experto, que
+                        // protege dinero). ApplyStripeAccountState es idempotente, así que reprocesar en un
+                        // reintento de Stripe es seguro.
 
                         var profileToUpdate = await FindExpertProfileForAccountAsync(account);
                         if (profileToUpdate == null)

@@ -4039,8 +4039,9 @@ namespace newApi.Services
 
                             // Procesar dinero automáticamente
                             // ✅ MEJORA: Usar lógica automática de mapeo - ProcessMoneyDistributionAsync mapea automáticamente
-                            // appointment_cancelled_by_client_no_proposal → cancelled (genérico)
-                            // Usa los % del AppointmentStatus (100/0/0) porque tiene configuración - Cliente recibe 100% refund
+                            // appointment_cancelled_by_client_no_proposal: culpa del CLIENTE (no propuso) → EXPERTO 100% (0/100/0).
+                            // El % sale de la StatusConfiguration ligada a este AppointmentStatus (sembrada en BD + migración
+                            // 20260116131817 corregida). NO es 100/0/0: eso robaría al experto que reservó su disponibilidad.
                             try
                             {
                                 var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
@@ -4359,8 +4360,9 @@ namespace newApi.Services
                                 if (!moneySuccess)
                                 {
                                     // 🔁 A9: si el dinero falló en fase 1/2 (antes del cambio de estado), avanzar
-                                    // SearchHire→cancelled a mano (las otras 3 ramas ya lo hacían; esta no). El
-                                    // no-report mapea a 'cancelled' (reembolso 100% al cliente). Evita hire atascado.
+                                    // SearchHire→cancelled a mano (las otras 3 ramas ya lo hacían; esta no). El ESTADO
+                                    // del hire va a 'cancelled', pero el reparto del dinero es 95/0/5 (cliente 95% /
+                                    // plataforma 5%), NO 100% — sale de la StatusConfiguration del AppointmentStatus. Evita hire atascado.
                                     try
                                     {
                                         var currentSearchHire = await _context.SearchHires

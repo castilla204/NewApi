@@ -682,7 +682,10 @@ namespace newApi.Services
                         // Si el cliente elimina su cuenta, dar el dinero al experto
                         var transferSuccess = await _refundService.ProcessMoneyDistributionAsync(
                             searchHire.Id,
-                            "appointment_cancelled_by_client_account_delete",
+                            // 🔧 FIX F1 (cita zombi): usar un AppointmentStatus que EXISTE en SystemStatuses y cuyo
+                            // GetDefaultMapping == Completed (mismo reparto 0/95/5). El literal *_account_delete no
+                            // tiene fila → el Appointment nunca se actualizaba (quedaba 'zombi' con el hire finalizado).
+                            "appointment_completed_without_client_approval",
                             "Client account deletion - transfer to expert",
                             userId, // ✅ Agregar initiatedByUserId para auditoría
                             updateState: true); // ✅ updateState: true maneja el cambio de estado automáticamente
@@ -711,7 +714,7 @@ namespace newApi.Services
 
                             // ✅ CRÍTICO: Verificar si el estado se cambió (puede haber fallado en Fase 1 o 2)
                             // Si NO se cambió, cambiarlo manualmente para evitar que el sistema quede bloqueado
-                            await EnsureStateChangedAsync(searchHire.Id, "appointment_cancelled_by_client_account_delete", cancellationToken);
+                            await EnsureStateChangedAsync(searchHire.Id, "appointment_completed_without_client_approval", cancellationToken); // 🔧 FIX F1: estado existente (→Completed), evita cita zombi
 
                             // ✅ Acumular error para log crítico final
                             processingErrors.Add((searchHire.Id, errorMessage, errorType, searchHire.Amount));
@@ -770,7 +773,10 @@ namespace newApi.Services
                         // Si el experto elimina su cuenta, reembolsar al cliente
                         var refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
                             searchHire.Id,
-                            "appointment_cancelled_by_expert_account_delete",
+                            // 🔧 FIX F1 (cita zombi): AppointmentStatus existente con GetDefaultMapping == Cancelled
+                            // (mismo reparto 100/0/0, cliente reembolsado). El literal *_account_delete no tiene fila
+                            // SystemStatuses → el Appointment no se actualizaba.
+                            "appointment_cancelled_by_expert_second",
                             reasonText,
                             userId, // ✅ Agregar initiatedByUserId para auditoría
                             updateState: true); // ✅ updateState: true maneja el cambio de estado automáticamente
@@ -800,7 +806,7 @@ namespace newApi.Services
 
                             // ✅ CRÍTICO: Verificar si el estado se cambió (puede haber fallado en Fase 1 o 2)
                             // Si NO se cambió, cambiarlo manualmente para evitar que el sistema quede bloqueado
-                            await EnsureStateChangedAsync(searchHire.Id, "appointment_cancelled_by_expert_account_delete", cancellationToken);
+                            await EnsureStateChangedAsync(searchHire.Id, "appointment_cancelled_by_expert_second", cancellationToken); // 🔧 FIX F1: estado existente (→Cancelled), evita cita zombi
 
                             // ✅ Acumular error para log crítico final
                             processingErrors.Add((searchHire.Id, errorMessage, errorType, searchHire.Amount));

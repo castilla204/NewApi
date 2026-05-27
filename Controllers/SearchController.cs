@@ -665,7 +665,8 @@ namespace newApi.Controllers
                         searchDto?.Title, searchDto?.Description,
                         parameterDto?.Keywords, parameterDto?.UserSearch,
                         parameterDto?.Latitude, parameterDto?.Longitude, parameterDto?.LocationName,
-                        parameterDto?.Category?.ToString(), parameterDto?.ServiceTypeId?.ToString());
+                        parameterDto?.Category?.ToString(), parameterDto?.ServiceTypeId?.ToString(),
+                        searchDto?.Frequency.ToString(), parameterDto?.LocationRange?.ToString()); // 🔧 FIX: frequency y locationRange también van en el body → deben discriminar la clave (si no, idempotency_error 400)
                     var session = await serviceStripe.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
 
                     await _loggingService.LogInfoAsync(

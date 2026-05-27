@@ -3826,7 +3826,7 @@ namespace newApi.Services
                                             {
                                                 var appointmentCompletedStatus = await _context.SystemStatuses
                                                     .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-                                                                             s.StatusValue == "appointment_completed_auto");
+                                                                             s.StatusValue == AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue() /* FIX F5: antes "appointment_completed_auto" (no existe en enum/BD) → fallback frágil */);
                                                 if (appointmentCompletedStatus == null)
                                                 {
                                                     // Fallback: buscar cualquier estado de finalizaci├│n de Appointment
@@ -3988,7 +3988,7 @@ namespace newApi.Services
                                             try
                                             {
                                                 var appointmentCompletedStatusId = await GetStatusIdByValueAsync(
-                                                    "appointment_completed_auto", 
+                                                    AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue() /* FIX F5: antes "appointment_completed_auto" (no existe en enum/BD) → fallback frágil */, 
                                                     "AppointmentStatus"
                                                 );
                                                 currentSearchHire.Appointment.StatusId = appointmentCompletedStatusId;
@@ -3998,7 +3998,7 @@ namespace newApi.Services
                                             {
                                                 // Fallback: buscar cualquier estado de finalizaci├│n de AppointmentStatus
                                                 var appointmentCompletedStatus = await GetStatusByValueAndTypeAsync(
-                                                    "appointment_completed_auto", 
+                                                    AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue() /* FIX F5: antes "appointment_completed_auto" (no existe en enum/BD) → fallback frágil */, 
                                                     "AppointmentStatus"
                                                 );
                                                 if (appointmentCompletedStatus == null)

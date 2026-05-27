@@ -4276,7 +4276,19 @@ namespace newApi.Services
                     };
 
                     _context.AppointmentTimers.Add(expertReportTimer);
-                    await _context.SaveChangesAsync();
+                    try
+                    {
+                        await _context.SaveChangesAsync();
+                    }
+                    catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException pg && pg.SqlState == "23505")
+                    {
+                        // 🔧 FIX G5: el guard AnyAsync previo es TOCTOU; el índice único parcial
+                        // IX_AppointmentTimers_Appt_Type_Active (AppointmentId,TimerType WHERE !IsExpired) es la
+                        // garantía REAL. Si otra réplica/ejecución concurrente (job original / wrapper A-iv /
+                        // barrido A-iii) ya creó el timer expert_report activo, la 2ª inserción viola el único
+                        // (23505) → salimos limpiamente (la transacción revierte también el cambio de estado).
+                        return;
+                    }
 
                     // Programar scheduled job para cuando expire el timer (24 horas)
                     // ✅ Usar método wrapper con nombre descriptivo para Hangfire

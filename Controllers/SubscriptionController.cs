@@ -2406,154 +2406,10 @@ namespace newApi.Controllers
 
                         break;
                     case "transfer.failed":
-                        var transfer = stripeEvent.Data.Object as Transfer;
-                        if (transfer != null)
-                        {
-                            // 🔧 FIX: SearchHire.ExpertTransferId NUNCA se escribe (era código muerto: este
-                            // handler nunca encontraba el hire, así que los fallos de pago al experto quedaban
-                            // sin detectar ni reintentar). El ID del transfer SÍ se persiste en
-                            // FinancialTransaction.StripeTransferId (RefundService.ProcessMoneyDistributionAsync).
-                            // Resolvemos el Payout por ese campo y de ahí el SearchHire.
-                            var payoutTx = await _context.FinancialTransactions
-                                .FirstOrDefaultAsync(ft => ft.StripeTransferId == transfer.Id
-                                                        && ft.TransactionType == "Payout"
-                                                        && ft.RelatedEntityType == "SearchHire");
-
-                            SearchHire? searchHire = null;
-                            if (payoutTx != null && payoutTx.RelatedEntityId.HasValue)
-                            {
-                                searchHire = await _context.SearchHires
-                                    .Include(sh => sh.Status)
-                                    .Include(sh => sh.Client)
-                                    .FirstOrDefaultAsync(sh => sh.Id == payoutTx.RelatedEntityId.Value);
-                            }
-
-                            if (searchHire != null)
-                            {
-                                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
-                                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
-                                await using var transferFailedTransaction = await _context.Database.BeginTransactionAsync();
-                                try
-                                {
-                                    // 🚨 REGISTRAR FALLO DE TRANSFER - NO DEVOLVER AL CLIENTE
-                                    // El cliente ya aprobó el servicio, el experto ya hizo el trabajo
-                                    // Solo registrar el error y alertar a administradores
-                                    
-                                    var failedTransaction = await _context.FinancialTransactions
-                                        .FirstOrDefaultAsync(ft => ft.RelatedEntityId == searchHire.Id && 
-                                                                   ft.TransactionType == "Payout");
-                                    
-                                    if (failedTransaction != null)
-                                    {
-                                        // ✅ SOLO REGISTRAR EL FALLO - NO REVERTIR NI REFUND
-                                        var failureRecord = new FinancialTransaction
-                                        {
-                                            UserId = failedTransaction.UserId,
-                                            Amount = 0, // No hay monto en caso de fallo
-                                            AmountCents = 0,
-                                            TransactionType = "TransferFailed",
-                                            RelatedEntityType = "SearchHire",
-                                            RelatedEntityId = searchHire.Id,
-                                            StripePaymentIntentId = transfer.Id, // ID del transfer fallido
-                                            CreatedAt = DateTime.UtcNow
-                                        };
-                                        _context.FinancialTransactions.Add(failureRecord);
-                                        // 🚨 Registrar en sistema de logs con tipo específico
-                                        await _loggingService.LogCriticalAsync(
-                                            $"Transfer to expert failed - SearchHireId: {searchHire.Id}",
-                                            $"TransferId: {transfer.Id}, ExpertId: {failedTransaction.UserId}, Amount: {failedTransaction.Amount}€",
-                                            failedTransaction.UserId,
-                                            "SubscriptionController.transfer.failed",
-                                            "SearchHire",
-                                            searchHire.Id,
-                                            new { TransferId = transfer.Id, ExpertId = failedTransaction.UserId, Amount = failedTransaction.Amount }
-                                        );
-                                        await _loggingService.LogCriticalAsync(
-                                            message: "CRITICAL: Transfer failure requires admin action",
-                                            details: $"Transfer {transfer.Id} for SearchHire {searchHire.Id} failed and was marked for manual review.",
-                                            userId: null,
-                                            source: "SubscriptionController.transfer.failed",
-                                            relatedEntityType: "SearchHire",
-                                            relatedEntityId: searchHire.Id,
-                                            additionalData: new { TransferId = transfer.Id, ExpertId = failedTransaction.UserId, Amount = failedTransaction.Amount }
-                                        );
-                                    }
-                                    
-                                    var transferFailedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.TransferFailed.ToStringValue());
-                                    searchHire.StatusId = transferFailedStatusId;
-                                    searchHire.UpdatedAt = DateTime.UtcNow;
-                                    
-                                await _context.SaveChangesAsync();
-                                    await transferFailedTransaction.CommitAsync();
-
-                                    if (searchHire.ExpertId.HasValue)
-                                    {
-                                        await _loggingService.LogWarningAsync(
-                                            message: "Transferencia pendiente con error",
-                                            details: $"La transferencia de tu servicio #{searchHire.Id} falló. El equipo de pagos la reintentará y te avisaremos.",
-                                            userId: searchHire.ExpertId.Value,
-                                            source: "SubscriptionController.transfer.failed",
-                                            relatedEntityType: "SearchHire",
-                                            relatedEntityId: searchHire.Id,
-                                            notifyUser: true
-                                        );
-                                    }
-
-                                    await _loggingService.LogWarningAsync(
-                                        message: "Pago al experto en revisión",
-                                        details: $"La transferencia al experto del servicio #{searchHire.Id} falló. Un administrador está revisando el caso para garantizar que el dinero esté seguro.",
-                                        userId: searchHire.ClientId,
-                                        source: "SubscriptionController.transfer.failed",
-                                        relatedEntityType: "SearchHire",
-                                        relatedEntityId: searchHire.Id,
-                                        notifyUser: true
-                                    );
-                                }
-                                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
-                                {
-                                    // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
-                                    try
-                                    {
-                                        await transferFailedTransaction.RollbackAsync();
-                                    }
-                                    catch { }
-                                    throw; // Re-lanzar para que el usuario pueda reintentar
-                                }
-                                catch (ObjectDisposedException)
-                                {
-                                    // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
-                                    try
-                                    {
-                                        await transferFailedTransaction.RollbackAsync();
-                                    }
-                                    catch { }
-                                    throw; // Re-lanzar para que el usuario pueda reintentar
-                                }
-                                catch (Exception ex)
-                                {
-                                    try
-                                    {
-                                        await transferFailedTransaction.RollbackAsync();
-                                    }
-                                    catch { }
-                                    throw;
-                                }
-                            }
-                            else
-                            {
-                                // 🔧 FIX: antes este caso quedaba en SILENCIO. Si llega transfer.failed pero no
-                                // localizamos el Payout/SearchHire por StripeTransferId, lo registramos como
-                                // crítico para revisión manual en vez de perder el fallo.
-                                await _loggingService.LogCriticalAsync(
-                                    message: "transfer.failed sin Payout/SearchHire asociado",
-                                    details: $"Transfer {transfer.Id} falló pero no se encontró FinancialTransaction Payout con ese StripeTransferId. Requiere revisión manual del pago al experto.",
-                                    userId: null,
-                                    source: "SubscriptionController.transfer.failed",
-                                    relatedEntityType: "Transfer",
-                                    relatedEntityId: null,
-                                    additionalData: new { TransferId = transfer.Id });
-                            }
-                        }
+                        // 🔧 FIX B4: delega en el método compartido (también llamado desde /webhook-general,
+                        // que es donde Stripe entrega los eventos de la cuenta PLATAFORMA en separate charges
+                        // & transfers). Idempotencia por EventId evita doble proceso si llegara por ambos.
+                        await HandleTransferFailed(stripeEvent.Data.Object as Transfer);
                         break;
 
                     // 🔁 P6 (CRÍTICO): confirmación del clawback al experto tras un chargeback. La reversión
@@ -3040,6 +2896,20 @@ namespace newApi.Controllers
                     case "payout.paid":
                     case "payout.failed":
                         await HandlePayoutEvent(stripeEvent.Type, stripeEvent.Data.Object as Payout, stripeEvent.Account);
+                        break;
+
+                    // 🔧 FIX B4 (ROUTING): en separate charges & transfers el Transfer lo crea la PLATAFORMA
+                    // (sin StripeAccount), así que transfer.reversed/transfer.failed son eventos de "Your account"
+                    // y Stripe los entrega a ESTE endpoint (plataforma), no a /webhook (Connect). Se manejan en
+                    // AMBOS por robustez ante la config del Dashboard; TryBeginProcessingEventAsync (idempotencia
+                    // por EventId) evita doble proceso si llegaran por los dos. transfer.reversed confirma el
+                    // clawback (P6); transfer.failed marca el hire para revisión.
+                    case "transfer.reversed":
+                        await HandleTransferReversed(stripeEvent.Data.Object as Transfer);
+                        break;
+
+                    case "transfer.failed":
+                        await HandleTransferFailed(stripeEvent.Data.Object as Transfer);
                         break;
 
                     case "invoice.payment_succeeded":
@@ -3606,6 +3476,58 @@ namespace newApi.Controllers
                         failureReason: "Stripe checkout session did not include a PaymentIntentId.",
                         searchHireId: searchHireId); // ✅ FIX: Usar searchHireId guardado
                     throw new InvalidOperationException("PaymentIntentId is missing from checkout session.");
+                }
+
+                // 🔒 FIX B5: revalidar EN VIVO que el experto puede cobrar ANTES de capturar. La validación del
+                // pre-checkout fue hasta ~7 días antes (captura manual diferida); el experto pudo romper/deshabilitar
+                // su cuenta Connect en el intervalo. Si capturáramos igual, cobraríamos al cliente y el transfer
+                // posterior fallaría (dinero retenido sin destino). Fail-closed: si NO puede cobrar, NO capturamos,
+                // cancelamos el PI (requires_capture → sin cargo), notificamos, rollback y RETURN (no relanzamos
+                // para no entrar en bucle de reintentos de Stripe: el cobro está legítimamente abortado).
+                var captureValidation = await _stripeValidationService.ValidateExpertCanReceivePaymentsAsync(
+                    expertProfile, "completar el cobro de la contratación");
+                if (!captureValidation.IsValid)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Expert can no longer receive payments at capture time - aborting capture",
+                        details: $"PaymentIntent {session.PaymentIntentId} (SearchHire {searchHireId}, ServiceId {serviceId}) NO se captura: el experto dejó de poder cobrar entre el checkout y la captura. StripeStatus: {captureValidation.StripeStatus}. Motivo: {captureValidation.ErrorMessage}. Se cancela el PI; el cliente NO es cobrado y la contratación se aborta (rollback).",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { PaymentIntentId = session.PaymentIntentId, SearchHireId = searchHireId, ServiceId = serviceId, ExpertUserId = expertuserid, StripeStatus = captureValidation.StripeStatus, Reason = captureValidation.ErrorMessage });
+
+                    try
+                    {
+                        var preCapturePiService = new PaymentIntentService();
+                        var preCapturePi = await preCapturePiService.GetAsync(session.PaymentIntentId);
+                        if (preCapturePi.Status == "requires_capture")
+                        {
+                            await preCapturePiService.CancelAsync(session.PaymentIntentId);
+                        }
+                    }
+                    catch (Exception cancelEx)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Failed to cancel uncapturable PaymentIntent after expert payout validation failed",
+                            details: $"PaymentIntent {session.PaymentIntentId}, SearchHire {searchHireId}: {cancelEx.Message}. ACTION REQUIRED: revisar/cancelar el PI manualmente desde Stripe.",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId);
+                    }
+
+                    await _loggingService.LogWarningAsync(
+                        message: "Contratación no completada: el experto no está disponible para cobros",
+                        details: $"No se ha realizado ningún cargo. El experto no puede recibir pagos ahora mismo, por lo que la contratación del servicio {serviceId} no se completó. No se te ha cobrado nada.",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: serviceId,
+                        notifyUser: true);
+
+                    await transaction.RollbackAsync();
+                    return;
                 }
 
                 await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHireId); // ✅ FIX: Usar searchHireId guardado
@@ -5899,6 +5821,10 @@ namespace newApi.Controllers
             var amount = dispute.Amount / 100m;
             var (hireId, expertId, clientId) = await FindHireForPaymentIntentAsync(dispute.PaymentIntentId);
             var lost = string.Equals(dispute.Status, "lost", StringComparison.OrdinalIgnoreCase);
+            // 🔧 FIX B6: estados de cierre FAVORABLES en los que Stripe REINTEGRA el bruto a la plataforma.
+            // 'late_win' = un 'lost' revertido tarde por el emisor (también reintegra).
+            var won = string.Equals(dispute.Status, "won", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(dispute.Status, "late_win", StringComparison.OrdinalIgnoreCase);
 
             if (lost)
             {
@@ -5913,6 +5839,30 @@ namespace newApi.Controllers
                     relatedEntityType: "Dispute",
                     relatedEntityId: hireId,
                     additionalData: new { DisputeId = dispute.Id, dispute.PaymentIntentId, Amount = amount, dispute.Status, ExpertId = expertId });
+            }
+            else if (won && hireId.HasValue)
+            {
+                // 🔧 FIX B6: al abrir el chargeback se revirtió el transfer al experto. Al GANARLO, Stripe
+                // reintegra el bruto a la plataforma, pero el experto NO recupera su transfer automáticamente
+                // (antes esto solo era un LogInfo => pérdida silenciosa para el experto). Avisamos como CRÍTICO
+                // con el importe revertido para reintegro MANUAL. NO se re-paga automáticamente a propósito:
+                // si sobre el mismo transfer hubo además un clawback PARCIAL de una disputa interna legítima,
+                // re-pagar la suma total sobre-pagaría al experto. El admin debe discriminar antes de reintegrar.
+                var reversedCents = await _context.FinancialTransactions
+                    .Where(ft => ft.RelatedEntityType == "SearchHire" && ft.RelatedEntityId == hireId.Value
+                                 && ft.TransactionType == "TransferReversal")
+                    .SumAsync(ft => ft.AmountCents);
+                var reversedEur = Math.Abs(reversedCents) / 100m;
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Chargeback WON — expert transfer reversed earlier may need manual reinstatement",
+                    details: $"Dispute {dispute.Id} closed as '{dispute.Status}' for {amount}€. SearchHire {hireId}, ExpertId {expertId}. " +
+                             $"Stripe reintegró el bruto a la plataforma. Al abrir el chargeback se revirtió el transfer al experto (~{reversedEur:F2}€ en filas TransferReversal). " +
+                             $"ACCIÓN REQUERIDA: reintegrar al experto la parte revertida POR EL CHARGEBACK (descontando cualquier clawback de disputa interna previo sobre el mismo transfer).",
+                    userId: expertId,
+                    source: "SubscriptionController.HandleChargeDisputeClosed",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: hireId,
+                    additionalData: new { DisputeId = dispute.Id, dispute.PaymentIntentId, Amount = amount, dispute.Status, ExpertId = expertId, ReversedCents = reversedCents, ReversedEur = reversedEur });
             }
             else
             {
@@ -6262,6 +6212,121 @@ namespace newApi.Controllers
                         StackTrace = ex.StackTrace
                     }
                 );
+                // 🔁 FIX B7: relanzar (mismo motivo que HandlePaymentIntentCanceled) → 500 → Stripe reintenta.
+                // Handler idempotente (guard isActive + notifs solo si hireWasCancelledNow).
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// transfer.failed (FIX B4) — el transfer al experto falló. Marca el SearchHire como TransferFailed,
+        /// registra el fallo (sin devolver al cliente: el servicio se prestó) y alerta para revisión manual.
+        /// Idempotente. Invocable desde /webhook (Connect) y /webhook-general (plataforma): en separate charges
+        /// &amp; transfers el Transfer lo crea la PLATAFORMA (sin StripeAccount), así que Stripe entrega transfer.*
+        /// al endpoint de "Your account" (plataforma) — por eso se maneja en ambos switches.
+        /// </summary>
+        private async Task HandleTransferFailed(Transfer? transfer)
+        {
+            if (transfer == null)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "transfer.failed received with null Transfer object",
+                    source: "SubscriptionController.transfer.failed",
+                    relatedEntityType: "Transfer");
+                return;
+            }
+
+            // El ID del transfer se persiste en FinancialTransaction.StripeTransferId; resolvemos el Payout y de
+            // ahí el SearchHire.
+            var payoutTx = await _context.FinancialTransactions
+                .FirstOrDefaultAsync(ft => ft.StripeTransferId == transfer.Id
+                                        && ft.TransactionType == "Payout"
+                                        && ft.RelatedEntityType == "SearchHire");
+
+            SearchHire? searchHire = null;
+            if (payoutTx != null && payoutTx.RelatedEntityId.HasValue)
+            {
+                searchHire = await _context.SearchHires
+                    .Include(sh => sh.Status)
+                    .Include(sh => sh.Client)
+                    .FirstOrDefaultAsync(sh => sh.Id == payoutTx.RelatedEntityId.Value);
+            }
+
+            if (searchHire == null)
+            {
+                // Si no localizamos el Payout/SearchHire por StripeTransferId, lo registramos como crítico para
+                // revisión manual en vez de perder el fallo.
+                await _loggingService.LogCriticalAsync(
+                    message: "transfer.failed sin Payout/SearchHire asociado",
+                    details: $"Transfer {transfer.Id} falló pero no se encontró FinancialTransaction Payout con ese StripeTransferId. Requiere revisión manual del pago al experto.",
+                    userId: null,
+                    source: "SubscriptionController.transfer.failed",
+                    relatedEntityType: "Transfer",
+                    relatedEntityId: null,
+                    additionalData: new { TransferId = transfer.Id });
+                return;
+            }
+
+            await using var transferFailedTransaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                // Solo REGISTRAR el fallo + marcar el hire para revisión. NO devolver al cliente (el experto hizo
+                // el trabajo); el pago al experto se reintenta/gestiona manualmente.
+                var failedTransaction = await _context.FinancialTransactions
+                    .FirstOrDefaultAsync(ft => ft.RelatedEntityId == searchHire.Id &&
+                                               ft.TransactionType == "Payout");
+                if (failedTransaction != null)
+                {
+                    _context.FinancialTransactions.Add(new FinancialTransaction
+                    {
+                        UserId = failedTransaction.UserId,
+                        Amount = 0,
+                        AmountCents = 0,
+                        TransactionType = "TransferFailed",
+                        RelatedEntityType = "SearchHire",
+                        RelatedEntityId = searchHire.Id,
+                        StripePaymentIntentId = transfer.Id,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Transfer to expert failed - requires admin action",
+                        details: $"TransferId: {transfer.Id}, SearchHireId: {searchHire.Id}, ExpertId: {failedTransaction.UserId}, Amount: {failedTransaction.Amount}€. Marcado para revisión manual.",
+                        userId: failedTransaction.UserId,
+                        source: "SubscriptionController.transfer.failed",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHire.Id,
+                        additionalData: new { TransferId = transfer.Id, ExpertId = failedTransaction.UserId, Amount = failedTransaction.Amount });
+                }
+
+                searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.TransferFailed.ToStringValue());
+                searchHire.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+                await transferFailedTransaction.CommitAsync();
+
+                if (searchHire.ExpertId.HasValue)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Transferencia pendiente con error",
+                        details: $"La transferencia de tu servicio #{searchHire.Id} falló. El equipo de pagos la reintentará y te avisaremos.",
+                        userId: searchHire.ExpertId.Value,
+                        source: "SubscriptionController.transfer.failed",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHire.Id,
+                        notifyUser: true);
+                }
+                await _loggingService.LogWarningAsync(
+                    message: "Pago al experto en revisión",
+                    details: $"La transferencia al experto del servicio #{searchHire.Id} falló. Un administrador está revisando el caso.",
+                    userId: searchHire.ClientId,
+                    source: "SubscriptionController.transfer.failed",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHire.Id,
+                    notifyUser: true);
+            }
+            catch
+            {
+                try { await transferFailedTransaction.RollbackAsync(); } catch { }
+                throw; // re-lanzar → el endpoint devuelve 500 y Stripe reintenta
             }
         }
 
@@ -6559,6 +6624,11 @@ namespace newApi.Controllers
                         StackTrace = ex.StackTrace
                     }
                 );
+                // 🔁 FIX B7: RELANZAR (no tragar). Al propagar, el catch del endpoint marca el evento "Failed"
+                // y devuelve 500 => Stripe REINTENTA y TryBeginProcessingEventAsync re-reclama el evento. El
+                // handler es idempotente (guard isActive + notifs solo si hireWasCancelledNow), así que el
+                // reintento no duplica. El "Success" del switch queda inalcanzable porque está tras esta llamada.
+                throw;
             }
         }
 

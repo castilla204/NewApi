@@ -1755,7 +1755,9 @@ namespace newApi.Controllers
                 Session session;
                 try
                 {
-                    var idempotencyKey = $"checkout-{userId}-{request.ServiceId}-none-{DateTime.UtcNow:yyyyMMddHHmm}";
+                    // 🔧 FIX #6 (doble cobro): clave SIN minuto (ver SearchController). Estable durante el TTL
+                    // de idempotencia (~24h) para que dos intentos del mismo (usuario,servicio) no generen 2 PIs.
+                    var idempotencyKey = $"checkout-{userId}-{request.ServiceId}-none";
                     session = await stripeService.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
                 }
                 catch (StripeException ex)
@@ -4432,7 +4434,9 @@ namespace newApi.Controllers
                 Session session;
                 try
                 {
-                    var idempotencyKey = $"checkout-{userId}-{service.Id}-{request.SearchId}-{DateTime.UtcNow:yyyyMMddHHmm}";
+                    // 🔧 FIX #6 (doble cobro): clave SIN minuto (ver SearchController). Dos intentos del mismo
+                    // (usuario,servicio,búsqueda) colapsan en una sola sesión durante el TTL de idempotencia.
+                    var idempotencyKey = $"checkout-{userId}-{service.Id}-{request.SearchId}";
                     session = await stripeService.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
                     
                     await _loggingService.LogInfoAsync(

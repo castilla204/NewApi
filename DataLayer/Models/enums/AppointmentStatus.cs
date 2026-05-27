@@ -20,6 +20,7 @@ namespace newApi.DataLayer.Models.enums
         AppointmentAwaitingReport,              // Esperando reporte/archivos del experto (3h después de la cita)
         AppointmentCancelledByNoReport,          // Experto no envió reporte en 24h
         AppointmentReportSent,                 // Experto envió el reporte
+        AppointmentCompleted,                  // Servicio completado (cliente aprobó / disputa resuelta) -> hire 'completed'
         AppointmentCompletedWithoutClientApproval, // Cliente no decidió (aprobó/disputó) en 24h (timer "client_decision")
         AppointmentCancelledByClientAccountDelete, // Cliente eliminó su cuenta
         AppointmentCancelledByExpertAccountDelete  // Experto eliminó su cuenta
@@ -46,6 +47,7 @@ namespace newApi.DataLayer.Models.enums
                 AppointmentStatus.AppointmentAwaitingReport => "appointment_awaiting_report",
                 AppointmentStatus.AppointmentCancelledByNoReport => "appointment_cancelled_by_no_report",
                 AppointmentStatus.AppointmentReportSent => "appointment_report_sent",
+                AppointmentStatus.AppointmentCompleted => "appointment_completed",
                 AppointmentStatus.AppointmentCompletedWithoutClientApproval => "appointment_completed_without_client_approval",
                 AppointmentStatus.AppointmentCancelledByClientAccountDelete => "appointment_cancelled_by_client_account_delete",
                 AppointmentStatus.AppointmentCancelledByExpertAccountDelete => "appointment_cancelled_by_expert_account_delete",
@@ -72,6 +74,7 @@ namespace newApi.DataLayer.Models.enums
                 "appointment_awaiting_report" => AppointmentStatus.AppointmentAwaitingReport,
                 "appointment_cancelled_by_no_report" => AppointmentStatus.AppointmentCancelledByNoReport,
                 "appointment_report_sent" => AppointmentStatus.AppointmentReportSent,
+                "appointment_completed" => AppointmentStatus.AppointmentCompleted,
                 "appointment_completed_without_client_approval" => AppointmentStatus.AppointmentCompletedWithoutClientApproval,
                 "appointment_cancelled_by_client_account_delete" => AppointmentStatus.AppointmentCancelledByClientAccountDelete,
                 "appointment_cancelled_by_expert_account_delete" => AppointmentStatus.AppointmentCancelledByExpertAccountDelete,

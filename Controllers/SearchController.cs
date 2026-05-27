@@ -527,6 +527,14 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Service not found" });
                 }
 
+                // 🚨 FIX C9: servicio SIN experto (ExpertProfileId nullable, FK OnDelete SetNull → un servicio
+                // cuyo experto fue borrado queda con ExpertProfile == null). Sin experto no hay destino de payout
+                // ni contratación válida. Rechazar ANTES de crear la Checkout Session.
+                if (service.ExpertProfile == null)
+                {
+                    return BadRequest(new { message = "Este servicio no está disponible para contratar" });
+                }
+
                 // ✅ VALIDACIÓN CENTRALIZADA: Verificar que el experto puede recibir pagos
                 if (service.ExpertProfile != null)
                 {

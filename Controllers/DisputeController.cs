@@ -531,6 +531,14 @@ namespace newApi.Controllers
                 // Alinear la entidad en memoria con el claim ya persistido.
                 dispute.Status = "Resolving";
 
+                // 🔧 Auto-sanación (P1): si esta request muere tras el claim (antes de marcar Resolved o de
+                // resetear a Pending), este job —que Hangfire PERSISTE, así que sobrevive a la caída— devolverá
+                // la disputa a "Pending" en 10 min SOLO si sigue en "Resolving". No-op si la resolución acaba
+                // normal (ya estará Resolved/Pending). Cierra el riesgo de atasco permanente del estado intermedio.
+                Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                    s => s.RescueStuckResolvingDisputeAsync(disputeId),
+                    TimeSpan.FromMinutes(10));
+
                 // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
                 // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
                 try

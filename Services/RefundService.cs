@@ -1644,6 +1644,48 @@ namespace newApi.Services
         }
 
         /// <summary>
+        /// 🔧 Auto-sanación del estado intermedio "Resolving" (P1). El claim atómico de
+        /// DisputeController.ResolveDispute deja la disputa en "Resolving" mientras mueve el dinero. Si la
+        /// request muere en esa ventana (deploy/OOM/timeout) la disputa quedaría atascada en "Resolving" para
+        /// siempre (todos los caminos de re-resolución exigen "Pending" y no hay watchdog que la recoja). Este
+        /// job se PROGRAMA al hacer el claim; Hangfire lo persiste, así que sobrevive a la caída del proceso.
+        /// Al dispararse SOLO actúa si la disputa SIGUE en "Resolving" (una resolución normal ya habría llegado
+        /// a "Resolved" o reseteado a "Pending" en segundos): la devuelve a "Pending" para re-resolución manual
+        /// (la distribución de dinero es idempotente) y avisa como crítico. No-op en el caso normal.
+        /// </summary>
+        [Hangfire.AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 900 })]
+        public async Task RescueStuckResolvingDisputeAsync(int disputeId)
+        {
+            // Atómico: solo resetea si SIGUE en "Resolving" (no pisa una que ya llegó a "Resolved"/"Pending").
+            var reset = await _context.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE \"Disputes\" SET \"Status\" = 'Pending' WHERE \"Id\" = {disputeId} AND \"Status\" = 'Resolving'");
+
+            if (reset > 0)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Stuck dispute in 'Resolving' rescued to 'Pending'",
+                    details: $"Dispute {disputeId} permanecio en 'Resolving' mas alla de la ventana de resolucion " +
+                             "(la request de resolucion probablemente murio tras el claim atomico, antes de marcar " +
+                             "'Resolved' o resetear). Devuelta a 'Pending' para re-resolucion (la distribucion de " +
+                             "dinero es idempotente). REVISAR si el dinero llego a moverse parcialmente.",
+                    userId: null,
+                    source: "StripeRefundService.RescueStuckResolvingDisputeAsync",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: disputeId,
+                    additionalData: new
+                    {
+                        metric_name = "dispute_stuck_resolving_rescued_total",
+                        metric_kind = "counter",
+                        event_type = "dispute_stuck_resolving_rescued",
+                        severity = "critical",
+                        DisputeId = disputeId,
+                        TimestampUtc = DateTime.UtcNow
+                    });
+            }
+            // reset == 0 → caso normal (ya 'Resolved'/'Pending'): no-op silencioso.
+        }
+
+        /// <summary>
         /// 🔁 A3 (R3): REVERSIÓN TOTAL del transfer al experto cuando hay un CHARGEBACK (contracargo).
         /// Un chargeback revierte el cargo ENTERO (el banco devuelve el 100% al cliente y Stripe retira el
         /// bruto de la plataforma), así que el experto NO debe quedarse su transfer — se revierte COMPLETO

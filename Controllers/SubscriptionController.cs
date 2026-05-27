@@ -3389,6 +3389,9 @@ namespace newApi.Controllers
                 decimal totalAmount = service.Price;
                 decimal? taxAmount = null;
                 decimal? baseAmount = null;
+                // 🔧 FIX D11 (IVA no recaudado): flag para marcar el hire si Stripe devolvió tax=0 por
+                // falta de registro fiscal (taxability_reason "not_collecting"), NO por reverse charge B2B.
+                bool taxNotCollectedNeedsReview = false;
                 
                 try
                 {
@@ -3405,7 +3408,21 @@ namespace newApi.Controllers
                         taxAmount = (sessionWithTax.TotalDetails?.AmountTax ?? 0) / 100m; // IVA (en centavos, dividir por 100)
                         baseAmount = totalAmount - taxAmount; // Base pre-tax
                         
-                        // ✅ VALIDACIÓN: Si AutomaticTax no aplicó (ej. exención B2B), AmountTax será 0
+                        // 🔧 FIX D11 (IVA no recaudado): Stripe puede devolver AmountTax==0 SIN error en dos
+                        // escenarios MUY distintos que antes se trataban igual (0 = IVA legítimo):
+                        //   a) status "requires_location_inputs" → faltan datos de ubicación (ya contemplado).
+                        //   b) status "complete" + amount_tax 0 → lo explica taxability_reason (por línea, en el
+                        //      breakdown ya expandido): "reverse_charge" = B2B intracomunitario, 0 LEGÍTIMO (no
+                        //      alertar); "not_collecting"/otros = NO hay registro fiscal en la jurisdicción del
+                        //      comprador → siendo MoR, es IVA NO recaudado → alerta + revisión.
+                        // (NB: automatic_tax.status NO tiene "not_collecting"/"collecting"; esos son taxability_reason.)
+                        var taxabilityReasons = sessionWithTax.TotalDetails?.Breakdown?.Taxes?
+                            .Select(t => t.TaxabilityReason)
+                            .Where(r => !string.IsNullOrEmpty(r))
+                            .ToList() ?? new List<string>();
+                        bool isReverseChargeOnly = taxabilityReasons.Count > 0
+                            && taxabilityReasons.All(r => r == "reverse_charge");
+
                         if (sessionWithTax.AutomaticTax?.Status == "requires_location_inputs")
                         {
                             // Stripe necesita más información de ubicación - usar precio completo como fallback
@@ -3419,7 +3436,28 @@ namespace newApi.Controllers
                             );
                             baseAmount = totalAmount;
                             taxAmount = 0;
+                            taxNotCollectedNeedsReview = true; // ubicación inválida → revisar fiscalmente
                         }
+                        else if (taxAmount == 0 && !isReverseChargeOnly)
+                        {
+                            // tax 0 NO justificado por reverse charge → muy probablemente falta registro fiscal (OSS/alta).
+                            // El cliente YA pagó: NO bloqueamos. Dejamos traza accionable + marcamos el hire para revisión.
+                            await _loggingService.LogCriticalAsync(
+                                message: "IVA no recaudado: Stripe Tax devolvió 0 sin reverse charge — falta registro fiscal",
+                                details: $"Session {session.Id}: automatic_tax.status='{sessionWithTax.AutomaticTax?.Status}', amount_tax=0, taxability_reason=[{string.Join(",", taxabilityReasons)}]. " +
+                                         $"Siendo la plataforma Merchant of Record, un 0 no-reverse-charge implica que NO hay registro fiscal activo en la jurisdicción del comprador. " +
+                                         $"ACCIÓN: revisar alta OSS / registro fiscal en Stripe Tax y regularizar esta venta ({totalAmount}€). El hire se marca RequiresManualReview; el cobro NO se bloquea.",
+                                userId: userId,
+                                source: "SubscriptionController.HandlePendingHireCompleted",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: null,
+                                additionalData: new { SessionId = session.Id, AutomaticTaxStatus = sessionWithTax.AutomaticTax?.Status, TaxabilityReasons = taxabilityReasons, TotalAmount = totalAmount }
+                            );
+                            baseAmount = totalAmount;
+                            taxAmount = 0;
+                            taxNotCollectedNeedsReview = true;
+                        }
+                        // else: tax > 0 (collecting normal) o reverse_charge legítimo → no se toca nada.
                     }
                     else
                     {
@@ -3466,7 +3504,8 @@ namespace newApi.Controllers
                     CompletionDeadline = DateTime.UtcNow.AddDays(7),
                     ExpertAvailabilityId = currentAvailabilityId, // Guardar la disponibilidad usada
                     ExpertTimezone = expertTimezone, // ✅ INTERNACIONALIZACIÓN: Snapshot del timezone del lugar de contratación
-                    ExpertCountry = expertCountry // ✅ INTERNACIONALIZACIÓN: Snapshot del país del lugar de contratación
+                    ExpertCountry = expertCountry, // ✅ INTERNACIONALIZACIÓN: Snapshot del país del lugar de contratación
+                    RequiresManualReview = taxNotCollectedNeedsReview // 🔧 FIX D11: IVA no recaudado → revisión fiscal del admin
                 };
                     // ✅ REMOVED: Balance verification eliminated - all payments are direct Stripe
 

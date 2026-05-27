@@ -86,6 +86,28 @@ namespace newApi.Services
             if (hire == null)
                 return (false, "Servicio no encontrado o no tienes permisos para modificarlo");
 
+            // 🔒 VALIDACIÓN DE TRANSICIÓN (P2): este setter manual NO mueve dinero ni sincroniza la cita.
+            // Solo se permiten transiciones administrativas entre estados NO finales. Rechazar:
+            //  (a) salir de un estado de finalización (no revivir un hire ya cerrado),
+            //  (b) destinos de finalización/dinero (completed, cancelled, disputed, transfer_failed,
+            //      dispute_resolved_*, cancelaciones por timer) -> deben ir por CompleteService /
+            //      resolve-dispute / timers, no por este endpoint.
+            if (hire.Status != null && hire.Status.IsFinalizationStatus)
+            {
+                return (false, "No se puede cambiar el estado de un servicio ya finalizado");
+            }
+
+            var targetStatus = await _context.SystemStatuses
+                .FirstOrDefaultAsync(s => s.StatusValue == status && s.StatusType == "SearchHireStatus");
+            if (targetStatus == null)
+            {
+                return (false, $"Status '{status}' does not exist for SearchHire entities");
+            }
+            if (targetStatus.IsFinalizationStatus)
+            {
+                return (false, "Esta transición debe realizarse a través de su flujo correspondiente (finalización, disputa o cancelación)");
+            }
+
             // Validar archivos obligatorios cuando se cambia a "Completed"
             if (status == "completed")
             {
@@ -94,17 +116,11 @@ namespace newApi.Services
                 {
                     return (false, validationResult.ErrorMessage);
                 }
-                
+
                 hire.UpdatedAt = DateTime.UtcNow;
             }
 
-            var statusId = await FindStatusIdByValueAsync(status);
-            if (!statusId.HasValue)
-            {
-                return (false, $"Status '{status}' does not exist for SearchHire entities");
-            }
-
-            hire.StatusId = statusId.Value;
+            hire.StatusId = targetStatus.Id;
             if (status != "completed")
             {
                 hire.UpdatedAt = DateTime.UtcNow;

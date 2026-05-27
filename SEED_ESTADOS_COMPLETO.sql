@@ -110,7 +110,7 @@ FROM (VALUES
   ('appointment_cancelled_by_expert','cancelled',false),         -- 1a cancelacion: inactivo
   ('appointment_cancelled_by_expert_rejection','cancelled',true),
   ('appointment_cancelled_by_no_response','cancelled',true),
-  ('appointment_completed','awaiting_client_decision',true)
+  ('appointment_completed','completed',true)   -- FIX #3: cita completada -> hire 'completed' (antes apuntaba mal a 'awaiting_client_decision', un estado NO final)
 ) AS v("src","tgt","act")
 JOIN "SystemStatuses" src ON src."StatusValue"=v."src" AND src."StatusType"='AppointmentStatus'
 JOIN "SystemStatuses" tgt ON tgt."StatusValue"=v."tgt" AND tgt."StatusType"='SearchHireStatus'

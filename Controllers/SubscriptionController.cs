@@ -6770,7 +6770,7 @@ namespace newApi.Controllers
                     {
                         await _refundService.ProcessMoneyDistributionAsync(
                             hire.Id,
-                            SearchHireStatus.CancelledByExpertAccountDelete.ToStringValue(),
+                            SearchHireStatus.Cancelled.ToStringValue(), // 🔧 FIX #2: el granular *_account_delete NO existe en SystemStatuses -> config==null -> el reembolso al cliente quedaba BLOQUEADO. Cancelled (100/0/0) existe y reembolsa íntegro.
                             $"Stripe account deauthorized ({deauthorizationReason}); appointment not yet served.",
                             initiatedByUserId: -1,
                             updateState: true);
@@ -6903,7 +6903,7 @@ namespace newApi.Controllers
                             var refundReason = $"Expert account rejected by Stripe ({disabledReason}); appointment not yet served.";
                             await _refundService.ProcessMoneyDistributionAsync(
                                 hire.Id,
-                                SearchHireStatus.CancelledByExpertAccountDelete.ToStringValue(),
+                                SearchHireStatus.Cancelled.ToStringValue(), // 🔧 FIX #2: el granular *_account_delete NO existe en SystemStatuses -> config==null -> el reembolso al cliente quedaba BLOQUEADO. Cancelled (100/0/0) existe y reembolsa íntegro.
                                 refundReason,
                                 initiatedByUserId: -1,
                                 updateState: true);

@@ -646,7 +646,11 @@ namespace newApi.Controllers
                     };
 
                     var serviceStripe = new SessionService();
-                    var idempotencyKey = $"checkout-{userId}-{service.Id}-none-{DateTime.UtcNow:yyyyMMddHHmm}";
+                    // 🔧 FIX #6 (doble cobro): clave SIN componente de minuto. Con {yyyyMMddHHmm}, dos intentos
+                    // del mismo (usuario,servicio) a caballo del cambio de minuto generaban 2 Checkout Sessions =>
+                    // 2 PaymentIntents => doble captura. Estable, Stripe deduplica la sesión durante su TTL (~24h,
+                    // alineado con la expiración de la propia Checkout Session).
+                    var idempotencyKey = $"checkout-{userId}-{service.Id}-none";
                     var session = await serviceStripe.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
 
                     await _loggingService.LogInfoAsync(

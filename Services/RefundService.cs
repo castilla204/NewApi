@@ -1354,9 +1354,18 @@ namespace newApi.Services
                         // Si la nueva parte >= lo transferido (p.ej. dispute_resolved_expert tras Completed),
                         // clawbackAmountEur <= 0 y NO se revierte nada. (Antes solo disparaba con experto==0%,
                         // por eso 90/8/2 dejaba al experto cobrado de más y la plataforma perdía ~85%.)
-                        var clawbackAmountEur = existingTransfer != null
-                            ? Math.Abs(existingTransfer.Amount) - expertAmountForStripe
-                            : 0m;
+                        // 🔧 FIX (céntimos): calcular el clawback en CÉNTIMOS enteros, no sobre el Amount decimal
+                        // crudo del ledger (que podía guardar 18.0595 cuando a Stripe se envió 18.06). Usar
+                        // AmountCents si está poblado (filas nuevas); si es una fila antigua con AmountCents=0,
+                        // caer al Amount redondeado a céntimo (no al crudo). Así el clawback casa con lo transferido.
+                        long transferredCents = existingTransfer == null
+                            ? 0L
+                            : (existingTransfer.AmountCents != 0
+                                ? Math.Abs(existingTransfer.AmountCents)
+                                : checked((long)Math.Round(Math.Abs(existingTransfer.Amount) * 100)));
+                        long expertOwedCents = checked((long)Math.Round(expertAmountForStripe * 100));
+                        long clawbackCents = Math.Max(0L, transferredCents - expertOwedCents);
+                        var clawbackAmountEur = clawbackCents / 100m;
                         // 🔁 A2: dispara también si el refund YA estaba hecho (reintento de un clawback que
                         // falló antes), no solo cuando se acaba de crear el refund en esta ejecución.
                         if (((needsRefund && !string.IsNullOrEmpty(createdRefundId)) || refundAlreadyProcessed)
@@ -1379,7 +1388,7 @@ namespace newApi.Services
                                     var clawbackSvc = new TransferReversalService();
                                     var clawbackOptions = new TransferReversalCreateOptions
                                     {
-                                        Amount = (long)Math.Round(clawbackAmountEur * 100),
+                                        Amount = clawbackCents, // 🔧 FIX: céntimos exactos (calculados arriba), no Math.Round del decimal crudo
                                         Metadata = new Dictionary<string, string>
                                         {
                                             { "searchHireId", searchHireId.ToString() },
@@ -1387,13 +1396,11 @@ namespace newApi.Services
                                             { "reason", "clawback on client refund" }
                                         }
                                     };
-                                    // 🔧 FIX A-i: clave de reversión UNIFICADA por transfer (compartida con la
-                                    // reversión por chargeback en ReverseExpertTransferForChargebackAsync). Antes
-                                    // clawback usaba "-clawback" y chargeback "-chargeback-reversal": claves
-                                    // DISTINTAS → si ambos caminos corrían en carrera, Stripe no los deduplicaba
-                                    // entre sí → DOBLE reversión del mismo transfer. Atándola al StripeTransferId,
-                                    // la 2ª llamada o deduplica (mismo body) o es rechazada con idempotency_error
-                                    // (body distinto: parcial vs total) → nunca ejecuta una 2ª reversión.
+                                    // 🔧 Clave PROPIA del clawback ("-reversal-"), DISTINTA de la del chargeback
+                                    // ("-cbreversal-" en ReverseExpertTransferForChargebackAsync): revierten importes
+                                    // distintos del mismo transfer, así que compartir clave daba idempotency_error.
+                                    // La doble reversión concurrente clawback↔chargeback se evita porque el chargeback
+                                    // lee el remanente VIVO y Stripe rechaza revertir por encima de AmountReversed.
                                     var clawbackRequestOptions = new RequestOptions { IdempotencyKey = $"md-{searchHireId}-reversal-{existingTransfer.StripeTransferId}" };
                                     var clawbackReversal = await clawbackSvc.CreateAsync(existingTransfer.StripeTransferId, clawbackOptions, clawbackRequestOptions);
 
@@ -1402,6 +1409,7 @@ namespace newApi.Services
                                     {
                                         UserId = searchHire.ExpertId,
                                         Amount = -clawbackAmountEur,
+                                        AmountCents = -clawbackCents,
                                         TransactionType = "TransferReversal",
                                         RelatedEntityType = "SearchHire",
                                         RelatedEntityId = searchHireId,
@@ -1439,7 +1447,8 @@ namespace newApi.Services
                             var refundTx = new FinancialTransaction
                             {
                                 UserId = searchHire.ClientId,
-                                Amount = clientRefundAmountForStripe, // ✅ Guardar el monto real enviado a Stripe (con tax proporcional)
+                                Amount = Math.Round(clientRefundAmountForStripe, 2), // 🔧 redondeado a céntimo para casar con Stripe
+                                AmountCents = checked((long)Math.Round(clientRefundAmountForStripe * 100)), // céntimos exactos refundados
                                 TransactionType = "Refund",
                                 RelatedEntityType = "SearchHire",
                                 RelatedEntityId = searchHireId,
@@ -1458,11 +1467,13 @@ namespace newApi.Services
                             var expertTx = new FinancialTransaction
                             {
                                 UserId = searchHire.ExpertId.Value,
-                                Amount = expertAmountForStripe, // ✅ Guardar el monto real enviado a Stripe (base, sin tax)
+                                Amount = Math.Round(expertAmountForStripe, 2), // 🔧 redondeado a céntimo para casar con Stripe
+                                AmountCents = checked((long)Math.Round(expertAmountForStripe * 100)), // céntimos exactos transferidos
                                 TransactionType = "Payout",
                                 RelatedEntityType = "SearchHire",
                                 RelatedEntityId = searchHireId,
                                 StripeTransferId = createdTransferId,
+                                StripePaymentIntentId = servicePayment.StripePaymentIntentId, // 🔧 trazabilidad: vincular Payout al cargo (se propaga a la reversión por chargeback)
                                 CreatedAt = DateTime.UtcNow
                             };
                             _context.FinancialTransactions.Add(expertTx);
@@ -1753,16 +1764,19 @@ namespace newApi.Services
                 return;
             }
 
-            var alreadyReversed = await _context.FinancialTransactions.AnyAsync(ft =>
-                ft.RelatedEntityType == "SearchHire" &&
-                ft.RelatedEntityId == searchHireId &&
-                ft.TransactionType == "TransferReversal" &&
-                ft.StripeTransferId == payout.StripeTransferId);
-            if (alreadyReversed)
+            // 🔧 FIX A-ii (regresión de A-i): NO usar un guard binario "¿existe alguna fila TransferReversal?".
+            // Un clawback PARCIAL previo (dispute_resolved_client 90/8/2) ya deja una fila TransferReversal, y el
+            // guard antiguo daba el chargeback por hecho => el experto conservaba el remanente de un cargo devuelto
+            // al 100% y la plataforma perdía. Leemos el estado VIVO del transfer (GetAsync NO se cachea por
+            // idempotency) y revertimos solo el REMANENTE no-revertido. Stripe expone Amount/AmountReversed en
+            // CÉNTIMOS (long). Un chargeback aislado (sin clawback previo) tiene AmountReversed=0 => revierte el 100%.
+            var liveTransfer = await new TransferService().GetAsync(payout.StripeTransferId);
+            var remainderCents = liveTransfer.Amount - liveTransfer.AmountReversed; // céntimos aún reversibles
+            if (remainderCents <= 0)
             {
                 await _loggingService.LogInfoAsync(
-                    message: "Chargeback reversal: expert transfer already reversed (idempotent no-op)",
-                    details: $"SearchHire {searchHireId}: transfer {payout.StripeTransferId} already has a TransferReversal row.",
+                    message: "Chargeback reversal: expert transfer already fully reversed (idempotent no-op)",
+                    details: $"SearchHire {searchHireId}: transfer {payout.StripeTransferId} sin remanente reversible (amount={liveTransfer.Amount}c, reversed={liveTransfer.AmountReversed}c). Nada que revertir.",
                     userId: payout.UserId,
                     source: "StripeRefundService.ReverseExpertTransferForChargebackAsync",
                     relatedEntityType: "SearchHire",
@@ -1770,29 +1784,32 @@ namespace newApi.Services
                 return;
             }
 
-            var reverseAmount = Math.Abs(payout.Amount);
+            var reverseAmount = remainderCents / 100m; // EUR, solo para ledger/logs
             try
             {
                 var reversalSvc = new TransferReversalService();
                 var reversalOptions = new TransferReversalCreateOptions
                 {
-                    Amount = (long)Math.Round(reverseAmount * 100),
+                    Amount = remainderCents, // revierte el REMANENTE vivo, no Abs(payout.Amount)
                     Metadata = new Dictionary<string, string>
                     {
                         { "searchHireId", searchHireId.ToString() },
-                        { "reason", "chargeback full reversal" }
+                        { "reason", "chargeback reversal (remainder)" }
                     }
                 };
-                // 🔧 FIX A-i: misma clave de reversión por transfer que usa el clawback interno
-                // (ProcessMoneyDistributionAsync). Unificadas para que Stripe deduplique/rechace una 2ª
-                // reversión del mismo transfer aunque ambos caminos se disparen en carrera.
-                var requestOptions = new RequestOptions { IdempotencyKey = $"md-{searchHireId}-reversal-{payout.StripeTransferId}" };
+                // 🔧 FIX A-ii: clave DISTINTA de la del clawback ("-reversal-"). Clawback parcial y chargeback
+                // revierten importes DISTINTOS del mismo transfer; con clave compartida la 2ª chocaba con
+                // idempotency_error y entraba en bucle de reintentos de Hangfire. Con "-cbreversal-" cada camino
+                // deduplica solo consigo mismo; la doble reversión CONCURRENTE sigue cubierta porque ambos leen el
+                // remanente vivo y Stripe rechaza revertir por encima de AmountReversed.
+                var requestOptions = new RequestOptions { IdempotencyKey = $"md-{searchHireId}-cbreversal-{payout.StripeTransferId}" };
                 var reversal = await reversalSvc.CreateAsync(payout.StripeTransferId, reversalOptions, requestOptions);
 
                 _context.FinancialTransactions.Add(new FinancialTransaction
                 {
                     UserId = payout.UserId,
                     Amount = -reverseAmount,
+                    AmountCents = -remainderCents,
                     TransactionType = "TransferReversal",
                     RelatedEntityType = "SearchHire",
                     RelatedEntityId = searchHireId,

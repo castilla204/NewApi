@@ -1755,9 +1755,13 @@ namespace newApi.Controllers
                 Session session;
                 try
                 {
-                    // 🔧 FIX #6 (doble cobro): clave SIN minuto (ver SearchController). Estable durante el TTL
-                    // de idempotencia (~24h) para que dos intentos del mismo (usuario,servicio) no generen 2 PIs.
-                    var idempotencyKey = $"checkout-{userId}-{request.ServiceId}-none";
+                    // 🔧 FIX #6 + regresión: clave determinista por (usuario,servicio,importe). El body aquí solo
+                    // varía con el precio del servicio, así que incluir el importe basta: mismo importe => misma
+                    // clave (deduplica doble-clic), importe distinto => clave distinta (no rompe con
+                    // idempotency_error). El guard de contratación activa evita el re-cobro del mismo servicio.
+                    var idempotencyKey = IdempotencyKeyHelper.ForCheckout(
+                        userId, request.ServiceId,
+                        amountToCharge.ToString(System.Globalization.CultureInfo.InvariantCulture));
                     session = await stripeService.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
                 }
                 catch (StripeException ex)
@@ -2446,6 +2450,7 @@ namespace newApi.Controllers
                                         {
                                             UserId = failedTransaction.UserId,
                                             Amount = 0, // No hay monto en caso de fallo
+                                            AmountCents = 0,
                                             TransactionType = "TransferFailed",
                                             RelatedEntityType = "SearchHire",
                                             RelatedEntityId = searchHire.Id,
@@ -3578,6 +3583,7 @@ namespace newApi.Controllers
                 {
                     UserId = userId,
                     Amount = -totalAmount, // 🔧 FIX (#3): registrar lo REALMENTE cobrado (con IVA), coherente con SearchHire.Amount. Antes -service.Price (base) descuadraba el ledger interno con tax exclusive y mostraba un importe erróneo al usuario.
+                    AmountCents = -checked((long)Math.Round(totalAmount * 100)), // 🔧 céntimos exactos cobrados (con IVA)
                     TransactionType = "ServicePayment",
                     RelatedEntityType = "SearchHire",
                         RelatedEntityId = searchHireId, // ✅ FIX: Usar searchHireId guardado
@@ -4004,6 +4010,7 @@ namespace newApi.Controllers
             {
                 UserId = userId,
                 Amount = 0, // No hay monto en caso de error
+                AmountCents = 0,
                 TransactionType = "CriticalRefundFailure",
                 RelatedEntityType = "ErrorRecovery",
                 RelatedEntityId = 0,
@@ -4224,6 +4231,7 @@ namespace newApi.Controllers
                 {
                     UserId = userId,
                     Amount = refundAmount,
+                    AmountCents = refund.Amount, // 🔧 céntimos exactos devueltos por Stripe (fuente de verdad)
                     TransactionType = "Refund",
                     RelatedEntityType = refundType == "automatic_error_refund" ? "ErrorRecovery" : "SearchHire",
                     RelatedEntityId = 0, // Se puede especificar si es necesario
@@ -4434,9 +4442,13 @@ namespace newApi.Controllers
                 Session session;
                 try
                 {
-                    // 🔧 FIX #6 (doble cobro): clave SIN minuto (ver SearchController). Dos intentos del mismo
-                    // (usuario,servicio,búsqueda) colapsan en una sola sesión durante el TTL de idempotencia.
-                    var idempotencyKey = $"checkout-{userId}-{service.Id}-{request.SearchId}";
+                    // 🔧 FIX #6 + regresión: searchId ya discrimina compras distintas; lo pasamos por el hash
+                    // junto al precio para blindar también un cambio de precio del servicio entre dos intentos del
+                    // mismo searchId (evita idempotency_error 400). Mismo (searchId,precio) => misma clave.
+                    var idempotencyKey = IdempotencyKeyHelper.ForCheckout(
+                        userId, service.Id,
+                        request.SearchId.ToString(),
+                        service.Price.ToString(System.Globalization.CultureInfo.InvariantCulture));
                     session = await stripeService.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
                     
                     await _loggingService.LogInfoAsync(
@@ -5848,6 +5860,7 @@ namespace newApi.Controllers
                     {
                         UserId = clientId,
                         Amount = -amount,
+                        AmountCents = -dispute.Amount, // 🔧 céntimos exactos retirados por Stripe (fuente de verdad)
                         TransactionType = "Chargeback",
                         RelatedEntityType = "SearchHire",
                         RelatedEntityId = hireId.Value,

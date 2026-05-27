@@ -70,9 +70,13 @@ namespace newApi.Services
             var clientEmail = searchHire.Client.Email ?? "email@eliminado.com";
             var serviceName = searchHire.SearchService.ServiceType.Name ?? "Servicio eliminado";
             var serviceCategory = searchHire.SearchService.Category.Name ?? "Categoría eliminada";
-            var total = searchHire.Amount; // bruto con IVA incluido
-            var iva = searchHire.TaxAmount ?? Math.Round(total - (total / 1.21m), 2);
-            var baseSinIva = Math.Round(total - iva, 2);
+            var total = searchHire.Amount; // bruto con IVA incluido (si lo hay)
+            // 🔧 FIX internacional: NO inventar 21% de IVA. Derivar del impuesto REAL (Stripe Tax).
+            var iva = searchHire.TaxAmount ?? 0m;
+            var baseSinIva = searchHire.BaseAmount ?? Math.Round(total - iva, 2);
+            var ivaPct = (baseSinIva > 0m && iva > 0m)
+                ? (int)Math.Round(iva / baseSinIva * 100m, MidpointRounding.AwayFromZero)
+                : 0;
 
             // Generar PDF con QuestPDF
             var pdfBytes = Document.Create(container =>
@@ -173,7 +177,7 @@ namespace newApi.Services
                                     table.Cell().Element(CellStyle).Text("Base imponible:").FontSize(11);
                                     table.Cell().Element(CellStyle).AlignRight().Text($"{baseSinIva:N2} €").FontSize(11);
 
-                                    table.Cell().Element(CellStyle).Text("IVA (21%):").FontSize(11);
+                                    table.Cell().Element(CellStyle).Text($"IVA ({ivaPct}%):").FontSize(11);
                                     table.Cell().Element(CellStyle).AlignRight().Text($"{iva:N2} €").FontSize(11);
 
                                     table.Cell().Element(CellStyle).Text("TOTAL:").Bold().FontSize(12);

@@ -16,6 +16,7 @@ using Twilio;
 using static UserController;
 using System.Globalization;
 using Microsoft.Extensions.DependencyInjection;
+using newApi.Common;
 
 namespace newApi.Services
 {
@@ -659,6 +660,35 @@ namespace newApi.Services
                         Exception = ex.Message
                     }
                 );
+            }
+
+            // 🔧 GATE DE PAÍS (P3, paso 1): NO promover a Expert si el país detectado no puede recibir pagos.
+            // Sin esto se crea un "experto zombie": perfil publicado y contratable que NUNCA puede cobrar
+            // (el paso 2, onboarding Stripe, devolvería BadRequest). Usamos la MISMA whitelist que el paso 2.
+            // Country == null (geocoding falló o no devolvió país) → rechazamos también: promover con país
+            // desconocido reproduce el bug y crear la cuenta Stripe con país equivocado es irreversible.
+            if (!SupportedConnectCountries.IsSupported(expertCountry))
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "BecomeExpert bloqueado: pais no soportado o no detectado",
+                    details: $"User {userId} no se promueve a Expert. Country detectado='{expertCountry ?? "null"}'. " +
+                             "No soportado para Stripe Connect (separate charges & transfers desde plataforma EEA) " +
+                             "o geocoding no devolvio pais. Se evita crear un experto que no podria cobrar.",
+                    userId: userId,
+                    source: "UserService.BecomeExpert",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new
+                    {
+                        Action = "CountryGate",
+                        UserId = userId,
+                        DetectedCountry = expertCountry,
+                        Latitude = latitude,
+                        Longitude = longitude
+                    }
+                );
+
+                return (false, null, null, null);
             }
 
             var expertProfile = new ExpertProfile

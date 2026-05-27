@@ -492,6 +492,14 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Admin access required" });
                 }
 
+                // 🔒 FIX P1: validar la acción ANTES del claim atómico, para que ningún early-return
+                // posterior al claim deje la disputa atascada en estado intermedio "Resolving".
+                var requestedAction = request.Action?.ToLower();
+                if (requestedAction != "refund_client" && requestedAction != "pay_expert")
+                {
+                    return BadRequest(new { message = "Invalid action. Valid actions: refund_client, pay_expert" });
+                }
+
                 var dispute = await _context.Disputes
                     .Include(d => d.SearchHire)
                         .ThenInclude(sh => sh.Status)
@@ -508,10 +516,20 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Dispute not found" });
                 }
 
-                if (dispute.Status != "Pending")
+                // 🔒 FIX P1 (carrera de doble resolución): claim ATÓMICO. Antes el guard
+                // (dispute.Status != "Pending") se leía SIN lock: dos admins / doble clic / reintento HTTP
+                // pasaban ambos y movían el dinero DOS veces (doble refund/transfer). Este UPDATE condicional
+                // es una sola sentencia atómica: solo UN request consigue voltear Pending -> Resolving (1 fila
+                // afectada); el perdedor recibe 0 filas y se rechaza. En fallo recuperable se restaura a
+                // "Pending" (catches ObjectDisposed + catch externo) → reintentable (la distribución es idempotente).
+                var claimed = await _context.Database.ExecuteSqlInterpolatedAsync(
+                    $"UPDATE \"Disputes\" SET \"Status\" = 'Resolving' WHERE \"Id\" = {disputeId} AND \"Status\" = 'Pending'");
+                if (claimed == 0)
                 {
-                    return BadRequest(new { message = "Dispute is already resolved" });
+                    return BadRequest(new { message = "Dispute is already resolved or currently being resolved" });
                 }
+                // Alinear la entidad en memoria con el claim ya persistido.
+                dispute.Status = "Resolving";
 
                 // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
                 // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
@@ -939,6 +957,19 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
+                // 🔒 FIX P1: si algo falló de forma inesperada tras el claim atómico, restaurar la disputa a
+                // "Pending" para que sea reintentable (la distribución de dinero es idempotente). Best-effort,
+                // con contexto nuevo por si el _context original quedó inutilizable. Solo toca filas aún en
+                // "Resolving" (no pisa una que ya llegó a "Resolved").
+                try
+                {
+                    using var resetScope = _serviceScopeFactory.CreateScope();
+                    var resetContext = resetScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    await resetContext.Database.ExecuteSqlInterpolatedAsync(
+                        $"UPDATE \"Disputes\" SET \"Status\" = 'Pending' WHERE \"Id\" = {disputeId} AND \"Status\" = 'Resolving'");
+                }
+                catch { /* best-effort: el reintento del admin podrá re-claim */ }
+
                 // 🚨 LOG CRÍTICO: Excepción externa durante resolución de disputa
                 var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
                 await _loggingService.LogCriticalAsync(

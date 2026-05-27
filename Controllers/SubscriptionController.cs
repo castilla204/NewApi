@@ -821,15 +821,10 @@ namespace newApi.Controllers
                 // soportados por una plataforma EEA en separate charges & transfers (EEA + US/CA/GB/CH). Si el país
                 // falta o no está soportado, bloqueamos el onboarding (crear la cuenta con país equivocado es
                 // IRREVERSIBLE). LatAm (MX, AR...) requiere Cross-border payouts vía Stripe Sales → no se habilita aquí.
-                var supportedConnectCountries = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GR","HU","IE","IT",
-                    "LV","LT","LU","MT","NL","PL","PT","RO","SK","SI","ES","SE","NO", // IS/LI fuera: Stripe Connect no los soporta como cuenta conectada
-
-                    "US","CA","GB","CH"
-                };
+                // Lista compartida (newApi.Common.SupportedConnectCountries) — MISMA fuente que el gate del
+                // paso 1 en UserService.BecomeExpert, para que paso 1 y paso 2 no diverjan.
                 var expertConnectCountry = expertProfile.Country?.Trim().ToUpperInvariant();
-                if (string.IsNullOrEmpty(expertConnectCountry) || !supportedConnectCountries.Contains(expertConnectCountry))
+                if (!SupportedConnectCountries.IsSupported(expertConnectCountry))
                 {
                     await _loggingService.LogWarningAsync(
                         message: "Onboarding de experto bloqueado: pais no soportado o ausente",
@@ -2554,6 +2549,14 @@ namespace newApi.Controllers
                         }
                         break;
 
+                    // 🔁 P6 (CRÍTICO): confirmación del clawback al experto tras un chargeback. La reversión
+                    // se ENCOLA en HandleChargeDisputeCreated (ReverseExpertTransferForChargebackAsync), pero su
+                    // RESULTADO sólo se conoce aquí: Stripe emite transfer.reversed cuando el/los reversal(es)
+                    // se aplican. Sin este handler no sabíamos si la reversión falló o fue parcial.
+                    case "transfer.reversed":
+                        await HandleTransferReversed(stripeEvent.Data.Object as Transfer);
+                        break;
+
                     // Los eventos de suscripción y facturas se manejan en el webhook general
 
                     case "capability.updated":
@@ -2896,6 +2899,17 @@ namespace newApi.Controllers
                         }
                         else
                         {
+                        }
+                        break;
+
+                    // ⏳ A-v (ALTO): con CAPTURA MANUAL, una autorización no capturada expira a ~7 días y
+                    // Stripe emite payment_intent.canceled. Antes caía en default → el hire quedaba colgado en
+                    // 'pending' para siempre. Ahora se cancela y se notifica (no hubo cobro → sin refund).
+                    case "payment_intent.canceled":
+                        var canceledPaymentIntent = stripeEvent.Data.Object as PaymentIntent;
+                        if (canceledPaymentIntent != null)
+                        {
+                            await HandlePaymentIntentCanceled(canceledPaymentIntent);
                         }
                         break;
 
@@ -6223,6 +6237,303 @@ namespace newApi.Controllers
                     message: "CRITICAL: Error processing failed payment intent",
                     details: $"Error processing failed payment intent {paymentIntent.Id}: {ex.Message}",
                     source: "SubscriptionController.HandlePaymentIntentFailed",
+                    relatedEntityType: "Payment",
+                    relatedEntityId: null,
+                    additionalData: new {
+                        PaymentIntentId = paymentIntent.Id,
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+            }
+        }
+
+        /// <summary>
+        /// transfer.reversed (P6) — Stripe confirma que un transfer al experto fue revertido (total o parcial).
+        /// Casa el transfer revertido con su Payout/SearchHire por StripeTransferId (o metadata searchHireId) y
+        /// con la fila "TransferReversal" del clawback. Confirma que la reversión esperada se aplicó; ALERTA como
+        /// crítico si el importe revertido ≠ esperado o si no se localiza el hire/registro. Idempotente (solo concilia).
+        /// </summary>
+        private async Task HandleTransferReversed(Transfer? transfer)
+        {
+            if (transfer == null)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "transfer.reversed received with null Transfer object",
+                    source: "SubscriptionController.HandleTransferReversed",
+                    relatedEntityType: "Transfer");
+                return;
+            }
+
+            var reversedAmount = transfer.AmountReversed / 100m;
+            var transferAmount = transfer.Amount / 100m;
+
+            // 1) Localizar el Payout/SearchHire por el StripeTransferId persistido.
+            var payoutTx = await _context.FinancialTransactions
+                .FirstOrDefaultAsync(ft => ft.StripeTransferId == transfer.Id
+                                        && ft.TransactionType == "Payout"
+                                        && ft.RelatedEntityType == "SearchHire");
+
+            // Fallback: la reversión por chargeback escribe searchHireId en la metadata del transfer.
+            int? hireId = payoutTx?.RelatedEntityId;
+            if (!hireId.HasValue
+                && transfer.Metadata != null
+                && transfer.Metadata.TryGetValue("searchHireId", out var metaHireId)
+                && int.TryParse(metaHireId, out var parsedHireId))
+            {
+                hireId = parsedHireId;
+            }
+
+            if (!hireId.HasValue)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: transfer.reversed without matching Payout/SearchHire",
+                    details: $"Transfer {transfer.Id} reportado como revertido ({reversedAmount:F2}€ de {transferAmount:F2}€) pero no se encontró FinancialTransaction Payout con ese StripeTransferId ni searchHireId en metadata. Requiere conciliación manual del clawback al experto.",
+                    userId: null,
+                    source: "SubscriptionController.HandleTransferReversed",
+                    relatedEntityType: "Transfer",
+                    relatedEntityId: null,
+                    additionalData: new { TransferId = transfer.Id, AmountReversed = reversedAmount, TransferAmount = transferAmount, transfer.Reversed });
+                return;
+            }
+
+            // 2) ¿Existe ya el registro de reversión del clawback? (consistencia).
+            var reversalTx = await _context.FinancialTransactions
+                .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire"
+                                        && ft.RelatedEntityId == hireId.Value
+                                        && ft.TransactionType == "TransferReversal"
+                                        && ft.StripeTransferId == transfer.Id);
+
+            var expectedReversal = reversalTx != null
+                ? Math.Abs(reversalTx.Amount)
+                : (payoutTx != null ? Math.Abs(payoutTx.Amount) : reversedAmount);
+
+            var mismatch = Math.Abs(reversedAmount - expectedReversal) > 0.01m;
+
+            if (mismatch)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: transfer.reversed amount mismatch",
+                    details: $"Transfer {transfer.Id} (SearchHire {hireId}) revertido por {reversedAmount:F2}€ pero se esperaba {expectedReversal:F2}€ (transfer original {transferAmount:F2}€). Posible reversión PARCIAL o doble — el experto podría quedarse fondos de un cargo revertido. Revisión manual.",
+                    userId: payoutTx?.UserId,
+                    source: "SubscriptionController.HandleTransferReversed",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: hireId.Value,
+                    additionalData: new { TransferId = transfer.Id, AmountReversed = reversedAmount, ExpectedReversal = expectedReversal, TransferAmount = transferAmount, transfer.Reversed });
+            }
+            else
+            {
+                await _loggingService.LogInfoAsync(
+                    message: "Expert transfer reversal confirmed by Stripe",
+                    details: $"Transfer {transfer.Id} (SearchHire {hireId}) confirmado como revertido por {reversedAmount:F2}€ (esperado {expectedReversal:F2}€). " +
+                             (reversalTx != null
+                                ? "Casa con el TransferReversal local registrado por el clawback."
+                                : "Sin TransferReversal local previo (reversión iniciada fuera del flujo automático); conciliar el ledger."),
+                    userId: payoutTx?.UserId,
+                    source: "SubscriptionController.HandleTransferReversed",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: hireId.Value);
+            }
+        }
+
+        /// <summary>
+        /// payment_intent.canceled (A-v) — con CAPTURA MANUAL, una autorización no capturada expira a ~7 días y
+        /// Stripe la cancela. Si el SearchHire asociado sigue en un estado no-final esperando captura, se marca
+        /// Cancelado y se notifica. NO hubo cobro → NO se emite refund. Idempotente; seguro si el PI no tiene hire.
+        /// Clon del patrón probado de HandlePaymentIntentFailed.
+        /// </summary>
+        private async Task HandlePaymentIntentCanceled(PaymentIntent paymentIntent)
+        {
+            try
+            {
+                var amount = paymentIntent.Amount / 100m;
+                var userId = paymentIntent.Metadata?.ContainsKey("userId") == true &&
+                            int.TryParse(paymentIntent.Metadata["userId"], out int parsedUserId)
+                            ? parsedUserId : (int?)null;
+
+                await _loggingService.LogWarningAsync(
+                    message: "Payment intent canceled (deferred capture expired or voided)",
+                    details: $"PaymentIntent {paymentIntent.Id} canceled. Amount: {amount}€ {paymentIntent.Currency?.ToUpper()}. CancellationReason: {paymentIntent.CancellationReason ?? "n/a"}, Status: {paymentIntent.Status}.",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePaymentIntentCanceled",
+                    relatedEntityType: "Payment",
+                    relatedEntityId: null,
+                    notifyUser: false);
+
+                var hireFt = await _context.FinancialTransactions
+                    .FirstOrDefaultAsync(t => t.StripePaymentIntentId == paymentIntent.Id
+                                              && t.TransactionType == "ServicePayment");
+
+                if (hireFt == null || hireFt.RelatedEntityId == null)
+                {
+                    return;
+                }
+
+                int hireId = hireFt.RelatedEntityId.Value;
+
+                var cancelledHireStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
+                var pendingHireStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Pending.ToStringValue());
+                var awaitingHireStatusId = await GetStatusIdByValueAsync(SearchHireStatus.AwaitingClientDecision.ToStringValue());
+                var disputedHireStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
+
+                var appointmentCancelledStatusId = (await _context.SystemStatuses
+                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus"
+                                              && s.StatusValue == "appointment_cancelled_by_client"))?.Id;
+
+                var strategy = _context.Database.CreateExecutionStrategy();
+                int? expertIdForNotif = null;
+                int? clientIdForNotif = null;
+                bool hireWasCancelledNow = false;
+
+                await strategy.ExecuteAsync(async () =>
+                {
+                    await using var tx = await _context.Database.BeginTransactionAsync();
+
+                    var hire = await _context.SearchHires
+                        .Include(h => h.Appointment)
+                        .FirstOrDefaultAsync(h => h.Id == hireId);
+
+                    if (hire == null)
+                    {
+                        await tx.CommitAsync();
+                        return;
+                    }
+
+                    expertIdForNotif = hire.ExpertId;
+                    clientIdForNotif = hire.ClientId;
+
+                    bool isActive = hire.StatusId == pendingHireStatusId
+                                    || hire.StatusId == awaitingHireStatusId
+                                    || hire.StatusId == disputedHireStatusId;
+
+                    if (!isActive)
+                    {
+                        await tx.CommitAsync();
+                        return;
+                    }
+
+                    hire.StatusId = cancelledHireStatusId;
+                    hire.UpdatedAt = DateTime.UtcNow;
+                    hireWasCancelledNow = true;
+
+                    if (hire.Appointment != null && appointmentCancelledStatusId.HasValue)
+                    {
+                        hire.Appointment.StatusId = appointmentCancelledStatusId.Value;
+                        hire.Appointment.UpdatedAt = DateTime.UtcNow;
+
+                        var activeTimers = await _context.AppointmentTimers
+                            .Where(t => t.AppointmentId == hire.Appointment.Id
+                                        && !t.IsExpired
+                                        && t.HangfireJobId != null)
+                            .ToListAsync();
+
+                        foreach (var timer in activeTimers)
+                        {
+                            try
+                            {
+                                if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                                {
+                                    BackgroundJob.Delete(timer.HangfireJobId);
+                                }
+                            }
+                            catch (Exception delEx)
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "Failed to cancel Hangfire job after payment_intent.canceled",
+                                    details: $"AppointmentTimerId: {timer.Id}, HangfireJobId: {timer.HangfireJobId}, Error: {delEx.Message}",
+                                    source: "SubscriptionController.HandlePaymentIntentCanceled",
+                                    relatedEntityType: "AppointmentTimer",
+                                    relatedEntityId: timer.Id);
+                            }
+
+                            timer.IsExpired = true;
+                            timer.ExpiredAt = DateTime.UtcNow;
+                            timer.Notes = (timer.Notes ?? string.Empty)
+                                + $" | Cancelled by HandlePaymentIntentCanceled (PI: {paymentIntent.Id})";
+                        }
+                    }
+
+                    await _context.SaveChangesAsync();
+                    await tx.CommitAsync();
+                });
+
+                if (hireWasCancelledNow)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: SearchHire cancelled due to payment_intent.canceled (deferred capture expired)",
+                        details: $"SearchHire {hireId} cancelled because PaymentIntent {paymentIntent.Id} was canceled (reason: {paymentIntent.CancellationReason ?? "n/a"}) before capture. No refund issued (no funds captured). Hangfire timers cancelled and Appointment marked as cancelled_by_client when present.",
+                        userId: clientIdForNotif,
+                        source: "SubscriptionController.HandlePaymentIntentCanceled",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hireId,
+                        additionalData: new {
+                            metric_name = "payment_intent_canceled_hire_cancelled_total",
+                            metric_kind = "counter",
+                            event_type = "payment_intent_canceled_hire_cancelled",
+                            severity = "critical",
+                            PaymentIntentId = paymentIntent.Id,
+                            SearchHireId = hireId,
+                            ExpertId = expertIdForNotif,
+                            ClientId = clientIdForNotif,
+                            CancellationReason = paymentIntent.CancellationReason,
+                            TimestampUtc = DateTime.UtcNow
+                        });
+
+                    var notifications = new List<Notification>();
+
+                    if (clientIdForNotif.HasValue)
+                    {
+                        notifications.Add(new Notification
+                        {
+                            Id = Guid.NewGuid(),
+                            Title = "Contratación cancelada",
+                            Message = $"La contratación #{hireId} se ha cancelado porque la autorización del pago expiró antes de completarse. No se te ha cobrado. Puedes intentarlo de nuevo desde tu panel.",
+                            Type = "payment_canceled",
+                            UserId = clientIdForNotif.Value,
+                            Read = false,
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    }
+
+                    if (expertIdForNotif.HasValue)
+                    {
+                        notifications.Add(new Notification
+                        {
+                            Id = Guid.NewGuid(),
+                            Title = "Contratación cancelada por pago expirado",
+                            Message = $"La contratación #{hireId} se ha cancelado porque la autorización de pago del cliente expiró. No es necesario que realices ninguna acción.",
+                            Type = "hire_cancelled_payment_canceled",
+                            UserId = expertIdForNotif.Value,
+                            Read = false,
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    }
+
+                    if (notifications.Count > 0)
+                    {
+                        try
+                        {
+                            _context.Notifications.AddRange(notifications);
+                            await _context.SaveChangesAsync();
+                        }
+                        catch (Exception notifEx)
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "Failed to persist in-app notifications after payment_intent.canceled",
+                                details: $"SearchHireId: {hireId}, Error: {notifEx.Message}",
+                                source: "SubscriptionController.HandlePaymentIntentCanceled",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: hireId);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Error processing canceled payment intent",
+                    details: $"Error processing canceled payment intent {paymentIntent.Id}: {ex.Message}",
+                    source: "SubscriptionController.HandlePaymentIntentCanceled",
                     relatedEntityType: "Payment",
                     relatedEntityId: null,
                     additionalData: new {

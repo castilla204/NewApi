@@ -3194,6 +3194,20 @@ namespace newApi.Services
                     return; // Timer ya procesado o cancelado
                 }
 
+                // 🔒 FIX #7 (claim ATÓMICO): con replicas:2 (HPA hasta 10) y el watchdog llamando a este
+                // método EN PROCESO (fuera del lock por-job de Hangfire), dos ejecutores podían leer
+                // IsExpired=false y procesar el MISMO timer => doble notificación/chat/transición y timer
+                // expert_report DUPLICADO. AppointmentTimer no tiene token de concurrencia, así que el
+                // marcado in-memory no serializa. Este UPDATE condicional es atómico: solo UN ejecutor
+                // voltea false->true (1 fila); el resto recibe 0 y sale. En fallo se RE-ABRE en el catch
+                // (este método se traga la excepción y confía en el watchdog, que ignora timers expirados).
+                var timerClaimed = await _context.Database.ExecuteSqlInterpolatedAsync(
+                    $"UPDATE \"AppointmentTimers\" SET \"IsExpired\" = true, \"ExpiredAt\" = {DateTime.UtcNow} WHERE \"Id\" = {timerId} AND \"IsExpired\" = false");
+                if (timerClaimed == 0)
+                {
+                    return; // otro ejecutor ya reclamó este timer
+                }
+
                 // Ô£à VALIDACI├ôN CR├ìTICA: Verificar que el SearchHire y Appointment existan
                 if (timer.Appointment == null || timer.Appointment.SearchHire == null)
                 {
@@ -4068,6 +4082,17 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
+                // 🔒 FIX #7: el timer se reclamó atómicamente al inicio (IsExpired=true). Como este método se
+                // TRAGA la excepción (no relanza) y el watchdog ignora timers expirados, RE-ABRIMOS el timer
+                // para que se reprocese; si no, quedaría expirado SIN efecto. Los guards de estado del reproceso
+                // evitan re-aplicar un efecto ya persistido. Best-effort.
+                try
+                {
+                    await _context.Database.ExecuteSqlInterpolatedAsync(
+                        $"UPDATE \"AppointmentTimers\" SET \"IsExpired\" = false, \"ExpiredAt\" = NULL WHERE \"Id\" = {timerId}");
+                }
+                catch { /* best-effort: el watchdog (ProcessOverdueTimersAsync / barrido A-iii) es la red de seguridad */ }
+
                 // ­ƒÜ¿ LOG CR├ìTICO: Excepci├│n general procesando timer
                 // Intentar obtener informaci├│n del timer si es posible
                 AppointmentTimer? timer = null;
@@ -4219,8 +4244,19 @@ namespace newApi.Services
                     return; // Experto eliminado o bloqueado
                 }
 
+                // 🔒 FIX #7: evitar timer expert_report DUPLICADO bajo carrera. Tres vías llaman a este método
+                // (job original al confirmar, wrapper A-iv, y barrido A-iii del watchdog cada 10 min sobre
+                // replicas:2). Si dos entran a la vez crean DOS timers expert_report -> dos jobs de reporte +
+                // doble notificación. Si ya hay uno activo para esta cita, no transicionar ni crear otro.
+                var hasActiveExpertReportTimer = await _context.AppointmentTimers
+                    .AnyAsync(t => t.AppointmentId == appointment.Id && t.TimerType == "expert_report" && !t.IsExpired);
+                if (hasActiveExpertReportTimer)
+                {
+                    return; // otra ejecución ya transicionó la cita y creó el timer expert_report
+                }
+
                 var awaitingReportStatus = await _context.SystemStatuses
-                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" &&
                                             s.StatusValue == "appointment_awaiting_report");
 
                 if (awaitingReportStatus != null)

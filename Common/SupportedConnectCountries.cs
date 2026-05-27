@@ -2,8 +2,8 @@ namespace newApi.Common
 {
     /// <summary>
     /// Lista ÚNICA de países soportados para recibir pagos vía Stripe Connect
-    /// (separate charges &amp; transfers desde una plataforma EEA): EEA-27 + NO + US/CA/GB/CH.
-    /// IS/LI quedan fuera: Stripe Connect no los soporta como cuenta conectada.
+    /// (separate charges &amp; transfers desde una plataforma EEA): EEA-27 + NO/LI + US/CA/GB/CH.
+    /// IS (Islandia) queda fuera: Stripe no lo soporta. LI (Liechtenstein) SÍ es cuenta conectada soportada (EEA).
     /// LatAm (MX, AR...) requiere Cross-border payouts vía Stripe Sales → no se habilita aquí.
     ///
     /// Fuente de verdad compartida por:
@@ -16,7 +16,7 @@ namespace newApi.Common
         public static readonly HashSet<string> Codes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GR","HU","IE","IT",
-            "LV","LT","LU","MT","NL","PL","PT","RO","SK","SI","ES","SE","NO", // IS/LI fuera
+            "LV","LT","LU","MT","NL","PL","PT","RO","SK","SI","ES","SE","NO","LI", // IS fuera (Stripe no lo soporta); LI SÍ soportado
             "US","CA","GB","CH"
         };
 

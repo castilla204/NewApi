@@ -650,6 +650,12 @@ namespace newApi.DataLayer.Models
                 entity.HasIndex(e => e.TimerType);
                 entity.HasIndex(e => e.EndTime);
                 entity.HasIndex(e => e.IsExpired);
+                // 🔧 FIX G5: índice único PARCIAL — máximo UN timer ACTIVO por (cita, tipo). Es la garantía real
+                // contra el TOCTOU del guard expert_report (también creado en prod vía CREATE UNIQUE INDEX).
+                entity.HasIndex(e => new { e.AppointmentId, e.TimerType })
+                    .IsUnique()
+                    .HasFilter("\"IsExpired\" = false")
+                    .HasDatabaseName("IX_AppointmentTimers_Appt_Type_Active");
             });
 
             // Configuración de la nueva arquitectura de estados

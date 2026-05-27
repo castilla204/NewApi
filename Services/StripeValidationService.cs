@@ -50,7 +50,12 @@ namespace newApi.Services
                 try
                 {
                     var account = await new Stripe.AccountService().GetAsync(expertProfile.StripeAccountId);
-                    if (account.ChargesEnabled && account.PayoutsEnabled)
+                    // 🔧 FIX F4: separate charges & transfers — el experto onboarda SOLO con la capability
+                    // "transfers", así que ChargesEnabled es false de forma LEGÍTIMA. El criterio de "puede
+                    // cobrar" debe ser el MISMO que el transfer real (RefundService.cs:1087): capability
+                    // transfers activa + payouts. Exigir ChargesEnabled bloqueaba a expertos transfers-only
+                    // válidos (PI cancelado en la captura B5 → contratación perdida).
+                    if (account.PayoutsEnabled && account.Capabilities?.Transfers == "active")
                     {
                         return (true, string.Empty, stripeStatus.ToString(), false, false);
                     }

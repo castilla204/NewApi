@@ -190,7 +190,11 @@ namespace newApi.Controllers
                             ReporterId = userId,
                             Reason = request.Reason,
                             Status = "Pending",
-                            CreatedAt = DateTime.UtcNow
+                            CreatedAt = DateTime.UtcNow,
+                            // 🔧 FIX F2: ventana de 48h para que el experto responda (paridad con
+                            // CreateDisputeWithFiles). Sin esto, Dispute.CanExpertRespond es SIEMPRE false
+                            // (deadline null) y el experto nunca podía responder a una disputa creada aquí.
+                            ExpertResponseDeadline = DateTime.UtcNow.AddHours(48)
                         };
 
                         _context.Disputes.Add(dispute);

@@ -4891,6 +4891,13 @@ namespace newApi.Controllers
                 bool enqueueRetry = false;
                 int retryHireId = 0;
                 int successHireId = 0;
+                // 🔧 FIX F6: capturar datos de la disputa para enviar evidencia a Stripe (Submit=true) tras el
+                // commit, igual que DisputeController.ResolveDispute. Sin esto, resolver a favor del experto por
+                // ESTA vía no subía la evidencia → se perdía el chargeback bancario por incomparecencia.
+                string? resolvedStripeDisputeId = null;
+                string? resolvedExpertResponse = null;
+                string? resolvedReason = null;
+                int resolvedDisputeId = 0;
 
                 var strategy = _context.Database.CreateExecutionStrategy();
                 var actionResult = await strategy.ExecuteAsync<IActionResult>(async () =>
@@ -4982,6 +4989,16 @@ namespace newApi.Controllers
                     if (success)
                     {
                         dispute.Status = "Resolved";
+                        // 🔧 FIX F6: si se resolvió a favor del experto y la disputa está vinculada a Stripe,
+                        // recordar los datos para enviar evidencia definitiva (Submit=true) tras el commit
+                        // (fuera de la tx, para no mantener el FOR UPDATE durante la llamada de red).
+                        if (!request.ResolveInFavorOfClient && !string.IsNullOrEmpty(dispute.StripeDisputeId))
+                        {
+                            resolvedStripeDisputeId = dispute.StripeDisputeId;
+                            resolvedExpertResponse = dispute.ExpertResponse;
+                            resolvedReason = dispute.Reason;
+                            resolvedDisputeId = dispute.Id;
+                        }
                     }
 
                     try
@@ -5021,6 +5038,45 @@ namespace newApi.Controllers
 
                 if (successHireId > 0)
                 {
+                    // 🔧 FIX F6: enviar evidencia definitiva a Stripe (Submit=true) cuando se resolvió a favor del
+                    // experto y la disputa está vinculada a Stripe — equivalente a DisputeController.ResolveDispute.
+                    // Antes ESTA vía no la enviaba → se perdía el chargeback bancario por incomparecencia. No
+                    // bloqueante (el dinero ya se movió); fuera de la transacción; idempotente por clave a-minuto.
+                    if (!string.IsNullOrEmpty(resolvedStripeDisputeId))
+                    {
+                        try
+                        {
+                            var combinedText = string.Join(" | ", new[]
+                            {
+                                string.IsNullOrWhiteSpace(resolvedReason) ? null : $"Reason: {resolvedReason}",
+                                string.IsNullOrWhiteSpace(resolvedExpertResponse) ? null : $"Expert response: {resolvedExpertResponse}",
+                                string.IsNullOrWhiteSpace(request.Resolution) ? null : $"Resolution: {request.Resolution}"
+                            }.Where(s => !string.IsNullOrEmpty(s)));
+                            if (combinedText.Length > 150_000) combinedText = combinedText.Substring(0, 150_000);
+
+                            await new Stripe.DisputeService().UpdateAsync(
+                                resolvedStripeDisputeId,
+                                new Stripe.DisputeUpdateOptions
+                                {
+                                    Evidence = new Stripe.DisputeEvidenceOptions
+                                    {
+                                        UncategorizedText = string.IsNullOrWhiteSpace(combinedText) ? null : combinedText
+                                    },
+                                    Submit = true
+                                },
+                                new Stripe.RequestOptions { IdempotencyKey = $"dispute-submit-{resolvedDisputeId}-{DateTime.UtcNow:yyyyMMddHHmm}" });
+                        }
+                        catch (Exception submitEx)
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "Failed to submit dispute evidence to Stripe on resolution",
+                                details: $"DisputeId {resolvedDisputeId} StripeDisputeId {resolvedStripeDisputeId}: {submitEx.Message}",
+                                source: "SubscriptionController.ResolveDispute",
+                                relatedEntityType: "Dispute",
+                                relatedEntityId: resolvedDisputeId);
+                        }
+                    }
+
                     if (request.ResolveInFavorOfClient)
                     {
                         await _loggingService.LogWarningAsync(

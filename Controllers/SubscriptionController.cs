@@ -824,7 +824,8 @@ namespace newApi.Controllers
                 var supportedConnectCountries = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
                 {
                     "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GR","HU","IE","IT",
-                    "LV","LT","LU","MT","NL","PL","PT","RO","SK","SI","ES","SE","IS","LI","NO",
+                    "LV","LT","LU","MT","NL","PL","PT","RO","SK","SI","ES","SE","NO", // IS/LI fuera: Stripe Connect no los soporta como cuenta conectada
+
                     "US","CA","GB","CH"
                 };
                 var expertConnectCountry = expertProfile.Country?.Trim().ToUpperInvariant();

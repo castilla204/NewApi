@@ -3733,10 +3733,13 @@ namespace newApi.Services
                         try
                         {
                             // 🔒 GUARD (A-ii): NO auto-pagar a favor del experto si hay una disputa PENDIENTE
-                            // sobre este hire. El estado del hire por si solo no basta: una disputa abierta deja
-                            // el dinero a decision del admin. Marcamos el timer expirado (ya hecho arriba) y salimos.
+                            // o EN RESOLUCIÓN sobre este hire. El estado del hire por si solo no basta: una disputa
+                            // abierta (Pending) o que un admin está resolviendo ahora mismo (Resolving, estado
+                            // intermedio del claim atómico) deja el dinero a su decisión. Defensa en profundidad.
+                            // Marcamos el timer expirado (ya hecho arriba) y salimos.
                             var hasPendingDispute = await _context.Disputes
-                                .AnyAsync(d => d.SearchHireId == searchHire.Id && d.Status == "Pending");
+                                .AnyAsync(d => d.SearchHireId == searchHire.Id
+                                            && (d.Status == "Pending" || d.Status == "Resolving"));
                             if (hasPendingDispute)
                             {
                                 await _loggingService.LogWarningAsync(

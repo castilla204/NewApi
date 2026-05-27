@@ -3095,6 +3095,55 @@ namespace newApi.Services
                             relatedEntityId: timer.Id);
                     }
                 }
+
+                // 🔒 BARRIDO POR ESTADO (A-iii): el job confirmed→awaiting_report puede agotar sus reintentos
+                // Hangfire sin dejar timer; entonces no hay fila en AppointmentTimers que el barrido de arriba
+                // recoja, y la cita queda atascada en "appointment_confirmed". Rescatamos esas citas: las que
+                // ya pasaron ProposedDate+ProposedTime+3h (en UTC real, via GetAppointmentUtc con el huso del
+                // experto) y NO tienen un timer "awaiting_report_transition" activo → re-encolamos su handler.
+                // Idempotente: ProcessAppointmentToAwaitingReportAsync re-valida "appointment_confirmed" antes
+                // de actuar, asi que no duplica trabajo del flujo normal ni del barrido por-timer de arriba.
+                var nowUtc = DateTime.UtcNow;
+                var confirmedCandidates = await _context.Appointments
+                    .Include(a => a.Status)
+                    .Include(a => a.SearchHire)
+                    .Where(a => a.Status.StatusValue == "appointment_confirmed"
+                             && a.ProposedDate.HasValue && a.ProposedTime.HasValue)
+                    .Select(a => new { a.Id, a.ProposedDate, a.ProposedTime, ExpertTimezone = a.SearchHire.ExpertTimezone })
+                    .ToListAsync();
+
+                foreach (var appt in confirmedCandidates)
+                {
+                    try
+                    {
+                        var appointmentUtc = GetAppointmentUtc(appt.ProposedDate!.Value, appt.ProposedTime!.Value, appt.ExpertTimezone);
+                        if (appointmentUtc.AddHours(3) > nowUtc)
+                        {
+                            continue; // aun no ha pasado la ventana de 3h
+                        }
+
+                        var hasActiveTransitionTimer = await _context.AppointmentTimers
+                            .AnyAsync(t => t.AppointmentId == appt.Id
+                                        && t.TimerType == "awaiting_report_transition"
+                                        && !t.IsExpired);
+                        if (hasActiveTransitionTimer)
+                        {
+                            continue; // el flujo normal aun tiene un timer vivo que lo hara
+                        }
+
+                        await ProcessAppointmentToAwaitingReportAsync(appt.Id);
+                    }
+                    catch (Exception exAppt)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Watchdog failed to rescue a stuck confirmed appointment",
+                            details: $"ProcessOverdueTimersAsync (state sweep) could not transition appointment {appt.Id} to awaiting_report: {exAppt.Message}",
+                            userId: null,
+                            source: "AppointmentService.ProcessOverdueTimersAsync",
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: appt.Id);
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -3106,782 +3155,6 @@ namespace newApi.Services
                     relatedEntityType: "AppointmentTimer",
                     relatedEntityId: null);
             }
-        }
-
-        public async Task CheckAppointmentTimersAsync()
-
-        {
-
-            try
-
-            {
-
-                // 1. Procesar timers expirados
-
-                var expiredTimers = await _context.AppointmentTimers
-
-                    .Include(t => t.Appointment)
-
-                        .ThenInclude(a => a.Status)
-
-                    .Where(t => !t.IsExpired && t.EndTime <= DateTime.UtcNow)
-
-                    .ToListAsync();
-
-
-
-                foreach (var timer in expiredTimers)
-
-                {
-
-                    timer.IsExpired = true;
-
-                    timer.ExpiredAt = DateTime.UtcNow;
-
-
-
-                    // L├│gica espec├¡fica seg├║n el tipo de timer
-
-                    switch (timer.TimerType)
-
-                    {
-
-                        case "response":
-
-                            // Si el experto no responde en 24h, cancelar por no respuesta
-
-                            var noResponseStatus = await _context.SystemStatuses
-
-                                .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-
-                                                        s.StatusValue == AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue());
-
-                            
-
-                            if (noResponseStatus != null)
-
-                            {
-
-                                timer.Appointment.StatusId = noResponseStatus.Id;
-
-                                timer.Appointment.UpdatedAt = DateTime.UtcNow;
-
-                                // ­ƒÄ» PROCESAR DINERO AUTOM├üTICAMENTE
-                                // Ô£à MEJORA: Usar l├│gica autom├ítica de mapeo - ProcessMoneyDistributionAsync mapea autom├íticamente
-                                // appointment_cancelled_by_expert_no_response ÔåÆ cancelled (gen├®rico)
-                                // Usa los % del AppointmentStatus (100/0/0) porque tiene configuraci├│n
-                                try
-
-                                {
-                                        var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
-
-                                        timer.Appointment.SearchHireId,
-
-                                        AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
-
-                                        "Expert did not respond within 24h - automatic cancellation",
-
-                                        null,
-                                        updateState: true); // Ô£à updateState: true para que haga el mapeo autom├ítico
-
-                                    
-
-                                    if (moneySuccess)
-
-                                    {
-
-                                        // Ô£à LOG INFO: Timer expirado correctamente - experto no respondi├│ (comportamiento esperado)
-
-                                        await _loggingService.LogInfoAsync(
-
-                                            message: "Appointment timer expired - expert no response, auto-cancelled",
-
-                                            details: $"Appointment {timer.Appointment.Id} cancelled automatically due to expert not responding within 24h. Money distribution processed successfully.",
-
-                                            userId: timer.Appointment.SearchHire?.ClientId,
-
-                                            source: "AppointmentService.CheckAppointmentTimersAsync",
-
-                                            relatedEntityType: "Appointment",
-
-                                            relatedEntityId: timer.Appointment.Id,
-
-                                            additionalData: new { 
-
-                                                Action = "TimerExpired",
-
-                                                TimerType = "response",
-
-                                                AppointmentId = timer.Appointment.Id,
-
-                                                SearchHireId = timer.Appointment.SearchHireId,
-
-                                                ClientId = timer.Appointment.SearchHire?.ClientId,
-
-                                                ExpertId = timer.Appointment.SearchHire?.ExpertId,
-
-                                                Status = AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
-
-                                                MoneyDistributionSuccess = true
-
-                                            }
-
-                                        );
-
-
-
-                                        // Ô£à Notificar a cliente y experto sobre cancelaci├│n autom├ítica
-
-                                        if (timer.Appointment.SearchHire?.ClientId > 0)
-
-                                        {
-
-                                            await _loggingService.LogInfoAsync(
-
-                                                message: "Cita cancelada - experto no respondi├│",
-
-                                                details: $"El experto no respondi├│ a tu propuesta de cita en 24 horas. La cita fue cancelada autom├íticamente. Se procesar├í tu reembolso completo.",
-
-                                                userId: timer.Appointment.SearchHire.ClientId,
-
-                                                source: "AppointmentService.CheckAppointmentTimersAsync",
-
-                                                relatedEntityType: "Appointment",
-
-                                                relatedEntityId: timer.Appointment.Id,
-
-                                                notifyUser: true
-
-                                            );
-
-                                        }
-
-
-
-                                        if (timer.Appointment.SearchHire?.ExpertId.HasValue == true)
-
-                                        {
-
-                                            await _loggingService.LogWarningAsync(
-
-                                                message: "Cita cancelada autom├íticamente",
-
-                                                details: $"No respondiste a la propuesta de cita en 24 horas. La cita fue cancelada autom├íticamente.",
-
-                                                userId: timer.Appointment.SearchHire.ExpertId.Value,
-
-                                                source: "AppointmentService.CheckAppointmentTimersAsync",
-
-                                                relatedEntityType: "Appointment",
-
-                                                relatedEntityId: timer.Appointment.Id,
-
-                                                notifyUser: true
-
-                                            );
-
-                                        }
-
-                                    }
-
-                                    else
-
-                                    {
-
-                                        // ­ƒÜ¿ LOG CR├ìTICO: Fallo en distribuci├│n de dinero por timer expirado
-
-                                        await _loggingService.LogCriticalAsync(
-
-                                            message: "CRITICAL: Money distribution failed for expired timer",
-
-                                            details: $"Appointment {timer.Appointment.Id} timer expired but money distribution failed",
-
-                                            userId: timer.Appointment.SearchHire?.ClientId,
-
-                                            source: "AppointmentService.CheckAppointmentTimersAsync",
-
-                                            relatedEntityType: "Appointment",
-
-                                            relatedEntityId: timer.Appointment.Id,
-
-                                            additionalData: new { 
-
-                                                Action = "TimerExpired",
-
-                                                TimerType = "response",
-
-                                                AppointmentId = timer.Appointment.Id,
-
-                                                SearchHireId = timer.Appointment.SearchHireId,
-
-                                                ClientId = timer.Appointment.SearchHire?.ClientId,
-
-                                                ExpertId = timer.Appointment.SearchHire?.ExpertId,
-
-                                                Status = AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
-
-                                                MoneyDistributionSuccess = false
-
-                                            }
-
-                                        );
-
-                                    }
-
-                                }
-
-                                catch (Exception ex)
-
-                                {
-
-                                    // ­ƒÜ¿ LOG CR├ìTICO: Excepci├│n en timer expirado
-
-                                    await _loggingService.LogCriticalAsync(
-
-                                        message: "CRITICAL: Exception during timer expiration processing",
-
-                                        details: $"Appointment {timer.Appointment.Id} timer expired but exception occurred: {ex.Message}",
-
-                                        userId: timer.Appointment.SearchHire?.ClientId,
-
-                                        source: "AppointmentService.CheckAppointmentTimersAsync",
-
-                                        relatedEntityType: "Appointment",
-
-                                        relatedEntityId: timer.Appointment.Id,
-
-                                        additionalData: new { 
-
-                                            Action = "TimerExpired",
-
-                                            TimerType = "response",
-
-                                            AppointmentId = timer.Appointment.Id,
-
-                                            SearchHireId = timer.Appointment.SearchHireId,
-
-                                            ClientId = timer.Appointment.SearchHire?.ClientId,
-
-                                            ExpertId = timer.Appointment.SearchHire?.ExpertId,
-
-                                            Status = AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
-
-                                            Exception = ex.Message,
-
-                                            StackTrace = ex.StackTrace
-
-                                        }
-
-                                    );
-
-                                }
-
-                                
-
-                                // Ô£à Enviar mensaje al chat con el cambio de estado autom├ítico
-
-                                // Para cambios autom├íticos, el senderId es el ExpertId del SearchHire
-
-                                var expertIdForMessage = timer.Appointment.SearchHire?.ExpertId ?? 0;
-
-                                if (expertIdForMessage > 0)
-
-                                {
-
-                                    await SendAppointmentStatusChangeMessageAsync(
-
-                                        timer.Appointment.SearchHireId,
-
-                                        AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
-
-                                        expertIdForMessage
-
-                                    );
-
-                                }
-
-                            }
-
-                            break;
-
-                            
-
-                        case "expert_report":
-
-                            // Verificar si se han subido todos los archivos requeridos
-
-                            var validationResult = await ValidateRequiredDeliverablesAsync(timer.Appointment.SearchHire);
-
-                            
-
-                            if (validationResult.IsValid)
-
-                            {
-
-                                // Si todos los archivos est├ín listos, enviar el reporte autom├íticamente
-
-                                // La cita se marca como informe enviado
-
-                                var appointmentReportSentStatus = await _context.SystemStatuses
-
-                                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-
-                                                            s.StatusValue == "appointment_report_sent");
-
-                                
-
-                                // El SearchHire pasa a esperar decisi├│n del cliente
-
-                                var awaitingClientDecisionStatus = await _context.SystemStatuses
-
-                                    .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
-
-                                                            s.StatusValue == "awaiting_client_decision");
-
-                                
-
-                                if (appointmentReportSentStatus != null && awaitingClientDecisionStatus != null)
-
-                                {
-
-                                    // Marcar la cita como informe enviado
-
-                                    timer.Appointment.StatusId = appointmentReportSentStatus.Id;
-
-                                    timer.Appointment.UpdatedAt = DateTime.UtcNow;
-
-                                    
-
-                                    // Actualizar el SearchHire para que use el estado del sistema centralizado
-
-                                    var awaitingStatusId = await GetStatusIdByValueAsync(SearchHireStatus.AwaitingClientDecision.ToStringValue());
-
-                                    timer.Appointment.SearchHire.StatusId = awaitingStatusId;
-
-                                    timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
-
-                                    // Ô£à Enviar mensaje al chat con el cambio de estado autom├ítico
-
-                                    // Para cambios autom├íticos, el senderId es el ExpertId del SearchHire
-
-                                    var expertIdForMessage = timer.Appointment.SearchHire?.ExpertId ?? 0;
-
-                                    if (expertIdForMessage > 0)
-
-                                    {
-
-                                        await SendAppointmentStatusChangeMessageAsync(
-
-                                            timer.Appointment.SearchHireId,
-
-                                            AppointmentStatus.AppointmentReportSent.ToStringValue(),
-
-                                            expertIdForMessage
-
-                                        );
-
-                                    }
-
-                                }
-
-                            }
-
-                            else
-
-                            {
-
-                                // Si faltan archivos, cancelar por no reporte
-
-                                var noReportStatus = await _context.SystemStatuses
-
-                                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-
-                                                            s.StatusValue == AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue());
-
-                                
-
-                                if (noReportStatus != null)
-
-                                {
-
-                                    timer.Appointment.StatusId = noReportStatus.Id;
-
-                                    timer.Appointment.UpdatedAt = DateTime.UtcNow;
-
-                                    
-
-                                    // Tambi├®n actualizar el SearchHire para que use el estado del sistema centralizado
-
-                                    var cancelledStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Cancelled.ToStringValue());
-
-                                    timer.Appointment.SearchHire.StatusId = cancelledStatusId;
-
-                                    timer.Appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
-
-                                    
-
-                                    // ­ƒÄ» PROCESAR DINERO AUTOM├üTICAMENTE
-                                    // Ô£à OPTIMIZACI├ôN: updateState: false porque ya cambiamos el estado arriba
-
-                                    try
-
-                                    {
-
-                                        var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
-
-                                            timer.Appointment.SearchHireId,
-
-                                            AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue(),
-
-                                            "Expert did not submit report within 24h - automatic cancellation",
-
-                                            null,
-                                            updateState: false);
-
-                                        
-
-                                        if (moneySuccess)
-
-                                        {
-
-                                            // Ô£à Notificar a cliente y experto sobre cancelaci├│n por falta de reporte
-
-                                            if (timer.Appointment.SearchHire?.ClientId > 0)
-
-                                            {
-
-                                                await _loggingService.LogWarningAsync(
-
-                                                    message: "Cita cancelada - experto no envi├│ reporte",
-
-                                                    details: $"El experto no envi├│ el reporte a tiempo. La cita fue cancelada autom├íticamente. Se procesar├í tu reembolso.",
-
-                                                    userId: timer.Appointment.SearchHire.ClientId,
-
-                                                    source: "AppointmentService.CheckAppointmentTimersAsync",
-
-                                                    relatedEntityType: "Appointment",
-
-                                                    relatedEntityId: timer.Appointment.Id,
-
-                                                    notifyUser: true
-
-                                                );
-
-                                            }
-
-
-
-                                            if (timer.Appointment.SearchHire?.ExpertId.HasValue == true)
-
-                                            {
-
-                                                await _loggingService.LogWarningAsync(
-
-                                                    message: "Cita cancelada - no enviaste el reporte",
-
-                                                    details: $"No enviaste el reporte de la cita #{timer.Appointment.Id} en 24 horas. La cita fue cancelada autom├íticamente.",
-
-                                                    userId: timer.Appointment.SearchHire.ExpertId.Value,
-
-                                                    source: "AppointmentService.CheckAppointmentTimersAsync",
-
-                                                    relatedEntityType: "Appointment",
-
-                                                    relatedEntityId: timer.Appointment.Id,
-
-                                                    notifyUser: true
-
-                                                );
-
-                                            }
-
-                                        }
-
-                                        else
-
-                                        {
-
-                                            // ­ƒÜ¿ LOG CR├ìTICO: Fallo en distribuci├│n de dinero por falta de reporte (una sola vez, con informaci├│n completa)
-
-                                            await _loggingService.LogCriticalAsync(
-
-                                                message: "CRITICAL: Money distribution failed for expired report timer",
-
-                                                details: $"Appointment {timer.Appointment.Id} timer expired (expert did not submit report within 24h) but money distribution failed. " +
-
-                                                        $"Timer Type: expert_report, AppointmentId: {timer.Appointment.Id}, SearchHireId: {timer.Appointment.SearchHireId}. " +
-
-                                                        $"ClientId: {timer.Appointment.SearchHire?.ClientId}, ExpertId: {timer.Appointment.SearchHire?.ExpertId}, Amount: {timer.Appointment.SearchHire?.Amount}Ôé¼. " +
-
-                                                        $"ACTION REQUIRED: Review ProcessMoneyDistributionAsync error logs and manually process money distribution if needed.",
-
-                                                userId: timer.Appointment.SearchHire?.ClientId,
-
-                                                source: "AppointmentService.CheckAppointmentTimersAsync",
-
-                                                relatedEntityType: "Appointment",
-
-                                                relatedEntityId: timer.Appointment.Id,
-
-                                                additionalData: new { 
-
-                                                    Action = "TimerExpired",
-
-                                                    TimerType = "expert_report",
-
-                                                    AppointmentId = timer.Appointment.Id,
-
-                                                    SearchHireId = timer.Appointment.SearchHireId,
-
-                                                    ClientId = timer.Appointment.SearchHire?.ClientId,
-
-                                                    ExpertId = timer.Appointment.SearchHire?.ExpertId,
-
-                                                    Amount = timer.Appointment.SearchHire?.Amount,
-
-                                                    Status = AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue(),
-
-                                                    MoneyDistributionSuccess = false
-
-                                                }
-
-                                            );
-
-                                        }
-
-                                    }
-
-                                    catch (Exception ex)
-
-                                    {
-
-                                        // ­ƒÜ¿ LOG CR├ìTICO: Excepci├│n procesando distribuci├│n por falta de reporte (una sola vez, con informaci├│n completa)
-
-                                        await _loggingService.LogCriticalAsync(
-
-                                            message: "CRITICAL: Exception during money distribution for expired report timer",
-
-                                            details: $"Exception occurred while processing money distribution for Appointment {timer.Appointment.Id} due to expired report timer. " +
-
-                                                    $"Timer Type: expert_report, AppointmentId: {timer.Appointment.Id}, SearchHireId: {timer.Appointment.SearchHireId}. " +
-
-                                                    $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
-
-                                                    $"ClientId: {timer.Appointment.SearchHire?.ClientId}, ExpertId: {timer.Appointment.SearchHire?.ExpertId}, Amount: {timer.Appointment.SearchHire?.Amount}Ôé¼. " +
-
-                                                    $"Stack Trace: {ex.StackTrace}. " +
-
-                                                    $"ACTION REQUIRED: Review exception and manually process money distribution if needed.",
-
-                                            userId: timer.Appointment.SearchHire?.ClientId,
-
-                                            source: "AppointmentService.CheckAppointmentTimersAsync",
-
-                                            relatedEntityType: "Appointment",
-
-                                            relatedEntityId: timer.Appointment.Id,
-
-                                            additionalData: new { 
-
-                                                Action = "TimerExpired",
-
-                                                TimerType = "expert_report",
-
-                                                AppointmentId = timer.Appointment.Id,
-
-                                                SearchHireId = timer.Appointment.SearchHireId,
-
-                                                ClientId = timer.Appointment.SearchHire?.ClientId,
-
-                                                ExpertId = timer.Appointment.SearchHire?.ExpertId,
-
-                                                Amount = timer.Appointment.SearchHire?.Amount,
-
-                                                Status = AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue(),
-
-                                                ErrorType = ex.GetType().Name,
-
-                                                ErrorMessage = ex.Message,
-
-                                                StackTrace = ex.StackTrace,
-
-                                                InnerException = ex.InnerException?.Message
-
-                                            }
-
-                                        );
-
-                                    }
-
-                                    // Ô£à Enviar mensaje al chat con el cambio de estado autom├ítico
-
-                                    // Para cambios autom├íticos, el senderId es el ExpertId del SearchHire
-
-                                    var expertIdForMessage = timer.Appointment.SearchHire?.ExpertId ?? 0;
-
-                                    if (expertIdForMessage > 0)
-
-                                    {
-
-                                    await SendAppointmentStatusChangeMessageAsync(
-
-                                        timer.Appointment.SearchHireId,
-
-                                        AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue(),
-
-                                        expertIdForMessage
-
-                                    );
-
-                                    }
-
-                                }
-
-                            }
-
-                            break;
-
-                    }
-
-                }
-
-
-
-                // 2. Verificar citas confirmadas que deben cambiar a awaiting_report (3 horas despu├®s)
-
-                var cutoffTime = DateTime.UtcNow.AddHours(-3);
-
-                var confirmedAppointments = await _context.Appointments
-
-                    .Include(a => a.Status)
-
-                    .Where(a => a.Status.StatusValue == "appointment_confirmed")
-
-                    .ToListAsync();
-
-
-
-                // Filtrar en memoria para evitar problemas de traducci├│n de EF
-
-                confirmedAppointments = confirmedAppointments
-
-                    .Where(a => a.ProposedDate.HasValue && a.ProposedTime.HasValue && a.ProposedDate.Value.Add(a.ProposedTime.Value) <= cutoffTime)
-
-                    .ToList();
-
-
-
-                var awaitingReportStatus = await _context.SystemStatuses
-
-                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
-
-                                            s.StatusValue == "appointment_awaiting_report");
-
-
-
-                if (awaitingReportStatus != null)
-
-                {
-
-                    foreach (var appointment in confirmedAppointments)
-
-                    {
-
-                        appointment.StatusId = awaitingReportStatus.Id;
-
-                        appointment.UpdatedAt = DateTime.UtcNow;
-
-                        
-
-                        // Crear timer para reporte del experto (24 horas)
-
-                        var expertReportTimer = new AppointmentTimer
-
-                        {
-
-                            AppointmentId = appointment.Id,
-
-                            TimerType = "expert_report",
-
-                            StartTime = DateTime.UtcNow,
-
-                            EndTime = DateTime.UtcNow.AddHours(24),
-
-                            IsExpired = false,
-
-                            CreatedAt = DateTime.UtcNow
-
-                        };
-
-
-
-                        _context.AppointmentTimers.Add(expertReportTimer);
-                        await _context.SaveChangesAsync();
-
-                        // Programar scheduled job para cuando expire el timer (24 horas)
-                        // ✅ Usar método wrapper con nombre descriptivo para Hangfire
-                        var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                            service => service.ProcessExpertReportTimerAsync(expertReportTimer.Id),
-                            expertReportTimer.EndTime - DateTime.UtcNow
-                        );
-
-                        // Guardar el JobId en el timer
-                        expertReportTimer.HangfireJobId = jobId;
-                        await _context.SaveChangesAsync();
-
-                        // Ô£à Enviar mensaje al chat con el cambio de estado autom├ítico
-
-                        // Para cambios autom├íticos, el senderId es el ExpertId del SearchHire
-
-                        var appointmentWithHire = await _context.Appointments
-
-                            .Include(a => a.SearchHire)
-
-                            .FirstOrDefaultAsync(a => a.Id == appointment.Id);
-
-                        
-
-                        if (appointmentWithHire?.SearchHire?.ExpertId.HasValue == true)
-
-                        {
-
-                            await SendAppointmentStatusChangeMessageAsync(
-
-                                appointmentWithHire.SearchHireId,
-
-                                AppointmentStatus.AppointmentAwaitingReport.ToStringValue(),
-
-                                appointmentWithHire.SearchHire.ExpertId.Value
-
-                            );
-
-                        }
-
-                    }
-
-                }
-
-
-
-                if (expiredTimers.Any() || confirmedAppointments.Any())
-
-                {
-
-                    await _context.SaveChangesAsync();
-
-                }
-
-            }
-
-            catch (Exception ex)
-
-            {
-
-                throw;
-
-            }
-
         }
 
         /// <summary>
@@ -4459,6 +3732,24 @@ namespace newApi.Services
                         // Si el cliente no aprueba/disputa en 24h, completar autom├íticamente a favor del experto
                         try
                         {
+                            // 🔒 GUARD (A-ii): NO auto-pagar a favor del experto si hay una disputa PENDIENTE
+                            // sobre este hire. El estado del hire por si solo no basta: una disputa abierta deja
+                            // el dinero a decision del admin. Marcamos el timer expirado (ya hecho arriba) y salimos.
+                            var hasPendingDispute = await _context.Disputes
+                                .AnyAsync(d => d.SearchHireId == searchHire.Id && d.Status == "Pending");
+                            if (hasPendingDispute)
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "Client-decision timer expired but a pending dispute exists - skipping auto-payout",
+                                    details: $"SearchHire {searchHire.Id}: client_decision timer {timer.Id} expired, but a Dispute with Status='Pending' is open. " +
+                                            $"Auto-completion in favor of the expert is SKIPPED; money distribution awaits dispute resolution.",
+                                    userId: searchHire.ClientId,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHire.Id);
+                                break; // timer ya marcado IsExpired arriba; el SaveChanges final lo persiste
+                            }
+
                             // Cambiar AppointmentStatus a estado espec├¡fico
                             var completedWithoutApprovalAppointmentStatus = await _context.SystemStatuses
                                 .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
@@ -6190,7 +5481,20 @@ namespace newApi.Services
         [JobDisplayName("⏰ Timer Transición a Awaiting Report (3h después de cita) - Timer #{0}")]
         public async Task ProcessAwaitingReportTransitionTimerAsync(int timerId)
         {
-            await ProcessAppointmentTimerAsync(timerId);
+            // ⚠️ A-iv: ProcessAppointmentTimerAsync NO maneja "awaiting_report_transition" (su switch no tiene
+            // ese caso ni default), asi que consumiria el timer sin transicionar. Despachamos al handler real,
+            // que va por appointmentId y re-valida estado (idempotente).
+            var timer = await _context.AppointmentTimers
+                .Where(t => t.Id == timerId)
+                .Select(t => new { t.AppointmentId, t.IsExpired })
+                .FirstOrDefaultAsync();
+
+            if (timer == null || timer.IsExpired)
+            {
+                return; // timer inexistente o ya procesado/cancelado
+            }
+
+            await ProcessAppointmentToAwaitingReportAsync(timer.AppointmentId);
         }
 
     }

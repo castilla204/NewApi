@@ -1001,18 +1001,18 @@ namespace newApi.Services
                         // el hire (línea ~48, serializa finalizaciones concurrentes del MISMO hire) y (2) el guard
                         // de fila Payout/Refund de arriba (líneas ~916-951, corta como "ya procesado"). La clave
                         // de Stripe es defensa SECUNDARIA contra reintentos del MISMO movimiento.
-                        // 🔧 FIX (hallazgo E): clave de transfer/refund discriminada por estado+importe. Antes era
-                        // fija "md-{hire}", así que tras un revert (refund falló → transfer revertido, SIN fila
-                        // Payout) un reintento LEGÍTIMO con OTRO importe reusaba la misma clave y Stripe la
-                        // RECHAZABA (idempotency_error) → la distribución quedaba atascada. Con la clave por
-                        // estado+importe, un reintento idéntico produce la MISMA clave (sigue deduplicando, sin
-                        // doble pago) y uno con importe distinto usa clave nueva (ya no se bloquea). El clawback
-                        // conserva su propia clave estable (-clawback) con su guard de TransferReversal.
                         var idempotencyKey = $"md-{searchHireId}";
-                        var expertCentsForKey = checked((long)Math.Round(expertAmountForStripe * 100));
-                        var clientCentsForKey = checked((long)Math.Round(clientRefundAmountForStripe * 100));
-                        var transferIdempotencyKey = $"md-{searchHireId}-transfer-{statusValue}-{expertCentsForKey}";
-                        var refundIdempotencyKey = $"md-{searchHireId}-refund-{statusValue}-{clientCentsForKey}";
+                        // 🔧 FIX P5: clave de transfer/refund discriminada SOLO por estado lógico (statusValue),
+                        // NO por importe. El importe (expertAmountForStripe = baseAmount * %) puede derivar 1
+                        // céntimo entre reintentos del MISMO movimiento (fallback BaseAmount??Amount, cambio de
+                        // BaseAmount/TaxAmount, redondeo Math.Round) → si lo metemos en la clave, un reintento
+                        // legítimo (Hangfire) genera clave nueva, Stripe NO deduplica → DOBLE TRANSFER/REFUND.
+                        // statusValue basta para discriminar operaciones lógicas distintas sobre el mismo hire:
+                        // cada statusValue de finalización mapea 1:1 a un reparto fijo (StatusConfigurations), así
+                        // que un revert con otro importe SIEMPRE lleva otro statusValue (no colisiona), y dos
+                        // ejecuciones con el mismo statusValue son el mismo movimiento (deben deduplicar).
+                        var transferIdempotencyKey = $"md-{searchHireId}-transfer-{statusValue}";
+                        var refundIdempotencyKey = $"md-{searchHireId}-refund-{statusValue}";
 
                         // 🔁 A3: si hubo un CHARGEBACK (contracargo) en este pago, Stripe YA devolvió el dinero
                         // al cliente. NO crear un refund interno encima → evita el DOBLE reembolso (chargeback +
@@ -1347,8 +1347,14 @@ namespace newApi.Services
                                             { "reason", "clawback on client refund" }
                                         }
                                     };
-                                    // Clave determinista: protege contra doble reversión en reintentos/rollbacks.
-                                    var clawbackRequestOptions = new RequestOptions { IdempotencyKey = idempotencyKey + "-clawback" };
+                                    // 🔧 FIX A-i: clave de reversión UNIFICADA por transfer (compartida con la
+                                    // reversión por chargeback en ReverseExpertTransferForChargebackAsync). Antes
+                                    // clawback usaba "-clawback" y chargeback "-chargeback-reversal": claves
+                                    // DISTINTAS → si ambos caminos corrían en carrera, Stripe no los deduplicaba
+                                    // entre sí → DOBLE reversión del mismo transfer. Atándola al StripeTransferId,
+                                    // la 2ª llamada o deduplica (mismo body) o es rechazada con idempotency_error
+                                    // (body distinto: parcial vs total) → nunca ejecuta una 2ª reversión.
+                                    var clawbackRequestOptions = new RequestOptions { IdempotencyKey = $"md-{searchHireId}-reversal-{existingTransfer.StripeTransferId}" };
                                     var clawbackReversal = await clawbackSvc.CreateAsync(existingTransfer.StripeTransferId, clawbackOptions, clawbackRequestOptions);
 
                                     // Registrar la reversión en el ledger (importe negativo para el experto).
@@ -1695,7 +1701,10 @@ namespace newApi.Services
                         { "reason", "chargeback full reversal" }
                     }
                 };
-                var requestOptions = new RequestOptions { IdempotencyKey = $"md-{searchHireId}-chargeback-reversal" };
+                // 🔧 FIX A-i: misma clave de reversión por transfer que usa el clawback interno
+                // (ProcessMoneyDistributionAsync). Unificadas para que Stripe deduplique/rechace una 2ª
+                // reversión del mismo transfer aunque ambos caminos se disparen en carrera.
+                var requestOptions = new RequestOptions { IdempotencyKey = $"md-{searchHireId}-reversal-{payout.StripeTransferId}" };
                 var reversal = await reversalSvc.CreateAsync(payout.StripeTransferId, reversalOptions, requestOptions);
 
                 _context.FinancialTransactions.Add(new FinancialTransaction

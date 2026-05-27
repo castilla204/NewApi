@@ -488,6 +488,7 @@ namespace newApi.Services
                 AppointmentStatus.AppointmentCancelledByNoResponse => SearchHireStatus.Cancelled, // [DEPRECATED] Mantener por compatibilidad
                 AppointmentStatus.AppointmentCancelledByExpertRejection => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCancelledByNoReport => SearchHireStatus.Cancelled,
+                AppointmentStatus.AppointmentCompleted => SearchHireStatus.Completed, // FIX #3: cita completada -> hire completed (no awaiting_client_decision)
                 AppointmentStatus.AppointmentCompletedWithoutClientApproval => SearchHireStatus.Completed,
                 // 🔁 Borrado de cuenta: se mapea a estados YA CONFIGURADOS en BD en vez de a los dedicados
                 // *_account_delete (que NO tienen StatusConfiguration → el dinero quedaba en no-op y el hire

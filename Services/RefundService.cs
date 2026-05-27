@@ -1146,6 +1146,46 @@ namespace newApi.Services
                                 }
                             }
                             createdTransferId = transfer.Id;
+
+                            // 🔧 FIX (#1): NO registrar como Payout activo un transfer que YA está revertido.
+                            // Escenario: en un intento anterior este transfer se creó y, al fallar el refund, se
+                            // REVIRTIÓ + se hizo rollback (sin dejar fila Payout). En el reintento, CreateAsync con la
+                            // MISMA idempotency key NO crea nada: Stripe REPLICA la respuesta CACHEADA de la creación
+                            // original (amount_reversed=0), así que el objeto devuelto NO refleja la reversión. Si lo
+                            // registráramos como Payout, el ledger diría que el experto cobró cuando el dinero ya
+                            // volvió a la plataforma (descuadre). Solución: leer el estado VIVO (GetAsync NO se cachea
+                            // por idempotency) y, si está revertido, crear uno NUEVO con clave derivada del transfer
+                            // muerto (determinista por-intento) para pagar de verdad al experto.
+                            var liveTransfer = await transferSvc.GetAsync(transfer.Id);
+                            int freshTransferAttempts = 0;
+                            while ((liveTransfer.Reversed || liveTransfer.AmountReversed >= liveTransfer.Amount)
+                                   && freshTransferAttempts++ < 5)
+                            {
+                                var freshTransferKey = $"{transferIdempotencyKey}-after-{liveTransfer.Id}";
+                                transfer = await transferSvc.CreateAsync(
+                                    transferOptions,
+                                    new RequestOptions { IdempotencyKey = freshTransferKey });
+                                createdTransferId = transfer.Id;
+                                liveTransfer = await transferSvc.GetAsync(transfer.Id);
+                            }
+                            if (liveTransfer.Reversed || liveTransfer.AmountReversed >= liveTransfer.Amount)
+                            {
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Expert transfer keeps returning reversed - aborting to protect ledger",
+                                    details: $"SearchHire {searchHireId}: el transfer al experto vuelve REVERTIDO tras " +
+                                             $"{freshTransferAttempts} intentos con clave fresca (replay idempotente de transfers " +
+                                             $"muertos). Se ABORTA para NO registrar un Payout fantasma. Requiere intervención manual.",
+                                    userId: searchHire.ExpertId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId,
+                                    additionalData: new { Status = statusValue, LastTransferId = createdTransferId });
+                                if (transaction != null)
+                                {
+                                    await transaction.RollbackAsync();
+                                }
+                                return false;
+                            }
                         }
 
                         // Refund despu├®s (si aplica)

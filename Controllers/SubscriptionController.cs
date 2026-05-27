@@ -817,10 +817,38 @@ namespace newApi.Controllers
                         });
                     }
                 }
+                // 🔧 FIX internacional: usar el país REAL del experto (no "ES" fijo). Validamos contra los países
+                // soportados por una plataforma EEA en separate charges & transfers (EEA + US/CA/GB/CH). Si el país
+                // falta o no está soportado, bloqueamos el onboarding (crear la cuenta con país equivocado es
+                // IRREVERSIBLE). LatAm (MX, AR...) requiere Cross-border payouts vía Stripe Sales → no se habilita aquí.
+                var supportedConnectCountries = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GR","HU","IE","IT",
+                    "LV","LT","LU","MT","NL","PL","PT","RO","SK","SI","ES","SE","IS","LI","NO",
+                    "US","CA","GB","CH"
+                };
+                var expertConnectCountry = expertProfile.Country?.Trim().ToUpperInvariant();
+                if (string.IsNullOrEmpty(expertConnectCountry) || !supportedConnectCountries.Contains(expertConnectCountry))
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Onboarding de experto bloqueado: pais no soportado o ausente",
+                        details: $"UserId {userId}, ExpertProfileId {expertProfile.Id}, Country='{expertProfile.Country ?? "null"}'. No soportado para Stripe Connect (separate charges & transfers desde plataforma EEA).",
+                        userId: userId,
+                        source: "SubscriptionController.BecomeExpert",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: expertProfile.Id);
+                    return BadRequest(new {
+                        message = "Tu pais todavia no esta disponible para recibir pagos en la plataforma. Si crees que es un error, contacta con soporte.",
+                        blocked = true,
+                        reason = "unsupported_country",
+                        country = expertProfile.Country
+                    });
+                }
+
                 var accountOptions = new AccountCreateOptions
                 {
                     Type = "express",
-                    Country = "ES",
+                    Country = expertConnectCountry,
                     Email = User.FindFirst(ClaimTypes.Email)?.Value,
                     Capabilities = new AccountCapabilitiesOptions
                     {
@@ -1509,8 +1537,11 @@ namespace newApi.Controllers
                     // ✅ STRIPE TAX: Habilitar cálculo automático de tax
                     AutomaticTax = new SessionAutomaticTaxOptions
                     {
-                        Enabled = true
+                        Enabled = true,
+                        Liability = new SessionAutomaticTaxLiabilityOptions { Type = "self" } // 🔧 FIX: plataforma = responsable fiscal (MoR)
                     },
+                    TaxIdCollection = new SessionTaxIdCollectionOptions { Enabled = true }, // 🔧 FIX: recoge NIF/VAT -> reverse charge B2B
+                    BillingAddressCollection = "required", // 🔧 FIX: direccion fiable para AutomaticTax correcto por pais
                     Mode = "payment",
                     SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}",
                     CancelUrl = domain + "/cancel",
@@ -1700,8 +1731,11 @@ namespace newApi.Controllers
                     // ✅ STRIPE TAX: Habilitar cálculo automático de tax basado en ubicación del comprador
                     AutomaticTax = new SessionAutomaticTaxOptions
                     {
-                        Enabled = true // Habilita cálculo auto basado en IP, billing/shipping address
+                        Enabled = true, // Habilita cálculo auto basado en IP, billing/shipping address
+                        Liability = new SessionAutomaticTaxLiabilityOptions { Type = "self" } // 🔧 FIX: plataforma = responsable fiscal (MoR)
                     },
+                    TaxIdCollection = new SessionTaxIdCollectionOptions { Enabled = true }, // 🔧 FIX: recoge NIF/VAT -> reverse charge B2B
+                    BillingAddressCollection = "required", // 🔧 FIX: direccion fiable para AutomaticTax correcto por pais
                     Mode = "payment",
                     SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}",
                     CancelUrl = $"{domain}/cancel",
@@ -4354,8 +4388,11 @@ namespace newApi.Controllers
                     // ✅ STRIPE TAX: Habilitar cálculo automático de tax basado en ubicación del comprador
                     AutomaticTax = new SessionAutomaticTaxOptions
                     {
-                        Enabled = true // Habilita cálculo auto basado en IP, billing/shipping address
+                        Enabled = true, // Habilita cálculo auto basado en IP, billing/shipping address
+                        Liability = new SessionAutomaticTaxLiabilityOptions { Type = "self" } // 🔧 FIX: plataforma = responsable fiscal (MoR)
                     },
+                    TaxIdCollection = new SessionTaxIdCollectionOptions { Enabled = true }, // 🔧 FIX: recoge NIF/VAT -> reverse charge B2B
+                    BillingAddressCollection = "required", // 🔧 FIX: direccion fiable para AutomaticTax correcto por pais
                     Mode = "payment",
                     SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}",
                     CancelUrl = $"{domain}/cancel",

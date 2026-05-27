@@ -39,6 +39,7 @@ namespace newApi.Services
         private readonly ILoggingService _loggingService;
 
         private readonly IStripeValidationService _stripeValidationService;
+        private readonly ITimezoneService _timezoneService; // 🔧 FIX zona horaria
 
         // Ô£à MEJORA: Cache de estados para evitar consultas repetidas a la BD
         // Usa una clave compuesta: "StatusType|StatusValue" -> StatusId
@@ -47,7 +48,7 @@ namespace newApi.Services
         private static DateTime _cacheLastRefresh = DateTime.MinValue;
         private static readonly TimeSpan _cacheExpiration = TimeSpan.FromMinutes(30); // Cache v├ílido por 30 minutos
 
-        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService)
+        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService)
 
         {
 
@@ -61,6 +62,22 @@ namespace newApi.Services
 
             _stripeValidationService = stripeValidationService;
 
+            _timezoneService = timezoneService;
+
+        }
+
+        /// <summary>
+        /// 🔧 FIX zona horaria: convierte la hora LOCAL de pared de la cita (ProposedDate.Date + ProposedTime)
+        /// a UTC REAL usando el timezone IANA del experto (SearchHire.ExpertTimezone). Si el timezone es
+        /// null/vacío, ConvertToUtc hace fallback a "tratar como UTC" (= comportamiento anterior), así que es
+        /// seguro. Usar SOLO para comparar contra DateTime.UtcNow o programar timers Hangfire; el ALMACENAMIENTO
+        /// de ProposedDate/ProposedTime sigue en hora local del experto (la validación de disponibilidad y el
+        /// display dependen de ello).
+        /// </summary>
+        private DateTime GetAppointmentUtc(DateTime proposedDate, TimeSpan proposedTime, string? expertTimezone)
+        {
+            var localWall = DateTime.SpecifyKind(proposedDate.Date + proposedTime, DateTimeKind.Unspecified);
+            return _timezoneService.ConvertToUtc(localWall, expertTimezone ?? string.Empty);
         }
 
         /// <summary>
@@ -431,7 +448,9 @@ namespace newApi.Services
 
                         var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
 
-                        var timeUntilAppointment = proposedDateTime - DateTime.UtcNow;
+                        // 🔧 FIX zona horaria: comparar contra UTC REAL (la cita se guarda en hora local del experto).
+                        var proposedUtc = GetAppointmentUtc(dto.ProposedDate, dto.ProposedTime, searchHire.ExpertTimezone);
+                        var timeUntilAppointment = proposedUtc - DateTime.UtcNow;
 
                         
 
@@ -824,7 +843,9 @@ namespace newApi.Services
 
                 var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
 
-                var timeUntilAppointment = proposedDateTime - DateTime.UtcNow;
+                // 🔧 FIX zona horaria: comparar contra UTC REAL (la cita se guarda en hora local del experto).
+                var proposedUtc = GetAppointmentUtc(dto.ProposedDate, dto.ProposedTime, appointment.SearchHire?.ExpertTimezone);
+                var timeUntilAppointment = proposedUtc - DateTime.UtcNow;
 
                 
 
@@ -1215,7 +1236,10 @@ namespace newApi.Services
                             if (appointment.ProposedDate.HasValue && appointment.ProposedTime.HasValue)
                             {
                                 var appointmentDateTime = appointment.ProposedDate.Value.Date + appointment.ProposedTime.Value;
-                            var timeUntil3HoursAfter = appointmentDateTime.AddHours(3) - DateTime.UtcNow;
+                            // 🔧 FIX zona horaria: el +3h se calcula sobre la hora UTC REAL de la cita (no la local-etiquetada).
+                            var appointmentUtc = GetAppointmentUtc(appointment.ProposedDate.Value, appointment.ProposedTime.Value, appointment.SearchHire?.ExpertTimezone);
+                            var endTimeUtc = appointmentUtc.AddHours(3);
+                            var timeUntil3HoursAfter = endTimeUtc - DateTime.UtcNow;
                             
                             if (timeUntil3HoursAfter.TotalSeconds > 0) // Solo programar si a├║n no han pasado las 3 horas
                             {
@@ -1225,7 +1249,7 @@ namespace newApi.Services
                                     AppointmentId = appointment.Id,
                                     TimerType = "awaiting_report_transition",
                                     StartTime = DateTime.UtcNow,
-                                    EndTime = appointmentDateTime.AddHours(3),
+                                    EndTime = endTimeUtc,
                                     IsExpired = false,
                                     CreatedAt = DateTime.UtcNow
                                 };
@@ -2423,7 +2447,9 @@ namespace newApi.Services
                             if (appointment.ProposedDate.HasValue && appointment.ProposedTime.HasValue && appointment.ProposedDate.Value != default(DateTime) && appointment.ProposedDate.Value > DateTime.MinValue)
                             {
                                 var appointmentDateTime = appointment.ProposedDate.Value.Date + appointment.ProposedTime.Value;
-                                var timeUntilAppointment = appointmentDateTime - DateTime.UtcNow;
+                                // 🔧 FIX zona horaria: comparar contra UTC REAL.
+                                var appointmentUtc = GetAppointmentUtc(appointment.ProposedDate.Value, appointment.ProposedTime.Value, appointment.SearchHire?.ExpertTimezone);
+                                var timeUntilAppointment = appointmentUtc - DateTime.UtcNow;
                                 
                                 if (timeUntilAppointment.TotalHours < 12)
                                 {

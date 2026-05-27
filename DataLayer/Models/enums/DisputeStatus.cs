@@ -6,6 +6,10 @@ namespace newApi.DataLayer.Models.enums
     public enum DisputeStatus
     {
         Pending,
+        // Estado intermedio del claim atómico de resolución (DisputeController.ResolveDispute): la disputa
+        // está siendo resuelta por una request en curso. El flujo normal pasa Pending -> Resolving -> Resolved
+        // en segundos; si una request muere y la deja en Resolving, un job de rescate la devuelve a Pending.
+        Resolving,
         Resolved
     }
 
@@ -22,6 +26,7 @@ namespace newApi.DataLayer.Models.enums
             return status switch
             {
                 DisputeStatus.Pending => "Pending",
+                DisputeStatus.Resolving => "Resolving",
                 DisputeStatus.Resolved => "Resolved",
                 _ => throw new ArgumentException($"Unknown status: {status}")
             };
@@ -35,6 +40,7 @@ namespace newApi.DataLayer.Models.enums
             return status switch
             {
                 DisputeStatus.Pending => "Pendiente",
+                DisputeStatus.Resolving => "Resolviéndose",
                 DisputeStatus.Resolved => "Resuelta",
                 _ => throw new ArgumentException($"Unknown status: {status}")
             };
@@ -48,6 +54,7 @@ namespace newApi.DataLayer.Models.enums
             return statusString switch
             {
                 "Pending" => "Pendiente",
+                "Resolving" => "Resolviéndose",
                 "Resolved" => "Resuelta",
                 _ => statusString // Si no se encuentra, devolver el original
             };

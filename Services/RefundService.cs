@@ -1080,7 +1080,11 @@ namespace newApi.Services
                             // MODIFICACI├ôN: Chequear status de connected account (best practice 2025 para cumplimiento)
                             var accountService = new AccountService();
                             var expertAccount = await accountService.GetAsync(expertStripeAccountId);
-                            if (expertAccount.ChargesEnabled == false || expertAccount.PayoutsEnabled == false)
+                            // 🔧 FIX (pagos): en separate charges & transfers el experto SOLO necesita la capability
+                            // "transfers" + payouts; NO "charges". El onboarding pide solo "transfers", así que
+                            // ChargesEnabled es false de forma legítima -> el guard antiguo bloqueaba TODO pago al
+                            // experto (dinero atascado). Comprobamos la capability transfers activa + PayoutsEnabled.
+                            if (expertAccount.PayoutsEnabled == false || expertAccount.Capabilities?.Transfers != "active")
                             {
                                 await _loggingService.LogCriticalAsync(
                                     message: "CRITICAL: Expert account not enabled for transfers",
@@ -1089,7 +1093,7 @@ namespace newApi.Services
                                     source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                     relatedEntityType: "Account",
                                     relatedEntityId: (int)searchHire.ExpertId,
-                                    additionalData: new { AccountId = expertStripeAccountId, ChargesEnabled = expertAccount.ChargesEnabled, PayoutsEnabled = expertAccount.PayoutsEnabled }
+                                    additionalData: new { AccountId = expertStripeAccountId, TransfersCapability = expertAccount.Capabilities?.Transfers, PayoutsEnabled = expertAccount.PayoutsEnabled }
                                 );
                                 if (transaction != null)
                                 {

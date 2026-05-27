@@ -607,8 +607,11 @@ namespace newApi.Controllers
                         // ✅ STRIPE TAX: Habilitar cálculo automático de tax
                         AutomaticTax = new SessionAutomaticTaxOptions
                         {
-                            Enabled = true
+                            Enabled = true,
+                            Liability = new SessionAutomaticTaxLiabilityOptions { Type = "self" } // 🔧 FIX: plataforma = responsable fiscal (MoR)
                         },
+                        TaxIdCollection = new SessionTaxIdCollectionOptions { Enabled = true }, // 🔧 FIX: recoge NIF/VAT -> reverse charge B2B
+                        BillingAddressCollection = "required", // 🔧 FIX: direccion fiable para AutomaticTax correcto por pais
                         Mode = "payment",
                         SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}&serviceId={service.Id}",
                         CancelUrl = $"{domain}/cancel",

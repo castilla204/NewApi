@@ -1641,6 +1641,13 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Service price mismatch or invalid amount (must be between 0.01 and 1000.00)" });
                 }
 
+                // 🚨 FIX C9: servicio SIN experto (FK OnDelete SetNull) → sin destino de payout. Rechazar
+                // ANTES de crear la Checkout Session. (LoadMoneyService ni siquiera validaba el experto.)
+                if (service.ExpertProfile == null)
+                {
+                    return BadRequest(new { message = "Este servicio no está disponible para contratar" });
+                }
+
                 // 🚨 VALIDACIÓN CRÍTICA: Verificar que el experto no se contrate a sí mismo
                 // ✅ IMPORTANTE: Esta validación DEBE hacerse ANTES de crear el checkout session
                 // para evitar perder comisiones de Stripe al hacer refunds
@@ -3175,7 +3182,11 @@ namespace newApi.Controllers
 
             // ✅ FIX CRÍTICO: Obtener StatusId ANTES de iniciar la transacción para evitar conflictos con ExecutionStrategy
             var pendingStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Pending.ToStringValue());
-            
+            // 🔒 FIX C8: IDs de estados ACTIVOS (resueltos por StatusValue, robusto ante re-seed) para el guard
+            // anti-doble-hire. Se obtienen ANTES de la transacción (mismo motivo: evitar ExecutionStrategy).
+            var awaitingDecisionStatusIdForGuard = await GetStatusIdByValueAsync(SearchHireStatus.AwaitingClientDecision.ToStringValue());
+            var disputedStatusIdForGuard = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
+
             // ✅ FIX CRÍTICO: Obtener TODAS las queries ANTES de iniciar la transacción para evitar ExecutionStrategy
             // Estas queries activan ExecutionStrategy automáticamente si están dentro de una transacción
             var expertProfile = await _context.ExpertProfiles
@@ -3229,8 +3240,47 @@ namespace newApi.Controllers
             int searchHireId = 0; // ✅ FIX: Declarar searchHireId antes del try para que esté disponible en catch
             try
             {
+                    // 🔒 FIX C8 (doble-hire cross-flow / carrera replicas:2): serializa por (ClientId, ServiceId)
+                    // con un advisory lock de transacción (se libera al COMMIT/ROLLBACK). El 2º webhook concurrente
+                    // espera aquí; al entrar, ya ve el hire del 1º. Si ya existe un SearchHire ACTIVO para
+                    // (ClientId, ServiceId), el PI entrante es un DUPLICADO (otro flujo/carrera): se cancela/reembolsa
+                    // y NO se crea 2º hire (la idempotencia de #6 solo cubre el mismo PI; esto cubre PIs distintos).
+                    await _context.Database.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock({0}, {1})", userId, service.Id);
+                    var existingActiveHire = await _context.SearchHires
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(sh => sh.ClientId == userId
+                                                && sh.SearchServiceId == service.Id
+                                                && (sh.StatusId == pendingStatusId
+                                                    || sh.StatusId == awaitingDecisionStatusIdForGuard
+                                                    || sh.StatusId == disputedStatusIdForGuard));
+                    if (existingActiveHire != null)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "Duplicate active SearchHire detected at webhook - aborting 2nd charge",
+                            details: $"Ya existe SearchHire activo #{existingActiveHire.Id} para ClientId {userId}, ServiceId {service.Id}. PaymentIntent entrante {session.PaymentIntentId} se trata como DUPLICADO: se cancela/reembolsa y NO se crea un 2º hire.",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: existingActiveHire.Id,
+                            additionalData: new { PaymentIntentId = session.PaymentIntentId, ExistingHireId = existingActiveHire.Id, ClientId = userId, ServiceId = service.Id });
+
+                        await CancelOrRefundDuplicatePaymentIntentAsync(session.PaymentIntentId, userId, existingActiveHire.Id);
+
+                        await _loggingService.LogWarningAsync(
+                            message: "Contratación duplicada evitada",
+                            details: "Ya tenías una contratación activa para este servicio. No se te ha cobrado por segunda vez.",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted",
+                            relatedEntityType: "Payment",
+                            relatedEntityId: service.Id,
+                            notifyUser: true);
+
+                        await transaction.CommitAsync(); // libera el advisory lock; no se persiste nada (no hubo Add)
+                        return;
+                    }
+
                     // ✅ REMOVED: Balance system eliminated - all payments are direct Stripe
-                
+
                 try
                 {
                     await _context.SaveChangesAsync();
@@ -3856,6 +3906,41 @@ namespace newApi.Controllers
 
         // ❌ ELIMINADO: ProcessAutomaticRefundOnError - No se usa (reemplazado por captura manual)
 
+        /// <summary>
+        /// FIX C8: cancela (si requires_capture) o reembolsa (si succeeded) un PaymentIntent DUPLICADO —un 2º
+        /// cobro del mismo (cliente, servicio) llegado por otro flujo o por carrera de webhooks—. Idempotente
+        /// (refund con clave propia dup-refund-{pi}); best-effort con log crítico si falla.
+        /// </summary>
+        private async Task CancelOrRefundDuplicatePaymentIntentAsync(string paymentIntentId, int userId, int existingHireId)
+        {
+            if (string.IsNullOrEmpty(paymentIntentId)) return;
+            try
+            {
+                var piService = new PaymentIntentService();
+                var pi = await piService.GetAsync(paymentIntentId);
+                if (pi.Status == "requires_capture")
+                {
+                    await piService.CancelAsync(paymentIntentId); // aún no capturado → sin cargo al cliente
+                }
+                else if (pi.Status == "succeeded")
+                {
+                    await new Stripe.RefundService().CreateAsync(
+                        new RefundCreateOptions { PaymentIntent = paymentIntentId, Reason = "duplicate" },
+                        new RequestOptions { IdempotencyKey = $"dup-refund-{paymentIntentId}" });
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Failed to cancel/refund duplicate PaymentIntent",
+                    details: $"PaymentIntent {paymentIntentId} (hire activo existente #{existingHireId}): {ex.Message}. ACTION REQUIRED: cancelar/reembolsar manualmente en Stripe.",
+                    userId: userId,
+                    source: "SubscriptionController.CancelOrRefundDuplicatePaymentIntentAsync",
+                    relatedEntityType: "Payment",
+                    relatedEntityId: existingHireId);
+            }
+        }
+
         private async Task EnsurePaymentCapturedAsync(string paymentIntentId, int userId, int serviceId, int searchHireId)
         {
             var paymentIntentService = new PaymentIntentService();
@@ -4210,6 +4295,13 @@ namespace newApi.Controllers
                 if (service == null)
                 {
                     return NotFound(new { message = "Service not found" });
+                }
+
+                // 🚨 FIX C9: servicio SIN experto (FK OnDelete SetNull) → sin destino de payout. Rechazar
+                // ANTES de crear la Checkout Session.
+                if (service.ExpertProfile == null)
+                {
+                    return BadRequest(new { message = "Este servicio no está disponible para contratar" });
                 }
 
                 // ✅ VALIDACIÓN CENTRALIZADA: Verificar que el experto puede recibir pagos

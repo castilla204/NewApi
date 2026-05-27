@@ -646,11 +646,18 @@ namespace newApi.Controllers
                     };
 
                     var serviceStripe = new SessionService();
-                    // 🔧 FIX #6 (doble cobro): clave SIN componente de minuto. Con {yyyyMMddHHmm}, dos intentos
-                    // del mismo (usuario,servicio) a caballo del cambio de minuto generaban 2 Checkout Sessions =>
-                    // 2 PaymentIntents => doble captura. Estable, Stripe deduplica la sesión durante su TTL (~24h,
-                    // alineado con la expiración de la propia Checkout Session).
-                    var idempotencyKey = $"checkout-{userId}-{service.Id}-none";
+                    // 🔧 FIX #6 + regresión: clave determinista con HASH del body. La versión "-none" era estable
+                    // 24h por (usuario,servicio), pero el body lleva metadata POR-BÚSQUEDA; dos inspecciones
+                    // DISTINTAS del mismo servicio en <24h => body distinto, misma clave => Stripe idempotency_error
+                    // (400) => 500 al cliente. Con el hash: misma búsqueda (doble-clic) => misma clave (deduplica,
+                    // cierra el doble cobro); búsqueda distinta => clave distinta (deja contratar).
+                    var idempotencyKey = IdempotencyKeyHelper.ForCheckout(
+                        userId, service.Id,
+                        amountToCharge.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        searchDto?.Title, searchDto?.Description,
+                        parameterDto?.Keywords, parameterDto?.UserSearch,
+                        parameterDto?.Latitude, parameterDto?.Longitude, parameterDto?.LocationName,
+                        parameterDto?.Category?.ToString(), parameterDto?.ServiceTypeId?.ToString());
                     var session = await serviceStripe.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
 
                     await _loggingService.LogInfoAsync(

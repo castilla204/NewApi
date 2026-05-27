@@ -6040,6 +6040,15 @@ namespace newApi.Services
 
                 ProposedTime = appointment.ProposedTime,
 
+                // 🔧 FIX i18n display: ProposedDate/Time se guardan en hora LOCAL del experto; exponemos esa hora
+                // local + su timezone IANA para que el frontend muestre la hora con su huso (y la convierta a la
+                // zona del que mira). Antes ProposedDateLocal/ProposedTimeLocal/Timezone llegaban siempre null.
+                ProposedDateLocal = appointment.ProposedDate,
+
+                ProposedTimeLocal = appointment.ProposedTime,
+
+                Timezone = appointment.SearchHire?.ExpertTimezone,
+
                 Location = appointment.Location,
 
                 Latitude = appointment.Latitude,

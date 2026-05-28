@@ -6758,7 +6758,13 @@ namespace newApi.Controllers
                         TransactionType = "TransferFailed",
                         RelatedEntityType = "SearchHire",
                         RelatedEntityId = searchHire.Id,
-                        StripePaymentIntentId = transfer.Id,
+                        // 🛡️ C5 FIX: transfer.Id es un ID de Transfer (tr_XXX), NO un PaymentIntent.
+                        // Antes se grababa en StripePaymentIntentId, donde las queries que filtran
+                        // por StripePaymentIntentId == "pi_XXX" nunca lo encontraban → reportería rota.
+                        // Para conservar el PI original (útil en trazabilidad), también lo copiamos
+                        // de failedTransaction.StripePaymentIntentId si está presente.
+                        StripeTransferId = transfer.Id,
+                        StripePaymentIntentId = failedTransaction.StripePaymentIntentId,
                         CreatedAt = DateTime.UtcNow
                     });
                     await _loggingService.LogCriticalAsync(

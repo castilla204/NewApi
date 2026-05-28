@@ -12,12 +12,20 @@ namespace newApi.Services
     {
         private readonly AppDbContext _context;
         private readonly IEmailService _emailService;
+        private readonly IInvoiceNumberService _invoiceNumberService;
+        private readonly newApi.Configuration.PlatformFiscalProfile _fiscal;
 
-        public InvoiceService(AppDbContext context, IEmailService emailService)
+        public InvoiceService(
+            AppDbContext context,
+            IEmailService emailService,
+            IInvoiceNumberService invoiceNumberService,
+            Microsoft.Extensions.Options.IOptions<newApi.Configuration.PlatformFiscalProfile> fiscal)
         {
             _context = context;
             _emailService = emailService;
-            
+            _invoiceNumberService = invoiceNumberService;
+            _fiscal = fiscal?.Value ?? new newApi.Configuration.PlatformFiscalProfile();
+
             // Configurar QuestPDF
             QuestPDF.Settings.License = LicenseType.Community;
         }
@@ -64,7 +72,20 @@ namespace newApi.Services
             }
 
             // Datos para la factura
-            var invoiceNumber = $"FAC-{searchHire.Id:D6}";
+            // 🔧 FISCAL FLIP: numeración condicional.
+            //   IsReadyForFlip()=false → pseudo-número estable basado en hire ID (NO correlativo, NO fiscal).
+            //   IsReadyForFlip()=true  → reserva número correlativo persistente desde InvoiceCounters (sin huecos).
+            // NOTA: si flip activo, llamar a GenerateInvoicePdfAsync MÁS DE UNA VEZ por hire consume números
+            // correlativos extra (TODO: persistir InvoiceNumber en SearchHire la 1ª vez para reutilizarlo).
+            string invoiceNumber;
+            if (_fiscal.IsReadyForFlip())
+            {
+                invoiceNumber = await _invoiceNumberService.NextAsync(_fiscal.InvoiceSeriesPrefix);
+            }
+            else
+            {
+                invoiceNumber = $"FAC-{searchHire.Id:D6}"; // recibo simple, NO es factura formal
+            }
             var invoiceDate = searchHire.CreatedAt;
             var clientName = searchHire.Client.Name ?? "Cliente eliminado";
             var clientEmail = searchHire.Client.Email ?? "email@eliminado.com";
@@ -193,11 +214,34 @@ namespace newApi.Services
                                     }
                                 });
 
-                                // NOTA: documento = RECIBO simple, NO factura fiscal. La plataforma aún no es
-                                // empresa ni tiene NIF, así que NO se añaden datos fiscales (NIF emisor/cliente,
-                                // numeración secuencial) ni mención de reverse-charge (mecanismo de IVA entre
-                                // empresas registradas, inaplicable sin alta fiscal). Cuando se constituya la
-                                // empresa: añadir NIF/domicilio, serie correlativa y, si procede, reverse-charge.
+                                // 🔧 FISCAL FLIP: si la plataforma está dada de alta y rellena el perfil,
+                                // pintar datos fiscales del emisor + NIF cliente (si lo tenemos) + mención
+                                // reverse-charge cuando IVA=0 y cliente tiene NIF intracomunitario no-ES.
+                                // Pre-flip: leyenda "documento informativo" (no es factura fiscal).
+                                if (_fiscal.IsReadyForFlip())
+                                {
+                                    totalesColumn.Item().PaddingTop(15).Text($"Emisor: {_fiscal.LegalName}").FontSize(9);
+                                    totalesColumn.Item().Text($"NIF: {_fiscal.Nif}").FontSize(9);
+                                    totalesColumn.Item().Text($"{_fiscal.FiscalAddress.Street}, {_fiscal.FiscalAddress.PostalCode} {_fiscal.FiscalAddress.City} ({_fiscal.FiscalAddress.Province}) — {_fiscal.FiscalAddress.Country}").FontSize(9);
+                                    if (!string.IsNullOrWhiteSpace(_fiscal.IaeCode))
+                                        totalesColumn.Item().Text($"IAE: {_fiscal.IaeCode}").FontSize(9);
+                                    if (!string.IsNullOrWhiteSpace(searchHire.ClientVatNumber))
+                                        totalesColumn.Item().Text($"NIF cliente: {searchHire.ClientVatCountryCode}{searchHire.ClientVatNumber}").FontSize(9);
+                                    if (iva == 0m && !string.IsNullOrWhiteSpace(searchHire.ClientVatNumber)
+                                        && !string.Equals(searchHire.ClientVatCountryCode, "ES", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        totalesColumn.Item().PaddingTop(5)
+                                            .Text("Operación intracomunitaria — Inversión del sujeto pasivo (art. 84.Uno.2º Ley 37/1992 / art. 196 Dir. 2006/112/CE). IVA NO repercutido.")
+                                            .FontSize(8).Italic();
+                                    }
+                                }
+                                else
+                                {
+                                    // Pre-flip: leyenda explícita de que no es factura fiscal (la plataforma aún no es empresa).
+                                    totalesColumn.Item().PaddingTop(10)
+                                        .Text("Documento informativo de pago. No constituye factura a efectos fiscales.")
+                                        .FontSize(8).Italic();
+                                }
                             });
                         });
                     }
@@ -248,9 +292,13 @@ namespace newApi.Services
                 }
 
                 // Generar PDF
+                // 🔧 FISCAL FLIP: la numeración correlativa (si flip activo) se reserva DENTRO de
+                // GenerateInvoicePdfAsync — no la duplicamos aquí. El nombre del fichero adjunto usa una
+                // etiqueta estable por hire ID (no es el número fiscal): evita consumir un 2º número en
+                // reenvíos del email.
                 var pdfBytes = await GenerateInvoicePdfAsync(searchHireId);
 
-                var invoiceNumber = $"FAC-{searchHire.Id:D6}";
+                var invoiceNumber = $"FAC-{searchHire.Id:D6}"; // label estable para el nombre del adjunto, NO número fiscal
                 var subject = "Factura y confirmación de contratación";
                 var title = "¡Contratación completada!";
                 var serviceName = searchHire.SearchService.ServiceType.Name;

@@ -1090,7 +1090,7 @@ builder.Services.AddAuthentication(options =>
             var authHeader = hasAuthHeader ? context.HttpContext.Request.Headers["Authorization"].ToString().Substring(0, Math.Min(30, context.HttpContext.Request.Headers["Authorization"].ToString().Length)) + "..." : "NO AUTH HEADER";
             
             // Si es un endpoint público, no loggear el error (es normal que no haya token)
-            var publicEndpoints = new[] { "/api/Categories", "/api/ServiceType/public", "/api/SearchService/homepage-wall", "/health", "/warmup" };
+            var publicEndpoints = new[] { "/api/Categories", "/api/ServiceType/public", "/api/SearchService/homepage-wall", "/api/SearchService/detected-country-from-ip", "/health", "/warmup" };
             var pathString = new Microsoft.AspNetCore.Http.PathString(path);
             var isPublicEndpoint = publicEndpoints.Any(ep => pathString.StartsWithSegments(ep));
             
@@ -1124,7 +1124,8 @@ builder.Services.AddAuthentication(options =>
             var publicEndpoints = new[] { 
                 "/api/Categories", 
                 "/api/ServiceType/public", 
-                "/api/SearchService/homepage-wall", 
+                "/api/SearchService/homepage-wall",
+                "/api/SearchService/detected-country-from-ip",
                 "/health", 
                 "/warmup", 
                 "/health-detailed" 
@@ -1412,6 +1413,16 @@ builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<ILoggingService, LoggingService>();
 builder.Services.AddSingleton<IAlertChannelService, AlertChannelService>(); // P3-3: canal alternativo Slack/Telegram
+
+// 🔧 FISCAL FLIP: perfil fiscal de la plataforma + servicios asociados. Default IsVatRegistered=false
+// → comportamiento legacy (recibo simple, sin alertas IVA, sin captura NIF cliente formal). Para activar:
+// rellenar sección "PlatformFiscal" en appsettings o env vars de Render (PlatformFiscal__*) + aplicar
+// migración AddInvoiceCountersAndClientVat + reiniciar. Sin recompilar.
+builder.Services.Configure<newApi.Configuration.PlatformFiscalProfile>(
+    builder.Configuration.GetSection(newApi.Configuration.PlatformFiscalProfile.SectionName));
+builder.Services.AddScoped<newApi.Services.IInvoiceNumberService, newApi.Services.InvoiceNumberService>();
+builder.Services.AddScoped<newApi.Services.IViesValidator, newApi.Services.ViesValidatorStub>();
+
 builder.Services.AddScoped<IInvoiceService, newApi.Services.InvoiceService>();
 builder.Services.AddScoped<IStripeValidationService, StripeValidationService>();
 builder.Services.AddScoped<RefreshTokenCleanupService>(); // ✅ SEGURIDAD 2025: Limpieza de refresh tokens

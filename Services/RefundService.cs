@@ -1418,6 +1418,30 @@ namespace newApi.Services
                                         CreatedAt = DateTime.UtcNow
                                     });
 
+                                    // 🛡️ C4 FIX: SaveChanges INMEDIATO tras el Add, antes de que el flujo continúe
+                                    // ~77 líneas hasta el SaveChanges global. Si el proceso muere en esa ventana, Stripe
+                                    // ya tiene el reversal hecho pero la BD no — el reintento (guard alreadyReversed
+                                    // busca en BD) reentra y Stripe replica la respuesta cacheada por idempotencia →
+                                    // fila DUPLICADA en BD al final. Persistiendo aquí, el guard ya la encuentra.
+                                    // Si SaveChanges falla, log critical: hay desincronía Stripe↔BD que requiere
+                                    // reconciliación manual (el clawback Stripe ya ocurrió).
+                                    try
+                                    {
+                                        await _context.SaveChangesAsync();
+                                    }
+                                    catch (Exception persistEx)
+                                    {
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL: Clawback applied in Stripe but FT TransferReversal failed to persist",
+                                            details: $"SearchHire {searchHireId}: Stripe reversal {clawbackReversal.Id} de {clawbackAmountEur:F2}€ en transfer {existingTransfer.StripeTransferId} se ejecutó OK, pero el ledger BD no se actualizó. RECONCILIACIÓN MANUAL: insertar fila FinancialTransaction TransferReversal con esos datos. Error: {persistEx.Message}",
+                                            userId: searchHire.ExpertId,
+                                            source: "StripeRefundService.ProcessMoneyDistributionAsync.C4Persist",
+                                            relatedEntityType: "SearchHire",
+                                            relatedEntityId: searchHireId,
+                                            additionalData: new { ReversalId = clawbackReversal.Id, TransferId = existingTransfer.StripeTransferId, ClawbackAmount = clawbackAmountEur, Error = persistEx.Message });
+                                        throw; // re-throw para no marcar el dispute como Resolved si el ledger está roto
+                                    }
+
                                     await _loggingService.LogInfoAsync(
                                         message: "Expert transfer reversed on client refund (clawback)",
                                         details: $"SearchHire {searchHireId}: reversed {clawbackAmountEur:F2}€ of expert transfer {existingTransfer.StripeTransferId} (originally {existingTransfer.Amount:F2}€) because the client was refunded (status {statusValue}). Expert keeps {expertAmountForStripe:F2}€ ({config.ExpertPercentage}%). ReversalId: {clawbackReversal.Id}.",
@@ -1841,6 +1865,10 @@ namespace newApi.Services
                 var requestOptions = new RequestOptions { IdempotencyKey = $"md-{searchHireId}-cbreversal-{payout.StripeTransferId}" };
                 var reversal = await reversalSvc.CreateAsync(payout.StripeTransferId, reversalOptions, requestOptions);
 
+                // 🛡️ C4 FIX (chargeback path): persistencia INMEDIATA del FT tras el reversal Stripe.
+                // El SaveChanges ya estaba inline aquí (línea siguiente), así que la ventana de riesgo
+                // era pequeña — pero formalizamos el catch para que un fallo no quede silencioso (Stripe
+                // ya ejecutó el reversal, la BD necesita reconciliación manual).
                 _context.FinancialTransactions.Add(new FinancialTransaction
                 {
                     UserId = payout.UserId,
@@ -1857,7 +1885,22 @@ namespace newApi.Services
                     StripePaymentIntentId = payout.StripePaymentIntentId,
                     CreatedAt = DateTime.UtcNow
                 });
-                await _context.SaveChangesAsync();
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch (Exception persistEx)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Chargeback reversal applied in Stripe but FT ChargebackReversal failed to persist",
+                        details: $"SearchHire {searchHireId}: Stripe reversal {reversal.Id} de {reverseAmount:F2}€ en transfer {payout.StripeTransferId} se ejecutó OK, pero el ledger BD no se actualizó. RECONCILIACIÓN MANUAL: insertar fila FinancialTransaction ChargebackReversal con esos datos. Error: {persistEx.Message}",
+                        userId: payout.UserId,
+                        source: "StripeRefundService.ReverseExpertTransferForChargebackAsync.C4Persist",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { ReversalId = reversal.Id, TransferId = payout.StripeTransferId, ReverseAmount = reverseAmount, Error = persistEx.Message });
+                    throw;
+                }
 
                 await _loggingService.LogInfoAsync(
                     message: "Expert transfer fully reversed on chargeback",

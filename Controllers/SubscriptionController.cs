@@ -3112,11 +3112,29 @@ namespace newApi.Controllers
             // que dependa de un lock pesimista (sólo se usa user.Email para envío
             // de factura más abajo). El FOR UPDATE con commit inmediato anterior no
             // protegía nada — el lock se liberaba antes de cualquier mutación.
+            // 🛡️ N5 FIX: IgnoreQueryFilters para que webhooks de usuarios borrados
+            // SE PROCESEN igual (crear el SearchHire, mover dinero, vincular factura)
+            // en lugar de salir silenciosos por el query filter global User.IsDeleted=false.
+            // Sin esto, si el cliente borra su cuenta MIENTRAS un checkout.session.completed
+            // está en flight, el hire nunca se crea pero el dinero SÍ se cobró → fondos en limbo.
             var user = await _context.Users
+                .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(u => u.Id == userId);
             if (user == null)
             {
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
+            }
+            if (user.IsDeleted)
+            {
+                // Webhook llegó tras delete del cliente: log critical para que admin reembolse manual.
+                await _loggingService.LogCriticalAsync(
+                    message: "N5: webhook checkout.session.completed for DELETED user",
+                    details: $"User {userId} ya está marcado IsDeleted. El cliente borró su cuenta entre el checkout y el webhook. Dinero cobrado pero no se puede crear hire. ACCIÓN: refund manual desde Stripe Dashboard o reconciliación. ServiceId={serviceId}.",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted.N5",
+                    relatedEntityType: "SearchService",
+                    relatedEntityId: serviceId);
+                return;
             }
 
             var service = await _context.SearchServices.FindAsync(serviceId);
@@ -3427,7 +3445,26 @@ namespace newApi.Controllers
 
                 // ✅ STRIPE TAX: Obtener tax breakdown de la Checkout Session (NO PaymentIntent)
                 // El tax breakdown está en la Session, no en el PaymentIntent
+                // 🛡️ N1 FIX: si el experto editó service.Price entre el checkout init y este webhook,
+                // service.Price aquí refleja el precio NUEVO, no el que se cobró. La metadata "amount"
+                // se grabó al crear la Session con el precio del momento (snapshot), así que la usamos
+                // como fallback de PRIORIDAD ALTA cuando session.AmountTotal no esté disponible.
+                // Si session.AmountTotal sí viene (caso normal), prevalecerá sobre este snapshot.
                 decimal totalAmount = service.Price;
+                if (decimal.TryParse(metadata.GetValueOrDefault("amount", ""), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var metadataAmountSnapshot) && metadataAmountSnapshot > 0)
+                {
+                    if (Math.Abs(metadataAmountSnapshot - service.Price) > 0.01m)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "N1: service.Price cambió entre checkout init y completed",
+                            details: $"SessionId {session.Id}: precio en metadata snapshot={metadataAmountSnapshot}€, precio live ahora={service.Price}€. Usaremos el snapshot (lo que realmente se cobró).",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted.N1",
+                            relatedEntityType: "SearchService",
+                            relatedEntityId: service.Id);
+                    }
+                    totalAmount = metadataAmountSnapshot;
+                }
                 decimal? taxAmount = null;
                 decimal? baseAmount = null;
                 // 🔧 FIX D11 (IVA no recaudado): flag para marcar el hire si Stripe devolvió tax=0 por

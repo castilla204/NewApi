@@ -1040,31 +1040,7 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
-                // 🔒 ROW-LEVEL LOCKING para prevenir race conditions
-                var searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Expert)
-                        .ThenInclude(e => e.ExpertProfile)
-                    .Include(sh => sh.Client)
-                    .FirstOrDefaultAsync();
-
-                if (searchHire == null)
-                {
-                    return NotFound(new { message = "Service not found" });
-                }
-
-                if (searchHire.ClientId != userId)
-                {
-                    return Unauthorized(new { message = "Unauthorized to complete this service" });
-                }
-
-                if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue() && 
-                    searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
-                {
-                    return BadRequest(new { message = "Service cannot be approved in current state" });
-                }
-
+                // Validaciones que NO dependen del searchHire — se hacen fuera de la tx.
                 if (request.ClientApproved == null)
                 {
                     return BadRequest(new { error = "ClientApproved is required" });
@@ -1087,8 +1063,43 @@ namespace newApi.Controllers
                 return await strategy.ExecuteAsync(async () =>
                 {
                     using var transaction = await _context.Database.BeginTransactionAsync();
+                    // 🛡️ D2 FIX: declarado fuera del try para que los catch blocks
+                    // (StripeException/Exception) puedan loguear datos del hire (con ?. null-safe).
+                    SearchHire? searchHire = null;
                     try
                     {
+                        // 🛡️ D2 FIX: FOR UPDATE DENTRO de la transacción. Antes estaba fuera, así que el lock
+                        // se liberaba antes del BeginTransaction (PostgreSQL: FOR UPDATE solo persiste DENTRO
+                        // de una tx explícita). Resultado: dos requests concurrentes podían pasar las
+                        // validaciones a la vez → doble money distribution al experto. Ahora el lock vive
+                        // hasta el CommitAsync.
+                        searchHire = await _context.SearchHires
+                            .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {request.SearchHireId} FOR UPDATE")
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.Expert)
+                                .ThenInclude(e => e.ExpertProfile)
+                            .Include(sh => sh.Client)
+                            .FirstOrDefaultAsync();
+
+                        if (searchHire == null)
+                        {
+                            await transaction.RollbackAsync();
+                            return (IActionResult)NotFound(new { message = "Service not found" });
+                        }
+
+                        if (searchHire.ClientId != userId)
+                        {
+                            await transaction.RollbackAsync();
+                            return Unauthorized(new { message = "Unauthorized to complete this service" });
+                        }
+
+                        if (searchHire.Status.StatusValue != SearchHireStatus.Pending.ToStringValue() &&
+                            searchHire.Status.StatusValue != SearchHireStatus.AwaitingClientDecision.ToStringValue())
+                        {
+                            await transaction.RollbackAsync();
+                            return BadRequest(new { message = "Service cannot be approved in current state" });
+                        }
+
                         searchHire.ClientApproved = request.ClientApproved.Value;
 
                         if (!searchHire.ClientApproved.Value)
@@ -1265,20 +1276,20 @@ namespace newApi.Controllers
                         // Este error ocurre ANTES de llamar a ProcessMoneyDistributionAsync, por lo que debe loguearse aquí
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Stripe error during service completion - before money distribution",
-                            details: $"Stripe exception occurred in CompleteService endpoint before calling ProcessMoneyDistributionAsync for SearchHire {searchHire.Id}. " +
+                            details: $"Stripe exception occurred in CompleteService endpoint before calling ProcessMoneyDistributionAsync for SearchHire {searchHire?.Id}. " +
                                     $"Client {userId} approved service, but Stripe operation failed. " +
                                     $"Stripe Error: {ex.Message}, Type: {ex.StripeError?.Type}, Code: {ex.StripeError?.Code}, DeclineCode: {ex.StripeError?.DeclineCode}. " +
-                                    $"SearchHire Status: {searchHire.Status?.StatusValue}, Amount: {searchHire.Amount}€, ExpertId: {searchHire.ExpertId}. " +
+                                    $"SearchHire Status: {searchHire?.Status?.StatusValue}, Amount: {searchHire?.Amount}€, ExpertId: {searchHire?.ExpertId}. " +
                                     $"ACTION REQUIRED: Review Stripe error and retry service completion if applicable.",
                             userId: userId,
                             source: "SearchHireController.CompleteService",
                             relatedEntityType: "SearchHire",
-                            relatedEntityId: searchHire.Id,
-                            additionalData: new { 
-                                SearchHireId = searchHire.Id,
-                                ExpertId = searchHire.ExpertId,
-                                Amount = searchHire.Amount,
-                                Status = searchHire.Status?.StatusValue,
+                            relatedEntityId: searchHire?.Id,
+                            additionalData: new {
+                                SearchHireId = searchHire?.Id,
+                                ExpertId = searchHire?.ExpertId,
+                                Amount = searchHire?.Amount,
+                                Status = searchHire?.Status?.StatusValue,
                                 StripeError = ex.Message,
                                 StripeErrorType = ex.StripeError?.Type,
                                 StripeErrorCode = ex.StripeError?.Code,
@@ -1286,7 +1297,7 @@ namespace newApi.Controllers
                                 StripeParam = ex.StripeError?.Param
                             }
                         );
-                        
+
                         return StatusCode(500, new { message = "Failed to process payment to expert" });
                     }
                     catch (Exception ex)
@@ -1295,22 +1306,22 @@ namespace newApi.Controllers
                         // 🔒 LOG CRÍTICO: Error general durante completado de servicio (una sola vez, con información completa)
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Unexpected error completing service",
-                            details: $"An unexpected exception occurred while completing service for SearchHire {searchHire.Id}. " +
+                            details: $"An unexpected exception occurred while completing service for SearchHire {searchHire?.Id}. " +
                                     $"Client {userId} attempted to approve service (ClientApproved: {request.ClientApproved}). " +
                                     $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
-                                    $"SearchHire Status: {searchHire.Status?.StatusValue}, Amount: {searchHire.Amount}€, ExpertId: {searchHire.ExpertId}, ClientId: {searchHire.ClientId}. " +
+                                    $"SearchHire Status: {searchHire?.Status?.StatusValue}, Amount: {searchHire?.Amount}€, ExpertId: {searchHire?.ExpertId}, ClientId: {searchHire?.ClientId}. " +
                                     $"Stack Trace: {ex.StackTrace}. " +
                                     $"ACTION REQUIRED: Review error details and retry if applicable.",
                             userId: userId,
                             source: "SearchHireController.CompleteService",
                             relatedEntityType: "SearchHire",
-                            relatedEntityId: searchHire.Id,
-                            additionalData: new { 
-                                SearchHireId = searchHire.Id,
-                                ExpertId = searchHire.ExpertId,
-                                ClientId = searchHire.ClientId,
-                                Amount = searchHire.Amount,
-                                Status = searchHire.Status?.StatusValue,
+                            relatedEntityId: searchHire?.Id,
+                            additionalData: new {
+                                SearchHireId = searchHire?.Id,
+                                ExpertId = searchHire?.ExpertId,
+                                ClientId = searchHire?.ClientId,
+                                Amount = searchHire?.Amount,
+                                Status = searchHire?.Status?.StatusValue,
                                 ClientApproved = request.ClientApproved,
                                 ErrorType = ex.GetType().Name,
                                 ErrorMessage = ex.Message,

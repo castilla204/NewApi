@@ -315,14 +315,15 @@ namespace newApi.Services
         
         public async Task<string> GetTimezoneFromCoordinatesAsync(decimal latitude, decimal longitude)
         {
-            // ✅ SOLO Google Timezone API - Sin fallbacks externos
+            // 🛡️ R13 FIX: fallback a "UTC" en lugar de throw cuando API key falta.
+            // Los call sites (N7-N8 en UpdateExpertProfile, AppointmentService al detectar TZ del experto)
+            // asumen que este método siempre retorna un IANA TZ válido — si throw, los flows revientan
+            // y bloquean creación de cita / actualización de perfil. UTC es safe fallback (Stripe acepta,
+            // citas se renderizan con offset 0 — el experto puede corregirlo después).
             if (string.IsNullOrWhiteSpace(_googleApiKey))
             {
-                _logger.LogError("❌ Google Maps API Key no configurada. No se puede detectar timezone para coordenadas ({Latitude}, {Longitude}). " +
-                    "Configura 'google-maps-api-key' en Google Cloud Secret Manager.", latitude, longitude);
-                throw new InvalidOperationException(
-                    $"Google Maps API Key no configurada. No se puede detectar timezone para coordenadas ({latitude}, {longitude}). " +
-                    "Configura 'google-maps-api-key' en Google Cloud Secret Manager.");
+                _logger.LogWarning("R13: Google Maps API Key no configurada. Usando 'UTC' como fallback para ({Latitude}, {Longitude}).", latitude, longitude);
+                return "UTC";
             }
 
             try
@@ -393,40 +394,32 @@ namespace newApi.Services
                             ? errorMsg.GetString() 
                             : "Sin mensaje de error";
                         
-                        _logger.LogError("❌ Google Timezone API error. Status: {Status}, Message: {Message}, Response: {Response}", 
-                            statusValue, errorMessage, json);
-                        
-                        throw new InvalidOperationException(
-                            $"Google Timezone API error: {statusValue}. {errorMessage}. " +
-                            $"No se puede detectar timezone para coordenadas ({latitude}, {longitude}).");
+                        _logger.LogWarning("R13: Google Timezone API error. Status: {Status}, Message: {Message}. Usando UTC fallback.",
+                            statusValue, errorMessage);
+                        // 🛡️ R13 FIX: fallback "UTC" en vez de throw (ver razón en el guard inicial del método).
+                        return "UTC";
                     }
                 }
                 else
                 {
-                    _logger.LogError("❌ Respuesta de Google API sin campo 'status'. Response: {Response}", json);
-                    throw new InvalidOperationException(
-                        $"Respuesta de Google API sin campo 'status' para coordenadas ({latitude}, {longitude}).");
+                    _logger.LogWarning("R13: Respuesta Google API sin campo 'status'. Usando UTC fallback.");
+                    return "UTC";
                 }
             }
             catch (TaskCanceledException ex)
             {
-                _logger.LogError(ex, "❌ Timeout llamando a Google Timezone API para coordenadas ({Latitude}, {Longitude})", 
+                _logger.LogWarning(ex, "R13: Timeout Google Timezone API para ({Latitude}, {Longitude}). Usando UTC fallback.",
                     latitude, longitude);
-                throw new InvalidOperationException(
-                    $"Timeout llamando a Google Timezone API para coordenadas ({latitude}, {longitude}). " +
-                    "Verifica tu conexión a internet y la configuración de la API key.");
-            }
-            catch (InvalidOperationException)
-            {
-                // Re-lanzar excepciones de InvalidOperationException (ya tienen mensajes claros)
-                throw;
+                return "UTC";
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Error inesperado llamando a Google Timezone API para coordenadas ({Latitude}, {Longitude})", 
+                // 🛡️ R13 FIX: fallback unificado UTC. No re-lanzar InvalidOperationException — antes
+                // los callers asumían que el método siempre retornaba string válido y un throw
+                // rompía flows críticos (UpdateExpertProfile, AppointmentService TZ detection).
+                _logger.LogWarning(ex, "R13: Error Google Timezone API para ({Latitude}, {Longitude}). Usando UTC fallback.",
                     latitude, longitude);
-                throw new InvalidOperationException(
-                    $"Error inesperado llamando a Google Timezone API para coordenadas ({latitude}, {longitude}): {ex.Message}");
+                return "UTC";
             }
         }
         

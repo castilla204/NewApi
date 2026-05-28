@@ -550,6 +550,15 @@ namespace newApi.Controllers
         {
             try
             {
+                // 🛡️ R8 FIX: ownership check. Sin esto, cualquier usuario autenticado podía
+                // leer cualquier SearchHire (conversaciones, montos, expert/client info).
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+                var isAdmin = _authService.IsAdmin(User);
+
                 var searchHire = await _context.SearchHires
                     .Include(sh => sh.Status)
                     .Include(sh => sh.Search)
@@ -559,6 +568,11 @@ namespace newApi.Controllers
                 if (searchHire == null)
                 {
                     return NotFound(new { message = "Search hire not found" });
+                }
+
+                if (!isAdmin && searchHire.ClientId != userId && searchHire.ExpertId != userId)
+                {
+                    return Forbid();
                 }
 
                 return Ok(searchHire);

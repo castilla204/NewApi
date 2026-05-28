@@ -30,6 +30,11 @@ namespace newApi.Services
         public SupabaseStorageService(HttpClient http, IConfiguration config, ILogger<SupabaseStorageService> logger)
         {
             _http = http;
+            // 🛡️ R12 FIX: timeout explícito en el HttpClient. Sin esto, si Supabase Storage está
+            // down/lento, SendAsync se cuelga indefinidamente bloqueando el flow de creación de
+            // SearchService (foto del servicio) o DisputeFile (evidencia). 30s da margen amplio
+            // para uploads grandes (PDFs hasta 50MB) sin congelar la request.
+            _http.Timeout = TimeSpan.FromSeconds(30);
             _logger = logger;
             _baseUrl = (config["SupabaseStorage:Url"] ?? string.Empty).TrimEnd('/');
             _serviceKey = config["SupabaseStorage:ServiceRoleKey"] ?? string.Empty;

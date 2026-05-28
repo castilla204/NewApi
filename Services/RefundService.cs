@@ -1079,7 +1079,27 @@ namespace newApi.Services
 
                             // MODIFICACI├ôN: Chequear status de connected account (best practice 2025 para cumplimiento)
                             var accountService = new AccountService();
-                            var expertAccount = await accountService.GetAsync(expertStripeAccountId);
+                            Stripe.Account expertAccount;
+                            try
+                            {
+                                expertAccount = await accountService.GetAsync(expertStripeAccountId);
+                            }
+                            catch (StripeException stripeAccEx) when (stripeAccEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                            {
+                                // 🛡️ R14 FIX: la cuenta Stripe del experto fue eliminada (probablemente por el N4 fix
+                                // del AccountDeletionService que ahora SÍ borra la cuenta Stripe al eliminar User).
+                                // El transfer al experto no se puede hacer — abortar con critical para reconciliación.
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL R14: Expert Stripe account not found (404)",
+                                    details: $"SearchHire {searchHireId}: la cuenta Stripe {expertStripeAccountId} retornó 404 (eliminada o nunca existió). Refund al cliente sí puede proceder pero el transfer al experto está bloqueado. ACCIÓN ADMIN: reconciliar manualmente (devolver al cliente lo que era del experto o re-asignar payout). Error: {stripeAccEx.Message}",
+                                    userId: searchHire.ExpertId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync.R14",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId,
+                                    additionalData: new { StripeAccountId = expertStripeAccountId, ExpertId = searchHire.ExpertId });
+                                if (transaction != null) await transaction.RollbackAsync();
+                                return false;
+                            }
                             // 🔧 FIX (pagos): en separate charges & transfers el experto SOLO necesita la capability
                             // "transfers" + payouts; NO "charges". El onboarding pide solo "transfers", así que
                             // ChargesEnabled es false de forma legítima -> el guard antiguo bloqueaba TODO pago al
@@ -1846,9 +1866,47 @@ namespace newApi.Services
         /// reintentar es seguro (no duplica pagos). Si sigue fallando se LANZA para que Hangfire reintente;
         /// la causa ya se registró como Critical (que ahora avisa por email al admin).
         /// </summary>
+        // 🛡️ R15: DisableConcurrentExecution evita que dos jobs concurrentes (encolados desde
+        // distintos sitios, ej DisputeController + AppointmentService + SearchHireController) corran
+        // simultáneamente para el mismo hire. Sin esto ambos ven el guard idempotente pasar a la vez
+        // y pueden duplicar transfer/refund. Timeout 600s cubre cualquier ProcessMoneyDistribution
+        // legítimo (Stripe API + SaveChanges).
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
         [Hangfire.AutomaticRetry(Attempts = 5, DelaysInSeconds = new[] { 120, 600, 1800, 3600, 7200 })]
         public async Task RetryMoneyDistributionJobAsync(int searchHireId, string statusValue, string reason, int? initiatedByUserId)
         {
+            // 🛡️ R16 FIX: re-verify state DEL HIRE en lugar de asumir statusValue del enqueue time.
+            // Entre el enqueue (delay 2 min) y la ejecución el hire pudo cambiar de estado por otro
+            // flow (admin re-resolvió, chargeback llegó, etc.). Si el estado actual no coincide con
+            // el statusValue del enqueue, abortar — el flow alternativo ya manejó el dinero.
+            var currentHire = await _context.SearchHires
+                .AsNoTracking()
+                .Include(sh => sh.Status)
+                .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+            if (currentHire == null)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "R16: RetryMoneyDistribution skipped — SearchHire no encontrado",
+                    details: $"SearchHire {searchHireId} no existe (¿borrado entre enqueue y ejecución?). Statusvalue del enqueue era {statusValue}.",
+                    userId: initiatedByUserId,
+                    source: "StripeRefundService.RetryMoneyDistributionJobAsync.R16",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId);
+                return; // no throw → no reintento (es irreparable)
+            }
+            var actualStatus = currentHire.Status?.StatusValue;
+            if (!string.Equals(actualStatus, statusValue, StringComparison.OrdinalIgnoreCase))
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "R16: RetryMoneyDistribution skipped — estado cambió entre enqueue y ejecución",
+                    details: $"SearchHire {searchHireId}: statusValue del enqueue='{statusValue}', estado actual='{actualStatus}'. Otro flow ya completó la transición; este reintento es no-op.",
+                    userId: initiatedByUserId,
+                    source: "StripeRefundService.RetryMoneyDistributionJobAsync.R16",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId);
+                return; // no throw → no reintento (es benign — otro flow tomó el caso)
+            }
+
             // El estado ya fue finalizado por el llamador → updateState:false (solo mover dinero).
             var ok = await ProcessMoneyDistributionAsync(searchHireId, statusValue, reason, initiatedByUserId, updateState: false);
             if (!ok)

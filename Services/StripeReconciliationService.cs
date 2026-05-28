@@ -40,6 +40,10 @@ namespace newApi.Services
             _loggingService = loggingService;
         }
 
+        // 🛡️ R3-V2 FIX (consistencia con N13): evita ejecución concurrente del recurring job
+        // en HPA multi-replica Render. Timeout 1800s (30 min) — reconciliación recorre 24h de
+        // FT vs Stripe API; en peor caso con muchos hires + rate limits puede tardar varios min.
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 1800)]
         public async Task<ReconciliationReport> RunDailyReconciliationAsync()
         {
             var windowEnd = DateTime.UtcNow;

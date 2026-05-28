@@ -370,31 +370,21 @@ namespace newApi.DataLayer.Models
                 .IsUnique()
                 .HasFilter("\"TransactionType\" = 'ServicePayment'");
 
-            // P2-3: índices parciales únicos sobre StripePaymentIntentId.
-            // Última línea de defensa anti doble PaymentIntent / doble Chargeback
-            // por mismo PaymentIntent en el ledger.
-            modelBuilder.Entity<FinancialTransaction>()
-                .HasIndex(ft => ft.StripePaymentIntentId)
-                .HasDatabaseName("IX_FT_StripePaymentIntent_ServicePayment_uq")
-                .IsUnique()
-                .HasFilter("\"StripePaymentIntentId\" IS NOT NULL AND \"TransactionType\" = 'ServicePayment'");
-            modelBuilder.Entity<FinancialTransaction>()
-                .HasIndex(ft => ft.StripePaymentIntentId)
-                .HasDatabaseName("IX_FT_StripePaymentIntent_Chargeback_uq")
-                .IsUnique()
-                .HasFilter("\"StripePaymentIntentId\" IS NOT NULL AND \"TransactionType\" = 'Chargeback'");
-
+            // 🛡️ F4 FIX: declaración única. Antes había DOS bloques idénticos (líneas 376-385
+            // y 389-398 en el original) que declaraban los mismos dos índices duplicando
+            // HasIndex(StripePaymentIntentId) con el mismo DatabaseName/filter. EF Core los
+            // procesaba ambos y avisaba con warning. Mantenemos un único bloque.
             // P2-3: defensa anti doble-cobro y doble-chargeback a nivel BD, complementando
             // las claves de idempotencia de Stripe. Ver SQL_UNIQUE_INDEXES_INTEGRITY.sql.
             modelBuilder.Entity<FinancialTransaction>()
                 .HasIndex(ft => ft.StripePaymentIntentId)
-                .IsUnique()
                 .HasDatabaseName("IX_FT_StripePaymentIntent_ServicePayment_uq")
+                .IsUnique()
                 .HasFilter("\"StripePaymentIntentId\" IS NOT NULL AND \"TransactionType\" = 'ServicePayment'");
             modelBuilder.Entity<FinancialTransaction>()
                 .HasIndex(ft => ft.StripePaymentIntentId)
-                .IsUnique()
                 .HasDatabaseName("IX_FT_StripePaymentIntent_Chargeback_uq")
+                .IsUnique()
                 .HasFilter("\"StripePaymentIntentId\" IS NOT NULL AND \"TransactionType\" = 'Chargeback'");
 
             modelBuilder.Entity<ServiceType>(entity =>

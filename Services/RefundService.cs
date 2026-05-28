@@ -117,6 +117,26 @@ namespace newApi.Services
                     );
                 }
 
+                // 🛡️ R26 FIX: validar que statusValue exista en SystemStatuses ANTES de buscar config.
+                // Si no existe, GetMoneyDistributionConfigAsync retornará null y caemos al fallback con
+                // critical genérico ("config not found") sin pista de la causa raíz (typo, enum nuevo
+                // sin sembrar). Detectar acá da error claro al admin.
+                var statusValueExists = await _context.SystemStatuses
+                    .AsNoTracking()
+                    .AnyAsync(s => s.StatusValue == statusValue);
+                if (!statusValueExists)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL R26: statusValue NO existe en SystemStatuses",
+                        details: $"SearchHire {searchHireId}: el statusValue '{statusValue}' no está sembrado en SystemStatuses. Imposible distribuir dinero. CAUSA típica: enum nuevo agregado sin run del SEED_ESTADOS_COMPLETO.sql, o typo en el caller. ACCIÓN: revisar seed + lista de SearchHireStatus/AppointmentStatus.",
+                        userId: initiatedByUserId ?? searchHire.ClientId,
+                        source: "StripeRefundService.ProcessMoneyDistributionAsync.R26",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { StatusValue = statusValue });
+                    return false;
+                }
+
                 // Obtener configuraci├│n de distribuci├│n para el estado concreto (subestado/granularidad lo resuelve el servicio)
                 var config = await _systemStatusService.GetMoneyDistributionConfigAsync(
                     statusValue,
@@ -190,6 +210,17 @@ namespace newApi.Services
                     }
                     catch (Exception mapEx)
                     {
+                        // 🛡️ R24 FIX: antes silent catch — ahora log warning para no perder la causa.
+                        // Si llegamos aquí, statusValue NO se pudo mapear a SearchHireStatus (typo,
+                        // enum nuevo no agregado, valor corrupto en webhook). El config queda null y
+                        // saltará el critical de la línea ~196, pero el warning ayuda a triangular.
+                        await _loggingService.LogWarningAsync(
+                            message: "R24: failed to map statusValue → SearchHireStatus enum",
+                            details: $"SearchHire {searchHireId}: no se pudo mapear statusValue='{statusValue}' al enum. Cae a config NULL y aborta money distribution. Causa típica: typo, valor legacy, o enum no actualizado. Error: {mapEx.Message}",
+                            userId: initiatedByUserId ?? searchHire?.ClientId,
+                            source: "StripeRefundService.ProcessMoneyDistributionAsync.R24",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId);
                     }
 
                     if (config == null)

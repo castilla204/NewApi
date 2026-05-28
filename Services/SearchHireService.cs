@@ -75,13 +75,18 @@ namespace newApi.Services
 
         public async Task<(bool Success, string ErrorMessage)> UpdateHireStatus(int userId, int hireId, string status)
         {
+            // 🛡️ R22 FIX: SELECT FOR UPDATE dentro del scope de lectura para serializar transiciones
+            // con CompleteService (que también muta StatusId tras fix D2). Sin esto, dos updates
+            // concurrentes (admin + cliente completing) pueden colisionar y dejar estado inconsistente.
+            // El lock vive hasta el siguiente SaveChanges (línea ~130) o hasta el final del scope.
             var hire = await _context.SearchHires
+                .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {hireId} AND \"ExpertId\" = {userId} FOR UPDATE")
                 .Include(sh => sh.SearchService)
                     .ThenInclude(ss => ss.SelectedDeliverableTypes)
                         .ThenInclude(ssdt => ssdt.DeliverableType)
                 .Include(sh => sh.Deliverables)
                 .Include(sh => sh.Status)
-                .FirstOrDefaultAsync(sh => sh.Id == hireId && sh.ExpertId == userId);
+                .FirstOrDefaultAsync();
             
             if (hire == null)
                 return (false, "Servicio no encontrado o no tienes permisos para modificarlo");

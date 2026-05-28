@@ -232,12 +232,6 @@ namespace newApi.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
-                    b.Property<uint>("xmin")
-                        .IsConcurrencyToken()
-                        .ValueGeneratedOnAddOrUpdate()
-                        .HasColumnType("xid")
-                        .HasColumnName("xmin");
-
                     b.HasKey("Id");
 
                     b.HasIndex("ProposedDate");
@@ -474,9 +468,6 @@ namespace newApi.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<string>("StripeDisputeId")
-                        .HasColumnType("text");
-
                     b.HasKey("Id");
 
                     b.HasIndex("ReporterId");
@@ -642,12 +633,6 @@ namespace newApi.Migrations
                     b.Property<int>("UserId")
                         .HasColumnType("integer");
 
-                    b.Property<uint>("xmin")
-                        .IsConcurrencyToken()
-                        .ValueGeneratedOnAddOrUpdate()
-                        .HasColumnType("xid")
-                        .HasColumnName("xmin");
-
                     b.HasKey("Id");
 
                     b.HasIndex("UserId")
@@ -666,9 +651,6 @@ namespace newApi.Migrations
 
                     b.Property<decimal>("Amount")
                         .HasColumnType("numeric");
-
-                    b.Property<long>("AmountCents")
-                        .HasColumnType("bigint");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -698,32 +680,9 @@ namespace newApi.Migrations
                     b.Property<int?>("UserId")
                         .HasColumnType("integer");
 
-                    b.Property<uint>("xmin")
-                        .IsConcurrencyToken()
-                        .ValueGeneratedOnAddOrUpdate()
-                        .HasColumnType("xid")
-                        .HasColumnName("xmin");
-
                     b.HasKey("Id");
 
-                    b.HasIndex("StripePaymentIntentId")
-                        .IsUnique()
-                        .HasDatabaseName("IX_FT_StripePaymentIntent_Chargeback_uq")
-                        .HasFilter("\"StripePaymentIntentId\" IS NOT NULL AND \"TransactionType\" = 'Chargeback'");
-
-                    b.HasIndex("StripeRefundId")
-                        .IsUnique()
-                        .HasFilter("\"StripeRefundId\" IS NOT NULL");
-
                     b.HasIndex("UserId");
-
-                    b.HasIndex("RelatedEntityType", "RelatedEntityId")
-                        .IsUnique()
-                        .HasFilter("\"TransactionType\" = 'ServicePayment'");
-
-                    b.HasIndex("StripeTransferId", "TransactionType")
-                        .IsUnique()
-                        .HasFilter("\"StripeTransferId\" IS NOT NULL");
 
                     b.ToTable("FinancialTransactions");
                 });
@@ -1289,9 +1248,6 @@ namespace newApi.Migrations
                     b.Property<decimal?>("BaseAmount")
                         .HasColumnType("numeric");
 
-                    b.Property<string>("CaptureStatus")
-                        .HasColumnType("text");
-
                     b.Property<bool?>("ClientApproved")
                         .HasColumnType("boolean");
 
@@ -1319,12 +1275,6 @@ namespace newApi.Migrations
                     b.Property<string>("ExpertTransferId")
                         .HasColumnType("text");
 
-                    b.Property<DateTime?>("RefundFailedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<bool>("RequiresManualReview")
-                        .HasColumnType("boolean");
-
                     b.Property<int?>("SearchId")
                         .HasColumnType("integer");
 
@@ -1339,12 +1289,6 @@ namespace newApi.Migrations
 
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<uint>("xmin")
-                        .IsConcurrencyToken()
-                        .ValueGeneratedOnAddOrUpdate()
-                        .HasColumnType("xid")
-                        .HasColumnName("xmin");
 
                     b.HasKey("Id");
 
@@ -2120,12 +2064,6 @@ namespace newApi.Migrations
 
                     b.Property<int?>("SubscriptionPlanId")
                         .HasColumnType("integer");
-
-                    b.Property<uint>("xmin")
-                        .IsConcurrencyToken()
-                        .ValueGeneratedOnAddOrUpdate()
-                        .HasColumnType("xid")
-                        .HasColumnName("xmin");
 
                     b.HasKey("Id");
 

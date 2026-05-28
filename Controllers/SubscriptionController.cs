@@ -5374,7 +5374,8 @@ namespace newApi.Controllers
                                 },
                                 Submit = true
                             },
-                            new Stripe.RequestOptions { IdempotencyKey = $"dispute-submit-{f6DisputeId}-{DateTime.UtcNow:yyyyMMddHHmm}" });
+                            // 🛡️ R2 FIX: clave determinista por f6DisputeId (sin DateTime.UtcNow).
+                            new Stripe.RequestOptions { IdempotencyKey = $"dispute-submit-{f6DisputeId}" });
                     }
                     catch (Exception submitEx)
                     {

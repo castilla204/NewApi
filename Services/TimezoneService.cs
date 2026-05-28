@@ -156,7 +156,22 @@ namespace newApi.Services
                 // ✅ Asegurar que el DateTime no tenga Kind=Utc para la conversión
                 // TimeZoneInfo.ConvertTimeToUtc requiere DateTimeKind.Unspecified o DateTimeKind.Local
                 var unspecifiedDateTime = DateTime.SpecifyKind(localDateTime, DateTimeKind.Unspecified);
-                
+
+                // 🛡️ E2 FIX: spring-forward — la hora 02:30 (Europa/Madrid el último domingo de marzo,
+                // p.ej.) NO EXISTE porque el reloj salta de 02:00 a 03:00. ConvertTimeToUtc lanza
+                // ArgumentException ante esto y el catch hacía fallback a "tratar como UTC" → la cita
+                // quedaba 1h desplazada en BD. Detectamos la hora inválida y la avanzamos al siguiente
+                // instante válido (+1h: cubre el delta DST estándar de todas las zonas que usan DST).
+                if (tzInfo.IsInvalidTime(unspecifiedDateTime))
+                {
+                    _logger.LogWarning("⚠️ E2: hora inválida {LocalTime} en timezone '{Timezone}' (spring-forward). Avanzada 1h a {AdjustedTime}.",
+                        localDateTime, ianaTimezone, unspecifiedDateTime.AddHours(1));
+                    unspecifiedDateTime = unspecifiedDateTime.AddHours(1);
+                }
+                // Nota: el caso ambiguo (fall-back, hora que ocurre 2 veces) no necesita ajuste —
+                // ConvertTimeToUtc por defecto toma la interpretación standard time (post-fallback),
+                // que es la convención más común y predecible para citas programadas.
+
                 // ✅ Convertir usando TimeZoneInfo (maneja automáticamente DST y todos los offsets)
                 // Esto funciona para TODOS los timezones IANA que TimeZoneConverter puede convertir
                 // TimeZoneConverter v6.1.0 soporta TODOS los timezones IANA estándar que Google Maps API devuelve

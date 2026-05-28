@@ -1707,6 +1707,42 @@ namespace newApi.Services
         [Hangfire.AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 900 })]
         public async Task RescueStuckResolvingDisputeAsync(int disputeId)
         {
+            // 🛡️ B4 FIX: antes de devolver a 'Pending', comprobar si el SearchHire vinculado YA
+            // está en un estado terminal de disputa (DisputeResolvedClient/Expert). Si lo está,
+            // el money distribution se completó — la request murió en la ventana entre el dinero
+            // y el dispute.Status='Resolved'. Devolver a Pending en ese caso permitiría al admin
+            // ejecutar una SEGUNDA resolución a favor del LADO CONTRARIO → doble movimiento de
+            // dinero en direcciones opuestas y ledger contradictorio. En su lugar: catch-up a
+            // 'Resolved' directamente (idempotente: si el resto ya pasó, esto es no-op).
+            var dispute = await _context.Disputes
+                .Include(d => d.SearchHire)
+                .ThenInclude(sh => sh.Status)
+                .FirstOrDefaultAsync(d => d.Id == disputeId);
+            if (dispute == null) return;
+
+            var shStatusValue = dispute.SearchHire?.Status?.StatusValue;
+            var moneyAlreadyMoved = shStatusValue == SearchHireStatus.DisputeResolvedClient.ToStringValue()
+                                 || shStatusValue == SearchHireStatus.DisputeResolvedExpert.ToStringValue();
+
+            if (moneyAlreadyMoved && dispute.Status == "Resolving")
+            {
+                // Catch-up: cierra el dispute en lugar de devolverlo a Pending.
+                var completed = await _context.Database.ExecuteSqlInterpolatedAsync(
+                    $"UPDATE \"Disputes\" SET \"Status\" = 'Resolved' WHERE \"Id\" = {disputeId} AND \"Status\" = 'Resolving'");
+                if (completed > 0)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "B4: Stuck dispute in 'Resolving' CATCH-UP a 'Resolved' (money already moved)",
+                        details: $"Dispute {disputeId}: SearchHire en estado terminal '{shStatusValue}' → catch-up a 'Resolved' (evita segunda resolución contradictoria que movería dinero al lado opuesto).",
+                        userId: null,
+                        source: "StripeRefundService.RescueStuckResolvingDisputeAsync",
+                        relatedEntityType: "Dispute",
+                        relatedEntityId: disputeId);
+                }
+                return;
+            }
+
+            // Caso normal: el money distribution NO se completó → revertir a Pending para reintento.
             // Atómico: solo resetea si SIGUE en "Resolving" (no pisa una que ya llegó a "Resolved"/"Pending").
             var reset = await _context.Database.ExecuteSqlInterpolatedAsync(
                 $"UPDATE \"Disputes\" SET \"Status\" = 'Pending' WHERE \"Id\" = {disputeId} AND \"Status\" = 'Resolving'");

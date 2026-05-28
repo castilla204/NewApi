@@ -1212,21 +1212,62 @@ namespace newApi.Services
                 expertProfile.Description = request.Description;
                 
                 // ✅ DETECTAR TIMEZONE Y COUNTRY si cambian las coordenadas
-                var coordinatesChanged = expertProfile.Latitude != request.Latitude || 
+                var coordinatesChanged = expertProfile.Latitude != request.Latitude ||
                                          expertProfile.Longitude != request.Longitude;
-                
-                expertProfile.Latitude = request.Latitude;
-                expertProfile.Longitude = request.Longitude;
-                
-                // Si cambian las coordenadas, detectar nuevo timezone, country y city
+
+                // 🛡️ E3 FIX: si cambian las coordenadas, detectar país NUEVO ANTES de tocar nada y
+                // validar contra la whitelist de Stripe Connect. BecomeExpert (línea 670) ya valida
+                // al registro, pero UpdateExpertProfile no lo hacía → un experto registrado en ES
+                // podía mover sus coords a un país fuera de la whitelist (JP/AR/etc.) y todos los
+                // payouts futuros fallarían. Rechazamos el update completo antes de persistir nada.
+                string? detectedTimezone = null;
+                string? detectedCountry = null;
+                string? detectedCity = null;
                 if (coordinatesChanged)
                 {
                     try
                     {
-                        var detectedTimezone = await _timezoneService.GetTimezoneFromCoordinatesAsync(latitude, longitude);
-                        var detectedCountry = await _timezoneService.GetCountryFromCoordinatesAsync(latitude, longitude);
-                        var detectedCity = await _timezoneService.GetCityFromCoordinatesAsync(latitude, longitude);
-                        
+                        detectedTimezone = await _timezoneService.GetTimezoneFromCoordinatesAsync(latitude, longitude);
+                        detectedCountry = await _timezoneService.GetCountryFromCoordinatesAsync(latitude, longitude);
+                        detectedCity = await _timezoneService.GetCityFromCoordinatesAsync(latitude, longitude);
+
+                        if (!string.IsNullOrEmpty(detectedCountry)
+                            && !SupportedConnectCountries.IsSupported(detectedCountry))
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "E3: Expert update REJECTED — new coordinates resolve to unsupported country",
+                                details: $"UserId {userId}: nuevas coords ({latitude},{longitude}) → {detectedCountry} no está en la whitelist de Stripe Connect. Update abortado.",
+                                userId: userId,
+                                source: "UserService.UpdateExpertProfile.E3",
+                                relatedEntityType: "ExpertProfile",
+                                relatedEntityId: expertProfile.Id,
+                                additionalData: new { Latitude = latitude, Longitude = longitude, DetectedCountry = detectedCountry, CurrentCountry = expertProfile.Country });
+                            return (false, null);
+                        }
+                    }
+                    catch (Exception detectEx)
+                    {
+                        // Si falla la detección de país, ANTES persistía las coords igual; ahora
+                        // continuamos sin actualizar Timezone/Country/City (manejado más abajo).
+                        await _loggingService.LogWarningAsync(
+                            message: "Failed to detect country from new coordinates (E3 gate)",
+                            details: $"Could not detect country for ({latitude},{longitude}): {detectEx.Message}. Coords ACEPTADAS pero Timezone/Country/City NO se actualizan.",
+                            userId: userId,
+                            source: "UserService.UpdateExpertProfile",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: expertProfile.Id);
+                        detectedCountry = null; // marcar como "no detectado"
+                    }
+                }
+
+                expertProfile.Latitude = request.Latitude;
+                expertProfile.Longitude = request.Longitude;
+
+                // Si cambian las coordenadas, aplicar timezone/country/city (ya validados arriba)
+                if (coordinatesChanged && detectedCountry != null)
+                {
+                    try
+                    {
                         expertProfile.Timezone = detectedTimezone;
                         expertProfile.Country = detectedCountry;
                         expertProfile.City = detectedCity;

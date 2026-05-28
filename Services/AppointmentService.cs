@@ -3086,6 +3086,10 @@ namespace newApi.Services
                     }
                     catch (Exception exTimer)
                     {
+                        // 🛡️ F2 FIX: limpiar ChangeTracker para que entidades modificadas por la
+                        // iteración fallida no se persistan en el siguiente SaveChanges (otra iteración
+                        // del foreach o cualquier llamada posterior reutiliza el mismo _context).
+                        _context.ChangeTracker.Clear();
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Watchdog failed to process an overdue appointment timer",
                             details: $"ProcessOverdueTimersAsync could not process timer {timer.Id} (type {timer.TimerType}): {exTimer.Message}",
@@ -3135,6 +3139,8 @@ namespace newApi.Services
                     }
                     catch (Exception exAppt)
                     {
+                        // 🛡️ F2 FIX: ver fix idéntico arriba — limpiar tracker para evitar contaminación.
+                        _context.ChangeTracker.Clear();
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Watchdog failed to rescue a stuck confirmed appointment",
                             details: $"ProcessOverdueTimersAsync (state sweep) could not transition appointment {appt.Id} to awaiting_report: {exAppt.Message}",

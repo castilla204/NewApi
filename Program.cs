@@ -1635,6 +1635,24 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     svc => svc.ProcessExpiringPaymentIntentsAsync(),
     "0 * * * *", // cada hora en punto
     n29UtcOptions);
+
+// 🛡️ R5-F1: rescata AppointmentTimers que quedaron con HangfireJobId=NULL (proceso muere
+// entre commit del timer y BackgroundJob.Schedule). Cada 15 min batch de 200 max para
+// no saturar Hangfire en caso de backlog grande.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "orphaned-timers-rescue",
+    svc => svc.RescueOrphanedAppointmentTimersAsync(),
+    "*/15 * * * *",
+    n29UtcOptions);
+
+// 🛡️ R5-F5: detecta SearchHires finalizados (completed/dispute_resolved_*) hace >24h SIN
+// ninguna FinancialTransaction Refund/Payout asociada → ProcessMoneyDistribution falló o
+// nunca corrió. Log Critical para reconciliación manual (no auto-fix por seguridad).
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "unreconciled-hires-detector",
+    svc => svc.DetectUnreconciledFinalizedHiresAsync(),
+    Hangfire.Cron.Daily(6, 0),
+    n29UtcOptions);
 /*
 RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     "cleanup-expired-refresh-tokens",

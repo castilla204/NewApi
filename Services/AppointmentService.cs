@@ -3075,8 +3075,14 @@ namespace newApi.Services
         {
             try
             {
+                // 🛡️ R5-C2 FIX: limit batch a 500 timers por ejecución. Si hay backlog grande
+                // (5000+ timers acumulados tras outage), procesarlos en serie tardaría minutos y
+                // bloquearía la réplica. Con 500 por iteración y watchdog cada 10 min, drenamos
+                // 3000/h — suficiente para recuperarse de cualquier picos realista.
                 var overdueTimers = await _context.AppointmentTimers
                     .Where(t => !t.IsExpired && t.EndTime <= DateTime.UtcNow)
+                    .OrderBy(t => t.EndTime) // procesar más antiguos primero
+                    .Take(500)
                     .Select(t => new { t.Id, t.TimerType, t.AppointmentId })
                     .ToListAsync();
 

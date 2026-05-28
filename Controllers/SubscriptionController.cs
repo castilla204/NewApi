@@ -2805,7 +2805,13 @@ namespace newApi.Controllers
                                         "PaymentIntentId is missing from session");
                                     eventMarkedProcessing = false;
                                 }
-                                return BadRequest(new { error = "PaymentIntentId is missing from session" });
+                                // 🛡️ A3 FIX: devolver 500 (no 400) para que Stripe REINTENTE. Si el
+                                // PaymentIntentId vino vacío por un timeout transitorio de Stripe API,
+                                // perder el evento equivale a perder el pago. Si es payload genuinamente
+                                // corrupto, Stripe desistirá tras ~3 días con backoff y queda visible
+                                // como "Failed" en BD para inspección manual. TryBeginProcessingEventAsync
+                                // re-reclama eventos en estado "Failed" en los reintentos.
+                                return StatusCode(500, new { error = "PaymentIntentId missing - Stripe will retry" });
                             }
 
                             // 🔍 IDEMPOTENCIA: Verificar si ya se procesó este evento
@@ -2872,7 +2878,11 @@ namespace newApi.Controllers
                                         "Invalid metadata format");
                                     eventMarkedProcessing = false;
                                 }
-                                return BadRequest(new { error = "Invalid metadata format" });
+                                // 🛡️ A3 FIX: 500 (no 400). Metadata inválida puede ser fallo
+                                // transitorio del extractor (deserialización) o de Stripe (campos vacíos
+                                // temporalmente). 400 hace que Stripe abandone tras 1 entrega; 500
+                                // permite reintento durante ~3 días. Queda como "Failed" en BD.
+                                return StatusCode(500, new { error = "Invalid metadata format - Stripe will retry" });
                             }
                         }
                         else if (session != null && session.Mode == "subscription")
@@ -2900,12 +2910,23 @@ namespace newApi.Controllers
                         await HandleChargeDisputeFundsEvent(stripeEvent.Type, stripeEvent.Data.Object as Stripe.Dispute);
                         break;
 
+                    // 🛡️ A4: charge.dispute.updated — cambios en una disputa abierta (evidencia, motivo).
+                    case "charge.dispute.updated":
+                        await HandleChargeDisputeUpdated(stripeEvent.Data.Object as Stripe.Dispute);
+                        break;
+
                     case "charge.refunded":
                         await HandleChargeRefunded(stripeEvent.Data.Object as Charge);
                         break;
 
+                    // 🛡️ A4: charge.failed — el cargo falló a nivel de "charge" (no de payment_intent).
+                    case "charge.failed":
+                        await HandleChargeFailed(stripeEvent.Data.Object as Charge);
+                        break;
+
                     case "payout.paid":
                     case "payout.failed":
+                    case "payout.canceled": // 🛡️ A4: ahora también canceled (alerta crítica)
                         await HandlePayoutEvent(stripeEvent.Type, stripeEvent.Data.Object as Payout, stripeEvent.Account);
                         break;
 
@@ -6191,6 +6212,27 @@ namespace newApi.Controllers
                         payout.Status
                     });
             }
+            else if (string.Equals(eventType, "payout.canceled", StringComparison.OrdinalIgnoreCase))
+            {
+                // 🛡️ A4: payout.canceled es muy raro y siempre crítico — datos bancarios inválidos,
+                // cuenta suspendida por Stripe, o cancelación manual por compliance. Sin alerta el
+                // experto queda con el dinero "en el aire" y la plataforma no se entera.
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: Payout canceled",
+                    details: $"Payout {payout.Id} of {amount}€ CANCELED for account '{accountId ?? "platform"}'. Reason: {payout.FailureMessage ?? "n/a"} ({payout.FailureCode ?? "n/a"}). ACTION REQUIRED: contactar al experto, revisar cuenta bancaria/KYC y reagendar el payout.",
+                    userId: null,
+                    source: "SubscriptionController.HandlePayoutEvent",
+                    relatedEntityType: "Payout",
+                    additionalData: new
+                    {
+                        PayoutId = payout.Id,
+                        Amount = amount,
+                        AccountId = accountId,
+                        payout.FailureMessage,
+                        payout.FailureCode,
+                        payout.Status
+                    });
+            }
             else
             {
                 await _loggingService.LogInfoAsync(
@@ -6199,6 +6241,73 @@ namespace newApi.Controllers
                     source: "SubscriptionController.HandlePayoutEvent",
                     relatedEntityType: "Payout");
             }
+        }
+
+        /// <summary>
+        /// 🛡️ A4: charge.dispute.updated — Stripe actualiza el Dispute cuando el cliente añade
+        /// evidencia, la plataforma sube counter-evidence, o cambia el estado intermedio. Antes
+        /// caía en default y se perdía visibilidad. Aquí solo se actualizan campos no-críticos
+        /// (Reason, evidence) si el Dispute ya existe localmente. La resolución final se sigue
+        /// manejando en charge.dispute.closed (no aquí).
+        /// </summary>
+        private async Task HandleChargeDisputeUpdated(Stripe.Dispute? dispute)
+        {
+            if (dispute == null) return;
+
+            var local = await _context.Disputes
+                .FirstOrDefaultAsync(d => d.StripeDisputeId == dispute.Id);
+
+            if (local == null)
+            {
+                // Dispute no local todavía — probablemente llegará el .created en otra entrega.
+                // Sólo log info, no alerta.
+                await _loggingService.LogInfoAsync(
+                    message: "charge.dispute.updated for unknown local dispute",
+                    details: $"StripeDisputeId={dispute.Id} status={dispute.Status} reason={dispute.Reason}",
+                    source: "SubscriptionController.HandleChargeDisputeUpdated",
+                    relatedEntityType: "Dispute");
+                return;
+            }
+
+            // Refrescar campos del Dispute (motivo puede cambiar; estado intermedio también).
+            // NO tocamos el StatusId interno — eso lo hace charge.dispute.closed.
+            var changed = false;
+            if (!string.IsNullOrEmpty(dispute.Reason) && local.Reason != dispute.Reason)
+            {
+                local.Reason = dispute.Reason;
+                changed = true;
+            }
+            if (changed)
+            {
+                await _context.SaveChangesAsync();
+            }
+
+            await _loggingService.LogInfoAsync(
+                message: "charge.dispute.updated processed",
+                details: $"DisputeId={local.Id} StripeDisputeId={dispute.Id} stripeStatus={dispute.Status} reason={dispute.Reason} changed={changed}",
+                source: "SubscriptionController.HandleChargeDisputeUpdated",
+                relatedEntityType: "Dispute",
+                relatedEntityId: local.Id);
+        }
+
+        /// <summary>
+        /// 🛡️ A4: charge.failed — el cargo en sí falló (no el payment_intent). Es raro porque
+        /// payment_intent.payment_failed cubre el caso normal, pero ocurre p.ej. con fraude
+        /// detectado post-auth. Solo log + alerta — el flujo de hire ya se aborta por el
+        /// payment_intent fallido. Sin handler antes caía a default = silencio.
+        /// </summary>
+        private async Task HandleChargeFailed(Charge? charge)
+        {
+            if (charge == null) return;
+            var amount = charge.Amount / 100m;
+
+            await _loggingService.LogWarningAsync(
+                message: "Stripe charge.failed",
+                details: $"ChargeId={charge.Id} amount={amount}€ failure_code={charge.FailureCode ?? "n/a"} failure_message={charge.FailureMessage ?? "n/a"} outcome={charge.Outcome?.Reason ?? "n/a"} risk={charge.Outcome?.RiskLevel ?? "n/a"} PI={charge.PaymentIntentId ?? "n/a"}",
+                userId: null,
+                source: "SubscriptionController.HandleChargeFailed",
+                relatedEntityType: "Charge",
+                relatedEntityId: null);
         }
 
         /// <summary>
@@ -7285,6 +7394,10 @@ namespace newApi.Controllers
                 {
                     Console.Error.WriteLine($"[HandleApprovedAccountRejection] {ex.GetType().Name}: {ex.Message}");
                 }
+                // 🛡️ A2 FIX: relanzar para que el caller (account.updated try-catch línea ~2369)
+                // marque el webhook como "Failed" y devuelva 500. Sin throw, Stripe creía que el
+                // webhook fue OK y NO reintentaba → hires zombi (refund pendiente, sin manual review).
+                throw;
             }
         }
 

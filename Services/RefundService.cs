@@ -1810,7 +1810,11 @@ namespace newApi.Services
                     UserId = payout.UserId,
                     Amount = -reverseAmount,
                     AmountCents = -remainderCents,
-                    TransactionType = "TransferReversal",
+                    // 🛡️ B2 FIX: TransactionType distinto del clawback ("TransferReversal") para que
+                    // HandleChargeDisputeClosed (caso "won") pueda discriminar al calcular el monto
+                    // a reintegrar al experto: solo lo revertido POR EL CHARGEBACK debe reintegrarse,
+                    // NUNCA el clawback de la disputa interna previa (sigue siendo legítimo).
+                    TransactionType = "ChargebackReversal",
                     RelatedEntityType = "SearchHire",
                     RelatedEntityId = searchHireId,
                     StripeTransferId = payout.StripeTransferId,

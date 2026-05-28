@@ -1983,16 +1983,26 @@ namespace newApi.Services
         }
 
         /// <summary>
-        /// Mapea un string de AppointmentStatus a su enum correspondiente
+        /// Mapea un string de AppointmentStatus a su enum correspondiente. Delega en
+        /// AppointmentStatusExtensions.FromStringValue para soportar TODOS los valores del enum,
+        /// no solo los antiguos *_account_delete (que ya no se usan tras el FIX F1).
         /// </summary>
         private AppointmentStatus? MapAppointmentStatus(string statusValue)
         {
-            return statusValue switch
+            // 🔧 FIX F1 (fallback): antes el switch local solo conocía los 2 literales viejos
+            // *_account_delete. Al cambiar AccountDeletionService a usar
+            // appointment_completed_without_client_approval / appointment_cancelled_by_expert_second,
+            // este map devolvía null → EnsureStateChangedAsync (línea 1816) salía sin tocar nada →
+            // cita zombi cuando ProcessMoneyDistributionAsync devolvía false (Stripe 5xx, balance,
+            // etc.). Delegar al extension del enum hace que F1 funcione en TODOS los caminos.
+            try
             {
-                "appointment_cancelled_by_client_account_delete" => AppointmentStatus.AppointmentCancelledByClientAccountDelete,
-                "appointment_cancelled_by_expert_account_delete" => AppointmentStatus.AppointmentCancelledByExpertAccountDelete,
-                _ => null
-            };
+                return AppointmentStatusExtensions.FromStringValue(statusValue);
+            }
+            catch (ArgumentException)
+            {
+                return null;
+            }
         }
 
         /// <summary>

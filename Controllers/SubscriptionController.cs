@@ -4994,6 +4994,15 @@ namespace newApi.Controllers
                 bool enqueueRetry = false;
                 int retryHireId = 0;
                 int successHireId = 0;
+                // 🛡️ B3/F6: snapshot capturado dentro del strategy para enviar evidencia a Stripe
+                // FUERA de la transacción (después del commit), evitando que un fallo del UpdateAsync
+                // de Stripe rollee la resolución ya persistida.
+                string? f6StripeDisputeId = null;
+                int f6DisputeId = 0;
+                string? f6Reason = null;
+                string? f6ExpertResponse = null;
+                string? f6ResolutionComments = null;
+                bool f6ShouldSubmit = false;
 
                 var strategy = _context.Database.CreateExecutionStrategy();
                 var actionResult = await strategy.ExecuteAsync<IActionResult>(async () =>
@@ -5028,6 +5037,27 @@ namespace newApi.Controllers
                         await transaction.RollbackAsync();
                         return NotFound(new { message = "No pending dispute found" });
                     }
+
+                    // 🛡️ B3 FIX: claim atómico Pending→Resolving para cerrar la race con
+                    // DisputeController.ResolveDispute (otro endpoint admin que también puede
+                    // resolver esta misma disputa). Solo un endpoint voltea Pending→Resolving
+                    // (1 fila afectada); el segundo recibe 0 filas y se rechaza. Replicado del
+                    // patrón ya probado en DisputeController línea ~530.
+                    var disputeIdToClaim = dispute.Id;
+                    var claimed = await _context.Database.ExecuteSqlInterpolatedAsync(
+                        $"UPDATE \"Disputes\" SET \"Status\" = 'Resolving' WHERE \"Id\" = {disputeIdToClaim} AND \"Status\" = 'Pending'");
+                    if (claimed == 0)
+                    {
+                        await transaction.RollbackAsync();
+                        return BadRequest(new { message = "Dispute is already resolved or currently being resolved" });
+                    }
+                    dispute.Status = "Resolving"; // alinear entidad en memoria con el claim ya persistido
+
+                    // Auto-sanación: si esta request muere tras el claim sin dejar Resolved/Pending,
+                    // el job devuelve la disputa a Pending en 10 min. No-op si la resolución acaba normal.
+                    Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                        s => s.RescueStuckResolvingDisputeAsync(disputeIdToClaim),
+                        TimeSpan.FromMinutes(10));
 
                     dispute.ResolutionComments = request.Resolution;
 
@@ -5085,6 +5115,19 @@ namespace newApi.Controllers
                     if (success)
                     {
                         dispute.Status = "Resolved";
+
+                        // 🛡️ B3/F6: capturar snapshot para enviar evidencia a Stripe FUERA de la tx.
+                        // Solo aplica si la disputa está vinculada a Stripe y se resuelve a favor del experto
+                        // (caso del chargeback: queremos defender el cargo presentando evidencia).
+                        if (!request.ResolveInFavorOfClient && !string.IsNullOrEmpty(dispute.StripeDisputeId))
+                        {
+                            f6StripeDisputeId = dispute.StripeDisputeId;
+                            f6DisputeId = dispute.Id;
+                            f6Reason = dispute.Reason;
+                            f6ExpertResponse = dispute.ExpertResponse;
+                            f6ResolutionComments = dispute.ResolutionComments;
+                            f6ShouldSubmit = true;
+                        }
                     }
 
                     try
@@ -5145,6 +5188,45 @@ namespace newApi.Controllers
                             relatedEntityType: "SearchHire",
                             relatedEntityId: successHireId
                         );
+                    }
+                }
+
+                // 🛡️ B3/F6: enviar evidencia a Stripe FUERA de la transacción (post-commit).
+                // Si falla aquí no afecta al estado interno ya persistido; solo log critical para
+                // que el admin pueda reenviar manualmente desde el Dashboard.
+                if (f6ShouldSubmit && !string.IsNullOrEmpty(f6StripeDisputeId))
+                {
+                    try
+                    {
+                        var combinedText = string.Join(" | ",
+                            new[]
+                            {
+                                string.IsNullOrWhiteSpace(f6Reason) ? null : $"Reason: {f6Reason}",
+                                string.IsNullOrWhiteSpace(f6ExpertResponse) ? null : $"Expert response: {f6ExpertResponse}",
+                                string.IsNullOrWhiteSpace(f6ResolutionComments) ? null : $"Resolution: {f6ResolutionComments}"
+                            }.Where(s => !string.IsNullOrEmpty(s)));
+                        if (combinedText.Length > 150_000) combinedText = combinedText.Substring(0, 150_000);
+
+                        await new Stripe.DisputeService().UpdateAsync(
+                            f6StripeDisputeId,
+                            new Stripe.DisputeUpdateOptions
+                            {
+                                Evidence = new Stripe.DisputeEvidenceOptions
+                                {
+                                    UncategorizedText = string.IsNullOrWhiteSpace(combinedText) ? null : combinedText
+                                },
+                                Submit = true
+                            },
+                            new Stripe.RequestOptions { IdempotencyKey = $"dispute-submit-{f6DisputeId}-{DateTime.UtcNow:yyyyMMddHHmm}" });
+                    }
+                    catch (Exception submitEx)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "Failed to submit dispute evidence to Stripe on resolution",
+                            details: $"DisputeId {f6DisputeId} StripeDisputeId {f6StripeDisputeId}: {submitEx.Message}. Admin debe reenviar manualmente desde Stripe Dashboard.",
+                            source: "SubscriptionController.ResolveDispute",
+                            relatedEntityType: "Dispute",
+                            relatedEntityId: f6DisputeId);
                     }
                 }
 

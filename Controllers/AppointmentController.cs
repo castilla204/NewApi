@@ -139,9 +139,30 @@ namespace newApi.Controllers
         {
             try
             {
+                // 🛡️ R9 FIX: ownership check — sin esto cualquier user autenticado leía
+                // cualquier appointment (datos del cliente/experto + fecha/hora/ubicación).
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+                var isAdmin = _authService.IsAdmin(User);
+
                 var appointment = await _appointmentService.GetAppointmentAsync(id);
                 if (appointment == null)
                     return NotFound(new { message = "Appointment not found" });
+
+                // Ownership via SearchHire del appointment.
+                var hireOwnership = await _context.SearchHires
+                    .AsNoTracking()
+                    .Where(sh => sh.Id == appointment.SearchHireId)
+                    .Select(sh => new { sh.ClientId, sh.ExpertId })
+                    .FirstOrDefaultAsync();
+                if (!isAdmin && hireOwnership != null
+                    && hireOwnership.ClientId != userId && hireOwnership.ExpertId != userId)
+                {
+                    return Forbid();
+                }
 
                 return Ok(appointment);
             }
@@ -159,6 +180,29 @@ namespace newApi.Controllers
         {
             try
             {
+                // 🛡️ R10 FIX: ownership check via SearchHire — sin esto cualquier user enumeraba
+                // citas por hireId ajeno.
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+                var isAdmin = _authService.IsAdmin(User);
+
+                var hireOwnership = await _context.SearchHires
+                    .AsNoTracking()
+                    .Where(sh => sh.Id == searchHireId)
+                    .Select(sh => new { sh.ClientId, sh.ExpertId })
+                    .FirstOrDefaultAsync();
+                if (hireOwnership == null)
+                {
+                    return NotFound(new { message = "SearchHire not found" });
+                }
+                if (!isAdmin && hireOwnership.ClientId != userId && hireOwnership.ExpertId != userId)
+                {
+                    return Forbid();
+                }
+
                 var appointment = await _appointmentService.GetAppointmentBySearchHireIdAsync(searchHireId);
                 if (appointment == null)
                     return NotFound(new { message = "Appointment not found" });

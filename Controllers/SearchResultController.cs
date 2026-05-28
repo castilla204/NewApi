@@ -32,6 +32,29 @@ namespace newApi.Controllers
         {
             try
             {
+                // 🛡️ R11 FIX: ownership check del Search — sin esto cualquier user autenticado
+                // enumeraba resultados (ads encontrados) de búsquedas ajenas.
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+                var isAdmin = _authService.IsAdmin(User);
+
+                var searchOwnerId = await _context.Searches
+                    .AsNoTracking()
+                    .Where(s => s.Id == searchId)
+                    .Select(s => s.UserId)
+                    .FirstOrDefaultAsync();
+                if (searchOwnerId == 0)
+                {
+                    return NotFound(new { message = "Search not found" });
+                }
+                if (!isAdmin && searchOwnerId != userId)
+                {
+                    return Forbid();
+                }
+
                 // Obtiene los resultados de búsqueda de la base de datos
                 var ads = await _context.SearchResults
                     .Where(sr => sr.SearchId == searchId)

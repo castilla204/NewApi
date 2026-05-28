@@ -93,6 +93,17 @@ namespace newApi.Services
             var serviceCategory = searchHire.SearchService.Category.Name ?? "Categoría eliminada";
             var total = searchHire.Amount; // bruto con IVA incluido (si lo hay)
             // 🔧 FIX internacional: NO inventar 21% de IVA. Derivar del impuesto REAL (Stripe Tax).
+            // 🛡️ N21 FIX: si la plataforma YA está registrada fiscalmente (flip H aplicado) pero el
+            // SearchHire es LEGACY (sin TaxAmount/BaseAmount poblados antes de Stripe Tax), la factura
+            // sale con IVA=0% — incumplimiento fiscal silencioso. Loguear critical para alerta al admin
+            // (debe regenerar la factura manualmente con los datos correctos o bloquear la emisión).
+            // Pre-flip (IsVatRegistered=false): recibo simple sin IVA es correcto → log info silencioso.
+            if (searchHire.TaxAmount == null && _fiscal.IsReadyForFlip())
+            {
+                Console.WriteLine($"[INVOICE SERVICE] CRITICAL N21: SearchHire {searchHire.Id} sin TaxAmount/BaseAmount " +
+                    $"pero plataforma está registrada (IsVatRegistered=true). Factura emitida con IVA=0% como fallback. " +
+                    $"ACCIÓN ADMIN: regenerar manualmente con datos fiscales correctos o bloquear emisión.");
+            }
             var iva = searchHire.TaxAmount ?? 0m;
             var baseSinIva = searchHire.BaseAmount ?? Math.Round(total - iva, 2);
             var ivaPct = (baseSinIva > 0m && iva > 0m)

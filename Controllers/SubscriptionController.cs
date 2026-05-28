@@ -1761,17 +1761,32 @@ namespace newApi.Controllers
                 var pendingStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Pending.ToStringValue());
                 var awaitingStatusId = await GetStatusIdByValueAsync(SearchHireStatus.AwaitingClientDecision.ToStringValue());
                 var disputedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
-                
+
                 var existingHire = await _context.SearchHires
-                    .FirstOrDefaultAsync(sh => sh.ClientId == userId && 
-                                              sh.SearchServiceId == service.Id && 
-                                              (sh.StatusId == pendingStatusId || 
+                    .FirstOrDefaultAsync(sh => sh.ClientId == userId &&
+                                              sh.SearchServiceId == service.Id &&
+                                              (sh.StatusId == pendingStatusId ||
                                                sh.StatusId == awaitingStatusId ||
                                                sh.StatusId == disputedStatusId));
-                
+
                 if (existingHire != null)
                 {
                     return BadRequest(new { message = "Ya tienes una contratación activa para este servicio" });
+                }
+
+                // 🛡️ N17 FIX: límite global de hires Pending por cliente — evita DoS / spam (el
+                // existingHire de arriba protege solo por (cliente,servicio), un atacante puede
+                // saltarlo creando N hires a servicios distintos del mismo experto). Límite arbitrario 20.
+                const int N17_MAX_PENDING_HIRES_PER_CLIENT = 20;
+                var n17PendingCount = await _context.SearchHires
+                    .AsNoTracking()
+                    .CountAsync(sh => sh.ClientId == userId && sh.StatusId == pendingStatusId);
+                if (n17PendingCount >= N17_MAX_PENDING_HIRES_PER_CLIENT)
+                {
+                    return BadRequest(new
+                    {
+                        message = $"Has alcanzado el límite de {N17_MAX_PENDING_HIRES_PER_CLIENT} contrataciones pendientes simultáneas. Completa o cancela algunas antes de crear nuevas."
+                    });
                 }
 
                 // 💳 SIEMPRE PAGAR CON STRIPE - NO USAR SALDO INTERNO
@@ -4656,17 +4671,32 @@ namespace newApi.Controllers
                 var pendingStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Pending.ToStringValue());
                 var awaitingStatusId = await GetStatusIdByValueAsync(SearchHireStatus.AwaitingClientDecision.ToStringValue());
                 var disputedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
-                
+
                 var existingHire = await _context.SearchHires
-                    .FirstOrDefaultAsync(sh => sh.ClientId == userId && 
-                                              sh.SearchServiceId == service.Id && 
-                                              (sh.StatusId == pendingStatusId || 
+                    .FirstOrDefaultAsync(sh => sh.ClientId == userId &&
+                                              sh.SearchServiceId == service.Id &&
+                                              (sh.StatusId == pendingStatusId ||
                                                sh.StatusId == awaitingStatusId ||
                                                sh.StatusId == disputedStatusId));
-                
+
                 if (existingHire != null)
                 {
                     return BadRequest(new { message = "Ya tienes una contratación activa para este servicio" });
+                }
+
+                // 🛡️ N17 FIX: límite global de hires Pending por cliente — evita DoS / spam (el
+                // existingHire de arriba protege solo por (cliente,servicio), un atacante puede
+                // saltarlo creando N hires a servicios distintos del mismo experto). Límite arbitrario 20.
+                const int N17_MAX_PENDING_HIRES_PER_CLIENT = 20;
+                var n17PendingCount = await _context.SearchHires
+                    .AsNoTracking()
+                    .CountAsync(sh => sh.ClientId == userId && sh.StatusId == pendingStatusId);
+                if (n17PendingCount >= N17_MAX_PENDING_HIRES_PER_CLIENT)
+                {
+                    return BadRequest(new
+                    {
+                        message = $"Has alcanzado el límite de {N17_MAX_PENDING_HIRES_PER_CLIENT} contrataciones pendientes simultáneas. Completa o cancela algunas antes de crear nuevas."
+                    });
                 }
 
                 // 💳 SIEMPRE PAGAR CON STRIPE - NO USAR SALDO INTERNO
@@ -7042,6 +7072,46 @@ namespace newApi.Controllers
                 var userId = paymentIntent.Metadata?.ContainsKey("userId") == true &&
                             int.TryParse(paymentIntent.Metadata["userId"], out int parsedUserId)
                             ? parsedUserId : (int?)null;
+
+                // 🛡️ N23 FIX: Stripe usa el mismo evento payment_intent.canceled tanto para PI
+                // que expiró sin captura (caso normal con CaptureMethod=manual) como para PI
+                // que SÍ fue capturado y luego cancelado manualmente desde Dashboard (raro pero
+                // posible). En el segundo caso el cliente fue cobrado y SE NECESITA refund.
+                // Stripe.net v50+ eliminó pi.Charges → usamos pi.LatestChargeId (o GetAsync con
+                // expand=latest_charge) y comprobamos el status del último charge.
+                try
+                {
+                    if (!string.IsNullOrEmpty(paymentIntent.LatestChargeId))
+                    {
+                        var n23ChargeSvc = new Stripe.ChargeService();
+                        var latestCharge = await n23ChargeSvc.GetAsync(paymentIntent.LatestChargeId);
+                        if (latestCharge != null && string.Equals(latestCharge.Status, "succeeded", StringComparison.OrdinalIgnoreCase) && !latestCharge.Refunded)
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL N23: payment_intent.canceled con cargo CAPTURADO — refund manual requerido",
+                                details: $"PI {paymentIntent.Id} ({amount}€) llegó como canceled pero el latest charge {latestCharge.Id} está succeeded y NO refunded. " +
+                                         $"El dinero SÍ se cobró al cliente. ACCIÓN ADMIN: emitir refund manual desde Stripe Dashboard " +
+                                         $"(Refunds → {paymentIntent.Id}) y revertir cualquier transfer al experto si ya se hizo. " +
+                                         $"El handler sigue cancelando el hire local — la reconciliación de dinero es manual.",
+                                userId: userId,
+                                source: "SubscriptionController.HandlePaymentIntentCanceled.N23",
+                                relatedEntityType: "PaymentIntent",
+                                relatedEntityId: null,
+                                additionalData: new { PaymentIntentId = paymentIntent.Id, Amount = amount, ChargeId = latestCharge.Id, ChargeStatus = latestCharge.Status, latestCharge.Refunded });
+                        }
+                    }
+                }
+                catch (Exception n23Ex)
+                {
+                    // Si no podemos comprobar el charge, log warning y continuar (no bloquear el flow del cancel).
+                    await _loggingService.LogWarningAsync(
+                        message: "N23: failed to check latest charge status on PI canceled",
+                        details: $"PI {paymentIntent.Id}: no se pudo verificar el charge para detectar refund pendiente. Verificar manualmente en Stripe Dashboard. Error: {n23Ex.Message}",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePaymentIntentCanceled.N23",
+                        relatedEntityType: "PaymentIntent",
+                        relatedEntityId: null);
+                }
 
                 await _loggingService.LogWarningAsync(
                     message: "Payment intent canceled (deferred capture expired or voided)",

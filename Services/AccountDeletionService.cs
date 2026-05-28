@@ -1044,6 +1044,27 @@ namespace newApi.Services
                 // Usar SQL directo para anonimización (más eficiente y evita problemas de EF Core)
                 try
                 {
+                    // 🛡️ N19 FIX: eliminar MessageAttachments del User ANTES de anonimizar Messages.
+                    // Los attachments contienen Url (Supabase Storage path) y ObjectName que pueden tener
+                    // PII en el filename (ej: "cv_juan_perez.pdf", "scan_dni_12345678.jpg"). Anonimizar
+                    // solo SenderId/Content dejaba estos archivos huérfanos accesibles → violación GDPR Art 17.
+                    var n19AttachmentsDeleted = await _context.Database.ExecuteSqlRawAsync(
+                        @"DELETE FROM ""MessageAttachments""
+                          WHERE ""MessageId"" IN (
+                              SELECT ""Id"" FROM ""Messages"" WHERE ""SenderId"" = {0}
+                          )",
+                        new object[] { userId }, cancellationToken);
+                    if (n19AttachmentsDeleted > 0)
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "N19: deleted MessageAttachments for account deletion",
+                            details: $"Deleted {n19AttachmentsDeleted} MessageAttachment(s) for user {userId} antes de anonimizar Messages. Las URLs a Supabase Storage / ObjectName con potencial PII quedan removidas del ledger.",
+                            userId: null,
+                            source: "AccountDeletionService.DeleteUserDataAsync.N19",
+                            relatedEntityType: "MessageAttachment",
+                            relatedEntityId: null);
+                    }
+
                     // 1. ✅ ANONIMIZAR mensajes (NO ELIMINAR - preservar para la otra parte)
                     // PostgreSQL + C# Best Practice: Anonimizar en lugar de eliminar para preservar contexto
                     // SenderId es nullable, usar NULL directamente
@@ -1098,13 +1119,18 @@ namespace newApi.Services
                     // ✅ IDEMPOTENCIA: Solo actualizar si ReviewerId no es NULL (no anonimizado ya)
                     // ✅ MEJORA: Agregar UpdatedAt para trazabilidad (aunque Review no tiene UpdatedAt, se preserva CreatedAt)
                     // ✅ CRÍTICO: Anonimizar Reviews ANTES de anonimizar/eliminar SearchHires para evitar violaciones de FK
+                    // 🛡️ N20 FIX: SUBSTRING para evitar overflow si Description ya estaba cerca del límite
+                    // (la concatenación añade 20 caracteres "[Usuario eliminado] " + el original) +
+                    // ILIKE (no LIKE) en la verificación de idempotencia para que no añada doble prefijo
+                    // si la fila ya está anonimizada con diferente casing.
                     var reviewsCount = await _context.Database.ExecuteSqlRawAsync(
                         @"UPDATE ""Reviews""
                           SET ""ReviewerId"" = NULL,
                               ""Description"" = CASE WHEN ""Description"" IS NOT NULL AND ""Description"" != ''
-                                  THEN '[Usuario eliminado] ' || ""Description""
+                                  THEN SUBSTRING('[Usuario eliminado] ' || ""Description"" FROM 1 FOR 2000)
                                   ELSE ""Description"" END
-                          WHERE ""ReviewerId"" = {0} AND ""ReviewerId"" IS NOT NULL",
+                          WHERE ""ReviewerId"" = {0} AND ""ReviewerId"" IS NOT NULL
+                          AND COALESCE(""Description"", '') NOT ILIKE '[Usuario eliminado]%'",
                         new object[] { userId }, cancellationToken);
 
                     // ✅ CRÍTICO: También anonimizar Reviews que referencian SearchHires del usuario
@@ -1112,12 +1138,12 @@ namespace newApi.Services
                     var reviewsForUserSearchHires = await _context.Database.ExecuteSqlRawAsync(
                         @"UPDATE ""Reviews""
                           SET ""Description"" = CASE WHEN ""Description"" IS NOT NULL AND ""Description"" != ''
-                                  THEN '[Usuario eliminado] ' || ""Description""
+                                  THEN SUBSTRING('[Usuario eliminado] ' || ""Description"" FROM 1 FOR 2000)
                                   ELSE ""Description"" END
                           WHERE ""SearchHireId"" IN (
                               SELECT ""Id"" FROM ""SearchHires""
                               WHERE ""ClientId"" = {0} OR ""ExpertId"" = {0}
-                          ) AND ""Description"" NOT LIKE '[Usuario eliminado]%'",
+                          ) AND COALESCE(""Description"", '') NOT ILIKE '[Usuario eliminado]%'",
                         new object[] { userId }, cancellationToken);
 
                     var totalReviewsAnonymized = reviewsCount + reviewsForUserSearchHires;
@@ -2182,13 +2208,21 @@ namespace newApi.Services
                     }
                     catch (Exception ex)
                     {
-                        // Si el job ya no existe o fue procesado, continuar sin error
-                        // Loguear pero no fallar - la cancelación de Hangfire no es crítica
-                        await _loggingService.LogWarningAsync(
-                            message: "Failed to cancel Hangfire job during account deletion",
-                            details: $"Failed to cancel Hangfire job {jobId} for SearchHire {searchHireId} during account deletion. Job may have already been processed. Error: {ex.Message}",
+                        // 🛡️ N18 FIX: upgrade a CRITICAL. Si BackgroundJob.Delete falla (Redis/Hangfire
+                        // transitorio), el job sigue encolado y puede ejecutar contra User borrado.
+                        // El handler ya re-valida estado del appointment/user antes de actuar (ver
+                        // ProcessAppointmentTimerAsync), así que el riesgo está mitigado — pero el
+                        // admin necesita saberlo para vigilancia post-delete. Antes era Warning →
+                        // se perdía en el ruido. Ahora Critical garantiza email + digest.
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL N18: Hangfire delete falló — job huérfano puede ejecutar tras delete",
+                            details: $"Failed to cancel Hangfire job {jobId} for SearchHire {searchHireId} during account deletion. " +
+                                     $"El timer ya está marcado IsExpired=true en BD, y el handler re-valida estado (debería no-op), " +
+                                     $"pero hay ventana de race. Si el handler procesa antes del SaveChanges de IsExpired=true, " +
+                                     $"actuará sobre User borrado. ACCIÓN ADMIN: revisar Hangfire dashboard 30 min después y " +
+                                     $"borrar manualmente el job {jobId} si sigue presente. Error: {ex.Message}",
                             userId: null,
-                            source: "AccountDeletionService.CancelActiveTimersAndHangfireJobsAsync",
+                            source: "AccountDeletionService.CancelActiveTimersAndHangfireJobsAsync.N18",
                             relatedEntityType: "AppointmentTimer",
                             relatedEntityId: appointment.Id,
                             additionalData: new

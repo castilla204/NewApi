@@ -152,6 +152,25 @@ namespace newApi.Controllers
                 bool isCompletedRecently = hireStatus == SearchHireStatus.Completed.ToStringValue()
                     && searchHire.UpdatedAt.HasValue
                     && searchHire.UpdatedAt.Value.AddDays(14) >= DateTime.UtcNow;
+
+                // 🛡️ N14 FIX: si el hire está Completed pero ya hubo distribución de dinero
+                // (Refund con StripeRefundId o Payout con StripeTransferId), abrir UNA NUEVA disputa
+                // crea un flujo paralelo confuso: la disputa pedirá refund/clawback contra movimientos
+                // ya consumados → doble distribución, ledger inconsistente. Mejor bloquearlo y obligar
+                // al cliente a abrir incidencia manual con admin.
+                if (isCompletedRecently)
+                {
+                    var alreadyDistributed = await _context.FinancialTransactions
+                        .AsNoTracking()
+                        .AnyAsync(ft => ft.RelatedEntityType == "SearchHire"
+                                        && ft.RelatedEntityId == searchHire.Id
+                                        && ((ft.TransactionType == "Refund" && !string.IsNullOrEmpty(ft.StripeRefundId))
+                                            || (ft.TransactionType == "Payout" && !string.IsNullOrEmpty(ft.StripeTransferId))));
+                    if (alreadyDistributed)
+                    {
+                        return BadRequest(new { message = "Este servicio ya fue resuelto con distribución de dinero. Para una incidencia posterior, contacta con soporte." });
+                    }
+                }
                 var disputableAppointmentStatuses = new[]
                 {
                     "appointment_confirmed",

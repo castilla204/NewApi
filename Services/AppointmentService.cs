@@ -3093,7 +3093,6 @@ namespace newApi.Services
                         // 🛡️ F2 FIX: limpiar ChangeTracker para que entidades modificadas por la
                         // iteración fallida no se persistan en el siguiente SaveChanges (otra iteración
                         // del foreach o cualquier llamada posterior reutiliza el mismo _context).
-                        _context.ChangeTracker.Clear();
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Watchdog failed to process an overdue appointment timer",
                             details: $"ProcessOverdueTimersAsync could not process timer {timer.Id} (type {timer.TimerType}): {exTimer.Message}",
@@ -3101,6 +3100,15 @@ namespace newApi.Services
                             source: "AppointmentService.ProcessOverdueTimersAsync",
                             relatedEntityType: "AppointmentTimer",
                             relatedEntityId: timer.Id);
+                    }
+                    finally
+                    {
+                        // 🛡️ N22 FIX: limpiar SIEMPRE el ChangeTracker tras cada iteración (no solo en
+                        // excepciones — F2 cubría solo el catch). ProcessAppointmentTimerAsync hace
+                        // Include de timer+appointment+searchhire+statuses+users tracked, y si la iteración
+                        // completa exitosamente esas entidades se quedan en el tracker para la siguiente.
+                        // Watchdog procesa hasta 1000+ timers → memory leak + posible doble-update en BD.
+                        _context.ChangeTracker.Clear();
                     }
                 }
 
@@ -3144,7 +3152,6 @@ namespace newApi.Services
                     catch (Exception exAppt)
                     {
                         // 🛡️ F2 FIX: ver fix idéntico arriba — limpiar tracker para evitar contaminación.
-                        _context.ChangeTracker.Clear();
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Watchdog failed to rescue a stuck confirmed appointment",
                             details: $"ProcessOverdueTimersAsync (state sweep) could not transition appointment {appt.Id} to awaiting_report: {exAppt.Message}",
@@ -3152,6 +3159,11 @@ namespace newApi.Services
                             source: "AppointmentService.ProcessOverdueTimersAsync",
                             relatedEntityType: "Appointment",
                             relatedEntityId: appt.Id);
+                    }
+                    finally
+                    {
+                        // 🛡️ N22 FIX: limpiar SIEMPRE — ver fix idéntico en el foreach de arriba.
+                        _context.ChangeTracker.Clear();
                     }
                 }
             }

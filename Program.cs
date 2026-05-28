@@ -1578,10 +1578,18 @@ Hangfire.GlobalJobFilters.Filters.Add(
 // (2) Watchdog cada 10 min: recupera timers vencidos no procesados (job perdido por crash/reinicio entre
 //     Schedule y Save). Solo toca timers con EndTime <= ahora y !IsExpired (no dispara antes de tiempo) y
 //     es idempotente (ProcessAppointmentTimerAsync re-chequea estado; el dinero usa clave por-hire).
+// 🛡️ N29 FIX: TZ explícita UTC en TODOS los RecurringJob. Sin esto, los cron usan la TZ
+// del servidor (típico UTC en Render pero NO garantizado tras cambio de región). Los cron
+// diarios además sufren DST spring-forward/fall-back si la TZ tiene DST → "0 3 * * *" puede
+// no ejecutar o ejecutar dos veces el domingo del cambio. UTC no tiene DST → comportamiento
+// determinista para auditoría y conciliación.
+var n29UtcOptions = new Hangfire.RecurringJobOptions { TimeZone = TimeZoneInfo.Utc };
+
 Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IAppointmentService>(
     "appointment-timers-watchdog",
     svc => svc.ProcessOverdueTimersAsync(),
-    "*/10 * * * *");
+    "*/10 * * * *",
+    n29UtcOptions);
 
 // P2-5: Conciliación diaria BD ↔ Stripe a las 03:00 UTC. Detecta y reporta
 // (LogCritical → email admin) refunds/transfers que existen sólo en Stripe o
@@ -1589,21 +1597,24 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IAppointmentService>(
 Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IStripeReconciliationService>(
     "stripe-reconciliation-daily",
     svc => svc.RunDailyReconciliationAsync(),
-    Cron.Daily(3, 0));
+    Cron.Daily(3, 0),
+    n29UtcOptions);
 
 // P3-2: Digest cada 30 min de alertas críticas suprimidas por dedup (count > umbral).
 // LoggingService dedupa email-spam de LogCriticalAsync; este job consolida lo suprimido.
 Hangfire.RecurringJob.AddOrUpdate<newApi.Services.ILoggingService>(
     "admin-alerts-digest",
     svc => svc.EmitAdminDigestAsync(),
-    "*/30 * * * *");
+    "*/30 * * * *",
+    n29UtcOptions);
 
 // P3-1 (versión mínima): Digest diario de SearchHires con RefundFailedAt en las últimas 24h.
 // El filtro Hangfire setea RefundFailedAt cuando RetryMoneyDistributionJobAsync agota los reintentos.
 Hangfire.RecurringJob.AddOrUpdate<newApi.Services.ILoggingService>(
     "refund-failed-digest",
     svc => svc.EmitRefundFailedDigestAsync(),
-    Hangfire.Cron.Daily(7, 0));
+    Hangfire.Cron.Daily(7, 0),
+    n29UtcOptions);
 /*
 RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     "cleanup-expired-refresh-tokens",

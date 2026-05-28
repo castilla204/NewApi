@@ -1588,6 +1588,80 @@ namespace newApi.Services
                             );
                         }
 
+                        // 🛡️ N4 FIX: desconectar cuenta Stripe Connect ANTES de borrar el ExpertProfile.
+                        // Sin esto, el StripeAccountId se pierde de la BD pero la cuenta sigue ACTIVA en
+                        // Stripe indefinidamente (viola GDPR Art 17 + posibles saldos no liquidados).
+                        string? stripeAccountIdToDelete = null;
+                        try
+                        {
+                            stripeAccountIdToDelete = await _context.ExpertProfiles
+                                .IgnoreQueryFilters()
+                                .Where(ep => ep.Id == expertProfileId)
+                                .Select(ep => ep.StripeAccountId)
+                                .FirstOrDefaultAsync(cancellationToken);
+                        }
+                        catch (Exception readEx)
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "N4: failed to read StripeAccountId before delete",
+                                details: $"ExpertProfile {expertProfileId} (User {userId}): no se pudo leer StripeAccountId antes del delete; la cuenta Stripe podría quedar zombi. Error: {readEx.Message}",
+                                userId: userId,
+                                source: "AccountDeletionService.DeleteUserDataAsync.N4Read",
+                                relatedEntityType: "ExpertProfile",
+                                relatedEntityId: expertProfileId);
+                        }
+
+                        if (!string.IsNullOrEmpty(stripeAccountIdToDelete))
+                        {
+                            try
+                            {
+                                var stripeAccountService = new Stripe.AccountService();
+                                await stripeAccountService.DeleteAsync(stripeAccountIdToDelete);
+                                await _loggingService.LogInfoAsync(
+                                    message: "N4: Stripe Connect account deleted",
+                                    details: $"Cuenta Stripe Connect {stripeAccountIdToDelete} eliminada para User {userId} antes del delete del ExpertProfile {expertProfileId}.",
+                                    userId: userId,
+                                    source: "AccountDeletionService.DeleteUserDataAsync.N4Delete",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfileId);
+                            }
+                            catch (Stripe.StripeException stripeEx) when (stripeEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                            {
+                                // Cuenta ya no existe en Stripe → es lo que queremos, no error.
+                                await _loggingService.LogInfoAsync(
+                                    message: "N4: Stripe account already gone (404)",
+                                    details: $"Stripe account {stripeAccountIdToDelete} ya no existe en Stripe — continuando con delete local.",
+                                    userId: userId,
+                                    source: "AccountDeletionService.DeleteUserDataAsync.N4Delete",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfileId);
+                            }
+                            catch (Stripe.StripeException stripeEx)
+                            {
+                                // Otros errores Stripe: balance >0, capability activa, etc. NO abortamos
+                                // el delete local (el usuario tiene derecho al olvido), pero alertamos al
+                                // admin para que limpie manualmente en Stripe Dashboard.
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL N4: Failed to delete Stripe Connect account (delete local continúa)",
+                                    details: $"User {userId} ExpertProfile {expertProfileId}: Stripe account {stripeAccountIdToDelete} NO se pudo borrar ({(int?)stripeEx.HttpStatusCode}: {stripeEx.StripeError?.Code}: {stripeEx.Message}). ACCIÓN ADMIN: revisar saldo + capability + borrar manualmente en Stripe Dashboard. El delete local del User SÍ continúa para no bloquear GDPR Art 17.",
+                                    userId: userId,
+                                    source: "AccountDeletionService.DeleteUserDataAsync.N4Delete",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfileId,
+                                    additionalData: new { StripeAccountId = stripeAccountIdToDelete, stripeEx.StripeError?.Code, stripeEx.HttpStatusCode, stripeEx.Message });
+                            }
+                            catch (Exception ex)
+                            {
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL N4: Unexpected error deleting Stripe account",
+                                    details: $"User {userId} ExpertProfile {expertProfileId}: error inesperado borrando Stripe account {stripeAccountIdToDelete}: {ex.Message}",
+                                    userId: userId,
+                                    source: "AccountDeletionService.DeleteUserDataAsync.N4Delete",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfileId);
+                            }
+                        }
+
                         // ✅ Eliminar perfil de experto (no depende de servicios, FK es nullable)
                         // ✅ FIX: Usar SQL directo para evitar ExecutionStrategy dentro de transacción manual
                         var expertProfileDeleted = await _context.Database.ExecuteSqlRawAsync(

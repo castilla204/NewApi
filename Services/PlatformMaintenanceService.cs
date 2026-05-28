@@ -18,6 +18,8 @@ namespace newApi.Services
     {
         Task CleanupOldProcessedWebhookEventsAsync();
         Task ProcessExpiringPaymentIntentsAsync();
+        Task RescueOrphanedAppointmentTimersAsync(); // 🛡️ R5-F1
+        Task DetectUnreconciledFinalizedHiresAsync(); // 🛡️ R5-F5
     }
 
     public class PlatformMaintenanceService : IPlatformMaintenanceService
@@ -170,6 +172,130 @@ namespace newApi.Services
                     details: $"Cancelaciones en Stripe ya ocurrieron pero los CaptureStatus locales no se persistieron. {nearExpiry.Count} hires afectados. Error: {saveEx.Message}",
                     userId: null,
                     source: "PlatformMaintenanceService.ProcessExpiringPaymentIntentsAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: null);
+            }
+        }
+
+        /// <summary>
+        /// 🛡️ R5-F1: rescata AppointmentTimers que quedaron con HangfireJobId=NULL.
+        /// Causa: el proceso muere entre commit del timer y BackgroundJob.Schedule (R6 partial dejó
+        /// 5/6 sitios pre-commit; este watchdog cubre cualquier caso donde el Schedule falla o se pierde).
+        /// Solo considera timers NO expirados y NO procesados (EndTime futuro o pasado reciente).
+        /// </summary>
+        public async Task RescueOrphanedAppointmentTimersAsync()
+        {
+            try
+            {
+                // Buscar timers sin HangfireJobId que aún no han vencido (o vencieron en última hora).
+                var cutoff = DateTime.UtcNow.AddHours(-1);
+                var orphaned = await _context.AppointmentTimers
+                    .Where(t => !t.IsExpired
+                             && string.IsNullOrEmpty(t.HangfireJobId)
+                             && t.EndTime >= cutoff)
+                    .Take(200) // batch limit
+                    .ToListAsync();
+
+                foreach (var timer in orphaned)
+                {
+                    try
+                    {
+                        var delay = timer.EndTime - DateTime.UtcNow;
+                        if (delay < TimeSpan.Zero) delay = TimeSpan.FromSeconds(5); // ya venció → encolar inmediato
+
+                        var jobId = Hangfire.BackgroundJob.Schedule<IAppointmentService>(
+                            s => s.ProcessAppointmentTimerAsync(timer.Id),
+                            delay);
+                        timer.HangfireJobId = jobId;
+                        await _loggingService.LogWarningAsync(
+                            message: "R5-F1: orphaned AppointmentTimer rescued",
+                            details: $"Timer {timer.Id} (AppointmentId={timer.AppointmentId}, TimerType={timer.TimerType}) tenía HangfireJobId NULL — re-encolado con jobId={jobId}, delay={delay.TotalMinutes:F1}min.",
+                            userId: null,
+                            source: "PlatformMaintenanceService.RescueOrphanedAppointmentTimersAsync",
+                            relatedEntityType: "AppointmentTimer",
+                            relatedEntityId: timer.Id);
+                    }
+                    catch (Exception scheduleEx)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL R5-F1: failed to rescue orphaned timer",
+                            details: $"Timer {timer.Id}: error encolando job: {scheduleEx.Message}",
+                            userId: null,
+                            source: "PlatformMaintenanceService.RescueOrphanedAppointmentTimersAsync",
+                            relatedEntityType: "AppointmentTimer",
+                            relatedEntityId: timer.Id);
+                    }
+                }
+
+                if (orphaned.Count > 0)
+                {
+                    await _context.SaveChangesAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL R5-F1: RescueOrphanedAppointmentTimersAsync failed",
+                    details: ex.Message,
+                    userId: null,
+                    source: "PlatformMaintenanceService.RescueOrphanedAppointmentTimersAsync",
+                    relatedEntityType: "AppointmentTimer",
+                    relatedEntityId: null);
+            }
+        }
+
+        /// <summary>
+        /// 🛡️ R5-F5: detecta SearchHires en estado terminal de finalización (Completed/DisputeResolved*)
+        /// hace más de 24h SIN ninguna FT Refund/Payout asociada — síntoma de que ProcessMoneyDistribution
+        /// nunca corrió o falló silenciosamente (Hangfire perdido, etc.). Solo log Critical: requiere
+        /// reconciliación manual por admin (puede involucrar reembolso o transfer adicional via Stripe Dashboard).
+        /// </summary>
+        public async Task DetectUnreconciledFinalizedHiresAsync()
+        {
+            try
+            {
+                var cutoff = DateTime.UtcNow.AddHours(-24);
+                // Status values que indican finalización con distribución de dinero esperada
+                var finalizationStatusValues = new[]
+                {
+                    "completed",
+                    "dispute_resolved_client",
+                    "dispute_resolved_expert"
+                };
+
+                var unreconciled = await _context.SearchHires
+                    .AsNoTracking()
+                    .Include(sh => sh.Status)
+                    .Where(sh => sh.Status != null
+                              && finalizationStatusValues.Contains(sh.Status.StatusValue)
+                              && sh.UpdatedAt < cutoff
+                              && !_context.FinancialTransactions.Any(ft =>
+                                    ft.RelatedEntityType == "SearchHire"
+                                    && ft.RelatedEntityId == sh.Id
+                                    && (ft.TransactionType == "Refund" || ft.TransactionType == "Payout")))
+                    .Take(50)
+                    .ToListAsync();
+
+                foreach (var hire in unreconciled)
+                {
+                    var ageHours = (DateTime.UtcNow - (hire.UpdatedAt ?? hire.CreatedAt)).TotalHours;
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL R5-F5: SearchHire finalizado sin FT Refund/Payout",
+                        details: $"SearchHire {hire.Id} en estado '{hire.Status?.StatusValue}' hace {ageHours:F1}h pero sin FinancialTransaction Refund/Payout. Posible falla silenciosa de ProcessMoneyDistribution (job Hangfire perdido, etc.). ACCIÓN ADMIN: revisar Stripe balance de cliente/experto y reconciliar manualmente.",
+                        userId: hire.ClientId,
+                        source: "PlatformMaintenanceService.DetectUnreconciledFinalizedHiresAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hire.Id,
+                        additionalData: new { hire.Id, Status = hire.Status?.StatusValue, AgeHours = ageHours, hire.ExpertId, hire.ClientId, hire.Amount });
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL R5-F5: DetectUnreconciledFinalizedHiresAsync failed",
+                    details: ex.Message,
+                    userId: null,
+                    source: "PlatformMaintenanceService.DetectUnreconciledFinalizedHiresAsync",
                     relatedEntityType: "SearchHire",
                     relatedEntityId: null);
             }

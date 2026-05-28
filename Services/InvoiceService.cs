@@ -193,17 +193,11 @@ namespace newApi.Services
                                     }
                                 });
 
-                                // 🧾 FIX G4: mención legal de inversión del sujeto pasivo (reverse charge) cuando NO
-                                // se repercute IVA (típico B2B intracomunitario / exportación). Solo texto; no cambia
-                                // importes. El desglose por tipo real ya sale de searchHire.TaxAmount (Stripe Tax).
-                                if (iva == 0m)
-                                {
-                                    totalesColumn.Item().PaddingTop(8).Text(
-                                        "Operacion sin IVA repercutido. En su caso, inversion del sujeto pasivo " +
-                                        "(reverse charge) conforme al art. 196 de la Directiva 2006/112/CE; el IVA " +
-                                        "lo declara el destinatario.")
-                                        .FontSize(8).Italic().FontColor(Colors.Grey.Darken1);
-                                }
+                                // NOTA: documento = RECIBO simple, NO factura fiscal. La plataforma aún no es
+                                // empresa ni tiene NIF, así que NO se añaden datos fiscales (NIF emisor/cliente,
+                                // numeración secuencial) ni mención de reverse-charge (mecanismo de IVA entre
+                                // empresas registradas, inaplicable sin alta fiscal). Cuando se constituya la
+                                // empresa: añadir NIF/domicilio, serie correlativa y, si procede, reverse-charge.
                             });
                         });
                     }

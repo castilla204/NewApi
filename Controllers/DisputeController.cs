@@ -908,7 +908,10 @@ namespace newApi.Controllers
                                         Evidence = evidenceOptions,
                                         Submit = true
                                     },
-                                    new Stripe.RequestOptions { IdempotencyKey = $"dispute-submit-{dispute.Id}-{DateTime.UtcNow:yyyyMMddHHmm}" });
+                                    // 🛡️ R2 FIX: clave determinista por dispute.Id (sin DateTime.UtcNow). Reintentos
+                                    // del admin tras timeout/error genera-ban CLAVES DIFERENTES por minuto → Stripe NO
+                                    // deduplicaba y aplicaba evidencia 2 veces (confusion en evaluación + posible pérdida).
+                                    new Stripe.RequestOptions { IdempotencyKey = $"dispute-submit-{dispute.Id}" });
                             }
                             catch (Exception submitEx)
                             {
@@ -2265,7 +2268,8 @@ namespace newApi.Controllers
                         await new Stripe.DisputeService().UpdateAsync(
                             dispute.StripeDisputeId,
                             new Stripe.DisputeUpdateOptions { Evidence = evidenceOptions },
-                            new Stripe.RequestOptions { IdempotencyKey = $"dispute-evidence-{disputeId}-{DateTime.UtcNow:yyyyMMddHHmm}" });
+                            // 🛡️ R2 FIX: clave determinista por disputeId (sin DateTime.UtcNow).
+                            new Stripe.RequestOptions { IdempotencyKey = $"dispute-evidence-{disputeId}" });
                     }
                     catch (Exception stripeUpdateEx)
                     {

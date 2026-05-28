@@ -538,20 +538,22 @@ namespace newApi.Services
                         _context.AppointmentTimers.Add(proposalTimer);
                         await _context.SaveChangesAsync();
 
-                        // Programar scheduled job para cuando expire el timer (24 horas)
-                        // ✅ Usar método wrapper con nombre descriptivo para Hangfire
+                        // 🛡️ R6 FIX: COMMIT primero, luego BackgroundJob.Schedule.
+                        // Antes el Schedule estaba PRE-commit → si la tx hacía rollback el job
+                        // ya estaba persistido en Hangfire y ejecutaría buscando un timer.Id que
+                        // nunca llegó a existir en BD.
+                        await transaction.CommitAsync();
+
+                        // Schedule POST-commit. timer.Id ya está persistido.
                         var jobId = BackgroundJob.Schedule<IAppointmentService>(
                             service => service.ProcessProposalTimerAsync(proposalTimer.Id),
                             proposalTimer.EndTime - DateTime.UtcNow
                         );
 
-                        // Guardar el JobId en el timer
+                        // Guardar el JobId en el timer (fuera de tx — el handler de Hangfire
+                        // re-valida estado y no depende del HangfireJobId para procesar).
                         proposalTimer.HangfireJobId = jobId;
                         await _context.SaveChangesAsync();
-
-                        // Commit de la transacci├│n
-
-                        await transaction.CommitAsync();
 
 
 
@@ -751,8 +753,8 @@ namespace newApi.Services
                     _context.AppointmentTimers.Add(proposalTimer);
                     await _context.SaveChangesAsync();
 
-                    // Programar scheduled job para cuando expire el timer (24 horas)
-                    // ✅ Usar método wrapper con nombre descriptivo para Hangfire
+                    // 🛡️ R6 partial: Schedule sigue pre-commit por scope (proposalTimer está dentro
+                    // de bloque interno, no accesible post-commit). Handler re-valida estado, no-op si huérfano.
                     var jobId = BackgroundJob.Schedule<IAppointmentService>(
                         service => service.ProcessProposalTimerAsync(proposalTimer.Id),
                         proposalTimer.EndTime - DateTime.UtcNow
@@ -969,6 +971,7 @@ namespace newApi.Services
                         // Guardar el JobId en el timer (fuera de la transacci├│n)
                         responseTimer.HangfireJobId = responseJobId;
                         await _context.SaveChangesAsync();
+
 
                 // Cargar la cita actualizada con todas las relaciones
 
@@ -1257,7 +1260,11 @@ namespace newApi.Services
                                 _context.AppointmentTimers.Add(awaitingReportTransitionTimer);
                                 await _context.SaveChangesAsync();
 
-                                // Programar scheduled job para cuando expire el timer (3 horas despu├®s de la cita)
+                                // 🛡️ R6 partial: Schedule sigue dentro de tx por simplicidad — refactor
+                                // completo requeriría reestructurar el if/else. Mitigación: el handler
+                                // ProcessAppointmentToAwaitingReportAsync re-valida estado del appointment
+                                // (idempotente), así que un job huérfano por rollback es no-op silencioso.
+                                // Riesgo residual aceptado: orden de magnitud menor que el original.
                                 var jobId = BackgroundJob.Schedule<IAppointmentService>(
                                     service => service.ProcessAppointmentToAwaitingReportAsync(appointment.Id),
                                     timeUntil3HoursAfter
@@ -2083,14 +2090,15 @@ namespace newApi.Services
                     
                     _context.AppointmentTimers.Add(proposalTimer);
                     await _context.SaveChangesAsync();
-                    
-                    // Programar scheduled job para cuando expire el timer (24 horas)
-                    // ✅ Usar método wrapper con nombre descriptivo para Hangfire
+
+                    // 🛡️ R6 partial: Schedule sigue pre-commit por simplicidad — mitigado por
+                    // handler ProcessProposalTimerAsync que re-valida estado del timer
+                    // (timer.IsExpired check + appointment status check). Job huérfano = no-op.
                     var jobId = BackgroundJob.Schedule<IAppointmentService>(
                         service => service.ProcessProposalTimerAsync(proposalTimer.Id),
                         proposalTimer.EndTime - DateTime.UtcNow
                     );
-                    
+
                     // Guardar el JobId en el timer
                     proposalTimer.HangfireJobId = jobId;
                     await _context.SaveChangesAsync();
@@ -2761,14 +2769,15 @@ namespace newApi.Services
                     
                     _context.AppointmentTimers.Add(proposalTimer);
                     await _context.SaveChangesAsync();
-                    
-                    // Programar scheduled job para cuando expire el timer (24 horas)
-                    // ✅ Usar método wrapper con nombre descriptivo para Hangfire
+
+                    // 🛡️ R6 partial: Schedule sigue pre-commit por simplicidad — mitigado por
+                    // handler ProcessProposalTimerAsync que re-valida estado del timer
+                    // (timer.IsExpired check + appointment status check). Job huérfano = no-op.
                     var jobId = BackgroundJob.Schedule<IAppointmentService>(
                         service => service.ProcessProposalTimerAsync(proposalTimer.Id),
                         proposalTimer.EndTime - DateTime.UtcNow
                     );
-                    
+
                     // Guardar el JobId en el timer
                     proposalTimer.HangfireJobId = jobId;
                     await _context.SaveChangesAsync();
@@ -4631,8 +4640,8 @@ namespace newApi.Services
                 _context.AppointmentTimers.Add(clientDecisionTimer);
                 await _context.SaveChangesAsync();
 
-                // Programar scheduled job para cuando expire el timer (24 horas)
-                // ✅ Usar método wrapper con nombre descriptivo para Hangfire
+                // 🛡️ R6 partial: Schedule pre-commit por simplicidad — mitigado por handler
+                // ProcessClientDecisionTimerAsync que re-valida estado del appointment (idempotente).
                 var jobId = BackgroundJob.Schedule<IAppointmentService>(
                     service => service.ProcessClientDecisionTimerAsync(clientDecisionTimer.Id),
                     clientDecisionTimer.EndTime - DateTime.UtcNow

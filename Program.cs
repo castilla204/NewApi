@@ -1413,6 +1413,7 @@ builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<ILoggingService, LoggingService>();
 builder.Services.AddSingleton<IAlertChannelService, AlertChannelService>(); // P3-3: canal alternativo Slack/Telegram
+builder.Services.AddScoped<IPlatformMaintenanceService, PlatformMaintenanceService>(); // 🛡️ R5+R7: jobs mantenimiento
 
 // 🔧 FISCAL FLIP: perfil fiscal de la plataforma + servicios asociados. Default IsVatRegistered=false
 // → comportamiento legacy (recibo simple, sin alertas IVA, sin captura NIF cliente formal). Para activar:
@@ -1614,6 +1615,25 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.ILoggingService>(
     "refund-failed-digest",
     svc => svc.EmitRefundFailedDigestAsync(),
     Hangfire.Cron.Daily(7, 0),
+    n29UtcOptions);
+
+// 🛡️ R7: cleanup diario de ProcessedWebhookEvent (retención 30 días). Sin esto la tabla
+// crece infinitamente — Stripe envía ~50-500 eventos/día y el TryBeginProcessingEventAsync
+// insertaba 1 fila por cada uno desde el inicio.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "processed-webhook-events-cleanup",
+    svc => svc.CleanupOldProcessedWebhookEventsAsync(),
+    Hangfire.Cron.Daily(4, 0),
+    n29UtcOptions);
+
+// 🛡️ R5: watchdog PaymentIntents próximos a expirar (7 días con CaptureMethod=manual).
+// TODO P3-9 explícito en SubscriptionController:3152. Cada hora detecta hires con
+// CaptureStatus="Pending" y CreatedAt > 6.5d, cancela el PI (libera autorización del cliente
+// antes de expiración automática) y marca Failed para alerta admin.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "payment-intent-expiry-watchdog",
+    svc => svc.ProcessExpiringPaymentIntentsAsync(),
+    "0 * * * *", // cada hora en punto
     n29UtcOptions);
 /*
 RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(

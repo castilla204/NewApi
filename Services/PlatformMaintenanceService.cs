@@ -110,7 +110,10 @@ namespace newApi.Services
                 try
                 {
                     var pi = await piService.GetAsync(ft.StripePaymentIntentId);
-                    if (pi.Status != "requires_capture" && pi.Status != "requires_action" && pi.Status != "requires_confirmation")
+                    // 🛡️ R29: incluimos requires_action (3DS abandonado por cliente). Aunque Stripe
+                    // tiene timeout propio para 3DS, dejar un PI en este estado >6.5 días bloquea la
+                    // autorización del cliente sin que el flujo normal lo capture nunca.
+                    if (pi.Status != "requires_capture" && pi.Status != "requires_action" && pi.Status != "requires_confirmation" && pi.Status != "requires_payment_method")
                     {
                         // Estado distinto: ya fue capturado o cancelado por otro flow. Marcar y seguir.
                         if (pi.Status == "succeeded")

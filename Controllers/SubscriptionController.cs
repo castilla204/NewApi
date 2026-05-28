@@ -1086,6 +1086,48 @@ namespace newApi.Controllers
             }
         }
 
+        /// <summary>
+        /// 🛡️ N12: verifica que una Checkout Session existe en Stripe, está completada,
+        /// y que el userId del metadata coincide con el usuario autenticado.
+        /// La PaymentSuccessPage debe llamarlo ANTES de mostrar "pago exitoso", para evitar que
+        /// un atacante navegue a /success sin haber pagado y vea confirmación falsa.
+        /// </summary>
+        [HttpGet("verify-checkout-session/{sessionId}")]
+        [Authorize]
+        public async Task<IActionResult> VerifyCheckoutSession(string sessionId)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId) || !sessionId.StartsWith("cs_"))
+            {
+                return BadRequest(new { valid = false, message = "Invalid session id" });
+            }
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!int.TryParse(userIdClaim, out var requesterId))
+            {
+                return Unauthorized(new { valid = false, message = "Invalid token" });
+            }
+            try
+            {
+                var stripeSession = await new Stripe.Checkout.SessionService().GetAsync(sessionId);
+                var paid = string.Equals(stripeSession?.PaymentStatus, "paid", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(stripeSession?.Status, "complete", StringComparison.OrdinalIgnoreCase);
+                var metadataUserId = 0;
+                int.TryParse(stripeSession?.Metadata?.GetValueOrDefault("userId"), out metadataUserId);
+                if (paid && metadataUserId == requesterId)
+                {
+                    return Ok(new { valid = true });
+                }
+                return Ok(new { valid = false, paid, mismatch = metadataUserId != requesterId });
+            }
+            catch (Stripe.StripeException stripeEx) when (stripeEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return Ok(new { valid = false, notFound = true });
+            }
+            catch (Exception)
+            {
+                return StatusCode(500, new { valid = false, message = "Verification error" });
+            }
+        }
+
         [HttpGet("onboarding-status")]
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> GetOnboardingStatus()
@@ -1649,6 +1691,30 @@ namespace newApi.Controllers
                 if (service.ExpertProfile == null)
                 {
                     return BadRequest(new { message = "Este servicio no está disponible para contratar" });
+                }
+
+                // 🛡️ N8 FIX: servicio desactivado entre catálogo y checkout init → cliente cobrado por
+                // servicio inactivo. Bloqueamos en el momento de crear la Stripe Session.
+                if (!service.IsActive)
+                {
+                    return BadRequest(new { message = "Este servicio no está activo actualmente" });
+                }
+
+                // 🛡️ N7 FIX: validar centralizado que el experto puede recibir pagos (StripeStatus=Approved,
+                // OnboardingCompleted, capability transfers). Sin esto, LoadMoneyService dejaba pasar
+                // checkouts hacia expertos rechazados/pending → validación tardía post-capture en webhook,
+                // que requiere refund (costoso + UX malo).
+                var n7Validation = await _stripeValidationService.ValidateExpertCanReceivePaymentsAsync(
+                    service.ExpertProfile, "contratar servicio");
+                if (!n7Validation.IsValid)
+                {
+                    return BadRequest(new
+                    {
+                        message = n7Validation.ErrorMessage,
+                        stripeStatus = n7Validation.StripeStatus,
+                        requiresStripeSetup = n7Validation.RequiresStripeSetup,
+                        canRetry = n7Validation.CanRetry
+                    });
                 }
 
                 // 🚨 VALIDACIÓN CRÍTICA: Verificar que el experto no se contrate a sí mismo
@@ -4497,6 +4563,14 @@ namespace newApi.Controllers
                 if (service.ExpertProfile == null)
                 {
                     return BadRequest(new { message = "Este servicio no está disponible para contratar" });
+                }
+
+                // 🛡️ N8 FIX: servicio desactivado entre catálogo y checkout init → cliente cobrado por
+                // servicio inactivo. Bloqueamos en el momento de crear la Stripe Session (mismo guard
+                // que el del endpoint LoadMoneyService).
+                if (!service.IsActive)
+                {
+                    return BadRequest(new { message = "Este servicio no está activo actualmente" });
                 }
 
                 // ✅ VALIDACIÓN CENTRALIZADA: Verificar que el experto puede recibir pagos

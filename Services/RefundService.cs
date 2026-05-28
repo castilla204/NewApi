@@ -1214,6 +1214,71 @@ namespace newApi.Services
                             }
                         }
 
+                        // 🛡️ N10 FIX: si el PI NO está capturado (requires_capture/action/payment_method),
+                        // Stripe rechaza el refund con error. Hay que CANCELAR el PI en su lugar.
+                        // Esto cubre el caso de un cliente que abandona el checkout justo cuando el flujo
+                        // termina (PI autorizado pero no capturado) y luego se procesa una resolución
+                        // (refund_client o cancellation).
+                        if (needsRefund)
+                        {
+                            try
+                            {
+                                var n10PiService = new PaymentIntentService();
+                                var n10Pi = await n10PiService.GetAsync(servicePayment.StripePaymentIntentId);
+                                if (n10Pi.Status == "requires_capture"
+                                    || n10Pi.Status == "requires_action"
+                                    || n10Pi.Status == "requires_payment_method"
+                                    || n10Pi.Status == "requires_confirmation")
+                                {
+                                    // PI no capturado → cancelar (no se puede refundear lo que no se cobró).
+                                    try
+                                    {
+                                        await n10PiService.CancelAsync(
+                                            servicePayment.StripePaymentIntentId,
+                                            new PaymentIntentCancelOptions
+                                            {
+                                                CancellationReason = "requested_by_customer"
+                                            },
+                                            new RequestOptions { IdempotencyKey = $"n10-cancel-{servicePayment.StripePaymentIntentId}" });
+                                        await _loggingService.LogInfoAsync(
+                                            message: "N10: PI no capturado → canceled en lugar de refund",
+                                            details: $"SearchHire {searchHireId}: PI {servicePayment.StripePaymentIntentId} estaba en '{n10Pi.Status}'. Cancelado en lugar de intentar refund (que habría fallado). No se crea FT Refund porque no se cobró nada.",
+                                            userId: searchHire.ClientId,
+                                            source: "StripeRefundService.ProcessMoneyDistributionAsync.N10Cancel",
+                                            relatedEntityType: "SearchHire",
+                                            relatedEntityId: searchHireId);
+                                        // Marcar refund como "completado" para el resto del flujo (no hay nada que persistir como FT Refund).
+                                        servicePayment.IsRefunded = true;
+                                        servicePayment.StripeRefundId = "n10-canceled-pre-capture";
+                                        needsRefund = false; // skip el CreateAsync de refund
+                                    }
+                                    catch (StripeException cancelEx) when (cancelEx.StripeError?.Code == "payment_intent_unexpected_state")
+                                    {
+                                        // Race: el PI cambió de estado entre el GetAsync y el CancelAsync.
+                                        // Caer al refund normal (tal vez ya está succeeded).
+                                        await _loggingService.LogWarningAsync(
+                                            message: "N10: PI cambió de estado entre GET y CANCEL — intentando refund",
+                                            details: $"SearchHire {searchHireId}: PI {servicePayment.StripePaymentIntentId} cambió. Fallback a refund normal.",
+                                            userId: searchHire.ClientId,
+                                            source: "StripeRefundService.ProcessMoneyDistributionAsync.N10Race",
+                                            relatedEntityType: "SearchHire",
+                                            relatedEntityId: searchHireId);
+                                    }
+                                }
+                            }
+                            catch (Exception n10CheckEx)
+                            {
+                                // Si falla el check de PI, log warning pero seguir al refund (puede que ya esté succeeded).
+                                await _loggingService.LogWarningAsync(
+                                    message: "N10: failed to pre-check PI status — proceeding with refund attempt",
+                                    details: $"SearchHire {searchHireId}: error verificando PI: {n10CheckEx.Message}. Continuando con refund normal.",
+                                    userId: searchHire.ClientId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync.N10CheckFail",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId);
+                            }
+                        }
+
                         if (needsRefund)
                         {
                             var refundOptions = new RefundCreateOptions
@@ -1262,6 +1327,26 @@ namespace newApi.Services
                                     }
                                 }
                                 createdRefundId = refund.Id;
+                            }
+                            // 🛡️ N11 FIX: idempotency hits específicos antes del catch general. Si Stripe responde
+                            // con `charge_already_refunded` o `idempotency_error`, significa que el refund YA se
+                            // procesó (sea por replica de webhook, sea por reintento anterior cuya SaveChanges falló).
+                            // No es un error → tratamos como éxito y continuamos. El refund real está en Stripe;
+                            // la BD se reconcilia abajo (el guard refundAlreadyProcessed lo detectará en la próxima).
+                            catch (StripeException idemRefundEx) when (
+                                idemRefundEx.StripeError?.Code == "charge_already_refunded"
+                                || idemRefundEx.StripeError?.Code == "idempotency_error")
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "N11: refund idempotency hit (already done)",
+                                    details: $"SearchHire {searchHireId}: Stripe respondió '{idemRefundEx.StripeError?.Code}' al crear refund — ya estaba aplicado. Marcando como completado sin crear FT Refund nueva (el refund original está en Stripe).",
+                                    userId: searchHire.ClientId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync.N11Refund",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId);
+                                // No tenemos el refund.Id real, marcamos placeholder para que el flujo continúe.
+                                createdRefundId = "n11-already-refunded";
+                                servicePayment.IsRefunded = true;
                             }
                             catch (StripeException refundEx)
                             {
@@ -1447,6 +1532,21 @@ namespace newApi.Services
                                         details: $"SearchHire {searchHireId}: reversed {clawbackAmountEur:F2}€ of expert transfer {existingTransfer.StripeTransferId} (originally {existingTransfer.Amount:F2}€) because the client was refunded (status {statusValue}). Expert keeps {expertAmountForStripe:F2}€ ({config.ExpertPercentage}%). ReversalId: {clawbackReversal.Id}.",
                                         userId: searchHire.ExpertId,
                                         source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId);
+                                }
+                                // 🛡️ N11 FIX: idempotency hit en clawback — el transfer YA fue revertido
+                                // (caso típico: reintento de Hangfire tras crash post-Stripe pre-BD).
+                                // Tratar como no-op (no fallar, no abortar el flow).
+                                catch (StripeException idemClawbackEx) when (
+                                    idemClawbackEx.StripeError?.Code == "transfer_already_reversed"
+                                    || idemClawbackEx.StripeError?.Code == "idempotency_error")
+                                {
+                                    await _loggingService.LogWarningAsync(
+                                        message: "N11: clawback idempotency hit (already reversed)",
+                                        details: $"SearchHire {searchHireId}: Stripe respondió '{idemClawbackEx.StripeError?.Code}' al revertir transfer {existingTransfer.StripeTransferId} — ya estaba revertido. Continuando.",
+                                        userId: searchHire.ExpertId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync.N11Clawback",
                                         relatedEntityType: "SearchHire",
                                         relatedEntityId: searchHireId);
                                 }
@@ -1949,6 +2049,20 @@ namespace newApi.Services
                     source: "StripeRefundService.ReverseExpertTransferForChargebackAsync",
                     relatedEntityType: "SearchHire",
                     relatedEntityId: searchHireId);
+            }
+            // 🛡️ N11 FIX: idempotency hit en chargeback reversal — el transfer YA fue revertido (reintento Hangfire post-crash).
+            catch (StripeException idemCbEx) when (
+                idemCbEx.StripeError?.Code == "transfer_already_reversed"
+                || idemCbEx.StripeError?.Code == "idempotency_error")
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "N11: chargeback reversal idempotency hit (already done)",
+                    details: $"SearchHire {searchHireId}: Stripe respondió '{idemCbEx.StripeError?.Code}' al revertir transfer {payout.StripeTransferId} por chargeback — ya estaba revertido. No-op.",
+                    userId: payout.UserId,
+                    source: "StripeRefundService.ReverseExpertTransferForChargebackAsync.N11",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId);
+                return;
             }
             catch (Exception ex)
             {

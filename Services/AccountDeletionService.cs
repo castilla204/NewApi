@@ -199,6 +199,55 @@ namespace newApi.Services
                 };
             }
 
+            // 🛡️ N6 FIX: bloquear delete si hay Refund o Chargeback/ChargebackReversal pendientes.
+            // El guard anterior solo cubre ServicePayment con PI activo; faltan los flows post-pago
+            // que aún están en curso (refund encolado tras dispute resuelta, chargeback en proceso).
+            // Si el delete procede ahora, las filas FT se anonimizan (UserId=null) y el operario
+            // pierde la pista de qué refund/clawback corresponde a este usuario.
+            var hasPendingRefund = await _context.FinancialTransactions
+                .AsNoTracking()
+                .AnyAsync(ft => ft.UserId == userId
+                                && ft.TransactionType == "Refund"
+                                && !ft.IsRefunded,
+                          linkedCts.Token);
+            if (hasPendingRefund)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "N6: Account deletion blocked - pending refunds",
+                    details: $"User {userId} tiene Refund(s) pendientes (IsRefunded=false). Esperar a que el flow termine antes del delete para preservar el rastro fiscal.",
+                    userId: userId,
+                    source: "AccountDeletionService.DeleteAccountAsync.N6",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId);
+                return new AccountDeletionResponseDto
+                {
+                    Success = false,
+                    Message = "No se puede eliminar la cuenta con reembolsos pendientes. Inténtalo de nuevo en unos minutos o contacta con soporte."
+                };
+            }
+
+            var hasPendingChargeback = await _context.FinancialTransactions
+                .AsNoTracking()
+                .AnyAsync(ft => ft.UserId == userId
+                                && (ft.TransactionType == "Chargeback"
+                                    || ft.TransactionType == "ChargebackReversal"),
+                          linkedCts.Token);
+            if (hasPendingChargeback)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "N6: Account deletion blocked - chargeback in progress",
+                    details: $"User {userId} tiene FinancialTransactions tipo Chargeback/ChargebackReversal. El proceso de disputa externa con Stripe sigue abierto; el delete se aplazaría hasta su resolución para no perder trazabilidad.",
+                    userId: userId,
+                    source: "AccountDeletionService.DeleteAccountAsync.N6",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId);
+                return new AccountDeletionResponseDto
+                {
+                    Success = false,
+                    Message = "No se puede eliminar la cuenta mientras hay un contracargo (chargeback) en proceso. Contacta con soporte para resolverlo primero."
+                };
+            }
+
             // 2. Obtener contrataciones activas (fuera de transacción)
             var activeContracts = await GetActiveContractsAsync(userId, linkedCts.Token);
             var disputesCreated = new List<DisputeCreatedInfo>();

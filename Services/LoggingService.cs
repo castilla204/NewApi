@@ -1120,6 +1120,8 @@ namespace newApi.Services
         /// P3-2: Emite un email digest agrupando alertas suprimidas (count > umbral) dentro de la ventana
         /// activa. Llamado por Hangfire RecurringJob cada 30 min. No emite nada si no hay suprimidas.
         /// </summary>
+        // 🛡️ N13: evita ejecución concurrente en HPA multi-replica de Render (job RecurringJob cada 30 min).
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 1200)]
         [AutomaticRetry(Attempts = 2, DelaysInSeconds = new[] { 60, 300 })]
         public async Task EmitAdminDigestAsync()
         {
@@ -1196,6 +1198,8 @@ namespace newApi.Services
         /// agota todos los reintentos). Envía un email a los admins listando los hires que requieren
         /// reconciliación manual. No emite nada si no hay hires marcados.
         /// </summary>
+        // 🛡️ N13: evita ejecución concurrente en HPA multi-replica (job diario @7am UTC).
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 1800)]
         [AutomaticRetry(Attempts = 2, DelaysInSeconds = new[] { 300, 1800 })]
         public async Task EmitRefundFailedDigestAsync()
         {

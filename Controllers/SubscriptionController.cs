@@ -2203,6 +2203,7 @@ namespace newApi.Controllers
                                 relatedEntityId: null);
 
                             await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, null, "Skipped", "Expert profile not found");
+                            eventMarkedProcessing = false; // 🛡️ A1: evitar que el bloque final pise "Skipped" con "Success"
                             break;
                         }
 
@@ -5441,6 +5442,16 @@ namespace newApi.Controllers
 
                 if (existingEvent != null)
                 {
+                    // 🛡️ A1 FIX: no degradar estado terminal explícito (Skipped/Failed/Error) al
+                    // default "Success" que dispara el bloque final del switch. Solo el primer
+                    // estado terminal explícito vale; el outer Mark("Success") no debe pisarlo.
+                    var existingIsTerminal = !string.IsNullOrEmpty(existingEvent.Status)
+                        && existingEvent.Status != "Success"
+                        && existingEvent.Status != "Processing";
+                    if (status == "Success" && existingIsTerminal)
+                    {
+                        return; // mantener el estado terminal previo (Skipped/Failed/Error)
+                    }
                     // Actualizar evento existente
                     existingEvent.Status = status;
                     existingEvent.ErrorMessage = errorMessage;
@@ -5461,7 +5472,7 @@ namespace newApi.Controllers
                     };
                     _context.ProcessedWebhookEvents.Add(processedEvent);
                 }
-                
+
                 await _context.SaveChangesAsync();
             }
             catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
@@ -5477,6 +5488,15 @@ namespace newApi.Controllers
 
                     if (existingEvent != null)
                     {
+                        // 🛡️ A1 FIX (recovery path): mismas reglas que el path principal — no
+                        // degradar estado terminal explícito (Skipped/Failed/Error) al default "Success".
+                        var existingIsTerminal = !string.IsNullOrEmpty(existingEvent.Status)
+                            && existingEvent.Status != "Success"
+                            && existingEvent.Status != "Processing";
+                        if (status == "Success" && existingIsTerminal)
+                        {
+                            return; // mantener estado terminal previo
+                        }
                         existingEvent.Status = status;
                         existingEvent.ErrorMessage = errorMessage;
                         existingEvent.ProcessedAt = DateTime.UtcNow;
@@ -5535,6 +5555,15 @@ namespace newApi.Controllers
 
                     if (existingEvent != null)
                     {
+                        // 🛡️ A1 FIX (recovery path): mismas reglas que el path principal — no
+                        // degradar estado terminal explícito (Skipped/Failed/Error) al default "Success".
+                        var existingIsTerminal = !string.IsNullOrEmpty(existingEvent.Status)
+                            && existingEvent.Status != "Success"
+                            && existingEvent.Status != "Processing";
+                        if (status == "Success" && existingIsTerminal)
+                        {
+                            return; // mantener estado terminal previo
+                        }
                         existingEvent.Status = status;
                         existingEvent.ErrorMessage = errorMessage;
                         existingEvent.ProcessedAt = DateTime.UtcNow;

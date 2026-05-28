@@ -6147,9 +6147,13 @@ namespace newApi.Controllers
                 // con el importe revertido para reintegro MANUAL. NO se re-paga automáticamente a propósito:
                 // si sobre el mismo transfer hubo además un clawback PARCIAL de una disputa interna legítima,
                 // re-pagar la suma total sobre-pagaría al experto. El admin debe discriminar antes de reintegrar.
+                // 🛡️ B2 FIX: filtrar SOLO "ChargebackReversal" (no "TransferReversal" del clawback).
+                // Stripe en "won" reintegra el bruto del CHARGEBACK; el experto debe recuperar SOLO
+                // ese monto, NUNCA el clawback de la disputa interna previa (que sigue siendo válido).
+                // Antes la suma mezclaba ambos → el admin reintegraba de más al experto (sobrepago).
                 var reversedCents = await _context.FinancialTransactions
                     .Where(ft => ft.RelatedEntityType == "SearchHire" && ft.RelatedEntityId == hireId.Value
-                                 && ft.TransactionType == "TransferReversal")
+                                 && ft.TransactionType == "ChargebackReversal")
                     .SumAsync(ft => ft.AmountCents);
                 var reversedEur = Math.Abs(reversedCents) / 100m;
                 await _loggingService.LogCriticalAsync(
@@ -6766,11 +6770,15 @@ namespace newApi.Controllers
                 return;
             }
 
-            // 2) ¿Existe ya el registro de reversión del clawback? (consistencia).
+            // 2) ¿Existe ya el registro de reversión? (consistencia).
+            // 🛡️ B2 FIX: transfer.reversed se dispara para ambos casos (clawback y chargeback),
+            // así que aceptamos cualquiera de los dos TransactionTypes. Antes solo buscaba
+            // "TransferReversal" → para reversales de chargeback (ahora "ChargebackReversal")
+            // siempre era null, y el mismatch check usaba el fallback de payoutTx.Amount.
             var reversalTx = await _context.FinancialTransactions
                 .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire"
                                         && ft.RelatedEntityId == hireId.Value
-                                        && ft.TransactionType == "TransferReversal"
+                                        && (ft.TransactionType == "TransferReversal" || ft.TransactionType == "ChargebackReversal")
                                         && ft.StripeTransferId == transfer.Id);
 
             var expectedReversal = reversalTx != null

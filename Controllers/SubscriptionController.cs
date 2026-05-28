@@ -6003,6 +6003,43 @@ namespace newApi.Controllers
                 return;
             }
 
+            // 🛡️ B1 FIX: discriminar INQUIRIES (warning_*) de chargebacks reales.
+            // Stripe usa `dispute.Status` con prefijo "warning_" para INQUIRIES:
+            //   warning_needs_response, warning_under_review, warning_closed.
+            // Las inquiries son AVISOS previos — Stripe NO ha retirado fondos de la plataforma,
+            // así que NO se debe (a) marcar FinancialTransaction "Chargeback" — corromperia la
+            // contabilidad — ni (b) encolar ReverseExpertTransferForChargebackAsync — robaria
+            // el pago al experto sin que hubiera pérdida real para la plataforma.
+            // Si la inquiry escala a chargeback real, Stripe envía OTRO charge.dispute.created
+            // (o charge.dispute.updated → closed) con un status sin "warning_", y ahí sí actuamos.
+            if (!string.IsNullOrEmpty(dispute.Status)
+                && dispute.Status.StartsWith("warning_", StringComparison.OrdinalIgnoreCase))
+            {
+                var inquiryAmount = dispute.Amount / 100m;
+                await _loggingService.LogWarningAsync(
+                    message: "Stripe Inquiry (pre-dispute warning) received — NO clawback",
+                    details: $"Inquiry {dispute.Id} for {inquiryAmount}€ (status: {dispute.Status}, reason: {dispute.Reason}). " +
+                             $"ChargeId: {dispute.ChargeId}, PI: {dispute.PaymentIntentId}. " +
+                             $"Stripe HAS NOT withdrawn funds — this is a warning, not a chargeback. " +
+                             $"Respond via Stripe Dashboard if needed. If it escalates, Stripe enviará otro " +
+                             $"charge.dispute.created/closed con status sin 'warning_' y allí sí se hará clawback.",
+                    userId: null,
+                    source: "SubscriptionController.HandleChargeDisputeCreated",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: null,
+                    additionalData: new
+                    {
+                        DisputeId = dispute.Id,
+                        dispute.ChargeId,
+                        dispute.PaymentIntentId,
+                        Amount = inquiryAmount,
+                        dispute.Reason,
+                        dispute.Status,
+                        IsInquiry = true
+                    });
+                return;
+            }
+
             var amount = dispute.Amount / 100m;
             var (hireId, expertId, clientId) = await FindHireForPaymentIntentAsync(dispute.PaymentIntentId);
 

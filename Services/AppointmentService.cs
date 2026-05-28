@@ -3057,7 +3057,11 @@ namespace newApi.Services
         /// CheckAppointmentTimersAsync, que consumía los timers de proposal/client_decision sin
         /// procesarlos. Es seguro/idempotente: ProcessAppointmentTimerAsync re-chequea el estado y la
         /// distribución de dinero usa clave de idempotencia por hire, así que no duplica avances ni pagos.
+        /// 🛡️ N13: DisableConcurrentExecution para evitar que múltiples réplicas (HPA Render 2-10)
+        /// ejecuten el watchdog en paralelo. Aunque ProcessAppointmentTimerAsync hace claim atómico,
+        /// el dispatch concurrente generaría doble logging/notificaciones por timer.
         /// </summary>
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
         public async Task ProcessOverdueTimersAsync()
         {
             try

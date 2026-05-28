@@ -1688,6 +1688,31 @@ namespace newApi.Services
 
                         if (!string.IsNullOrEmpty(stripeAccountIdToDelete))
                         {
+                            // 🛡️ R5-F4 FIX: nullear StripeAccountId del ExpertProfile ANTES de borrar
+                            // la cuenta en Stripe. Sin esto, webhooks en cola (transfer.failed, payout.paid)
+                            // que llegan después del Stripe.Delete pero antes del DELETE local del
+                            // ExpertProfile buscan por StripeAccountId y encuentran el profile aún con
+                            // el ID, intentan operar contra una cuenta Stripe que ya no existe → 404 y
+                            // evento "Skipped" silencioso. Al nullear primero, los webhooks tardíos
+                            // simplemente NO encuentran profile y el flujo está cubierto por handlers
+                            // de "expert profile not found" ya logueados (Skipped es esperado).
+                            try
+                            {
+                                await _context.Database.ExecuteSqlInterpolatedAsync(
+                                    $"UPDATE \"ExpertProfiles\" SET \"StripeAccountId\" = NULL WHERE \"Id\" = {expertProfileId}",
+                                    cancellationToken);
+                            }
+                            catch (Exception nullEx)
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "R5-F4: failed to null StripeAccountId before Stripe delete",
+                                    details: $"ExpertProfile {expertProfileId}: continuando con Stripe.Delete pese a error nulling: {nullEx.Message}",
+                                    userId: userId,
+                                    source: "AccountDeletionService.DeleteUserDataAsync.R5F4",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfileId);
+                            }
+
                             try
                             {
                                 var stripeAccountService = new Stripe.AccountService();

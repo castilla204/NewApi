@@ -81,6 +81,23 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// PendingFinalStatusId + reescritura de Fase 2) se documenta en RESUMEN_P3_PENDIENTES.md.
         /// </summary>
         public DateTime? RefundFailedAt { get; set; }
+
+        /// <summary>
+        /// 🔧 FISCAL FLIP: NIF/VAT del cliente, capturado desde Stripe TaxIdCollection en el checkout.
+        /// Nullable: la mayoría de B2C no lo introducen. Se persiste SIEMPRE que Stripe lo recoja
+        /// (no depende de IsVatRegistered) para tener histórico cuando se haga el flip.
+        ///
+        /// Formato: número SIN prefijo de país (ej. "B12345678"). El país va en ClientVatCountryCode.
+        /// La validación VIES y el cálculo final de reverse-charge se hacen vía IViesValidator (stub
+        /// para esta fase; implementación real al activarse la facturación formal).
+        /// </summary>
+        public string? ClientVatNumber { get; set; }
+
+        /// <summary>
+        /// 🔧 FISCAL FLIP: país del NIF/VAT del cliente. ISO 3166-1 alpha-2 (ej. "ES", "FR", "DE").
+        /// Se rellena junto con ClientVatNumber. Sin él, ClientVatNumber no es validable contra VIES.
+        /// </summary>
+        public string? ClientVatCountryCode { get; set; }
     }
 
 }

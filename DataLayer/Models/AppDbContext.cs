@@ -40,6 +40,8 @@ namespace newApi.DataLayer.Models
         public DbSet<Dispute> Disputes { get; set; }
         public DbSet<DisputeFile> DisputeFiles { get; set; }
         public DbSet<FinancialTransaction> FinancialTransactions { get; set; }
+        // 🔧 FISCAL FLIP: contadores de numeración correlativa de facturas (PK compuesta SeriesCode+Year).
+        public DbSet<InvoiceCounter> InvoiceCounters { get; set; }
         public DbSet<ServiceType> ServiceTypes { get; set; }
         public DbSet<ServiceTypeCategory> ServiceTypeCategories { get; set; }
         public DbSet<Conversation> Conversations { get; set; }
@@ -656,6 +658,14 @@ namespace newApi.DataLayer.Models
                     .IsUnique()
                     .HasFilter("\"IsExpired\" = false")
                     .HasDatabaseName("IX_AppointmentTimers_Appt_Type_Active");
+            });
+
+            // 🔧 FISCAL FLIP: InvoiceCounter usa clave compuesta (SeriesCode, Year).
+            modelBuilder.Entity<InvoiceCounter>(entity =>
+            {
+                entity.HasKey(ic => new { ic.SeriesCode, ic.Year });
+                entity.Property(ic => ic.SeriesCode).HasMaxLength(32).IsRequired();
+                entity.Property(ic => ic.NextNumber).IsRequired();
             });
 
             // Configuración de la nueva arquitectura de estados

@@ -45,6 +45,8 @@ namespace newApi.Controllers
         private readonly IStripeValidationService _stripeValidationService;
         private readonly IAppointmentService _appointmentService;
         private readonly IServiceScopeFactory _serviceScopeFactory;
+        // 🔧 FISCAL FLIP: perfil fiscal de la plataforma (default IsVatRegistered=false → pre-alta).
+        private readonly global::newApi.Configuration.PlatformFiscalProfile _fiscalProfile;
 
         // ✅ Propiedades para leer claves dinámicamente desde configuración
         private string? WebhookSecret => _configuration["Stripe:WebhookSecret"];
@@ -64,7 +66,7 @@ namespace newApi.Controllers
         //     };
         // }
 
-        public SubscriptionController(AppDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService, IInvoiceService invoiceService, IAppointmentService appointmentService, IServiceScopeFactory serviceScopeFactory)
+        public SubscriptionController(AppDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService, IInvoiceService invoiceService, IAppointmentService appointmentService, IServiceScopeFactory serviceScopeFactory, Microsoft.Extensions.Options.IOptions<global::newApi.Configuration.PlatformFiscalProfile> fiscalProfile)
         {
             _context = context;
             _systemStatusService = systemStatusService;
@@ -78,7 +80,8 @@ namespace newApi.Controllers
             _invoiceService = invoiceService;
             _appointmentService = appointmentService;
             _serviceScopeFactory = serviceScopeFactory;
-            
+            _fiscalProfile = fiscalProfile?.Value ?? new global::newApi.Configuration.PlatformFiscalProfile();
+
             // ✅ Actualizar StripeConfiguration.ApiKey dinámicamente
             // Se actualizará cada vez que se acceda a StripeSecretKey
             UpdateStripeApiKey();
@@ -1867,7 +1870,7 @@ namespace newApi.Controllers
                 // → estado de cuentas conectadas desincronizado, además enmascarando un fallo de config como
                 // "firma inválida / posible ataque". Si falta el secret de Connect, caemos directos al log
                 // CRÍTICO + 400 de abajo (accionable y con alerta a admin).
-
+                
                 if (string.IsNullOrEmpty(webhookSecretToUse))
                 {
                     // 🚨 LOG CRÍTICO: Webhook secret no configurado
@@ -3186,7 +3189,7 @@ namespace newApi.Controllers
             // anti-doble-hire. Se obtienen ANTES de la transacción (mismo motivo: evitar ExecutionStrategy).
             var awaitingDecisionStatusIdForGuard = await GetStatusIdByValueAsync(SearchHireStatus.AwaitingClientDecision.ToStringValue());
             var disputedStatusIdForGuard = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
-
+            
             // ✅ FIX CRÍTICO: Obtener TODAS las queries ANTES de iniciar la transacción para evitar ExecutionStrategy
             // Estas queries activan ExecutionStrategy automáticamente si están dentro de una transacción
             var expertProfile = await _context.ExpertProfiles
@@ -3280,7 +3283,7 @@ namespace newApi.Controllers
                     }
 
                     // ✅ REMOVED: Balance system eliminated - all payments are direct Stripe
-
+                
                 try
                 {
                     await _context.SaveChangesAsync();
@@ -3345,7 +3348,7 @@ namespace newApi.Controllers
                 await _context.Searches.AddAsync(search);
                 // 🔧 FIX (hallazgo C): sin recovery con autocommit (rompía la atomicidad). Si la conexión se
                 // cae aquí, la excepción sube al catch externo → rollback total + 500 → Stripe reintenta idempotente.
-                await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync();
 
                 // Create search parameters
                 var searchParameter = new SearchParameter
@@ -3369,7 +3372,7 @@ namespace newApi.Controllers
                 await _context.SearchParameters.AddAsync(searchParameter);
                 // 🔧 FIX (hallazgo C): sin recovery con autocommit. Si la conexión se cae, sube al catch externo
                 // → rollback total + 500 → Stripe reintenta idempotente.
-                await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync();
 
                 // Create platform associations (platforms ya obtenidos antes de la transacción)
                 if (platforms.Any())
@@ -3392,15 +3395,67 @@ namespace newApi.Controllers
                 // 🔧 FIX D11 (IVA no recaudado): flag para marcar el hire si Stripe devolvió tax=0 por
                 // falta de registro fiscal (taxability_reason "not_collecting"), NO por reverse charge B2B.
                 bool taxNotCollectedNeedsReview = false;
-                
+
+                // 🔧 FISCAL FLIP: declaraciones aquí (outer scope) para que estén visibles en la creación
+                // del SearchHire más abajo. Se POBLAN dentro del try (donde existe sessionWithTax).
+                string? clientVatNumber = null;
+                string? clientVatCountryCode = null;
+
                 try
                 {
                     var sessionService = new SessionService();
                     var sessionGetOptions = new SessionGetOptions
                     {
-                        Expand = new List<string> { "total_details.breakdown" } // Opcional pero recomendado para breakdown detallado
+                        Expand = new List<string>
+                        {
+                            "total_details.breakdown", // breakdown detallado (taxability_reason por línea)
+                            // 🔧 FISCAL FLIP: TaxIds del cliente (necesarios para capturar NIF cliente y, en el
+                            // futuro, validar contra VIES y aplicar reverse-charge). TaxIdCollection=true ya está
+                            // activado en el checkout; sin este expand vienen null en la respuesta.
+                            "customer_details.tax_ids"
+                        }
                     };
                     var sessionWithTax = await sessionService.GetAsync(session.Id, sessionGetOptions);
+
+                    // 🔧 FISCAL FLIP: extraer NIF cliente desde customer_details.tax_ids. Se persiste SIEMPRE
+                    // (también pre-flip) para tener histórico. Validación VIES vendrá vía IViesValidator (stub hoy).
+                    try
+                    {
+                        var taxIds = sessionWithTax?.CustomerDetails?.TaxIds;
+                        if (taxIds != null)
+                        {
+                            // Priorizar eu_vat (intracomunitario → reverse-charge); fallback es_cif (NIF/CIF nacional).
+                            var preferred = taxIds.FirstOrDefault(t => t.Type == "eu_vat")
+                                           ?? taxIds.FirstOrDefault(t => t.Type == "es_cif");
+                            if (preferred != null && !string.IsNullOrWhiteSpace(preferred.Value))
+                            {
+                                var raw = preferred.Value.Trim();
+                                if (preferred.Type == "eu_vat" && raw.Length >= 2)
+                                {
+                                    // eu_vat: prefijo país = 2 primeros chars (ej. "ESB12345678" → "ES" + "B12345678").
+                                    clientVatCountryCode = raw.Substring(0, 2).ToUpperInvariant();
+                                    clientVatNumber = raw.Substring(2);
+                                }
+                                else
+                                {
+                                    clientVatNumber = raw;
+                                    clientVatCountryCode = "ES";
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception vatEx)
+                    {
+                        // Fallo extrayendo NIF: NO bloqueamos la contratación. Log warning.
+                        await _loggingService.LogWarningAsync(
+                            message: "No se pudo extraer NIF cliente de Stripe TaxIds (no bloqueante)",
+                            details: $"Session {session.Id}: {vatEx.Message}",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: null
+                        );
+                    }
                     
                     if (sessionWithTax.AmountTotal.HasValue)
                     {
@@ -3436,26 +3491,47 @@ namespace newApi.Controllers
                             );
                             baseAmount = totalAmount;
                             taxAmount = 0;
-                            taxNotCollectedNeedsReview = true; // ubicación inválida → revisar fiscalmente
+                            // 🔧 FISCAL FLIP: solo marcar para revisión si la plataforma YA está registrada.
+                            // Sin alta, no hay obligación de recaudar → no es incidencia.
+                            taxNotCollectedNeedsReview = _fiscalProfile.IsVatRegistered;
                         }
                         else if (taxAmount == 0 && !isReverseChargeOnly)
                         {
-                            // tax 0 NO justificado por reverse charge → muy probablemente falta registro fiscal (OSS/alta).
-                            // El cliente YA pagó: NO bloqueamos. Dejamos traza accionable + marcamos el hire para revisión.
-                            await _loggingService.LogCriticalAsync(
-                                message: "IVA no recaudado: Stripe Tax devolvió 0 sin reverse charge — falta registro fiscal",
-                                details: $"Session {session.Id}: automatic_tax.status='{sessionWithTax.AutomaticTax?.Status}', amount_tax=0, taxability_reason=[{string.Join(",", taxabilityReasons)}]. " +
-                                         $"Siendo la plataforma Merchant of Record, un 0 no-reverse-charge implica que NO hay registro fiscal activo en la jurisdicción del comprador. " +
-                                         $"ACCIÓN: revisar alta OSS / registro fiscal en Stripe Tax y regularizar esta venta ({totalAmount}€). El hire se marca RequiresManualReview; el cobro NO se bloquea.",
-                                userId: userId,
-                                source: "SubscriptionController.HandlePendingHireCompleted",
-                                relatedEntityType: "SearchHire",
-                                relatedEntityId: null,
-                                additionalData: new { SessionId = session.Id, AutomaticTaxStatus = sessionWithTax.AutomaticTax?.Status, TaxabilityReasons = taxabilityReasons, TotalAmount = totalAmount }
-                            );
+                            // 🔧 FISCAL FLIP (gate D11): el tratamiento depende del estado fiscal de la plataforma.
+                            //   IsVatRegistered=false (pre-alta, hoy): IVA=0 sin reverse_charge es NORMAL — no
+                            //     estamos registrados, no recaudamos. LogInfo solo para auditoría, sin alerta
+                            //     crítica y sin RequiresManualReview (si no, alarmaría en CADA venta).
+                            //   IsVatRegistered=true (post-alta): SÍ es anómalo (como MoR deberíamos recaudar).
+                            //     Comportamiento previo (Critical + RequiresManualReview) intacto.
+                            if (_fiscalProfile.IsVatRegistered)
+                            {
+                                await _loggingService.LogCriticalAsync(
+                                    message: "IVA no recaudado: Stripe Tax devolvió 0 sin reverse charge — falta registro fiscal",
+                                    details: $"Session {session.Id}: automatic_tax.status='{sessionWithTax.AutomaticTax?.Status}', amount_tax=0, taxability_reason=[{string.Join(",", taxabilityReasons)}]. " +
+                                             $"Siendo la plataforma Merchant of Record, un 0 no-reverse-charge implica que NO hay registro fiscal activo en la jurisdicción del comprador. " +
+                                             $"ACCIÓN: revisar alta OSS / registro fiscal en Stripe Tax y regularizar esta venta ({totalAmount}€). El hire se marca RequiresManualReview; el cobro NO se bloquea.",
+                                    userId: userId,
+                                    source: "SubscriptionController.HandlePendingHireCompleted",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: null,
+                                    additionalData: new { SessionId = session.Id, AutomaticTaxStatus = sessionWithTax.AutomaticTax?.Status, TaxabilityReasons = taxabilityReasons, TotalAmount = totalAmount }
+                                );
+                                taxNotCollectedNeedsReview = true;
+                            }
+                            else
+                            {
+                                // Pre-flip: traza informativa, sin alerta ni marca de revisión.
+                                await _loggingService.LogInfoAsync(
+                                    message: "Tax 0 sin reverse_charge — plataforma NO registrada fiscalmente (esperado pre-alta)",
+                                    details: $"Session {session.Id}: amount_tax=0, taxability_reason=[{string.Join(",", taxabilityReasons)}], total={totalAmount}€. PlatformFiscal.IsVatRegistered=false → comportamiento normal (recibo simple). Cuando se haga el flip, este caso pasará a Critical + RequiresManualReview.",
+                                    userId: userId,
+                                    source: "SubscriptionController.HandlePendingHireCompleted",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: null
+                                );
+                            }
                             baseAmount = totalAmount;
                             taxAmount = 0;
-                            taxNotCollectedNeedsReview = true;
                         }
                         // else: tax > 0 (collecting normal) o reverse_charge legítimo → no se toca nada.
                     }
@@ -3489,6 +3565,9 @@ namespace newApi.Controllers
                     taxAmount = 0;
                 }
 
+                // (clientVatNumber/clientVatCountryCode ya fueron declarados arriba y poblados dentro del
+                // try donde existe sessionWithTax; aquí solo se usan en la creación del SearchHire.)
+
                 // Create search hire
                 searchHire = new SearchHire
                 {
@@ -3505,7 +3584,9 @@ namespace newApi.Controllers
                     ExpertAvailabilityId = currentAvailabilityId, // Guardar la disponibilidad usada
                     ExpertTimezone = expertTimezone, // ✅ INTERNACIONALIZACIÓN: Snapshot del timezone del lugar de contratación
                     ExpertCountry = expertCountry, // ✅ INTERNACIONALIZACIÓN: Snapshot del país del lugar de contratación
-                    RequiresManualReview = taxNotCollectedNeedsReview // 🔧 FIX D11: IVA no recaudado → revisión fiscal del admin
+                    RequiresManualReview = taxNotCollectedNeedsReview, // 🔧 FIX D11: IVA no recaudado → revisión fiscal del admin
+                    ClientVatNumber = clientVatNumber,                  // 🔧 FISCAL FLIP: NIF cliente (puede ser null)
+                    ClientVatCountryCode = clientVatCountryCode         // 🔧 FISCAL FLIP: país NIF cliente (puede ser null)
                 };
                     // ✅ REMOVED: Balance verification eliminated - all payments are direct Stripe
 
@@ -3518,8 +3599,8 @@ namespace newApi.Controllers
                 // ServicePayment, o filas zombi descorrelacionadas, al cascadear hasta capturar y commitear sobre
                 // una transacción muerta). Si la conexión se cae, sube al catch externo → rollback total + 500 →
                 // Stripe reintenta idempotente (guard de ServicePayment por PaymentIntentId + clave capture-{hireId}).
-                await _context.SaveChangesAsync(); // ✅ SAVE FIRST to get the real ID
-                searchHireId = searchHire.Id;
+                    await _context.SaveChangesAsync(); // ✅ SAVE FIRST to get the real ID
+                    searchHireId = searchHire.Id;
 
                 // Migrar chat pre-contratación → conversación post-hire
                 try
@@ -3554,7 +3635,7 @@ namespace newApi.Controllers
                 // 🔧 FIX (hallazgo C): sin recovery con autocommit. El ServicePayment debe commitear ATÓMICAMENTE
                 // con el SearchHire (misma transacción, commit en CommitAsync). Si la conexión se cae, sube al
                 // catch externo → rollback total + 500 → Stripe reintenta idempotente.
-                await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync();
 
                 if (string.IsNullOrEmpty(session.PaymentIntentId))
                 {

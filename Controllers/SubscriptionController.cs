@@ -3218,7 +3218,23 @@ namespace newApi.Controllers
                 .AsNoTracking() // ✅ FIX: AsNoTracking evita que EF Core intente usar ExecutionStrategy
                 .FirstOrDefaultAsync(z => z.Id == service.ExpertProfileId);
 
-            var expertuserid = expertProfile?.UserId ?? 0;
+            // 🛡️ D1 FIX: si el SearchService apunta a un ExpertProfile.Id que no existe
+            // (data corruption, race de eliminación), expertProfile sería null y antes el
+            // fallback `?? 0` creaba el SearchHire con ExpertId=0 → FK violation al
+            // SaveChanges. Abortamos con log critical para que el admin investigue (el
+            // checkout ya cobró al cliente; necesita refund o reasignación del servicio).
+            if (expertProfile == null)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: HandlePendingHireCompleted aborted — ExpertProfile not found",
+                    details: $"Checkout cobrado pero SearchService.ExpertProfileId={service.ExpertProfileId} no resuelve a ningún ExpertProfile. ClientId={userId} ServiceId={service.Id}. ACCIÓN: refund manual del cliente o reasignación del servicio. NO se creó SearchHire (evita FK violation con ExpertId=0).",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted",
+                    relatedEntityType: "SearchService",
+                    relatedEntityId: service.Id);
+                return;
+            }
+            var expertuserid = expertProfile.UserId; // ya no necesita ?? 0
 
             // Validar que el experto no se contrate a sí mismo
             if (expertuserid == userId)

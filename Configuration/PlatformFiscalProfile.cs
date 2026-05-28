@@ -46,7 +46,17 @@ namespace newApi.Configuration
         /// <summary>Alta en Registro de Operadores Intracomunitarios (ROI/VIES). Necesario para reverse-charge B2B intra-UE.</summary>
         public bool RoiRegistered { get; set; } = false;
 
-        /// <summary>Alta en One-Stop Shop (Union OSS) para B2C UE tras cruzar el umbral €10.000/año.</summary>
+        /// <summary>
+        /// Alta en One-Stop Shop (Union OSS) para B2C UE tras cruzar el umbral €10.000/año.
+        /// 🛡️ N24 TODO arquitectural: actualmente es un flag muerto sin lógica de tracking del
+        /// umbral anual. Cuando la plataforma vaya a darse de alta como autónoma, AÑADIR:
+        ///  - Tracking acumulado de ingresos B2C cross-border año-a-fecha (YTD) por país de cliente.
+        ///  - Job mensual que compare YTD vs 10000 y emita Critical cuando se acerque (ej 80%).
+        ///  - Auto-flip OssRegistered=true cuando se supere + alerta admin para registro AEAT modelo 369.
+        ///  - Recalcular TaxBehavior en checkout para que aplique tax del país del cliente (no SP).
+        /// Sin esto, cruzar el umbral sin registrarse en OSS = incumplimiento fiscal (cada país UE
+        /// reclamaría su IVA local cuando el portal lo detecte por intercambio de información AEAT-VAT).
+        /// </summary>
         public bool OssRegistered { get; set; } = false;
 
         /// <summary>Prefijo de la serie de facturación (ej. "INSP-"). Se concatena con año y nº.</summary>

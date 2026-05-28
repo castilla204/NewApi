@@ -1086,6 +1086,36 @@ namespace newApi.Services
                     Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ERROR] InnerException Message: {emailEx.InnerException.Message}");
                 }
                 System.Diagnostics.Debug.WriteLine($"[LOGGING SERVICE] HANGFIRE ERROR: {emailEx.Message}");
+
+                // 🛡️ N27 FIX: detectar errores SMTP permanentes (550-559 series) y NO reintentar.
+                // SmtpStatusCode 550=Mailbox unavailable / 551=User not local / 552=Mailbox storage limit /
+                // 553=Mailbox name not allowed / 554=Transaction failed (rejected). Estos errores NO mejoran
+                // con reintento → quema 3*60-600s antes de Mover a Failed sin razón. Detectable por:
+                // 1) SmtpFailedRecipientException con StatusCode permanent, o 2) mensaje contiene "550 "/"552".
+                var msg = emailEx.Message ?? "";
+                var innerMsg = emailEx.InnerException?.Message ?? "";
+                bool isPermanentSmtp =
+                    emailEx is System.Net.Mail.SmtpFailedRecipientException smtpFr
+                        && (int)smtpFr.StatusCode >= 500 && (int)smtpFr.StatusCode < 600
+                    || msg.Contains("550 ", StringComparison.OrdinalIgnoreCase)
+                    || msg.Contains("551 ", StringComparison.OrdinalIgnoreCase)
+                    || msg.Contains("552 ", StringComparison.OrdinalIgnoreCase)
+                    || msg.Contains("553 ", StringComparison.OrdinalIgnoreCase)
+                    || msg.Contains("554 ", StringComparison.OrdinalIgnoreCase)
+                    || msg.Contains("mailbox unavailable", StringComparison.OrdinalIgnoreCase)
+                    || msg.Contains("address rejected", StringComparison.OrdinalIgnoreCase)
+                    || innerMsg.Contains("550 ", StringComparison.OrdinalIgnoreCase)
+                    || innerMsg.Contains("552 ", StringComparison.OrdinalIgnoreCase);
+
+                if (isPermanentSmtp)
+                {
+                    Console.Error.WriteLine($"[LOGGING SERVICE] [N27] Email PERMANENT FAIL to {toEmail}: {msg}. NO reintento (gastaría hasta 16 min sin éxito). Marcado como Failed.");
+                    // No throw → Hangfire marca como Succeeded (no-op). Si quieres que aparezca en Failed
+                    // queue, se podría re-tipificar la excepción, pero el comportamiento más limpio es no
+                    // contaminar la queue con jobs irrecuperables.
+                    return;
+                }
+
                 // Lanzar excepción para que Hangfire reintente automáticamente
                 // Hangfire reintentará 3 veces: después de 60s, 5min, y 10min
                 throw;

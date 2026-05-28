@@ -114,9 +114,14 @@ namespace newApi.Filters
             }
             
             // Si la cookie no fue válida, intentar con query/header/referrer
+            // 🛡️ N26 FIX: priorizar Authorization header sobre query/referrer (token en URL queda en
+            // logs de servidor, browser history, referer headers → riesgo de filtración). Si la auth
+            // se consigue vía query o referer, log Critical para que el admin migre al header (o a
+            // un endpoint POST que setee solo la cookie). NO eliminamos el query/referer fallback
+            // porque rompería el bootstrap del dashboard si el frontend solo lo soporta así.
             if (validToken == null)
             {
-                var fallbackToken = tokenFromQuery ?? tokenFromHeader ?? tokenFromReferer;
+                var fallbackToken = tokenFromHeader ?? tokenFromQuery ?? tokenFromReferer;
                 if (!string.IsNullOrEmpty(fallbackToken))
                 {
                     try
@@ -126,6 +131,11 @@ namespace newApi.Filters
                         {
                             validToken = fallbackToken;
                             validPrincipal = principal;
+                            // Avisar si la auth llegó por una vía insegura
+                            if (string.ReferenceEquals(fallbackToken, tokenFromQuery) || string.ReferenceEquals(fallbackToken, tokenFromReferer))
+                            {
+                                Console.Error.WriteLine("[HangfireAuth] ⚠️ N26: token autenticado vía query/referer — TODO: migrar a Authorization header o endpoint POST que setee cookie. Token en URL queda expuesto en access logs, browser history y referer headers a terceros.");
+                            }
                             Console.WriteLine("[HangfireAuth] ✅ Token de query/header/referrer válido");
                         }
                         else

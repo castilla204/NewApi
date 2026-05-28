@@ -1,4 +1,4 @@
-﻿
+﻿using System.ComponentModel.DataAnnotations.Schema;
 
 namespace newApi.DataLayer.Models.PostGresModels
 {
@@ -84,19 +84,22 @@ namespace newApi.DataLayer.Models.PostGresModels
 
         /// <summary>
         /// 🔧 FISCAL FLIP: NIF/VAT del cliente, capturado desde Stripe TaxIdCollection en el checkout.
-        /// Nullable: la mayoría de B2C no lo introducen. Se persiste SIEMPRE que Stripe lo recoja
-        /// (no depende de IsVatRegistered) para tener histórico cuando se haga el flip.
-        ///
-        /// Formato: número SIN prefijo de país (ej. "B12345678"). El país va en ClientVatCountryCode.
-        /// La validación VIES y el cálculo final de reverse-charge se hacen vía IViesValidator (stub
-        /// para esta fase; implementación real al activarse la facturación formal).
+        /// Nullable. NotMapped HASTA QUE SE APLIQUE LA MIGRACIÓN EN PROD: las columnas físicas
+        /// (ClientVatNumber/ClientVatCountryCode) no existen aún en la BD de producción, y mapearlas
+        /// haría fallar TODAS las queries sobre SearchHires (column does not exist). Al hacer el flip:
+        ///   1) Regenerar migración limpia (dotnet ef migrations add) que añada estas 2 columnas.
+        ///   2) Aplicar a prod (dotnet ef database update).
+        ///   3) Quitar [NotMapped] de ambas propiedades.
+        /// Mientras tanto, la extracción del NIF cliente en HandlePendingHireCompleted se asigna a estas
+        /// propiedades en memoria (no se persiste). El día del flip, basta con quitar el atributo.
         /// </summary>
+        [NotMapped]
         public string? ClientVatNumber { get; set; }
 
         /// <summary>
-        /// 🔧 FISCAL FLIP: país del NIF/VAT del cliente. ISO 3166-1 alpha-2 (ej. "ES", "FR", "DE").
-        /// Se rellena junto con ClientVatNumber. Sin él, ClientVatNumber no es validable contra VIES.
+        /// 🔧 FISCAL FLIP: país del NIF/VAT del cliente. ISO 3166-1 alpha-2. NotMapped (ver ClientVatNumber).
         /// </summary>
+        [NotMapped]
         public string? ClientVatCountryCode { get; set; }
     }
 

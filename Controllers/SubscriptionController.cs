@@ -3493,7 +3493,7 @@ namespace newApi.Controllers
                             taxAmount = 0;
                             // 🔧 FISCAL FLIP: solo marcar para revisión si la plataforma YA está registrada.
                             // Sin alta, no hay obligación de recaudar → no es incidencia.
-                            taxNotCollectedNeedsReview = _fiscalProfile.IsVatRegistered;
+                            taxNotCollectedNeedsReview = _fiscalProfile.IsReadyForFlip();
                         }
                         else if (taxAmount == 0 && !isReverseChargeOnly)
                         {
@@ -3503,7 +3503,7 @@ namespace newApi.Controllers
                             //     crítica y sin RequiresManualReview (si no, alarmaría en CADA venta).
                             //   IsVatRegistered=true (post-alta): SÍ es anómalo (como MoR deberíamos recaudar).
                             //     Comportamiento previo (Critical + RequiresManualReview) intacto.
-                            if (_fiscalProfile.IsVatRegistered)
+                            if (_fiscalProfile.IsReadyForFlip())
                             {
                                 await _loggingService.LogCriticalAsync(
                                     message: "IVA no recaudado: Stripe Tax devolvió 0 sin reverse charge — falta registro fiscal",

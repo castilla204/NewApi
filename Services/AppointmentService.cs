@@ -3200,7 +3200,15 @@ namespace newApi.Services
         {
             try
             {
+                // 🛡️ R3-V1 FIX (N5 completar): IgnoreQueryFilters para que el Include de
+                // sh.Client y sh.Expert traiga al User AUN si está soft-deleted. Sin esto, si
+                // el cliente/experto borra su cuenta entre Schedule y ejecución del timer, el
+                // query filter global (User.IsDeleted=false) hace que sh.Client/sh.Expert vengan
+                // como null → handler no puede notificar, finalizar money distribution, etc.
+                // Con IgnoreQueryFilters el handler recibe el User completo y puede tomar
+                // decisión informada (saltarlo si IsDeleted, completar dinero si pertinente).
                 var timer = await _context.AppointmentTimers
+                    .IgnoreQueryFilters()
                     .Include(t => t.Appointment)
                         .ThenInclude(a => a.Status)
                     .Include(t => t.Appointment)
@@ -4228,7 +4236,10 @@ namespace newApi.Services
         {
             try
             {
+                // 🛡️ R3-V1 FIX (N5 completar): IgnoreQueryFilters para que sh.Client/sh.Expert
+                // se carguen aun si el User está soft-deleted (consistente con ProcessAppointmentTimerAsync).
                 var appointment = await _context.Appointments
+                    .IgnoreQueryFilters()
                     .Include(a => a.Status)
                     .Include(a => a.SearchHire)
                         .ThenInclude(sh => sh.Status)

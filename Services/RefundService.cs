@@ -1484,6 +1484,27 @@ namespace newApi.Services
 
                             servicePayment.IsRefunded = true;
                             servicePayment.StripeRefundId = createdRefundId;
+
+                            // 🛡️ N3 FIX (refund principal): SaveChanges INMEDIATO tras el Add. Antes había
+                            // ~252 líneas entre refundSvc.CreateAsync (línea ~1254) y el SaveChanges de la
+                            // línea siguiente (~1506) — ventana donde Stripe ya hizo el refund pero la BD
+                            // podía morir sin persistir. Mismo patrón que C4 (clawback).
+                            try
+                            {
+                                await _context.SaveChangesAsync();
+                            }
+                            catch (Exception persistEx)
+                            {
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Refund applied in Stripe but FT Refund failed to persist",
+                                    details: $"SearchHire {searchHireId}: Stripe refund {createdRefundId} de {clientRefundAmountForStripe:F2}€ se ejecutó OK, pero el ledger BD no se actualizó. RECONCILIACIÓN MANUAL: insertar fila FinancialTransaction Refund con esos datos. Error: {persistEx.Message}",
+                                    userId: searchHire.ClientId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync.N3RefundPersist",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId,
+                                    additionalData: new { RefundId = createdRefundId, Amount = clientRefundAmountForStripe, Error = persistEx.Message });
+                                throw;
+                            }
                         }
 
                         if (needsTransfer && !string.IsNullOrEmpty(createdTransferId))
@@ -1501,9 +1522,28 @@ namespace newApi.Services
                                 CreatedAt = DateTime.UtcNow
                             };
                             _context.FinancialTransactions.Add(expertTx);
+
+                            // 🛡️ N3 FIX (transfer principal): SaveChanges INMEDIATO. Antes había ~368 líneas
+                            // de gap entre transferSvc.CreateAsync y el SaveChanges global → riesgo idéntico.
+                            try
+                            {
+                                await _context.SaveChangesAsync();
+                            }
+                            catch (Exception persistEx)
+                            {
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Transfer applied in Stripe but FT Payout failed to persist",
+                                    details: $"SearchHire {searchHireId}: Stripe transfer {createdTransferId} de {expertAmountForStripe:F2}€ se ejecutó OK, pero el ledger BD no se actualizó. RECONCILIACIÓN MANUAL: insertar fila FinancialTransaction Payout con esos datos. Error: {persistEx.Message}",
+                                    userId: searchHire.ExpertId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync.N3TransferPersist",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId,
+                                    additionalData: new { TransferId = createdTransferId, Amount = expertAmountForStripe, Error = persistEx.Message });
+                                throw;
+                            }
                         }
 
-                        await _context.SaveChangesAsync();
+                        await _context.SaveChangesAsync(); // no-op si N3 ya persistió; útil si quedan tracked changes
                         
                         // Ô£à CORRECCI├ôN: Solo hacer commit si creamos la transacci├│n
                         if (transaction != null)

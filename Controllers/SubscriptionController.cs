@@ -970,9 +970,32 @@ namespace newApi.Controllers
                 }
                 catch (StripeException ex)
                 {
-                    // Si falla crear el link, el estado ya está guardado, pero eso está bien
-                    // El usuario puede intentar de nuevo y se creará un nuevo link
-                    return StatusCode(500, new { message = "Failed to create onboarding link", error = ex.Message });
+                    // 🛡️ R7 FIX: Critical log con accountId huérfano. Antes el account Stripe quedaba
+                    // creado (línea 867) y guardado como PendingStripeAccountId (línea 895), pero si
+                    // CreateAsync del AccountLink fallaba, el cliente recibía 500 sin que el admin se
+                    // enterara. Si el usuario NO reintentaba (frustrado), el account Stripe quedaba
+                    // huérfano sin completar onboarding indefinidamente. Cobramos comisión a la
+                    // plataforma por account creado pero nunca activo. Critical permite que admin
+                    // monitorice cuántos accounts hay en este estado para limpiar/recordar al user.
+                    await _loggingService.LogCriticalAsync(
+                        message: "R7: AccountLink creation falló — Stripe account huérfano hasta retry",
+                        details: $"User {userId}: Stripe account {account.Id} creado y guardado como PendingStripeAccountId, pero AccountLinkService.CreateAsync falló: {ex.StripeError?.Code} / {ex.StripeError?.Type} / {ex.Message}. El usuario verá error 500 al frontend. Si NO reintenta startOnboarding, el account queda huérfano (sin link de onboarding). ACCIÓN ADMIN: monitorizar (a) hires si el usuario reintenta o no en 7 días, (b) limpiar accounts huérfanos en Stripe Dashboard si el usuario abandona.",
+                        userId: userId,
+                        source: "SubscriptionController.CreateExpertOnboarding.R7",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: expertProfile?.Id,
+                        additionalData: new
+                        {
+                            StripeAccountId = account.Id,
+                            ex.StripeError?.Code,
+                            ex.StripeError?.Type,
+                            ExceptionMessage = ex.Message
+                        });
+                    return StatusCode(500, new
+                    {
+                        message = "No pudimos generar el enlace de configuración. Reintenta en unos minutos para reusar tu cuenta pendiente.",
+                        error = ex.Message
+                    });
                 }
             }
             catch (Exception ex)
@@ -3339,6 +3362,54 @@ namespace newApi.Controllers
             if (expertuserid == userId)
             {
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
+            }
+
+            // 🛡️ R9 FIX: validar IsOnVacation EN EL WEBHOOK. Antes solo se validaba al CREAR
+            // el checkout session (línea ~537 SearchController). Race window: si el experto
+            // activa vacation mode ENTRE checkout creation (cliente abre Stripe) y webhook
+            // (cliente paga), el hire se creaba para experto inactivo → experto recibe
+            // notificación de hire que no puede atender → conflict + manual refund.
+            // Solución: si IsOnVacation al llegar el webhook, refund automático del cliente
+            // y log Critical para que admin pueda contactar al experto (puede ser olvido).
+            // NO se crea SearchHire (el cliente recibe refund completo).
+            if (expertProfile.IsOnVacation)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "R9: Webhook llegó pero experto está en vacation mode → refund automático",
+                    details: $"User {userId} pagó por servicio {service.Id} del experto {expertuserid}, pero el experto activó IsOnVacation entre checkout y webhook. PaymentIntentId: {session.PaymentIntentId}. ACCIÓN AUTO: refund/cancel del PI. ACCIÓN ADMIN: verificar si el experto desactivó vacation por error y notificar al cliente.",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted.R9",
+                    relatedEntityType: "SearchService",
+                    relatedEntityId: service.Id,
+                    additionalData: new
+                    {
+                        ExpertUserId = expertuserid,
+                        ExpertProfileId = expertProfile.Id,
+                        PaymentIntentId = session.PaymentIntentId,
+                        Action = "auto_refund_vacation_race"
+                    });
+
+                // Cancel del PI directamente (estamos en checkout.session.completed → PI en
+                // requires_capture por manual capture). Si por algún motivo ya estuviera
+                // succeeded, devolverá StripeException y el admin lo procesará manualmente.
+                try
+                {
+                    var piSvc = new Stripe.PaymentIntentService();
+                    await piSvc.CancelAsync(session.PaymentIntentId,
+                        new Stripe.PaymentIntentCancelOptions { CancellationReason = "abandoned" },
+                        new Stripe.RequestOptions { IdempotencyKey = $"r9-vacation-cancel-{session.PaymentIntentId}" });
+                }
+                catch (Exception cancelEx)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "R9: cancel del PI falló — admin debe procesar refund manualmente",
+                        details: $"PaymentIntentId: {session.PaymentIntentId}. Error: {cancelEx.Message}. El cliente {userId} pagó pero no se le ha refundeado/cancelado. URGENTE.",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted.R9",
+                        relatedEntityType: "PaymentIntent",
+                        relatedEntityId: null);
+                }
+                return;
             }
 
             // Obtener la disponibilidad actual del experto al momento de la contratación

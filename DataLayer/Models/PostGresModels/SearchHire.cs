@@ -93,13 +93,13 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// Mientras tanto, la extracción del NIF cliente en HandlePendingHireCompleted se asigna a estas
         /// propiedades en memoria (no se persiste). El día del flip, basta con quitar el atributo.
         /// </summary>
-        [NotMapped]
+        // 🔧 FISCAL FLIP APLICADO 2026-05-29: columna física existe en BD prod
         public string? ClientVatNumber { get; set; }
 
         /// <summary>
         /// 🔧 FISCAL FLIP: país del NIF/VAT del cliente. ISO 3166-1 alpha-2. NotMapped (ver ClientVatNumber).
         /// </summary>
-        [NotMapped]
+        // 🔧 FISCAL FLIP APLICADO 2026-05-29: columna física existe en BD prod
         public string? ClientVatCountryCode { get; set; }
 
         /// <summary>
@@ -119,13 +119,9 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// Hasta entonces, la captura en HandlePendingHireCompleted asigna en memoria (no persiste)
         /// y el RefundService recibe siempre NULL → fallback a StatusConfiguration (comportamiento actual).
         /// </summary>
-        [NotMapped]
+        // 🛡️ V8 FIX APLICADO 2026-05-29: snapshots de % al crear hire — columnas en BD prod
         public decimal? ClientPercentageSnapshot { get; set; }
-
-        [NotMapped]
         public decimal? ExpertPercentageSnapshot { get; set; }
-
-        [NotMapped]
         public decimal? PlatformPercentageSnapshot { get; set; }
     }
 

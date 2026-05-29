@@ -5,6 +5,7 @@ using Stripe;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.enums;
 using newApi.DataLayer.Models;
+using newApi.DataLayer.Models.DTOs; // 🛡️ V8: MoneyDistributionConfigDto para construir snapshot
 using newApi.Common;
 using System;
 
@@ -137,12 +138,40 @@ namespace newApi.Services
                     return false;
                 }
 
-                // Obtener configuraci├│n de distribuci├│n para el estado concreto (subestado/granularidad lo resuelve el servicio)
-                var config = await _systemStatusService.GetMoneyDistributionConfigAsync(
-                    statusValue,
-                    searchHire.SearchService?.CategoryId,
-                    searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId
-                );
+                // 🛡️ V8 FIX: usar snapshot de % capturado al crear el hire SI EXISTE. Sin
+                // snapshot (hires legacy o pre-flip migración), fallback a StatusConfiguration
+                // actual (comportamiento previo). Esto protege contratos vigentes contra cambios
+                // retroactivos de % por admin: el experto que contrató con 95% recibe 95% aunque
+                // el admin baje el porcentaje después. NULL coalescing en las 3 → si alguno
+                // falta, usar config live (no mezclar snapshot parcial + live: incoherente).
+                MoneyDistributionConfigDto? config;
+                if (searchHire.ClientPercentageSnapshot.HasValue
+                    && searchHire.ExpertPercentageSnapshot.HasValue
+                    && searchHire.PlatformPercentageSnapshot.HasValue)
+                {
+                    config = new MoneyDistributionConfigDto
+                    {
+                        ClientPercentage = searchHire.ClientPercentageSnapshot.Value,
+                        ExpertPercentage = searchHire.ExpertPercentageSnapshot.Value,
+                        PlatformPercentage = searchHire.PlatformPercentageSnapshot.Value
+                    };
+                    await _loggingService.LogInfoAsync(
+                        message: "V8: usando snapshot de porcentajes del SearchHire (no StatusConfiguration live)",
+                        details: $"SearchHire {searchHire.Id}: Client={config.ClientPercentage}%, Expert={config.ExpertPercentage}%, Platform={config.PlatformPercentage}% (snapshot inmutable al momento de creación, protege contra cambios admin retroactivos).",
+                        userId: null,
+                        source: "StripeRefundService.ProcessMoneyDistributionAsync.V8",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHire.Id);
+                }
+                else
+                {
+                    // Obtener configuraci├│n de distribuci├│n para el estado concreto (subestado/granularidad lo resuelve el servicio)
+                    config = await _systemStatusService.GetMoneyDistributionConfigAsync(
+                        statusValue,
+                        searchHire.SearchService?.CategoryId,
+                        searchHire.SearchService?.ServiceType?.ServiceTypeCategoryId
+                    );
+                }
 
                 if (config == null)
                 {

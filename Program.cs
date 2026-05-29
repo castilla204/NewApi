@@ -1423,6 +1423,8 @@ builder.Services.Configure<newApi.Configuration.PlatformFiscalProfile>(
     builder.Configuration.GetSection(newApi.Configuration.PlatformFiscalProfile.SectionName));
 builder.Services.AddScoped<newApi.Services.IInvoiceNumberService, newApi.Services.InvoiceNumberService>();
 builder.Services.AddScoped<newApi.Services.IViesValidator, newApi.Services.ViesValidatorStub>();
+// 📜 Round 9 — A2 FIX: servicio de auditoría de transiciones de estado de SearchHire (GDPR Art 5(2)).
+builder.Services.AddScoped<newApi.Services.ISearchHireStatusAuditService, newApi.Services.SearchHireStatusAuditService>();
 
 builder.Services.AddScoped<IInvoiceService, newApi.Services.InvoiceService>();
 builder.Services.AddScoped<IStripeValidationService, StripeValidationService>();

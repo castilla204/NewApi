@@ -16,12 +16,15 @@ namespace newApi.Services
         private readonly AppDbContext _context;
         private readonly SystemStatusService _systemStatusService;
         private readonly ILoggingService _loggingService;
+        // 📜 Round 9 — A2 FIX: audit log de transiciones de estado.
+        private readonly ISearchHireStatusAuditService? _statusAudit;
 
-        public StripeRefundService(AppDbContext context, SystemStatusService systemStatusService, ILoggingService loggingService)
+        public StripeRefundService(AppDbContext context, SystemStatusService systemStatusService, ILoggingService loggingService, ISearchHireStatusAuditService? statusAudit = null)
         {
             _context = context;
             _systemStatusService = systemStatusService;
             _loggingService = loggingService;
+            _statusAudit = statusAudit; // opcional para no romper tests existentes
         }
 
 
@@ -422,6 +425,10 @@ namespace newApi.Services
                 }
 
                 // MODIFICACI├ôN: Verificar balance disponible antes de cualquier outflow (best practice Stripe 2025 para evitar negativos)
+                // 🌍 Round 9 — A5: Comprobamos solo el balance EUR porque todos los charges al cliente
+                // se hacen en EUR (la pasarela europea de la plataforma). Si el experto es GB/CH/US/CA,
+                // Stripe convierte automáticamente desde EUR a la divisa destino al crear el transfer.
+                // El balance EUR es por tanto la única fuente de liquidez relevante para outflows.
                 try
                 {
                     var balanceService = new BalanceService();
@@ -661,13 +668,26 @@ namespace newApi.Services
                                     // Ô£à Verificar si el estado actual es diferente al objetivo
                                     if (searchHireForState.StatusId != searchHireStatusRow.Id)
                                     {
+                                        // 📜 Round 9 — A2: registrar transición ANTES de mutar
+                                        var oldStatusForAudit = searchHireForState.StatusId;
                                         searchHireForState.StatusId = searchHireStatusRow.Id;
                                         searchHireForState.UpdatedAt = DateTime.UtcNow;
                                         stateNeedsUpdate = true;
+                                        if (_statusAudit != null)
+                                        {
+                                            await _statusAudit.RecordTransitionAsync(
+                                                searchHireId: searchHireForState.Id,
+                                                oldStatusId: oldStatusForAudit,
+                                                newStatusId: searchHireStatusRow.Id,
+                                                changedByUserId: initiatedByUserId,
+                                                source: "StripeRefundService.ProcessMoneyDistributionAsync.Phase2",
+                                                reason: reason,
+                                                additionalData: new { TargetStatusValue = targetSearchHireStatusValue, StatusValue = statusValue });
+                                        }
                                     }
                                 }
                             }
-                            
+
                             // Solo hacer SaveChanges si realmente hay cambios
                             if (stateNeedsUpdate)
                             {
@@ -787,20 +807,33 @@ namespace newApi.Services
                                 if (!string.IsNullOrEmpty(targetSearchHireStatusValue))
                                 {
                                     var searchHireStatusRow = await _context.SystemStatuses
-                                        .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" && 
+                                        .FirstOrDefaultAsync(s => s.StatusType == "SearchHireStatus" &&
                                                                  s.StatusValue == targetSearchHireStatusValue);
                                     if (searchHireStatusRow != null)
                                     {
                                         // Ô£à Verificar si el estado actual es diferente al objetivo
                                         if (searchHireForState.StatusId != searchHireStatusRow.Id)
                                         {
+                                            // 📜 Round 9 — A2: audit log de la transición
+                                            var oldStatusForAudit = searchHireForState.StatusId;
                                             searchHireForState.StatusId = searchHireStatusRow.Id;
                                             searchHireForState.UpdatedAt = DateTime.UtcNow;
                                             stateNeedsUpdate = true;
+                                            if (_statusAudit != null)
+                                            {
+                                                await _statusAudit.RecordTransitionAsync(
+                                                    searchHireId: searchHireForState.Id,
+                                                    oldStatusId: oldStatusForAudit,
+                                                    newStatusId: searchHireStatusRow.Id,
+                                                    changedByUserId: initiatedByUserId,
+                                                    source: "StripeRefundService.ProcessMoneyDistributionAsync.Phase2.Retry",
+                                                    reason: reason,
+                                                    additionalData: new { TargetStatusValue = targetSearchHireStatusValue, StatusValue = statusValue });
+                                            }
                                         }
                                     }
                                 }
-                                
+
                                 // Solo hacer SaveChanges si realmente hay cambios
                                 if (stateNeedsUpdate)
                                 {
@@ -1220,10 +1253,17 @@ namespace newApi.Services
                                 return false;
                             }
 
+                        // 🌍 Round 9 — A5 FIX: divisa derivada del Connect account del experto.
+                        // Hardcodear "eur" rompía transfers a GB/CH/US/CA (currency_mismatch).
+                        // Preferimos expertAccount.DefaultCurrency (verdad real de Stripe); fallback a mapping por país.
+                        var transferCurrency = newApi.Common.StripeCurrencyMapping.ResolveTransferCurrency(
+                            expertAccount?.DefaultCurrency,
+                            searchHire.ExpertCountry);
+
                         var transferOptions = new TransferCreateOptions
                         {
                             Amount = checked((long)Math.Round(expertAmountForStripe * 100)), // ✅ Usar monto base (sin tax) - transfers no incluyen tax. Round (no truncar) para no perder céntimos ni descuadrar el ledger.
-                                Currency = "eur",
+                                Currency = transferCurrency, // 🌍 A5: era "eur" hardcodeado — fallaba para GB/CH/US/CA
                                 Destination = expertStripeAccountId,
                                 Metadata = new Dictionary<string, string>
                                 {
@@ -1234,7 +1274,9 @@ namespace newApi.Services
                                     { "platformPercentage", config.PlatformPercentage.ToString() },
                                     { "reason", reason },
                                     { "clientId", searchHire.ClientId.ToString() }, // MODIFICACI├ôN: M├ís metadata para trazabilidad
-                                    { "expertId", searchHire.ExpertId?.ToString() ?? "N/A" }
+                                    { "expertId", searchHire.ExpertId?.ToString() ?? "N/A" },
+                                    { "transferCurrency", transferCurrency }, // 🌍 A5: divisa real usada para auditoría (vs charge en EUR)
+                                    { "expertCountry", searchHire.ExpertCountry ?? "unknown" } // 🌍 A5: país snapshot del experto
                                 }
                             };
 

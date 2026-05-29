@@ -101,6 +101,32 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// </summary>
         [NotMapped]
         public string? ClientVatCountryCode { get; set; }
+
+        /// <summary>
+        /// 🛡️ V8 FIX: snapshot de los porcentajes de reparto vigentes al CREAR el hire.
+        /// Sin snapshot, si admin modifica StatusConfiguration.ClientPercentage/ExpertPercentage/
+        /// PlatformPercentage entre la creación y la resolución del hire, el split de dinero
+        /// usaría los porcentajes NUEVOS retroactivamente → experto contrató con 95% pero recibe 90%.
+        /// Con snapshot, RefundService.ProcessMoneyDistributionAsync usa estos valores; si son NULL
+        /// (hires legacy pre-migración), fallback a StatusConfiguration actual.
+        ///
+        /// [NotMapped] HASTA QUE SE APLIQUE LA MIGRACIÓN: igual patrón que ClientVatNumber. Las
+        /// columnas físicas no existen aún en prod. Día del flip:
+        ///   1) Generar migración: dotnet ef migrations add SearchHirePercentageSnapshot
+        ///   2) Aplicar a prod: dotnet ef database update
+        ///   3) Quitar [NotMapped] de las 3 propiedades
+        ///   4) Opcional: backfill SQL para hires existentes (UPDATE con config global vigente)
+        /// Hasta entonces, la captura en HandlePendingHireCompleted asigna en memoria (no persiste)
+        /// y el RefundService recibe siempre NULL → fallback a StatusConfiguration (comportamiento actual).
+        /// </summary>
+        [NotMapped]
+        public decimal? ClientPercentageSnapshot { get; set; }
+
+        [NotMapped]
+        public decimal? ExpertPercentageSnapshot { get; set; }
+
+        [NotMapped]
+        public decimal? PlatformPercentageSnapshot { get; set; }
     }
 
 }

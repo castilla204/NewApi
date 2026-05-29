@@ -1219,6 +1219,10 @@ namespace newApi.Controllers
                         TaxAmount = dispute.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
                         ExpertTimezone = dispute.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
                         ExpertCountry = dispute.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
+                        // 🛡️ Round 10 — P-C FIX (V8 snapshots): exponer al frontend
+                        ClientPercentageSnapshot = dispute.SearchHire.ClientPercentageSnapshot,
+                        ExpertPercentageSnapshot = dispute.SearchHire.ExpertPercentageSnapshot,
+                        PlatformPercentageSnapshot = dispute.SearchHire.PlatformPercentageSnapshot,
                         Expert = dispute.SearchHire.Expert != null ? new UserDto
                         {
                             Id = dispute.SearchHire.Expert.Id,

@@ -764,6 +764,11 @@ namespace newApi.Controllers
                     TaxAmount = searchHire.TaxAmount,
                     ExpertTimezone = searchHire.ExpertTimezone,
                     ExpertCountry = searchHire.ExpertCountry,
+                    // 🛡️ Round 10 — P-C FIX (V8 snapshots): exponer al frontend para que use
+                    // el reparto pactado al crear la hire, ignorando cambios de admin posteriores.
+                    ClientPercentageSnapshot = searchHire.ClientPercentageSnapshot,
+                    ExpertPercentageSnapshot = searchHire.ExpertPercentageSnapshot,
+                    PlatformPercentageSnapshot = searchHire.PlatformPercentageSnapshot,
                     Expert = searchHire.ExpertId.HasValue && searchHire.Expert != null ? new UserDto
                     {
                         Id = searchHire.Expert.Id,

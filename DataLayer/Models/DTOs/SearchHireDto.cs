@@ -42,6 +42,14 @@ namespace newApi.DataLayer.Models.DTOs
         /// País del experto al momento de crear la contratación (ISO 3166-1 alpha-2, ej: "ES", "MX")
         /// </summary>
         public string? ExpertCountry { get; set; }
+
+        // 🛡️ Round 10 — P-C FIX (V8 snapshots): porcentajes congelados al momento de
+        // crear la hire. Si admin cambia StatusConfigurations DESPUÉS, el snapshot
+        // preserva el reparto pactado. Frontend los usa con prioridad sobre la config
+        // dinámica del estado actual. Null para hires creadas pre-V8.
+        public decimal? ClientPercentageSnapshot { get; set; }
+        public decimal? ExpertPercentageSnapshot { get; set; }
+        public decimal? PlatformPercentageSnapshot { get; set; }
     }
 
     public class ServiceInfo
@@ -115,6 +123,11 @@ namespace newApi.DataLayer.Models.DTOs
         /// País del experto al momento de crear la contratación (ISO 3166-1 alpha-2, ej: "ES", "MX")
         /// </summary>
         public string? ExpertCountry { get; set; }
+
+        // 🛡️ Round 10 — P-C FIX (V8 snapshots): mismos campos que en SearchHireDto.
+        public decimal? ClientPercentageSnapshot { get; set; }
+        public decimal? ExpertPercentageSnapshot { get; set; }
+        public decimal? PlatformPercentageSnapshot { get; set; }
     }
 
     public class UpdateSearchHireStatusDto

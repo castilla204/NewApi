@@ -22,6 +22,19 @@ namespace newApi.Controllers
     [Authorize]
     public class SearchController : ControllerBase
     {
+        /// <summary>
+        /// 🛡️ I6 FIX: helper de truncado UNIFORME para metadata + idempotency key.
+        /// Antes había truncado inline (con substring) en metadata pero no en el hash de
+        /// idempotency. Usar este helper garantiza que ambos usen exactamente el mismo
+        /// algoritmo y resultado. Devuelve "" si input null/empty para evitar diferencias
+        /// entre null/empty en el hash.
+        /// </summary>
+        private static string I6_Truncate(string? value, int maxLength)
+        {
+            if (string.IsNullOrEmpty(value)) return string.Empty;
+            return value.Length > maxLength ? value.Substring(0, maxLength) : value;
+        }
+
         private readonly AppDbContext _context;
         private readonly IAuthorizationServices _authService;
         private readonly IUserService _userService;
@@ -624,6 +637,13 @@ namespace newApi.Controllers
                         SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}&serviceId={service.Id}",
                         CancelUrl = $"{domain}/cancel",
                         CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "unknown@example.com",
+                        // 🛡️ I6 FIX: truncar UNA SOLA VEZ y usar los valores truncados para
+                        // AMBOS metadata Y idempotency key. Antes el hash usaba valores ORIGINALES
+                        // (sin truncar) mientras metadata SÍ truncaba — si el cliente enviaba el
+                        // mismo body desde frontend (consistente) funcionaba, pero si bypaseaba
+                        // el frontend (curl, mobile sin truncar, refactor frontend) → hash distinto
+                        // del esperado → Stripe NO reconocía idempotencia → segunda sesión creada
+                        // → doble cobro potencial.
                         Metadata = new Dictionary<string, string>
                         {
                             { "userId", userId.ToString() },
@@ -633,14 +653,14 @@ namespace newApi.Controllers
                             // ✅ OPTIMIZACIÓN: Solo enviar campos esenciales para evitar exceder límite de 500 caracteres
                             // En lugar de serializar DTOs completos, enviar solo IDs y campos críticos
                             { "searchId", "0" }, // ✅ CreateSearchDto no tiene Id (se crea después del pago)
-                            { "searchTitle", searchDto?.Title?.Length > 100 ? searchDto.Title.Substring(0, 100) : searchDto?.Title ?? "" },
-                            { "searchDescription", searchDto?.Description?.Length > 100 ? searchDto.Description.Substring(0, 100) : searchDto?.Description ?? "" },
+                            { "searchTitle", I6_Truncate(searchDto?.Title, 100) },
+                            { "searchDescription", I6_Truncate(searchDto?.Description, 100) },
                             { "frequency", searchDto?.Frequency.ToString() ?? "24" },
-                            { "keywords", parameterDto?.Keywords?.Length > 100 ? parameterDto.Keywords.Substring(0, 100) : parameterDto?.Keywords ?? "" },
-                            { "userSearch", parameterDto?.UserSearch?.Length > 200 ? parameterDto.UserSearch.Substring(0, 200) : parameterDto?.UserSearch ?? "" },
+                            { "keywords", I6_Truncate(parameterDto?.Keywords, 100) },
+                            { "userSearch", I6_Truncate(parameterDto?.UserSearch, 200) },
                             { "latitude", parameterDto?.Latitude ?? "" },
                             { "longitude", parameterDto?.Longitude ?? "" },
-                            { "locationName", parameterDto?.LocationName?.Length > 100 ? parameterDto.LocationName.Substring(0, 100) : parameterDto?.LocationName ?? "" },
+                            { "locationName", I6_Truncate(parameterDto?.LocationName, 100) },
                             { "categoryId", parameterDto?.Category?.ToString() ?? "" },
                             { "serviceTypeId", parameterDto?.ServiceTypeId?.ToString() ?? "" },
                             { "locationRange", parameterDto?.LocationRange?.ToString() ?? "" }
@@ -659,12 +679,21 @@ namespace newApi.Controllers
                     // DISTINTAS del mismo servicio en <24h => body distinto, misma clave => Stripe idempotency_error
                     // (400) => 500 al cliente. Con el hash: misma búsqueda (doble-clic) => misma clave (deduplica,
                     // cierra el doble cobro); búsqueda distinta => clave distinta (deja contratar).
+                    // 🛡️ I6 FIX: usar valores TRUNCADOS (mismos que metadata) para el hash de
+                    // idempotency. Esto garantiza que el doble-click rápido genera la MISMA key
+                    // aunque el frontend envíe valores ligeramente distintos (variaciones de
+                    // truncación, normalización Unicode, etc.). Antes el hash usaba originales →
+                    // si el segundo request truncaba antes o difería en 1 char post-100, key
+                    // distinta → Stripe creaba 2 sesiones.
                     var idempotencyKey = IdempotencyKeyHelper.ForCheckout(
                         userId, service.Id,
                         amountToCharge.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        searchDto?.Title, searchDto?.Description,
-                        parameterDto?.Keywords, parameterDto?.UserSearch,
-                        parameterDto?.Latitude, parameterDto?.Longitude, parameterDto?.LocationName,
+                        I6_Truncate(searchDto?.Title, 100),
+                        I6_Truncate(searchDto?.Description, 100),
+                        I6_Truncate(parameterDto?.Keywords, 100),
+                        I6_Truncate(parameterDto?.UserSearch, 200),
+                        parameterDto?.Latitude, parameterDto?.Longitude,
+                        I6_Truncate(parameterDto?.LocationName, 100),
                         parameterDto?.Category?.ToString(), parameterDto?.ServiceTypeId?.ToString(),
                         searchDto?.Frequency.ToString(), parameterDto?.LocationRange?.ToString()); // 🔧 FIX: frequency y locationRange también van en el body → deben discriminar la clave (si no, idempotency_error 400)
                     var session = await serviceStripe.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });

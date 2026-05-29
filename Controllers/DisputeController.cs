@@ -563,6 +563,27 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Dispute not found" });
                 }
 
+                // 🛡️ Round 15 — R7 FIX: validar que el SearchHire SIGUE en estado Disputed antes
+                // de resolver. Si una carrera con HandlePaymentIntentFailed/CancelService dejó el
+                // hire en Cancelled/TransferFailed mientras la disputa quedó en Pending, resolver
+                // ahora moverá dinero sobre un hire en estado inconsistente → corrupción.
+                // El claim atómico de la disputa (P1, abajo) protege contra doble resolve de la
+                // misma disputa, pero NO contra inconsistencia con el hire — eso lo cubre este check.
+                var hireStatusValue = dispute.SearchHire?.Status?.StatusValue;
+                if (hireStatusValue != "disputed")
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "R7: ResolveDispute rechazado por estado de hire inconsistente",
+                        details: $"Dispute {disputeId} en Pending pero SearchHire {dispute.SearchHireId} está en '{hireStatusValue ?? "null"}' (esperado 'disputed'). Posible carrera previa con cancellation/failure. No movemos dinero.",
+                        userId: null,
+                        source: "DisputeController.ResolveDispute.R7",
+                        relatedEntityType: "Dispute",
+                        relatedEntityId: disputeId);
+                    return BadRequest(new {
+                        message = $"El servicio asociado no está en estado 'disputed' (actual: {hireStatusValue ?? "desconocido"}). La disputa quizá quedó huérfana por una cancelación previa; contacta con el equipo técnico."
+                    });
+                }
+
                 // 🔒 FIX P1 (carrera de doble resolución): claim ATÓMICO. Antes el guard
                 // (dispute.Status != "Pending") se leía SIN lock: dos admins / doble clic / reintento HTTP
                 // pasaban ambos y movían el dinero DOS veces (doble refund/transfer). Este UPDATE condicional
@@ -1347,6 +1368,40 @@ namespace newApi.Controllers
                 {
                     return BadRequest(new { message = "Cannot dispute this service in its current status" });
                 }
+
+                // 🛡️ Round 15 — R8 FIX: replicar guards de CreateDispute (líneas 175-209) que
+                // FALTABAN aquí. Sin estos, el cliente podía abrir disputa sobre un hire Completed
+                // de hace 6 meses con dinero ya distribuido (Refund/Payout/Chargeback) → estado
+                // Disputed zombi y problemas al resolver.
+                //
+                // R8.a — Ventana 14 días: en Completed, solo permitir disputa si UpdatedAt ≥ -14d
+                if (searchHire.Status?.StatusValue == SearchHireStatus.Completed.ToStringValue())
+                {
+                    var completedAt = searchHire.UpdatedAt ?? searchHire.CreatedAt;
+                    var isRecent = completedAt >= DateTime.UtcNow.AddDays(-14);
+                    if (!isRecent)
+                    {
+                        return BadRequest(new {
+                            message = "No puedes disputar este servicio: han pasado más de 14 días desde su finalización. Contacta con soporte si necesitas resolver una incidencia."
+                        });
+                    }
+                }
+
+                // R8.b — N14 guard: no permitir si ya hubo distribución de dinero (Refund/Payout/Chargeback)
+                var hasMoneyDistributed = await _context.FinancialTransactions
+                    .AnyAsync(ft =>
+                        ft.RelatedEntityType == "SearchHire"
+                        && ft.RelatedEntityId == request.SearchHireId
+                        && (!string.IsNullOrEmpty(ft.StripeRefundId)
+                            || !string.IsNullOrEmpty(ft.StripeTransferId)
+                            || ft.TransactionType == "Chargeback"));
+                if (hasMoneyDistributed)
+                {
+                    return BadRequest(new {
+                        message = "No puedes disputar este servicio: el dinero ya se ha distribuido (refund/payout/chargeback). Contacta con soporte para resolver la incidencia."
+                    });
+                }
+
                 // Variable para almacenar el ID de la disputa creada
                 int disputeId = 0;
                 

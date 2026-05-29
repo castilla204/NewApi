@@ -299,7 +299,12 @@ namespace newApi.Services
                 
                 // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto al momento de la contratación
                 ExpertTimezone = hire.ExpertTimezone,
-                ExpertCountry = hire.ExpertCountry
+                ExpertCountry = hire.ExpertCountry,
+
+                // 🛡️ Round 10 — P-C FIX (V8 snapshots): exponer al frontend.
+                ClientPercentageSnapshot = hire.ClientPercentageSnapshot,
+                ExpertPercentageSnapshot = hire.ExpertPercentageSnapshot,
+                PlatformPercentageSnapshot = hire.PlatformPercentageSnapshot
             };
         }
 

@@ -78,10 +78,16 @@ namespace newApi.Services
 
         public async Task<(bool Success, string ErrorMessage)> UpdateHireStatus(int userId, int hireId, string status)
         {
+            // 🛡️ Round 15 — R9 FIX (D2 bug): el FOR UPDATE necesita una transacción explícita;
+            // sin ella, Npgsql usa autocommit y el lock se libera al cerrar el comando (ms después),
+            // dejando un race fatal con CompleteService/timers concurrentes. Mismo patrón ya
+            // aplicado en SearchHireController.CompleteService (D2 FIX previo).
+            using var transaction = await _context.Database.BeginTransactionAsync();
+
             // 🛡️ R22 FIX: SELECT FOR UPDATE dentro del scope de lectura para serializar transiciones
             // con CompleteService (que también muta StatusId tras fix D2). Sin esto, dos updates
             // concurrentes (admin + cliente completing) pueden colisionar y dejar estado inconsistente.
-            // El lock vive hasta el siguiente SaveChanges (línea ~130) o hasta el final del scope.
+            // El lock vive hasta el siguiente SaveChanges + commit dentro de la transacción.
             var hire = await _context.SearchHires
                 .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {hireId} AND \"ExpertId\" = {userId} FOR UPDATE")
                 .Include(sh => sh.SearchService)
@@ -147,6 +153,7 @@ namespace newApi.Services
                     additionalData: new { TargetStatus = status });
             }
             await _context.SaveChangesAsync();
+            await transaction.CommitAsync();
             return (true, string.Empty);
         }
 

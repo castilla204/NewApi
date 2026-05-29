@@ -1055,7 +1055,10 @@ builder.Services.AddAuthentication(options =>
         ValidAudience = builder.Configuration["Jwt:Audience"] ?? "",
         IssuerSigningKey = new SymmetricSecurityKey(
             Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? throw new InvalidOperationException("JWT Key not found in Secret Manager or configuration."))),
-        ClockSkew = TimeSpan.Zero
+        // 🛡️ Round 15 — R3 FIX: 60s de tolerancia para drift de reloj cliente↔servidor.
+        // Era Zero → rechazos espurios cuando el reloj del móvil va 5-30s adelantado.
+        // 60s es el mínimo razonable; OWASP/Microsoft recomiendan 30-60s.
+        ClockSkew = TimeSpan.FromSeconds(60)
     };
     options.Events = new JwtBearerEvents
     {
@@ -1677,17 +1680,14 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     svc => svc.NotifyUpcomingStripeDeadlinesAsync(),
     Hangfire.Cron.Daily(9, 0),
     n29UtcOptions);
-/*
-RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
+// 🛡️ Round 15 — R3 FIX: descomentar el cleanup. Estaba inactivo → la tabla RefreshTokens
+// crecía sin freno (usuario activo rotando ~1 token/h × 24h × 90d = ~2.1k rows). Con cron
+// diario a las 03:00 UTC se purgan los revocados/expirados con cutoff de 30+ días.
+Hangfire.RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     "cleanup-expired-refresh-tokens",
     service => service.CleanupExpiredTokensAsync(),
-    Cron.Daily(3),
-    new RecurringJobOptions
-    {
-        TimeZone = TimeZoneInfo.Utc
-    }
-);
-*/
+    Hangfire.Cron.Daily(3),
+    n29UtcOptions);
 
 // ✅ OPTIMIZADO: Usar solo scheduled jobs para eventos específicos
 // Los recurring jobs fueron eliminados porque:

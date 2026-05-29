@@ -5524,6 +5524,20 @@ namespace newApi.Controllers
                         return (IActionResult)NotFound(new { message = "Service not found" });
                     }
 
+                    // 🛡️ Round 15 — R7 FIX: bloquear ForceFinalize si el hire YA está en estado
+                    // terminal. Antes: admin podía ejecutar force-finalize sobre un Completed →
+                    // RefundService entraba en rama "partial distribution" + clawback al experto
+                    // que ya había cobrado. Si admin quiere refund post-completed por excepción,
+                    // debe usar un endpoint específico de "compensation refund" (no implementado),
+                    // NO reutilizar force-finalize (pensado para casos disputados).
+                    if (searchHire.Status?.IsFinalizationStatus == true)
+                    {
+                        await transaction.RollbackAsync();
+                        return (IActionResult)BadRequest(new {
+                            message = $"El servicio ya está en estado final ({searchHire.Status.StatusValue}). No se puede ForceFinalize. Para reembolsos posteriores contacta con el equipo técnico."
+                        });
+                    }
+
                     var success = await _refundService.ProcessMoneyDistributionAsync(
                         searchHire.Id,
                         "dispute_resolved_client",

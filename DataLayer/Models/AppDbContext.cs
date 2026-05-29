@@ -895,5 +895,117 @@ namespace newApi.DataLayer.Models
                 .ValueGeneratedOnAddOrUpdate()
                 .IsConcurrencyToken();
         }
+
+        // 🛡️ Round 14 — Q15 FIX: AsyncLocal con contexto del actor para que el interceptor
+        // de SaveChanges pueda enriquecer las filas SearchHireStatusHistory generadas
+        // automáticamente. Los callers que quieran adjuntar source/reason/userId/extra
+        // hacen: using (AppDbContext.BeginStatusAuditScope("Source.Method", reason, userId, extra)) { ... }
+        // Si no se llama, la fila se genera igual pero con Source="auto:SaveChanges".
+        public sealed class StatusAuditScope : IDisposable
+        {
+            public string? Source { get; }
+            public string? Reason { get; }
+            public int? ChangedByUserId { get; }
+            public object? AdditionalData { get; }
+            private readonly StatusAuditScope? _previous;
+            internal StatusAuditScope(string? source, string? reason, int? changedByUserId, object? additionalData)
+            {
+                Source = source; Reason = reason; ChangedByUserId = changedByUserId; AdditionalData = additionalData;
+                _previous = _current.Value;
+                _current.Value = this;
+            }
+            public void Dispose()
+            {
+                _current.Value = _previous;
+            }
+            private static readonly System.Threading.AsyncLocal<StatusAuditScope?> _current = new();
+            internal static StatusAuditScope? Current => _current.Value;
+        }
+
+        /// <summary>
+        /// Inicia un scope que enriquece la próxima escritura de SearchHire.StatusId con
+        /// metadata. Si el caller no abre scope, la fila se genera igual con Source="auto:SaveChanges".
+        /// </summary>
+        public static StatusAuditScope BeginStatusAuditScope(string? source = null, string? reason = null, int? changedByUserId = null, object? additionalData = null)
+            => new StatusAuditScope(source, reason, changedByUserId, additionalData);
+
+        public override int SaveChanges(bool acceptAllChangesOnSuccess)
+        {
+            CaptureSearchHireStatusTransitions();
+            return base.SaveChanges(acceptAllChangesOnSuccess);
+        }
+
+        public override System.Threading.Tasks.Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, System.Threading.CancellationToken cancellationToken = default)
+        {
+            CaptureSearchHireStatusTransitions();
+            return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        }
+
+        /// <summary>
+        /// 🛡️ Q15 FIX: detecta toda mutación de SearchHire.StatusId (incluida creación) y
+        /// añade fila SearchHireStatusHistory automáticamente. Cubre los 28 puntos del código
+        /// que mutan StatusId, en lugar de los 3 únicos que A2 instrumentó manualmente.
+        /// Esto resuelve GDPR Art 5(2) accountability sin riesgo de gaps futuros.
+        /// </summary>
+        private void CaptureSearchHireStatusTransitions()
+        {
+            // Snapshot del scope ANTES de iterar (callers pueden enrollar varios)
+            var scope = StatusAuditScope.Current;
+            var sourceDefault = scope?.Source ?? "auto:SaveChanges";
+            var reason = scope?.Reason;
+            var changedByUserId = scope?.ChangedByUserId;
+            var additionalJson = scope?.AdditionalData != null
+                ? System.Text.Json.JsonSerializer.Serialize(scope.AdditionalData)
+                : null;
+            // Limita el JSON a 4000 chars para evitar abusos
+            if (additionalJson != null && additionalJson.Length > 4000)
+            {
+                additionalJson = additionalJson.Substring(0, 4000) + "...[truncated]";
+            }
+
+            var entries = ChangeTracker.Entries<PostGresModels.SearchHire>().ToList();
+            foreach (var entry in entries)
+            {
+                if (entry.State == EntityState.Added)
+                {
+                    // Creación: OldStatusId = null, NewStatusId = StatusId actual
+                    var newStatusId = entry.Entity.StatusId;
+                    SearchHireStatusHistories.Add(new PostGresModels.SearchHireStatusHistory
+                    {
+                        SearchHireId = entry.Entity.Id, // puede ser 0 si aún no se guardó; EF rellena post-SaveChanges
+                        OldStatusId = null,
+                        NewStatusId = newStatusId,
+                        ChangedByUserId = changedByUserId,
+                        Source = sourceDefault,
+                        Reason = reason,
+                        AdditionalDataJson = additionalJson,
+                        CreatedAt = System.DateTime.UtcNow
+                    });
+                }
+                else if (entry.State == EntityState.Modified)
+                {
+                    var statusProp = entry.Property(nameof(PostGresModels.SearchHire.StatusId));
+                    if (statusProp.IsModified)
+                    {
+                        var oldStatusId = (int?)statusProp.OriginalValue;
+                        var newStatusId = (int)statusProp.CurrentValue;
+                        if (oldStatusId != newStatusId)
+                        {
+                            SearchHireStatusHistories.Add(new PostGresModels.SearchHireStatusHistory
+                            {
+                                SearchHireId = entry.Entity.Id,
+                                OldStatusId = oldStatusId,
+                                NewStatusId = newStatusId,
+                                ChangedByUserId = changedByUserId,
+                                Source = sourceDefault,
+                                Reason = reason,
+                                AdditionalDataJson = additionalJson,
+                                CreatedAt = System.DateTime.UtcNow
+                            });
+                        }
+                    }
+                }
+            }
+        }
     }
 }

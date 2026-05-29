@@ -423,9 +423,19 @@ namespace newApi.Services
             }
             else
             {
+                // 🛡️ T2 FIX (parte 1): validar TotpSecret no vacío ANTES de aceptar TOTP.
+                // Si por alguna razón TotpSecret se corrompió/borró pero IsEnabled sigue true,
+                // VerifyTotpCode con secret vacío puede devolver false constante (rate-limit OK)
+                // PERO si VerifyTotpCode tiene algún edge case que devuelva true con secret
+                // vacío (ej: librería que trata empty como wildcard), sería bypass. Defensa.
+                if (string.IsNullOrWhiteSpace(mfaSettings.TotpSecret))
+                {
+                    return (false, "MFA TOTP secret is missing. Use a recovery code or contact support.");
+                }
+
                 // Verificar código TOTP
                 var secret = DecryptSecret(mfaSettings.TotpSecret);
-                
+
                 if (VerifyTotpCode(secret, code))
                 {
                     mfaSettings.LastVerifiedAt = DateTime.UtcNow;
@@ -435,19 +445,40 @@ namespace newApi.Services
                 }
             }
 
-            // Código inválido - incrementar intentos fallidos
-            mfaSettings.FailedAttempts++;
-            
+            // 🛡️ T2 FIX (parte 2): incremento ATÓMICO de FailedAttempts vía SQL directo.
+            // El patrón anterior (`mfaSettings.FailedAttempts++` + SaveChangesAsync) tiene
+            // race condition: 5 requests en paralelo leen FailedAttempts=0, todos lo
+            // incrementan a 1 en memoria, y SaveChanges del último gana → solo cuenta como
+            // 1 intento fallido. Permite N intentos fuera del límite de 5.
+            // SQL atómico: UPDATE ... SET FailedAttempts = FailedAttempts + 1 RETURNING
+            // garantiza incremento per-request. Postgres serializa el UPDATE a nivel de fila.
+            var newFailedAttempts = await _context.UserMfaSettings
+                .Where(m => m.UserId == userId && m.IsEnabled)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(m => m.FailedAttempts, m => m.FailedAttempts + 1)
+                    .SetProperty(m => m.UpdatedAt, DateTime.UtcNow));
+
+            // Re-leer para obtener el contador post-update (no podemos usar mfaSettings local,
+            // su valor está stale tras el UPDATE atómico).
+            var updatedSettings = await _context.UserMfaSettings
+                .AsNoTracking()
+                .FirstOrDefaultAsync(m => m.UserId == userId);
+
+            var currentAttempts = updatedSettings?.FailedAttempts ?? mfaSettings.FailedAttempts + 1;
+
             // Bloquear después de 5 intentos fallidos (15 minutos)
-            if (mfaSettings.FailedAttempts >= 5)
+            if (currentAttempts >= 5)
             {
-                mfaSettings.LockedUntil = DateTime.UtcNow.AddMinutes(15);
-                await _context.SaveChangesAsync();
+                // Otro UPDATE atómico para setear LockedUntil. Idempotente: si llegan 2
+                // requests al 5to intento, ambos seteán el mismo LockedUntil aproximado.
+                await _context.UserMfaSettings
+                    .Where(m => m.UserId == userId && m.IsEnabled)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(m => m.LockedUntil, DateTime.UtcNow.AddMinutes(15)));
                 return (false, "Too many failed attempts. Account locked for 15 minutes.");
             }
 
-            await _context.SaveChangesAsync();
-            return (false, $"Invalid code. {5 - mfaSettings.FailedAttempts} attempts remaining.");
+            return (false, $"Invalid code. {5 - currentAttempts} attempts remaining.");
         }
 
         /// <summary>

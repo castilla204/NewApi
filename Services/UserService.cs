@@ -706,15 +706,20 @@ namespace newApi.Services
                 CreatedAt = DateTime.UtcNow
             };
 
+            // 🛡️ V7 FIX: atomicidad ExpertProfile + Role change. Antes eran 2 SaveChanges
+            // separados (ExpertProfile.Add → SaveChanges, luego user.Role → SaveChanges).
+            // Si el segundo fallaba, el ExpertProfile quedaba en BD pero el User seguía con
+            // Role=Client → estado inconsistente (perfil de experto huérfano). Combinar
+            // ambos cambios y persistir con UN SOLO SaveChanges los hace atómicos: si falla,
+            // EF Core no persiste NINGUNO (ChangeTracker descarta junto con el request).
+            // El recovery del catch ya hace ambos cambios juntos en el nuevo scope, así que
+            // sigue funcionando coherentemente.
+            user.Role = UserRole.Expert;
             _context.ExpertProfiles.Add(expertProfile);
-            
+
             // ✅ FIX: Manejar ObjectDisposedException y DbUpdateException específicamente
             try
             {
-                await _context.SaveChangesAsync();
-                
-                // ✅ CRÍTICO: Solo cambiar el rol DESPUÉS de que el ExpertProfile se guarde exitosamente
-                user.Role = UserRole.Expert;
                 await _context.SaveChangesAsync();
             }
             catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)

@@ -1248,6 +1248,16 @@ namespace newApi.Services
                     return (false, null, null);
                 }
 
+                // 🛡️ V4 FIX: validar Country del experto en whitelist EEA. P3 fix lo bloquea
+                // en BecomeExpert y E3 fix en UpdateExpertProfile, PERO sin gate aquí podría
+                // crearse servicio si por data corruption / migración legacy el perfil tiene
+                // Country no soportado (null, BR, US, etc.). Sin Country EEA el transfer al
+                // experto NUNCA funcionará — mejor bloquear ya al crear el servicio.
+                if (!Common.SupportedConnectCountries.IsSupported(expertProfile.Country))
+                {
+                    return (false, null, null);
+                }
+
                 var category = await _context.Categories
                     .Include(c => c.Parent)
                     .FirstOrDefaultAsync(c => c.Id == request.CategoryId);

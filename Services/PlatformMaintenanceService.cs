@@ -21,6 +21,7 @@ namespace newApi.Services
         Task RescueOrphanedAppointmentTimersAsync(); // 🛡️ R5-F1
         Task DetectUnreconciledFinalizedHiresAsync(); // 🛡️ R5-F5
         Task EscalateStaleDisputesAsync(); // 🛡️ T4
+        Task NotifyUpcomingStripeDeadlinesAsync(); // 🛡️ Round 12 — D3
     }
 
     public class PlatformMaintenanceService : IPlatformMaintenanceService
@@ -414,6 +415,98 @@ namespace newApi.Services
                     userId: null,
                     source: "PlatformMaintenanceService.DetectUnreconciledFinalizedHiresAsync",
                     relatedEntityType: "SearchHire",
+                    relatedEntityId: null);
+            }
+        }
+
+        /// <summary>
+        /// 🛡️ Round 12 — D3 FIX: notificación PROACTIVA al experto antes de que un requirement
+        /// futuro de Stripe entre en `past_due` y le bloqueen los transfers.
+        ///
+        /// MOTIVACIÓN
+        /// ----------
+        /// Stripe envía emails de compliance a expertos Express, pero SIN SLA garantizado. Casos:
+        ///  - El email cae en spam o el experto desactivó las preferencias en Express Dashboard.
+        ///  - Cambió su email tras onboarding y no actualizó en Stripe.
+        ///  - La cadencia varía por país y tipo de requisito (docs no garantizan tiempos).
+        /// Si no notificamos nosotros: el deadline pasa → StripeStatus → RequirementsPastDue →
+        /// transfers bloqueados → hires Pending zombi.
+        ///
+        /// ESTRATEGIA
+        /// ----------
+        /// Escanear diariamente ExpertProfiles donde StripeFutureDueAt está entre HOY y HOY+3d
+        /// y aún no past_due. Para cada uno, emitir LogWarningAsync(notifyUser=true) — esto crea
+        /// notificación in-app + envía email con el template estándar.
+        ///
+        /// DEDUP: para evitar spamear el mismo experto cada día, sólo notificamos a expertos cuyo
+        /// StripeStatus actualmente es Approved (es decir, todavía no se les ha avisado por la
+        /// transición a RequirementsDue/RestrictedSoon). Cuando el status cambie, el aviso lo
+        /// hará NotifyStripeStatusTransitionAsync. Si el status sigue Approved pero el deadline
+        /// está próximo, esta job es la única notificación.
+        /// </summary>
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
+        [Hangfire.AutomaticRetry(Attempts = 0)]
+        public async Task NotifyUpcomingStripeDeadlinesAsync()
+        {
+            try
+            {
+                var now = DateTime.UtcNow;
+                var deadline = now.AddDays(3);
+
+                // Filtro: deadline en próximos 3 días, todavía no past_due, experto aprobado
+                // (los que ya están en RequirementsDue/RestrictedSoon ya recibieron notificación
+                // vía NotifyStripeStatusTransitionAsync al cambiar de estado).
+                var experts = await _context.ExpertProfiles
+                    .Include(ep => ep.User)
+                    .Where(ep => ep.StripeFutureDueAt != null
+                              && ep.StripeFutureDueAt > now
+                              && ep.StripeFutureDueAt <= deadline
+                              && ep.StripeStatus == DataLayer.Models.PostGresModels.StripeStatus.Approved
+                              && ep.User != null
+                              && !ep.User.IsDeleted)
+                    .Take(100) // paginar por seguridad si hay backlog
+                    .ToListAsync();
+
+                foreach (var ep in experts)
+                {
+                    var hoursLeft = (ep.StripeFutureDueAt!.Value - now).TotalHours;
+                    var detailsText = string.IsNullOrEmpty(ep.StripeFutureRequirements)
+                        ? "Tienes documentación pendiente con Stripe."
+                        : $"Documentos/datos pendientes: {ep.StripeFutureRequirements}.";
+
+                    try
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: $"⏰ Plazo Stripe próximo ({hoursLeft:F0}h) — completa tus datos pendientes",
+                            details: $"Tu cuenta de pagos tiene un plazo a las {ep.StripeFutureDueAt:dd/MM HH:mm} UTC. {detailsText} Accede a tu panel y completa los requisitos para evitar que Stripe pause tus transferencias.",
+                            userId: ep.UserId,
+                            source: "PlatformMaintenanceService.NotifyUpcomingStripeDeadlinesAsync",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: ep.Id,
+                            notifyUser: true);
+                    }
+                    catch (Exception notifyEx)
+                    {
+                        // No abortar el batch por fallo de notificación a un experto puntual.
+                        try
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "D3: Notificación pre-deadline falló para un experto",
+                                details: $"ExpertProfileId {ep.Id}, UserId {ep.UserId}: {notifyEx.Message}",
+                                source: "PlatformMaintenanceService.NotifyUpcomingStripeDeadlinesAsync");
+                        }
+                        catch { /* swallow */ }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL D3: NotifyUpcomingStripeDeadlinesAsync failed",
+                    details: ex.Message,
+                    userId: null,
+                    source: "PlatformMaintenanceService.NotifyUpcomingStripeDeadlinesAsync",
+                    relatedEntityType: "ExpertProfile",
                     relatedEntityId: null);
             }
         }

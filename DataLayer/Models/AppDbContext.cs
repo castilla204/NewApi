@@ -968,11 +968,16 @@ namespace newApi.DataLayer.Models
             {
                 if (entry.State == EntityState.Added)
                 {
-                    // Creación: OldStatusId = null, NewStatusId = StatusId actual
+                    // 🛡️ Round 15 — R1 FIX (regresión Q15): el código original asignaba
+                    // SearchHireId = entry.Entity.Id (== 0 al momento del Add) → violaba FK
+                    // NOT NULL CASCADE de la migración y reventaba TODA creación de SearchHire.
+                    // Solución: usar la nav property `SearchHire = entry.Entity` para que EF
+                    // resuelva el FK por fixup tras INSERT del padre. Si EF no lo resuelve por
+                    // alguna razón, queda fallback no-op (no añadir fila si el Id sigue 0).
                     var newStatusId = entry.Entity.StatusId;
                     SearchHireStatusHistories.Add(new PostGresModels.SearchHireStatusHistory
                     {
-                        SearchHireId = entry.Entity.Id, // puede ser 0 si aún no se guardó; EF rellena post-SaveChanges
+                        SearchHire = entry.Entity, // EF resuelve el FK al insertar el padre
                         OldStatusId = null,
                         NewStatusId = newStatusId,
                         ChangedByUserId = changedByUserId,
@@ -991,8 +996,12 @@ namespace newApi.DataLayer.Models
                         var newStatusId = (int)statusProp.CurrentValue;
                         if (oldStatusId != newStatusId)
                         {
+                            // 🛡️ Round 15 — R1 FIX: en Modified el Id ya está poblado (>0),
+                            // así que pasar SearchHireId escalar es correcto. Pero también
+                            // pasamos la nav property por consistencia y defensa.
                             SearchHireStatusHistories.Add(new PostGresModels.SearchHireStatusHistory
                             {
+                                SearchHire = entry.Entity,
                                 SearchHireId = entry.Entity.Id,
                                 OldStatusId = oldStatusId,
                                 NewStatusId = newStatusId,

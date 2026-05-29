@@ -648,7 +648,8 @@ namespace newApi.Controllers
                         {
                             { "userId", userId.ToString() },
                             { "serviceId", service.Id.ToString() },
-                            { "amount", amountToCharge.ToString() },
+                            // 🛡️ A9 FIX: InvariantCulture (consistencia hash idempotency Stripe)
+                            { "amount", amountToCharge.ToString(System.Globalization.CultureInfo.InvariantCulture) },
                             { "pendingHire", "true" },
                             // ✅ OPTIMIZACIÓN: Solo enviar campos esenciales para evitar exceder límite de 500 caracteres
                             // En lugar de serializar DTOs completos, enviar solo IDs y campos críticos

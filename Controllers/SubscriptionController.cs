@@ -131,22 +131,26 @@ namespace newApi.Controllers
                 return (false, null, "Expert profile not found");
             }
 
-            // ✅ FIX: Permitir PendingVerification si charges_enabled: true (Stripe permite operar)
-            // Necesitamos verificar la cuenta de Stripe para saber si charges_enabled
-            // Por ahora, permitimos PendingVerification si no hay otros problemas
+            // 🛡️ Round 11 — S-A FIX: gate de PendingVerification para operaciones generales del experto.
+            // ANTES: exigía `ChargesEnabled && PayoutsEnabled`. En "separate charges & transfers" el
+            // experto onboarda SOLO con la capability "transfers" — ChargesEnabled es FALSE de forma
+            // LEGÍTIMA y permanente. Esto bloqueaba al experto durante toda la ventana de verificación
+            // aunque Stripe ya hubiese habilitado payouts/transfers.
+            // AHORA: alineado con StripeValidationService (R-F4): basta con PayoutsEnabled +
+            // Capabilities.Transfers == "active". Coincide con docs Stripe — account-capabilities:
+            // "the connected account has payouts_enabled: true (can receive transfers) but
+            //  charges_enabled: false" es un estado VÁLIDO para platforms en separate-charges-and-transfers.
             if (expertProfile.StripeStatus == StripeStatus.PendingVerification)
             {
-                // ✅ PendingVerification es informativo, no bloqueante si Stripe permite operar
-                // Verificamos si realmente está bloqueado consultando Stripe
                 try
                 {
                     if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
                     {
                         var accountService = new AccountService();
                         var account = await accountService.GetAsync(expertProfile.StripeAccountId);
-                        
-                        // Si charges_enabled y payouts_enabled, permitir operar
-                        if (account.ChargesEnabled && account.PayoutsEnabled)
+
+                        // Permitir operar si Stripe ha activado payouts + capability transfers.
+                        if (account.PayoutsEnabled && account.Capabilities?.Transfers == "active")
                         {
                             return (true, expertProfile, null);
                         }
@@ -274,14 +278,35 @@ namespace newApi.Controllers
                     }
                 }
                 
+                // 🛡️ Round 11 — S-B FIX: alinear con enum oficial Stripe 2026.
+                // Docs: https://docs.stripe.com/api/accounts/object#account_object-requirements-disabled_reason
+                // Valores oficiales: action_required.requested_capabilities, listed, other, platform_paused,
+                // rejected.fraud, rejected.incomplete_verification, rejected.listed, rejected.other,
+                // rejected.platform_fraud, rejected.platform_other, rejected.platform_terms_of_service,
+                // rejected.terms_of_service, requirements.past_due, requirements.pending_verification, under_review.
+                //
+                // ANTES: mapeaba reasons que NO existen (requirements.missing, requirements.currently_due,
+                // requirements.pending_review, platform_disabled, platform_suspended). El reason oficial
+                // `action_required.requested_capabilities` caía en `_ => Disabled` → UX equivocada
+                // (botón "Contactar Stripe" en lugar de "Resolver requisitos"). Y `platform_paused`
+                // (la plataforma pausó al experto desde Dashboard — TEMPORAL y resoluble) caía en Disabled.
                 state.Status = disabledReason switch
                 {
+                    // Temporal — resoluble por el experto resolviendo requisitos
+                    "action_required.requested_capabilities" => StripeStatus.ActionRequired,
                     "requirements.past_due" => StripeStatus.RequirementsPastDue,
-                    "requirements.pending_verification" or "requirements.pending_review" => StripeStatus.PendingVerification,
-                    "requirements.missing" or "requirements.currently_due" => StripeStatus.ActionRequired,
-                    "platform_paused" or "platform_disabled" or "platform_suspended" => StripeStatus.Disabled,
-                    _ when disabledReason.StartsWith("requirements.") => StripeStatus.Restricted,
+                    "requirements.pending_verification" => StripeStatus.PendingVerification,
+                    "under_review" => StripeStatus.PendingVerification,
+                    // Temporal — la plataforma pausó al experto (resoluble desde el Dashboard de la plataforma)
+                    "platform_paused" => StripeStatus.Restricted,
+                    // Definitivo (rejected.*) — necesita soporte; algunos sub-tipos vienen de la plataforma
                     _ when disabledReason.StartsWith("rejected.") => StripeStatus.Rejected,
+                    // `listed` (lista de sanciones OFAC/PEP) — Stripe no autoriza; permanente sin soporte compliance
+                    "listed" => StripeStatus.Rejected,
+                    // Catch-all anteriores que no están en el enum oficial pero que aparecían en código legacy
+                    "requirements.missing" or "requirements.currently_due" or "requirements.pending_review" => StripeStatus.ActionRequired,
+                    "platform_disabled" or "platform_suspended" => StripeStatus.Restricted,
+                    _ when disabledReason.StartsWith("requirements.") => StripeStatus.Restricted,
                     _ => StripeStatus.Disabled
                 };
                 state.OnboardingCompleted = false;
@@ -844,6 +869,26 @@ namespace newApi.Controllers
                     });
                 }
 
+                // 🛡️ Round 11 — S-D + S-F + S-A FIX para CreateExpertOnboarding:
+                //
+                // 1) NO se setea TosAcceptance: usamos Stripe-hosted onboarding (AccountLink type=
+                //    account_onboarding). Stripe recoge la aceptación y aplica service_agreement="full"
+                //    por defecto. NO cambiar a "recipient": Stripe REQUIERE "full" para cross-border
+                //    payouts EEA→{EEA,US,CA,GB,CH} (docs.stripe.com/connect/cross-border-payouts:
+                //    "You must use the Full service agreement... If you require the Recipient Service
+                //    Agreement, use Global payouts"). "recipient" es para Global payouts (contrato
+                //    Stripe Sales distinto) y añade 24h de settlement extra + sin soporte directo de
+                //    Stripe al experto.
+                //
+                // 2) NO se setea BusinessType: antes hardcodeaba "individual" → expertos con
+                //    SL/SLU/SA/comunidad de bienes quedaban atrapados como persona física (Stripe
+                //    Express NO permite cambiar business_type tras crear el AccountLink). Sin el
+                //    field, el hosted onboarding pide al experto que elija "Persona física / Empresa"
+                //    como primer paso (selector en español traducido por Stripe).
+                //
+                // 3) Solo capability `transfers` — correcto para "separate charges and transfers".
+                //    `card_payments` no se solicita porque el cliente cobra a la plataforma (no al
+                //    experto). PayoutsEnabled puede ser true con ChargesEnabled false legítimamente.
                 var accountOptions = new AccountCreateOptions
                 {
                     Type = "express",
@@ -853,7 +898,6 @@ namespace newApi.Controllers
                     {
                         Transfers = new AccountCapabilitiesTransfersOptions { Requested = true }
                     },
-                    BusinessType = "individual",
                     Metadata = new Dictionary<string, string>
                     {
                         { "userId", userId.ToString() }
@@ -2477,10 +2521,23 @@ namespace newApi.Controllers
                                 // Defensa: detectar cualquier salida de Approved hacia un estado que bloquea
                                 // transfers. La función HandleApprovedAccountRejection es idempotente, así que
                                 // si capability.updated dispara después, no hay doble cancelación.
+                                // 🛡️ Round 11 — S-C FIX: NO incluir RequirementsPastDue en blocksTransfers.
+                                // Stripe docs (handle-verification-updates): requirements.past_due es
+                                // típicamente TEMPORAL — el experto sube el documento que faltaba y vuelve
+                                // a Approved en horas. Cancelar y reembolsar hires Pending sanos por una
+                                // degradación de 24h es agresivo y destruye servicios contratados.
+                                //
+                                // Las capas que ya protegen el dinero quedan intactas:
+                                //  - StripeValidationService bloquea CREAR nuevas hires (status != Approved).
+                                //  - RefundService.cs:1238 verifica live PayoutsEnabled+transfers antes del
+                                //    transfer real. Si sigue bloqueado al finalizar, los reintentos Hangfire
+                                //    cubren ~3.6h y luego RefundFailedAt queda para reconciliación manual.
+                                //
+                                // Sólo cancelamos hires en transiciones DEFINITIVAS (Rejected) o pausas
+                                // pesadas (Disabled, Restricted permanente, Deauthorized).
                                 var blocksTransfers = state.Status == StripeStatus.Rejected
                                                    || state.Status == StripeStatus.Disabled
                                                    || state.Status == StripeStatus.Restricted
-                                                   || state.Status == StripeStatus.RequirementsPastDue
                                                    || state.Status == StripeStatus.Deauthorized;
 
                                 if (currentPreviousStatus == StripeStatus.Approved && blocksTransfers)
@@ -7782,6 +7839,24 @@ namespace newApi.Controllers
                         hire.RequiresManualReview = true;
                         hire.UpdatedAt = DateTime.UtcNow;
                         await _context.SaveChangesAsync();
+
+                        // 🛡️ Round 11 — S-E FIX: notificar al cliente también cuando su hire queda
+                        // bloqueada en revisión manual. Antes el cliente no se enteraba.
+                        if (hire.ClientId.HasValue)
+                        {
+                            try
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "Tu servicio requiere revisión manual",
+                                    details: $"El experto que estaba prestando tu servicio ha desconectado su cuenta de pagos de la plataforma. Tu servicio ya se había prestado, así que un administrador revisará el caso para resolverlo (refund o pago al experto). Te avisaremos cuando esté resuelto. (SearchHire #{hire.Id})",
+                                    userId: hire.ClientId.Value,
+                                    source: "SubscriptionController.HandleAccountDeauthorization",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: hire.Id,
+                                    notifyUser: true);
+                            }
+                            catch { /* swallow — la notificación es best-effort */ }
+                        }
                         continue;
                     }
                     try
@@ -7792,6 +7867,24 @@ namespace newApi.Controllers
                             $"Stripe account deauthorized ({deauthorizationReason}); appointment not yet served.",
                             initiatedByUserId: -1,
                             updateState: true);
+
+                        // 🛡️ Round 11 — S-E FIX: notificar al cliente del refund.
+                        // Equivalente a lo que HandleApprovedAccountRejection ya hace.
+                        if (hire.ClientId.HasValue)
+                        {
+                            try
+                            {
+                                await _loggingService.LogInfoAsync(
+                                    message: "Tu servicio se ha cancelado y reembolsado",
+                                    details: $"El experto que ibas a contratar ha desconectado su cuenta de pagos de la plataforma antes de prestar el servicio. Hemos cancelado tu contratación y te hemos reembolsado el importe íntegro. Puedes buscar otro experto si lo deseas. (SearchHire #{hire.Id})",
+                                    userId: hire.ClientId.Value,
+                                    source: "SubscriptionController.HandleAccountDeauthorization",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: hire.Id,
+                                    notifyUser: true);
+                            }
+                            catch { /* swallow — la notificación es best-effort */ }
+                        }
                     }
                     catch (Exception refundEx)
                     {
@@ -7804,7 +7897,7 @@ namespace newApi.Controllers
                             relatedEntityId: hire.Id);
                     }
                 }
-                
+
                 // 4. Crear notificación para el experto
                 await NotifyExpertOfAccountDeauthorization(expertId, deauthorizationReason, activeHires);
             }

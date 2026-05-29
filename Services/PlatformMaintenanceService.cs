@@ -20,6 +20,7 @@ namespace newApi.Services
         Task ProcessExpiringPaymentIntentsAsync();
         Task RescueOrphanedAppointmentTimersAsync(); // 🛡️ R5-F1
         Task DetectUnreconciledFinalizedHiresAsync(); // 🛡️ R5-F5
+        Task EscalateStaleDisputesAsync(); // 🛡️ T4
     }
 
     public class PlatformMaintenanceService : IPlatformMaintenanceService
@@ -31,6 +32,110 @@ namespace newApi.Services
         {
             _context = context;
             _loggingService = loggingService;
+        }
+
+        /// <summary>
+        /// 🛡️ T4 FIX: auto-escalar disputas en estado Pending cuyo deadline de respuesta del
+        /// experto (48h) ya pasó SIN respuesta. Antes: disputa quedaba indefinida en Pending
+        /// hasta intervención manual del admin → cliente sin refund, hire bloqueado.
+        ///
+        /// Estrategia: flip atómico Pending→Resolving + encolar RescueStuckResolvingDisputeAsync
+        /// (que ya existe y mueve dinero a favor del cliente al 100% según el reparto configurado
+        /// para el estado de hire correspondiente). Idempotente: si el flip falla porque otro
+        /// proceso ya lo hizo (admin manual o reintento previo), se salta sin error.
+        ///
+        /// Batch de 50 por ejecución para no saturar Hangfire en caso de backlog.
+        /// </summary>
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
+        [Hangfire.AutomaticRetry(Attempts = 0)]
+        public async Task EscalateStaleDisputesAsync()
+        {
+            List<int> staleDisputeIds;
+            try
+            {
+                staleDisputeIds = await _context.Disputes
+                    .AsNoTracking()
+                    .Where(d => d.Status == "Pending"
+                             && d.ExpertResponseDeadline.HasValue
+                             && d.ExpertResponseDeadline.Value < DateTime.UtcNow
+                             && d.ExpertResponseAt == null)
+                    .OrderBy(d => d.ExpertResponseDeadline)
+                    .Take(50)
+                    .Select(d => d.Id)
+                    .ToListAsync();
+            }
+            catch (Exception readEx)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "T4: query de stale disputes falló",
+                    details: $"No se pudo leer disputas pendientes con deadline expirado. Error: {readEx.Message}. Próxima ejecución reintentará.",
+                    userId: null,
+                    source: "PlatformMaintenanceService.EscalateStaleDisputesAsync.T4",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: null);
+                return;
+            }
+
+            if (staleDisputeIds.Count == 0) return;
+
+            int escalated = 0, alreadyClaimed = 0, errors = 0;
+            foreach (var disputeId in staleDisputeIds)
+            {
+                try
+                {
+                    // Claim atómico (mismo patrón B3/P1 que usa ResolveDispute admin)
+                    var claimed = await _context.Database.ExecuteSqlInterpolatedAsync(
+                        $"UPDATE \"Disputes\" SET \"Status\" = 'Resolving' WHERE \"Id\" = {disputeId} AND \"Status\" = 'Pending'");
+
+                    if (claimed == 0)
+                    {
+                        alreadyClaimed++;
+                        continue; // otro proceso (admin o retry) ya la tomó
+                    }
+
+                    await _loggingService.LogCriticalAsync(
+                        message: "T4: Dispute auto-escalada por timeout 48h del experto",
+                        details: $"Dispute {disputeId} pasó deadline ExpertResponseDeadline sin respuesta del experto → flip atómico a 'Resolving'. Encolado RescueStuckResolvingDisputeAsync para distribuir dinero a favor del cliente (mapeo por SearchHireStatus configurado). ACCIÓN ADMIN: monitorizar resolución; el experto perderá su parte por no responder en plazo.",
+                        userId: null,
+                        source: "PlatformMaintenanceService.EscalateStaleDisputesAsync.T4",
+                        relatedEntityType: "Dispute",
+                        relatedEntityId: disputeId);
+
+                    // Encolar rescate inmediato (el método ya existe y es idempotente).
+                    Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                        s => s.RescueStuckResolvingDisputeAsync(disputeId),
+                        TimeSpan.FromSeconds(2));
+
+                    escalated++;
+                }
+                catch (Exception ex)
+                {
+                    errors++;
+                    // Rollback del claim para que el siguiente ciclo lo reintente
+                    try
+                    {
+                        await _context.Database.ExecuteSqlInterpolatedAsync(
+                            $"UPDATE \"Disputes\" SET \"Status\" = 'Pending' WHERE \"Id\" = {disputeId} AND \"Status\" = 'Resolving'");
+                    }
+                    catch { /* swallow — el siguiente ciclo o el rescate la limpiará */ }
+
+                    await _loggingService.LogCriticalAsync(
+                        message: "T4: error escalando dispute (rollback intentado)",
+                        details: $"Dispute {disputeId}: {ex.Message}. Status revertido a Pending para reintento.",
+                        userId: null,
+                        source: "PlatformMaintenanceService.EscalateStaleDisputesAsync.T4",
+                        relatedEntityType: "Dispute",
+                        relatedEntityId: disputeId);
+                }
+            }
+
+            await _loggingService.LogInfoAsync(
+                message: $"T4: batch de stale disputes procesado ({escalated} escaladas, {alreadyClaimed} ya tomadas, {errors} errores)",
+                details: $"Total candidatas: {staleDisputeIds.Count}.",
+                userId: null,
+                source: "PlatformMaintenanceService.EscalateStaleDisputesAsync.T4",
+                relatedEntityType: "Dispute",
+                relatedEntityId: null);
         }
 
         public async Task CleanupOldProcessedWebhookEventsAsync()

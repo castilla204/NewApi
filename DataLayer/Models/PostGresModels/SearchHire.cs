@@ -83,24 +83,30 @@ namespace newApi.DataLayer.Models.PostGresModels
         public DateTime? RefundFailedAt { get; set; }
 
         /// <summary>
-        /// 🔧 FISCAL FLIP: NIF/VAT del cliente, capturado desde Stripe TaxIdCollection en el checkout.
-        /// Nullable. NotMapped HASTA QUE SE APLIQUE LA MIGRACIÓN EN PROD: las columnas físicas
-        /// (ClientVatNumber/ClientVatCountryCode) no existen aún en la BD de producción, y mapearlas
-        /// haría fallar TODAS las queries sobre SearchHires (column does not exist). Al hacer el flip:
-        ///   1) Regenerar migración limpia (dotnet ef migrations add) que añada estas 2 columnas.
-        ///   2) Aplicar a prod (dotnet ef database update).
-        ///   3) Quitar [NotMapped] de ambas propiedades.
-        /// Mientras tanto, la extracción del NIF cliente en HandlePendingHireCompleted se asigna a estas
-        /// propiedades en memoria (no se persiste). El día del flip, basta con quitar el atributo.
+        /// 🔧 FISCAL FLIP — APLICADO 2026-05-29: NIF/VAT del cliente, capturado desde
+        /// Stripe TaxIdCollection en el checkout. Columna física existe en BD prod.
         /// </summary>
-        [NotMapped]
         public string? ClientVatNumber { get; set; }
 
         /// <summary>
-        /// 🔧 FISCAL FLIP: país del NIF/VAT del cliente. ISO 3166-1 alpha-2. NotMapped (ver ClientVatNumber).
+        /// 🔧 FISCAL FLIP — APLICADO 2026-05-29: país del NIF/VAT del cliente. ISO 3166-1 alpha-2.
         /// </summary>
-        [NotMapped]
         public string? ClientVatCountryCode { get; set; }
+
+        /// <summary>
+        /// 🛡️ V8 FIX — APLICADO 2026-05-29: snapshot de los porcentajes de reparto vigentes al
+        /// CREAR el hire. Si admin modifica StatusConfiguration.ClientPercentage/ExpertPercentage/
+        /// PlatformPercentage entre la creación y la resolución del hire, el split de dinero
+        /// usa los porcentajes ORIGINALES — experto contrató con 95% y recibe 95%.
+        /// RefundService.ProcessMoneyDistributionAsync usa snapshot si existe; si NULL (hires
+        /// legacy pre-migración), fallback a StatusConfiguration actual.
+        /// Columnas físicas creadas en BD prod 2026-05-29.
+        /// </summary>
+        public decimal? ClientPercentageSnapshot { get; set; }
+
+        public decimal? ExpertPercentageSnapshot { get; set; }
+
+        public decimal? PlatformPercentageSnapshot { get; set; }
     }
 
 }

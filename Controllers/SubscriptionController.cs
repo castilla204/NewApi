@@ -3725,6 +3725,38 @@ namespace newApi.Controllers
                 // try donde existe sessionWithTax; aquí solo se usan en la creación del SearchHire.)
 
                 // Create search hire
+                // 🛡️ V8 FIX (activación): capturar snapshot de porcentajes vigentes para
+                // CONGELAR el reparto contractual al momento de la creación del hire. Si admin
+                // cambia StatusConfiguration.ClientPercentage/ExpertPercentage/PlatformPercentage
+                // entre creación y resolución, el RefundService usa el snapshot (no el valor
+                // nuevo). Failure-safe: si no encuentra config, asigna NULL → RefundService
+                // hace fallback a StatusConfiguration current (comportamiento legacy compatible).
+                decimal? clientPctSnapshot = null, expertPctSnapshot = null, platformPctSnapshot = null;
+                try
+                {
+                    var moneyConfigAtCreation = await _systemStatusService.GetMoneyDistributionConfigAsync(
+                        SearchHireStatus.Pending.ToStringValue(),
+                        service.CategoryId,
+                        service.ServiceType?.ServiceTypeCategoryId);
+
+                    if (moneyConfigAtCreation != null)
+                    {
+                        clientPctSnapshot = moneyConfigAtCreation.ClientPercentage;
+                        expertPctSnapshot = moneyConfigAtCreation.ExpertPercentage;
+                        platformPctSnapshot = moneyConfigAtCreation.PlatformPercentage;
+                    }
+                }
+                catch (Exception v8Ex)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "V8: snapshot capture failed (fallback to live StatusConfiguration)",
+                        details: $"User {userId} ServiceId {service.Id}: {v8Ex.Message}. Hire se crea sin snapshot — RefundService hará fallback a config vigente al resolver. Comportamiento legacy.",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted.V8",
+                        relatedEntityType: "SearchService",
+                        relatedEntityId: service.Id);
+                }
+
                 searchHire = new SearchHire
                 {
                     ClientId = userId,
@@ -3742,7 +3774,10 @@ namespace newApi.Controllers
                     ExpertCountry = expertCountry, // ✅ INTERNACIONALIZACIÓN: Snapshot del país del lugar de contratación
                     RequiresManualReview = taxNotCollectedNeedsReview, // 🔧 FIX D11: IVA no recaudado → revisión fiscal del admin
                     ClientVatNumber = clientVatNumber,                  // 🔧 FISCAL FLIP: NIF cliente (puede ser null)
-                    ClientVatCountryCode = clientVatCountryCode         // 🔧 FISCAL FLIP: país NIF cliente (puede ser null)
+                    ClientVatCountryCode = clientVatCountryCode,        // 🔧 FISCAL FLIP: país NIF cliente (puede ser null)
+                    ClientPercentageSnapshot = clientPctSnapshot,       // 🛡️ V8 FIX: congela % contractual
+                    ExpertPercentageSnapshot = expertPctSnapshot,
+                    PlatformPercentageSnapshot = platformPctSnapshot
                 };
                     // ✅ REMOVED: Balance verification eliminated - all payments are direct Stripe
 

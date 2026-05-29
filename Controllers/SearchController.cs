@@ -361,6 +361,10 @@ namespace newApi.Controllers
                         TaxAmount = s.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
                         ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
                         ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
+                        // 🛡️ Round 10 — P-C FIX (V8 snapshots): exponer al frontend
+                        ClientPercentageSnapshot = s.SearchHire.ClientPercentageSnapshot,
+                        ExpertPercentageSnapshot = s.SearchHire.ExpertPercentageSnapshot,
+                        PlatformPercentageSnapshot = s.SearchHire.PlatformPercentageSnapshot,
                           Expert = s.SearchHire.Expert != null ? new UserDto
                           {
                               Name = s.SearchHire.Expert.Name,
@@ -1054,6 +1058,10 @@ namespace newApi.Controllers
                             TaxAmount = s.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
                             ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
                             ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
+                            // 🛡️ Round 10 — P-C FIX (V8 snapshots): exponer al frontend
+                            ClientPercentageSnapshot = s.SearchHire.ClientPercentageSnapshot,
+                            ExpertPercentageSnapshot = s.SearchHire.ExpertPercentageSnapshot,
+                            PlatformPercentageSnapshot = s.SearchHire.PlatformPercentageSnapshot,
                               Expert = s.SearchHire.Expert != null ? new UserDto
                               {
                                   Name = s.SearchHire.Expert.Name,
@@ -1425,6 +1433,10 @@ namespace newApi.Controllers
                         TaxAmount = search.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
                         ExpertTimezone = search.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
                         ExpertCountry = search.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
+                        // 🛡️ Round 10 — P-C FIX (V8 snapshots): exponer al frontend
+                        ClientPercentageSnapshot = search.SearchHire.ClientPercentageSnapshot,
+                        ExpertPercentageSnapshot = search.SearchHire.ExpertPercentageSnapshot,
+                        PlatformPercentageSnapshot = search.SearchHire.PlatformPercentageSnapshot,
                           Expert = search.SearchHire.Expert != null ? new UserDto
                           {
                               Name = search.SearchHire.Expert.Name,

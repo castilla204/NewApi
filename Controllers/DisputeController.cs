@@ -114,6 +114,26 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Dispute reason is required" });
                 }
 
+                // 🛡️ T3 FIX: rate limit per-user para prevenir mass-dispute attack.
+                // Sin esto, un cliente malicioso podría crear 50 disputas seguidas contra
+                // distintos hires del mismo experto → todos sus hires en estado "Disputed" →
+                // DoS funcional al experto + flood al admin. Límite: 5 disputas/hora/usuario.
+                // Si supera, devolver 429 (TooManyRequests).
+                var recentDisputeCount = await _context.Disputes.AsNoTracking()
+                    .CountAsync(d => d.ReporterId == userId
+                                  && d.CreatedAt >= DateTime.UtcNow.AddHours(-1));
+                if (recentDisputeCount >= 5)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "T3: dispute rate limit excedido",
+                        details: $"User {userId} intentó crear dispute #{recentDisputeCount + 1} en última hora — bloqueado. Posible mass-dispute attack o uso indebido.",
+                        userId: userId,
+                        source: "DisputeController.CreateDispute.T3",
+                        relatedEntityType: "Dispute",
+                        relatedEntityId: null);
+                    return StatusCode(429, new { message = "Has alcanzado el límite de 5 disputas por hora. Espera o contacta con soporte para casos urgentes." });
+                }
+
                 var searchHire = await _context.SearchHires
                     .Include(sh => sh.Status)
                     .Include(sh => sh.Appointment)
@@ -1270,6 +1290,23 @@ namespace newApi.Controllers
                 if (request.Reason.Length > 1000)
                 {
                     return BadRequest(new { message = "Reason cannot exceed 1000 characters" });
+                }
+
+                // 🛡️ T3 FIX: mismo rate limit que CreateDispute (5/hora). Sin esto un cliente
+                // bypaseaba el límite usando este endpoint con files.
+                var recentDisputeCount = await _context.Disputes.AsNoTracking()
+                    .CountAsync(d => d.ReporterId == userId
+                                  && d.CreatedAt >= DateTime.UtcNow.AddHours(-1));
+                if (recentDisputeCount >= 5)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "T3: dispute rate limit excedido (with-files)",
+                        details: $"User {userId} intentó crear dispute con files #{recentDisputeCount + 1} en última hora — bloqueado.",
+                        userId: userId,
+                        source: "DisputeController.CreateDisputeWithFiles.T3",
+                        relatedEntityType: "Dispute",
+                        relatedEntityId: null);
+                    return StatusCode(429, new { message = "Has alcanzado el límite de 5 disputas por hora. Espera o contacta con soporte para casos urgentes." });
                 }
 
                 // Verificar que el SearchHire existe y pertenece al usuario

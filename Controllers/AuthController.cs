@@ -51,6 +51,22 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid refresh token" });
                 }
 
+                // 🛡️ T1 FIX: Usuario eliminado (soft-delete) - Revocar token y rechazar.
+                // Sin esta validación, un atacante (o el propio ex-usuario) podría usar un
+                // RefreshToken obtenido ANTES del DeleteAccount para renovar su AccessToken
+                // y mantener sesión activa indefinidamente. AccountDeletionService.R1 borra
+                // los RefreshTokens en el delete, pero hay race window: si el atacante hace
+                // refresh entre Stripe.AccountDelete y el DELETE RefreshTokens, conserva la
+                // sesión. Esta defensa cubre TODOS los casos.
+                if (storedToken.User.IsDeleted)
+                {
+                    storedToken.IsRevoked = true;
+                    storedToken.RevokedAt = DateTime.UtcNow;
+                    storedToken.RevokedByIp = GetClientIpAddress();
+                    await _context.SaveChangesAsync();
+                    return Unauthorized(new { message = "User account has been deleted" });
+                }
+
                 // ✅ VALIDACIÓN: Usuario bloqueado - Revocar token y rechazar
                 if (storedToken.User.IsBlocked)
                 {

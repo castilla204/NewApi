@@ -6330,10 +6330,43 @@ namespace newApi.Controllers
                     });
                     await _context.SaveChangesAsync();
 
-                    // 🔁 R3: encolar la reversión TOTAL del transfer al experto (idempotente; no-op si no hubo
-                    // transfer). Un chargeback revierte el cargo ENTERO → el experto no debe quedarse su pago.
-                    Hangfire.BackgroundJob.Enqueue<StripeRefundService>(
-                        s => s.ReverseExpertTransferForChargebackAsync(hireId.Value, $"Chargeback {dispute.Id} on PI {dispute.PaymentIntentId}"));
+                    // 🛡️ T9 FIX: detectar dispute interna activa antes de encolar reversal automático.
+                    // Race documentada: si admin está resolviendo una Dispute interna (Status=Pending o
+                    // Resolving) AL MISMO TIEMPO que llega el chargeback Stripe, encolar el reversal
+                    // automático aquí choca con la decisión manual del admin (ProcessMoneyDistribution).
+                    // Posible doble reversal de transfer + estado de hire inconsistente. Solución:
+                    // si hay dispute interna activa, NO encolamos — log Critical pidiendo intervención
+                    // manual para que el admin decida cómo coordinar Stripe chargeback + resolución interna.
+                    var hasActiveInternalDispute = await _context.Disputes
+                        .AsNoTracking()
+                        .AnyAsync(d => d.SearchHireId == hireId.Value
+                                    && (d.Status == "Pending" || d.Status == "Resolving"));
+
+                    if (hasActiveInternalDispute)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL T9: Chargeback Stripe + Dispute interna activa — NO se encola reversal automático",
+                            details: $"SearchHire {hireId} tiene una Dispute interna en estado Pending/Resolving cuando llegó el chargeback Stripe {dispute.Id}. NO se ha encolado ReverseExpertTransferForChargebackAsync para evitar doble reversal del transfer (race con la resolución manual del admin). ACCIÓN ADMIN: revisar la dispute interna y decidir si (a) resolverla primero y luego ejecutar reversal manualmente, o (b) abandonar la dispute interna porque Stripe ya hizo el chargeback y el cliente recibió el dinero. PaymentIntentId: {dispute.PaymentIntentId}.",
+                            userId: clientId,
+                            source: "SubscriptionController.HandleChargeDisputeCreated.T9",
+                            relatedEntityType: "Dispute",
+                            relatedEntityId: hireId,
+                            additionalData: new
+                            {
+                                DisputeId = dispute.Id,
+                                dispute.PaymentIntentId,
+                                SearchHireId = hireId,
+                                ExpertId = expertId,
+                                Reason = "T9_active_internal_dispute_skip_auto_reversal"
+                            });
+                    }
+                    else
+                    {
+                        // 🔁 R3: encolar la reversión TOTAL del transfer al experto (idempotente; no-op si no hubo
+                        // transfer). Un chargeback revierte el cargo ENTERO → el experto no debe quedarse su pago.
+                        Hangfire.BackgroundJob.Enqueue<StripeRefundService>(
+                            s => s.ReverseExpertTransferForChargebackAsync(hireId.Value, $"Chargeback {dispute.Id} on PI {dispute.PaymentIntentId}"));
+                    }
                 }
 
                 // Vincular la Dispute interna (si existe) con la disputa de Stripe para poder enviar evidencia.

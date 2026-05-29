@@ -3040,6 +3040,12 @@ namespace newApi.Controllers
                         await HandleChargeRefunded(stripeEvent.Data.Object as Charge);
                         break;
 
+                    // 🛡️ V11 FIX: charge.refund.updated — refund cambió status (pending→failed/canceled).
+                    // Refund a tarjeta caducada falla DESPUÉS de creación → cliente no recibe dinero.
+                    case "charge.refund.updated":
+                        await HandleChargeRefundUpdated(stripeEvent.Data.Object as Refund);
+                        break;
+
                     // 🛡️ A4: charge.failed — el cargo falló a nivel de "charge" (no de payment_intent).
                     case "charge.failed":
                         await HandleChargeFailed(stripeEvent.Data.Object as Charge);
@@ -3812,6 +3818,33 @@ namespace newApi.Controllers
                 // (clientVatNumber/clientVatCountryCode ya fueron declarados arriba y poblados dentro del
                 // try donde existe sessionWithTax; aquí solo se usan en la creación del SearchHire.)
 
+                // 🛡️ V8 FIX: capturar snapshot de % vigentes (congela reparto contractual al
+                // checkout — si admin cambia StatusConfiguration después, RefundService usa snapshot).
+                decimal? clientPctSnapshot = null, expertPctSnapshot = null, platformPctSnapshot = null;
+                try
+                {
+                    var moneyConfigAtCreation = await _systemStatusService.GetMoneyDistributionConfigAsync(
+                        SearchHireStatus.Pending.ToStringValue(),
+                        service.CategoryId,
+                        service.ServiceType?.ServiceTypeCategoryId);
+                    if (moneyConfigAtCreation != null)
+                    {
+                        clientPctSnapshot = moneyConfigAtCreation.ClientPercentage;
+                        expertPctSnapshot = moneyConfigAtCreation.ExpertPercentage;
+                        platformPctSnapshot = moneyConfigAtCreation.PlatformPercentage;
+                    }
+                }
+                catch (Exception v8Ex)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "V8: snapshot capture failed (fallback a config live al resolver)",
+                        details: $"User {userId} ServiceId {service.Id}: {v8Ex.Message}",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted.V8",
+                        relatedEntityType: "SearchService",
+                        relatedEntityId: service.Id);
+                }
+
                 // Create search hire
                 searchHire = new SearchHire
                 {
@@ -3830,7 +3863,10 @@ namespace newApi.Controllers
                     ExpertCountry = expertCountry, // ✅ INTERNACIONALIZACIÓN: Snapshot del país del lugar de contratación
                     RequiresManualReview = taxNotCollectedNeedsReview, // 🔧 FIX D11: IVA no recaudado → revisión fiscal del admin
                     ClientVatNumber = clientVatNumber,                  // 🔧 FISCAL FLIP: NIF cliente (puede ser null)
-                    ClientVatCountryCode = clientVatCountryCode         // 🔧 FISCAL FLIP: país NIF cliente (puede ser null)
+                    ClientVatCountryCode = clientVatCountryCode,        // 🔧 FISCAL FLIP: país NIF cliente (puede ser null)
+                    ClientPercentageSnapshot = clientPctSnapshot,       // 🛡️ V8 FIX: congela % contractual
+                    ExpertPercentageSnapshot = expertPctSnapshot,
+                    PlatformPercentageSnapshot = platformPctSnapshot
                 };
                     // ✅ REMOVED: Balance verification eliminated - all payments are direct Stripe
 
@@ -6559,6 +6595,26 @@ namespace newApi.Controllers
         /// "Refund" local para este PaymentIntent, fue un reembolso externo (Dashboard de Stripe)
         /// y se avisa para reconciliar el ledger.
         /// </summary>
+        private async Task HandleChargeRefundUpdated(Refund? refund)
+        {
+            // 🛡️ V11 FIX: si refund pasa a failed/canceled, log Critical (cliente no recibió dinero)
+            if (refund == null) return;
+            var status = refund.Status ?? "unknown";
+            if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "canceled", StringComparison.OrdinalIgnoreCase))
+            {
+                var localFt = await _context.FinancialTransactions.AsNoTracking()
+                    .FirstOrDefaultAsync(ft => ft.StripeRefundId == refund.Id);
+                await _loggingService.LogCriticalAsync(
+                    message: $"CRITICAL V11: Refund {refund.Id} cambió a '{status}' — cliente no recibe dinero",
+                    details: $"Refund {refund.Id} ({refund.Amount / 100m}€) PI {refund.PaymentIntentId}. FailureReason: {refund.FailureReason ?? "n/a"}. ACCIÓN ADMIN: contactar cliente, validar tarjeta actualizada, reintentar refund manual o emitir transferencia bancaria alternativa.",
+                    userId: localFt?.UserId,
+                    source: "SubscriptionController.HandleChargeRefundUpdated.V11",
+                    relatedEntityType: "Refund",
+                    relatedEntityId: localFt?.RelatedEntityId);
+            }
+        }
+
         private async Task HandleChargeRefunded(Charge? charge)
         {
             if (charge == null) return;

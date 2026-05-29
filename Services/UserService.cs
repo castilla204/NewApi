@@ -706,15 +706,16 @@ namespace newApi.Services
                 CreatedAt = DateTime.UtcNow
             };
 
+            // 🛡️ V7 FIX: atomicidad ExpertProfile + Role en un solo SaveChanges. Antes
+            // eran 2 SaveChanges separados — si el segundo fallaba, ExpertProfile quedaba en BD
+            // pero User con Role=Client (inconsistente). Combinar cambios y persistir UNA vez:
+            // si falla, ChangeTracker descarta AMBOS.
+            user.Role = UserRole.Expert;
             _context.ExpertProfiles.Add(expertProfile);
-            
+
             // ✅ FIX: Manejar ObjectDisposedException y DbUpdateException específicamente
             try
             {
-                await _context.SaveChangesAsync();
-                
-                // ✅ CRÍTICO: Solo cambiar el rol DESPUÉS de que el ExpertProfile se guarde exitosamente
-                user.Role = UserRole.Expert;
                 await _context.SaveChangesAsync();
             }
             catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)

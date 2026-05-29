@@ -77,6 +77,25 @@ namespace newApi.Services
         private DateTime GetAppointmentUtc(DateTime proposedDate, TimeSpan proposedTime, string? expertTimezone)
         {
             var localWall = DateTime.SpecifyKind(proposedDate.Date + proposedTime, DateTimeKind.Unspecified);
+
+            // 🛡️ V1 FIX: desambiguación DST fall-back. Europe/Madrid 2026-10-26 02:30 existe 2×
+            // (CEST UTC+2 y CET UTC+1). Tomamos primera ocurrencia (offset MAYOR, DST aún activo).
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(expertTimezone))
+                {
+                    var tz = TimeZoneInfo.FindSystemTimeZoneById(expertTimezone);
+                    if (tz.IsAmbiguousTime(localWall))
+                    {
+                        var offsets = tz.GetAmbiguousTimeOffsets(localWall);
+                        var firstOccurrenceOffset = offsets.Length > 0 ? offsets.Max() : tz.GetUtcOffset(localWall);
+                        return DateTime.SpecifyKind(localWall - firstOccurrenceOffset, DateTimeKind.Utc);
+                    }
+                }
+            }
+            catch (TimeZoneNotFoundException) { }
+            catch (InvalidTimeZoneException) { }
+
             return _timezoneService.ConvertToUtc(localWall, expertTimezone ?? string.Empty);
         }
 

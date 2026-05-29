@@ -239,18 +239,19 @@ namespace newApi.Controllers
                 FutureRequirementsPastDue = futurePastDue.Any()
             };
 
-            if (state.FutureRequirementsPastDue)
-            {
-                state.FutureRequirementsDueAt = DateTime.UtcNow.AddDays(-1);
-            }
-            else if (state.FutureRequirementsCurrentlyDue)
-            {
-                state.FutureRequirementsDueAt = DateTime.UtcNow.AddDays(7);
-            }
-            else if (futureEventuallyDue.Any())
-            {
-                state.FutureRequirementsDueAt = DateTime.UtcNow.AddDays(30);
-            }
+            // 🛡️ Round 12 — D5 FIX: preferir el deadline REAL de Stripe sobre el heurístico.
+            // Antes: heurístico inventado UtcNow±N días → engaña al experto mostrándole una fecha
+            // que NO es la de Stripe (el deadline puede ser +14d, +45d o +3d, no siempre +7/+30).
+            // Ahora: leer account.FutureRequirements.CurrentDeadline (DateTime?) y caer al heurístico
+            // SOLO si Stripe no asignó deadline (campo nullable por diseño del API).
+            // Doc: https://docs.stripe.com/api/accounts/object#account_object-requirements-current_deadline
+            state.FutureRequirementsDueAt =
+                futureRequirements.CurrentDeadline
+                ?? requirements.CurrentDeadline
+                ?? (state.FutureRequirementsPastDue ? DateTime.UtcNow.AddDays(-1)
+                  : state.FutureRequirementsCurrentlyDue ? DateTime.UtcNow.AddDays(7)
+                  : futureEventuallyDue.Any() ? DateTime.UtcNow.AddDays(30)
+                  : (DateTime?)null);
 
             if (!string.IsNullOrEmpty(disabledReason) && IsPermanentRejection(disabledReason))
             {
@@ -1138,9 +1139,9 @@ namespace newApi.Controllers
                 };
 
                 var accountLink = await accountLinkService.CreateAsync(accountLinkOptions);
-                return Ok(new { 
+                return Ok(new {
                     message = "Enlace de cuenta creado exitosamente",
-                    accountLinkUrl = accountLink.Url 
+                    accountLinkUrl = accountLink.Url
                 });
             }
             catch (StripeException stripeEx)
@@ -1149,6 +1150,105 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
+                return StatusCode(500, new { message = "Error interno del servidor" });
+            }
+        }
+
+        /// <summary>
+        /// 🛡️ Round 12 — D1 FIX: Crea un LoginLink de Stripe para que el experto APROBADO
+        /// acceda al Express Dashboard real (vista de payouts, balance, transactions, ajuste
+        /// de cuenta bancaria, configuración de payout schedule, etc.).
+        ///
+        /// Distinto del AccountLink:
+        ///  - AccountLink → flujo de onboarding/verificación KYC (formularios)
+        ///  - LoginLink   → Express Dashboard (panel de gestión)
+        ///
+        /// Sólo permitido cuando el experto está APPROVED + OnboardingCompleted. Si no, no
+        /// hay Dashboard que abrir (la cuenta aún no terminó setup).
+        ///
+        /// Doc: https://docs.stripe.com/api/account/create_login_link
+        /// </summary>
+        [HttpPost("create-login-link")]
+        [Authorize(Roles = "Expert")]
+        public async Task<IActionResult> CreateLoginLink()
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var expertProfile = await _context.ExpertProfiles
+                    .FirstOrDefaultAsync(ep => ep.UserId == userId);
+
+                if (expertProfile == null)
+                {
+                    return NotFound(new { message = "Expert profile not found" });
+                }
+
+                if (string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                {
+                    return BadRequest(new { message = "Stripe account not found. Please complete onboarding first." });
+                }
+
+                // Gate: el Express Dashboard sólo tiene sentido si la cuenta está aprobada.
+                // Para cuentas no aprobadas, el panel del experto en nuestra UI debe ofrecer
+                // CreateAccountLink (onboarding) en lugar de este endpoint.
+                if (expertProfile.StripeStatus != StripeStatus.Approved || !expertProfile.OnboardingCompleted)
+                {
+                    return BadRequest(new
+                    {
+                        message = "El Express Dashboard solo está disponible para cuentas completamente aprobadas.",
+                        currentStatus = expertProfile.StripeStatus.ToString(),
+                        onboardingCompleted = expertProfile.OnboardingCompleted
+                    });
+                }
+
+                try
+                {
+                    // LoginLinks son single-use y de duración corta — generamos uno por click.
+                    // En Stripe.net v50, el service se llama AccountLoginLinkService (no LoginLinkService —
+                    // fue renombrado en v46 al prefijar los servicios anidados con el nombre del padre).
+                    var loginLinkService = new Stripe.AccountLoginLinkService();
+                    var loginLink = await loginLinkService.CreateAsync(expertProfile.StripeAccountId);
+                    return Ok(new
+                    {
+                        message = "Login link creado exitosamente",
+                        loginLinkUrl = loginLink.Url,
+                        // 🛡️ Bandera honesta para el frontend (a diferencia del legacy `isLoginLink` de
+                        // CreateAccountLink que mentía — ese es siempre un AccountLink).
+                        isLoginLink = true
+                    });
+                }
+                catch (StripeException stripeEx)
+                {
+                    await _loggingService.LogErrorAsync(
+                        message: "D1: Falló creación de LoginLink Stripe",
+                        details: $"ExpertProfileId {expertProfile.Id}, StripeAccountId {expertProfile.StripeAccountId}, Code={stripeEx.StripeError?.Code}: {stripeEx.Message}",
+                        userId: userId,
+                        source: "SubscriptionController.CreateLoginLink",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: expertProfile.Id);
+                    return StatusCode(500, new
+                    {
+                        message = "Error al crear el login link de Stripe",
+                        error = stripeEx.Message,
+                        code = stripeEx.StripeError?.Code
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    await _loggingService.LogErrorAsync(
+                        message: "D1: Excepción inesperada en CreateLoginLink",
+                        details: ex.Message,
+                        source: "SubscriptionController.CreateLoginLink");
+                }
+                catch { /* swallow */ }
                 return StatusCode(500, new { message = "Error interno del servidor" });
             }
         }

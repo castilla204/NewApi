@@ -24,6 +24,11 @@ namespace newApi.Services
         private readonly StripeRefundService _refundService;
         private readonly ILoggingService _loggingService;
         private readonly SystemStatusService _systemStatusService;
+        // 🛡️ GDPR-S1 FIX: ISupabaseStorageService para limpiar archivos físicos en buckets
+        // (avatares, fotos de servicio, attachments de chat, evidencias de disputa, fotos de reviews).
+        // Sin esto, las filas BD se borran pero los archivos quedan accesibles por URL pública/firmada
+        // hasta que alguien los purgue manualmente → violación GDPR Art 17 ("derecho al olvido").
+        private readonly ISupabaseStorageService _storage;
 
         // ✅ MEJORA: Timeout para transacciones (5 minutos)
         private static readonly TimeSpan _transactionTimeout = TimeSpan.FromMinutes(5);
@@ -33,13 +38,86 @@ namespace newApi.Services
             IAccountDeletionNotificationService notificationService,
             StripeRefundService refundService,
             ILoggingService loggingService,
-            SystemStatusService systemStatusService)
+            SystemStatusService systemStatusService,
+            ISupabaseStorageService storage)
         {
             _context = context;
             _notificationService = notificationService;
             _refundService = refundService;
             _loggingService = loggingService;
             _systemStatusService = systemStatusService;
+            _storage = storage;
+        }
+
+        /// <summary>
+        /// 🛡️ GDPR-S1 FIX: best-effort delete de objetos en Supabase Storage.
+        /// NO aborta la eliminación de la cuenta si Supabase falla — la coherencia GDPR
+        /// se garantiza con un log Critical para limpieza manual posterior.
+        /// </summary>
+        private async Task TryDeleteStorageObjectsAsync(
+            string bucket,
+            IEnumerable<string?> objectNames,
+            int userId,
+            string sourceTag,
+            CancellationToken cancellationToken)
+        {
+            var paths = objectNames
+                .Where(o => !string.IsNullOrWhiteSpace(o))
+                .Select(o => o!.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (paths.Count == 0) return;
+
+            if (!_storage.IsConfigured)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: $"GDPR-S1: SupabaseStorage no configurado — {paths.Count} archivo(s) NO purgados",
+                    details: $"User {userId}: {paths.Count} objectPath(s) en bucket '{bucket}' deberían eliminarse pero el servicio Storage no tiene URL/ServiceRoleKey configurada. ACCIÓN ADMIN: purgar manualmente. Paths: {string.Join(", ", paths.Take(20))}",
+                    userId: userId,
+                    source: $"AccountDeletionService.{sourceTag}.S1",
+                    relatedEntityType: "SupabaseStorage",
+                    relatedEntityId: null);
+                return;
+            }
+
+            int ok = 0, fail = 0;
+            var failed = new List<string>();
+            foreach (var path in paths)
+            {
+                try
+                {
+                    var deleted = await _storage.DeleteAsync(bucket, path, cancellationToken);
+                    if (deleted) ok++;
+                    else { fail++; failed.Add(path); }
+                }
+                catch (Exception ex)
+                {
+                    fail++;
+                    failed.Add($"{path} (ex: {ex.GetType().Name})");
+                }
+            }
+
+            if (fail > 0)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: $"GDPR-S1: Supabase delete falló para {fail}/{paths.Count} archivo(s)",
+                    details: $"User {userId} bucket '{bucket}': {ok} borrados, {fail} fallidos. ACCIÓN ADMIN: purgar manualmente en Supabase Dashboard. Failed paths: {string.Join(" | ", failed.Take(20))}",
+                    userId: userId,
+                    source: $"AccountDeletionService.{sourceTag}.S1",
+                    relatedEntityType: "SupabaseStorage",
+                    relatedEntityId: null);
+            }
+            else
+            {
+                await _loggingService.LogInfoAsync(
+                    message: $"GDPR-S1: Supabase delete OK ({ok} archivos)",
+                    details: $"User {userId} bucket '{bucket}': {ok} objectPath(s) purgados correctamente.",
+                    userId: null,
+                    source: $"AccountDeletionService.{sourceTag}.S1",
+                    relatedEntityType: "SupabaseStorage",
+                    relatedEntityId: null);
+            }
         }
 
         public async Task<AccountDeletionStatusDto> CheckDeletionStatusAsync(int userId, CancellationToken cancellationToken = default)
@@ -518,12 +596,15 @@ namespace newApi.Services
             }
             catch (Exception notificationEx)
             {
-                // ✅ Log pero no fallar - las notificaciones no son críticas para la eliminación
-                await _loggingService.LogWarningAsync(
-                    message: "Failed to send notifications to affected users after account deletion",
-                    details: $"Account deletion succeeded for user {userId}, but failed to notify affected users. Error: {notificationEx.Message}. Notifications can be sent manually if needed.",
+                // 🛡️ W1 FIX: CRITICAL (antes era Warning). Las contrapartes (cliente recibió
+                // refund / experto recibió payout) NO se enteran de que el dinero se movió por
+                // el delete del otro lado. Sin notificación → soporte recibe tickets a ciegas.
+                // El admin debe enviar el aviso manualmente. CRITICAL dispara email automático.
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL W1: Failed to notify affected users after account deletion",
+                    details: $"Account deletion completed for user {userId}, but the OTHER PARTIES (clients receiving refunds / experts receiving payouts) were NOT notified. They may have unexplained Stripe movements. ACCIÓN ADMIN: enviar notificación manual a cada afectado. Error: {notificationEx.Message}.",
                     userId: userId,
-                    source: "AccountDeletionService.DeleteAccountAsync",
+                    source: "AccountDeletionService.DeleteAccountAsync.W1",
                     relatedEntityType: "Notification",
                     relatedEntityId: null,
                     additionalData: new
@@ -542,12 +623,15 @@ namespace newApi.Services
             }
             catch (Exception notificationEx)
             {
-                // ✅ Log pero no fallar - la notificación no es crítica
-                await _loggingService.LogWarningAsync(
-                    message: "Failed to send account deletion notification",
-                    details: $"Account deletion succeeded for user {userId}, but failed to send deletion notification. Error: {notificationEx.Message}.",
+                // 🛡️ W1 FIX: CRITICAL (antes era Warning). El usuario NO recibe la confirmación
+                // del delete → no tiene cómo verificar el resultado, no puede contactar soporte
+                // con referencias, no tiene email de auditoría. CRITICAL dispara email al admin
+                // para revisar el caso y considerar reenvío manual.
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL W1: Failed to send account deletion confirmation to user",
+                    details: $"Account deletion succeeded for user {userId} but the USER was NOT notified — no tienen confirmación del delete. ACCIÓN ADMIN: revisar email del usuario y enviar manualmente la confirmación si procede (puede ser dirección anonimizada deleted-{userId}@deleted.local). Error: {notificationEx.Message}.",
                     userId: userId,
-                    source: "AccountDeletionService.DeleteAccountAsync",
+                    source: "AccountDeletionService.DeleteAccountAsync.W1",
                     relatedEntityType: "Notification",
                     relatedEntityId: null,
                     additionalData: new
@@ -1044,10 +1128,29 @@ namespace newApi.Services
                 // Usar SQL directo para anonimización (más eficiente y evita problemas de EF Core)
                 try
                 {
-                    // 🛡️ N19 FIX: eliminar MessageAttachments del User ANTES de anonimizar Messages.
+                    // 🛡️ N19 + GDPR-S1 FIX: eliminar MessageAttachments del User ANTES de anonimizar Messages.
                     // Los attachments contienen Url (Supabase Storage path) y ObjectName que pueden tener
                     // PII en el filename (ej: "cv_juan_perez.pdf", "scan_dni_12345678.jpg"). Anonimizar
                     // solo SenderId/Content dejaba estos archivos huérfanos accesibles → violación GDPR Art 17.
+                    // GDPR-S1: leemos los ObjectName ANTES del DELETE y purgamos los archivos físicos en
+                    // Supabase Storage (bucket privado FilesBucket). Best-effort: si Supabase falla, log
+                    // Critical pero no aborta el delete (la cuenta del usuario sigue desapareciendo).
+                    var attachmentObjectNames = await _context.MessageAttachments
+                        .AsNoTracking()
+                        .Where(ma => _context.Messages.Any(m => m.Id == ma.MessageId && m.SenderId == userId))
+                        .Select(ma => ma.ObjectName)
+                        .ToListAsync(cancellationToken);
+
+                    if (attachmentObjectNames.Count > 0)
+                    {
+                        await TryDeleteStorageObjectsAsync(
+                            _storage.FilesBucket,
+                            attachmentObjectNames,
+                            userId,
+                            "DeleteUserDataAsync.N19",
+                            cancellationToken);
+                    }
+
                     var n19AttachmentsDeleted = await _context.Database.ExecuteSqlRawAsync(
                         @"DELETE FROM ""MessageAttachments""
                           WHERE ""MessageId"" IN (
@@ -1058,7 +1161,7 @@ namespace newApi.Services
                     {
                         await _loggingService.LogInfoAsync(
                             message: "N19: deleted MessageAttachments for account deletion",
-                            details: $"Deleted {n19AttachmentsDeleted} MessageAttachment(s) for user {userId} antes de anonimizar Messages. Las URLs a Supabase Storage / ObjectName con potencial PII quedan removidas del ledger.",
+                            details: $"Deleted {n19AttachmentsDeleted} MessageAttachment(s) for user {userId} antes de anonimizar Messages. {attachmentObjectNames.Count} archivo(s) físico(s) en Supabase Storage también purgados (ver log GDPR-S1).",
                             userId: null,
                             source: "AccountDeletionService.DeleteUserDataAsync.N19",
                             relatedEntityType: "MessageAttachment",
@@ -1111,6 +1214,43 @@ namespace newApi.Services
                             relatedEntityType: "Conversation",
                             relatedEntityId: null
                         );
+                    }
+
+                    // 🛡️ GDPR-S1.d FIX: borrar imágenes físicas (Supabase ImagesBucket) y filas de
+                    // ReviewImages para Reviews escritas POR el usuario (ReviewerId=userId). Estas fotos
+                    // son PII del autor (típicamente fotos del problema/resultado del servicio). NO
+                    // tocamos imágenes de Reviews ajenas aunque referencien al usuario como Expert.
+                    var reviewImageObjects = await _context.ReviewImages
+                        .AsNoTracking()
+                        .Where(ri => _context.Reviews.Any(r => r.Id == ri.ReviewId && r.ReviewerId == userId))
+                        .Select(ri => ri.ImageObjectName)
+                        .ToListAsync(cancellationToken);
+
+                    if (reviewImageObjects.Count > 0)
+                    {
+                        await TryDeleteStorageObjectsAsync(
+                            _storage.ImagesBucket,
+                            reviewImageObjects,
+                            userId,
+                            "DeleteUserDataAsync.ReviewImages",
+                            cancellationToken);
+                    }
+
+                    var reviewImagesDeleted = await _context.Database.ExecuteSqlRawAsync(
+                        @"DELETE FROM ""ReviewImages""
+                          WHERE ""ReviewId"" IN (
+                              SELECT ""Id"" FROM ""Reviews"" WHERE ""ReviewerId"" = {0}
+                          )",
+                        new object[] { userId }, cancellationToken);
+                    if (reviewImagesDeleted > 0)
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "GDPR-S1.d: deleted ReviewImages",
+                            details: $"Deleted {reviewImagesDeleted} ReviewImage row(s) for user {userId}. {reviewImageObjects.Count} archivo(s) físico(s) Supabase Storage también purgados.",
+                            userId: null,
+                            source: "AccountDeletionService.DeleteUserDataAsync.ReviewImages",
+                            relatedEntityType: "ReviewImage",
+                            relatedEntityId: null);
                     }
 
                     // 3. ✅ ANONIMIZAR reseñas dadas (NO ELIMINAR - preservar para mantener calificaciones)
@@ -1195,14 +1335,19 @@ namespace newApi.Services
                     }
 
                     // 5. ✅ ANONIMIZAR notificaciones (NO ELIMINAR - preservar para auditoría)
-                    // PostgreSQL + C# Best Practice: Anonimizar pero preservar para trazabilidad
-                    // Notification.UserId es nullable, usar NULL directamente
-                    // ✅ IDEMPOTENCIA: Solo actualizar si UserId no es NULL (no anonimizado ya)
+                    // 🛡️ GDPR-R6 FIX: REEMPLAZAR Message en lugar de prefijar. Antes era
+                    // '[Usuario eliminado] ' || Message → conservaba el contenido original que
+                    // puede incluir nombre/email/teléfono del usuario eliminado (ej:
+                    // "Juan Pérez (juan@example.com) ha solicitado tu servicio..."). Reemplazar
+                    // con un placeholder evita la fuga. La fila se mantiene como rastro de que
+                    // hubo una notificación, sin desvelar a quién pertenecía.
+                    // Idempotencia con NOT ILIKE para evitar re-anonimizar.
                     var notificationsCount = await _context.Database.ExecuteSqlRawAsync(
                         @"UPDATE ""Notifications""
                           SET ""UserId"" = NULL,
-                              ""Message"" = '[Usuario eliminado] ' || COALESCE(""Message"", '')
-                          WHERE ""UserId"" = {0} AND ""UserId"" IS NOT NULL",
+                              ""Message"" = '[Notificación de usuario eliminado]'
+                          WHERE ""UserId"" = {0} AND ""UserId"" IS NOT NULL
+                            AND COALESCE(""Message"", '') NOT ILIKE '[Notificación de usuario eliminado]%'",
                         new object[] { userId }, cancellationToken);
 
                     if (notificationsCount > 0)
@@ -1216,6 +1361,21 @@ namespace newApi.Services
                             relatedEntityId: null
                         );
                     }
+
+                    // 🛡️ GDPR FIX: capturar IDs de SearchHires del usuario ANTES de anonimizar
+                    // (luego ClientId/ExpertId pasan a NULL y no podríamos joinear). Estos IDs los
+                    // reutilizan los bloques A1 (Appointments) / F1 (DisputeFiles) / D1 (Disputes)
+                    // para localizar las filas relacionadas con precisión, sin heurísticas temporales.
+                    var userSearchHireIdsAll = await _context.SearchHires
+                        .AsNoTracking()
+                        .Where(sh => sh.ClientId == userId || sh.ExpertId == userId)
+                        .Select(sh => sh.Id)
+                        .ToListAsync(cancellationToken);
+                    var userSearchHireIdsAsClient = await _context.SearchHires
+                        .AsNoTracking()
+                        .Where(sh => sh.ClientId == userId)
+                        .Select(sh => sh.Id)
+                        .ToListAsync(cancellationToken);
 
                     // 6. ✅ ANONIMIZAR SearchHires (NO ELIMINAR - preservar contrataciones históricas)
                     // PostgreSQL + C# Best Practice: Anonimizar referencias pero mantener historial de contrataciones
@@ -1276,6 +1436,259 @@ namespace newApi.Services
                             relatedEntityId: null
                         );
                     }
+
+                    // 🛡️ GDPR-A1 FIX: anonimizar PII en Appointments donde el usuario era CLIENTE.
+                    // El cliente proporciona Location (dirección física), DoorNumber, OwnerPhone
+                    // (teléfono del propietario), SiteDetails y geocoordenadas. Si el cliente
+                    // borra y no anonimizamos, esos datos quedan visibles al experto para siempre.
+                    // NOTA: Si el experto borra, NO tocamos la cita (sigue siendo del cliente).
+                    // Usamos userSearchHireIdsAsClient capturados ANTES de anonimizar.
+                    var appointmentsAnonymized = 0;
+                    if (userSearchHireIdsAsClient.Count > 0)
+                    {
+                        var apptHireIdsArr = string.Join(",", userSearchHireIdsAsClient);
+                        appointmentsAnonymized = await _context.Database.ExecuteSqlRawAsync(
+                            @"UPDATE ""Appointments""
+                              SET ""Location"" = '[Datos eliminados]',
+                                  ""DoorNumber"" = NULL,
+                                  ""OwnerPhone"" = NULL,
+                                  ""SiteDetails"" = NULL,
+                                  ""Latitude"" = NULL,
+                                  ""Longitude"" = NULL,
+                                  ""UpdatedAt"" = CURRENT_TIMESTAMP
+                              WHERE ""SearchHireId"" = ANY(ARRAY[" + apptHireIdsArr + @"]::integer[])
+                                AND COALESCE(""Location"", '') NOT ILIKE '[Datos eliminados]%'",
+                            cancellationToken);
+
+                        if (appointmentsAnonymized > 0)
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "GDPR-A1: Appointments PII anonymized",
+                                details: $"Anonymized {appointmentsAnonymized} Appointment(s) for user {userId}: Location='[Datos eliminados]', DoorNumber/OwnerPhone/SiteDetails/Latitude/Longitude = NULL. Datos físicos (dirección, teléfono propietario) eliminados de {userSearchHireIdsAsClient.Count} SearchHire(s) donde era cliente.",
+                                userId: null,
+                                source: "AccountDeletionService.DeleteUserDataAsync.A1",
+                                relatedEntityType: "Appointment",
+                                relatedEntityId: null);
+                        }
+                    }
+
+                    // 🛡️ GDPR-F1 FIX (parte 1/2): borrar archivos físicos DisputeFile en Supabase
+                    // Storage ANTES de borrar las filas BD. DisputeFile.FilePath contiene el
+                    // objectPath en FilesBucket (bucket privado). Aplica a disputas donde el usuario
+                    // era Reporter, donde el SearchHire era del usuario (cliente o experto), o
+                    // donde el usuario subió un archivo (UploadedByUserId=userId).
+                    List<string?> disputeFilePaths = new();
+                    if (userSearchHireIdsAll.Count > 0)
+                    {
+                        disputeFilePaths = await _context.DisputeFiles
+                            .AsNoTracking()
+                            .Where(df => df.UploadedByUserId == userId
+                                      || _context.Disputes.Any(d => d.Id == df.DisputeId
+                                          && (d.ReporterId == userId
+                                              || userSearchHireIdsAll.Contains(d.SearchHireId))))
+                            .Select(df => df.FilePath)
+                            .ToListAsync(cancellationToken);
+                    }
+                    else
+                    {
+                        disputeFilePaths = await _context.DisputeFiles
+                            .AsNoTracking()
+                            .Where(df => df.UploadedByUserId == userId
+                                      || _context.Disputes.Any(d => d.Id == df.DisputeId && d.ReporterId == userId))
+                            .Select(df => df.FilePath)
+                            .ToListAsync(cancellationToken);
+                    }
+
+                    if (disputeFilePaths.Count > 0)
+                    {
+                        await TryDeleteStorageObjectsAsync(
+                            _storage.FilesBucket,
+                            disputeFilePaths,
+                            userId,
+                            "DeleteUserDataAsync.F1",
+                            cancellationToken);
+                    }
+
+                    // 🛡️ GDPR-F1 FIX (parte 2/2): borrar filas DisputeFile. Se eliminan por completo
+                    // (no se anonimizan) porque el contenido del fichero ya no es accesible (purga arriba).
+                    int disputeFilesDeleted;
+                    if (userSearchHireIdsAll.Count > 0)
+                    {
+                        var dfHireIdsArr = string.Join(",", userSearchHireIdsAll);
+                        disputeFilesDeleted = await _context.Database.ExecuteSqlRawAsync(
+                            @"DELETE FROM ""DisputeFiles""
+                              WHERE ""UploadedByUserId"" = {0}
+                                 OR ""DisputeId"" IN (
+                                     SELECT ""Id"" FROM ""Disputes""
+                                     WHERE ""ReporterId"" = {0}
+                                        OR ""SearchHireId"" = ANY(ARRAY[" + dfHireIdsArr + @"]::integer[])
+                                 )",
+                            new object[] { userId }, cancellationToken);
+                    }
+                    else
+                    {
+                        disputeFilesDeleted = await _context.Database.ExecuteSqlRawAsync(
+                            @"DELETE FROM ""DisputeFiles""
+                              WHERE ""UploadedByUserId"" = {0}
+                                 OR ""DisputeId"" IN (
+                                     SELECT ""Id"" FROM ""Disputes"" WHERE ""ReporterId"" = {0}
+                                 )",
+                            new object[] { userId }, cancellationToken);
+                    }
+
+                    if (disputeFilesDeleted > 0)
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "GDPR-F1: DisputeFiles deleted",
+                            details: $"Deleted {disputeFilesDeleted} DisputeFile row(s) for user {userId}. {disputeFilePaths.Count} archivo(s) físico(s) en Supabase Storage también purgados.",
+                            userId: null,
+                            source: "AccountDeletionService.DeleteUserDataAsync.F1",
+                            relatedEntityType: "DisputeFile",
+                            relatedEntityId: null);
+                    }
+
+                    // 🛡️ GDPR-D1 FIX: anonimizar Disputes PII (Reason, ResolutionComments, ExpertResponse).
+                    // No se elimina la fila — Status/StripeDisputeId/SearchHireId quedan para auditoría
+                    // Stripe. ReporterId es NOT NULL en BD: NO lo anonimizamos (requiere migración);
+                    // se mantiene el FK pero el User al que apunta queda con
+                    // email "deleted-{id}@deleted.local" tras U1. Idempotente con NOT ILIKE.
+                    int disputesAnonymized;
+                    if (userSearchHireIdsAll.Count > 0)
+                    {
+                        var dispHireIdsArr = string.Join(",", userSearchHireIdsAll);
+                        disputesAnonymized = await _context.Database.ExecuteSqlRawAsync(
+                            @"UPDATE ""Disputes""
+                              SET ""Reason"" = '[Datos eliminados]',
+                                  ""ResolutionComments"" = CASE WHEN ""ResolutionComments"" IS NOT NULL AND ""ResolutionComments"" != ''
+                                      THEN '[Datos eliminados]'
+                                      ELSE ""ResolutionComments"" END,
+                                  ""ExpertResponse"" = CASE WHEN ""ExpertResponse"" IS NOT NULL AND ""ExpertResponse"" != ''
+                                      THEN '[Datos eliminados]'
+                                      ELSE ""ExpertResponse"" END
+                              WHERE (""ReporterId"" = {0}
+                                  OR ""SearchHireId"" = ANY(ARRAY[" + dispHireIdsArr + @"]::integer[]))
+                                AND COALESCE(""Reason"", '') NOT ILIKE '[Datos eliminados]%'",
+                            new object[] { userId }, cancellationToken);
+                    }
+                    else
+                    {
+                        disputesAnonymized = await _context.Database.ExecuteSqlRawAsync(
+                            @"UPDATE ""Disputes""
+                              SET ""Reason"" = '[Datos eliminados]',
+                                  ""ResolutionComments"" = CASE WHEN ""ResolutionComments"" IS NOT NULL AND ""ResolutionComments"" != ''
+                                      THEN '[Datos eliminados]'
+                                      ELSE ""ResolutionComments"" END,
+                                  ""ExpertResponse"" = CASE WHEN ""ExpertResponse"" IS NOT NULL AND ""ExpertResponse"" != ''
+                                      THEN '[Datos eliminados]'
+                                      ELSE ""ExpertResponse"" END
+                              WHERE ""ReporterId"" = {0}
+                                AND COALESCE(""Reason"", '') NOT ILIKE '[Datos eliminados]%'",
+                            new object[] { userId }, cancellationToken);
+                    }
+
+                    if (disputesAnonymized > 0)
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "GDPR-D1: Disputes PII anonymized",
+                            details: $"Anonymized {disputesAnonymized} Dispute(s) for user {userId}: Reason/ResolutionComments/ExpertResponse → '[Datos eliminados]'. Status/StripeDisputeId/SearchHireId preservados para auditoría Stripe.",
+                            userId: null,
+                            source: "AccountDeletionService.DeleteUserDataAsync.D1",
+                            relatedEntityType: "Dispute",
+                            relatedEntityId: null);
+                    }
+
+                    // 🛡️ GDPR-R4 FIX (parte 1/2): purgar archivos físicos SearchHireDeliverable en
+                    // Supabase Storage ANTES de borrar las filas. Deliverable.ObjectName apunta a
+                    // FilesBucket (bucket privado: PDFs, vídeos, informes del experto al cliente).
+                    // SearchHire se ANONIMIZA (no se borra) → Cascade FK no se activa →
+                    // deliverables huérfanos con archivos accesibles por URL.
+                    List<string?> deliverableObjects = new();
+                    if (userSearchHireIdsAll.Count > 0)
+                    {
+                        deliverableObjects = await _context.SearchHireDeliverables
+                            .AsNoTracking()
+                            .Where(d => userSearchHireIdsAll.Contains(d.SearchHireId))
+                            .Select(d => d.ObjectName)
+                            .ToListAsync(cancellationToken);
+
+                        if (deliverableObjects.Count > 0)
+                        {
+                            await TryDeleteStorageObjectsAsync(
+                                _storage.FilesBucket,
+                                deliverableObjects,
+                                userId,
+                                "DeleteUserDataAsync.R4",
+                                cancellationToken);
+                        }
+
+                        // 🛡️ GDPR-R4 FIX (parte 2/2): borrar filas SearchHireDeliverable
+                        var deliverableHireIdsArr = string.Join(",", userSearchHireIdsAll);
+                        var deliverablesDeleted = await _context.Database.ExecuteSqlRawAsync(
+                            @"DELETE FROM ""SearchHireDeliverables""
+                              WHERE ""SearchHireId"" = ANY(ARRAY[" + deliverableHireIdsArr + @"]::integer[])",
+                            cancellationToken);
+
+                        if (deliverablesDeleted > 0)
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "GDPR-R4: SearchHireDeliverables deleted",
+                                details: $"Deleted {deliverablesDeleted} SearchHireDeliverable row(s) for user {userId}. {deliverableObjects.Count} archivo(s) físico(s) en Supabase Storage también purgados.",
+                                userId: null,
+                                source: "AccountDeletionService.DeleteUserDataAsync.R4",
+                                relatedEntityType: "SearchHireDeliverable",
+                                relatedEntityId: null);
+                        }
+                    }
+
+                    // 🛡️ GDPR-R3 + C1 FIX: anonimizar ProcessedWebhookEvent del usuario. EventData
+                    // es un JSON raw de webhook Stripe que puede contener metadata con email/nombre.
+                    // Nulleamos UserId/EventData pero PRESERVAMOS EventId/EventType/ProcessedAt/Status
+                    // como guard de idempotencia de webhooks (evita reprocesar el mismo evento).
+                    // C1: try/catch propio que NO aborta. Los webhook events son auditoría no
+                    // crítica para el delete del usuario — si falla, log Critical y continuamos
+                    // (el admin limpia manualmente). Sin esto, un fallo aquí abortaba TODO el
+                    // delete y el usuario quedaba sin borrar por algo que no debería bloquear.
+                    try
+                    {
+                        var webhookEventsAnonymized = await _context.Database.ExecuteSqlRawAsync(
+                            @"UPDATE ""ProcessedWebhookEvents""
+                              SET ""UserId"" = NULL,
+                                  ""EventData"" = NULL
+                              WHERE (""UserId"" = {0} AND ""UserId"" IS NOT NULL)
+                                 OR (""EventData"" IS NOT NULL AND ""EventData"" LIKE '%""metadata""%' AND ""UserId"" = {0})",
+                            new object[] { userId }, cancellationToken);
+
+                        if (webhookEventsAnonymized > 0)
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "GDPR-R3: ProcessedWebhookEvents anonymized",
+                                details: $"Anonymized {webhookEventsAnonymized} ProcessedWebhookEvent(s) for user {userId}: UserId/EventData=NULL. Idempotencia preservada (EventId/EventType/ProcessedAt intactos).",
+                                userId: null,
+                                source: "AccountDeletionService.DeleteUserDataAsync.R3",
+                                relatedEntityType: "ProcessedWebhookEvent",
+                                relatedEntityId: null);
+                        }
+                    }
+                    catch (Exception r3Ex)
+                    {
+                        // C1: no abortar — webhook events son auditoría no crítica
+                        // ⚠️ NOTA POSTGRESQL: si esta operación falla dentro de la tx global,
+                        // la tx queda en estado "aborted" y las siguientes operaciones también
+                        // fallarán hasta el rollback. PERO el catch externo grande hará el
+                        // rollback y la captura habrá quedado en logs separados. Por eso es
+                        // mejor que R3 vaya al FINAL de la fase de anonimización (ya está):
+                        // si falla, todavía perdemos el resto de Fase 2/3/4. Limitación de
+                        // PgBouncer sin savepoints.
+                        await _loggingService.LogCriticalAsync(
+                            message: "GDPR-R3 + C1: Failed to anonymize webhook events (non-critical)",
+                            details: $"User {userId}: ProcessedWebhookEvents anonymization falló: {r3Ex.Message}. ACCIÓN ADMIN: ejecutar manualmente UPDATE ProcessedWebhookEvents SET UserId=NULL,EventData=NULL WHERE UserId={userId}. NOTA: por limitación de PgBouncer sin savepoints, esta excepción puede haber abortado la tx global — verificar si el usuario realmente quedó eliminado.",
+                            userId: null,
+                            source: "AccountDeletionService.DeleteUserDataAsync.R3.C1",
+                            relatedEntityType: "ProcessedWebhookEvent",
+                            relatedEntityId: null);
+                        // NO throw — pero PostgreSQL ya marcó la tx como abortada. Continuamos
+                        // (las siguientes ops fallarán y el catch externo hará rollback).
+                    }
                 }
                 catch (DbUpdateConcurrencyException ex)
                 {
@@ -1332,6 +1745,25 @@ namespace newApi.Services
                 if (likesDeleted > 0)
                 {
                     hasDeletes = true;
+                }
+
+                // 🛡️ GDPR-FA1 FIX: eliminar SearchServiceFavorite del usuario (servicios marcados
+                // como favoritos por él). NO se anonimiza — es preferencia personal sin valor
+                // histórico. Si quedaran como filas con UserId apuntando a usuario soft-deleted, el
+                // query filter las ignoraría pero seguirían en BD como huérfanas.
+                var favoritesDeleted = await _context.Database.ExecuteSqlRawAsync(
+                    @"DELETE FROM ""SearchServiceFavorites"" WHERE ""UserId"" = {0}",
+                    new object[] { userId }, cancellationToken);
+                if (favoritesDeleted > 0)
+                {
+                    hasDeletes = true;
+                    await _loggingService.LogInfoAsync(
+                        message: "GDPR-FA1: SearchServiceFavorites deleted (user's favorites)",
+                        details: $"Deleted {favoritesDeleted} SearchServiceFavorite row(s) where UserId={userId}.",
+                        userId: null,
+                        source: "AccountDeletionService.DeleteUserDataAsync.FA1",
+                        relatedEntityType: "SearchServiceFavorite",
+                        relatedEntityId: null);
                 }
 
                 // 8. Eliminar búsquedas (datos no críticos)
@@ -1566,10 +1998,38 @@ namespace newApi.Services
                                 // ✅ FIX: Construir SQL como string normal para evitar que EF Core busque placeholders
                                 var servicesArray = string.Join(",", servicesToDeleteFinal);  // Sin {} para formar ARRAY[1,2,3]
 
+                                // 🛡️ GDPR-S1.b FIX: purgar imágenes físicas en Supabase Storage ANTES
+                                // del DELETE de filas. SearchServiceImage.ImageObjectName contiene el
+                                // objectPath en ImagesBucket (bucket público). Si los SearchServices se
+                                // borran (no anonimizan), las fotos quedan huérfanas en Storage.
+                                var ssImagePaths = await _context.SearchServiceImages
+                                    .AsNoTracking()
+                                    .Where(ssi => servicesToDeleteFinal.Contains(ssi.SearchServiceId))
+                                    .Select(ssi => ssi.ImageObjectName)
+                                    .ToListAsync(cancellationToken);
+
+                                if (ssImagePaths.Count > 0)
+                                {
+                                    await TryDeleteStorageObjectsAsync(
+                                        _storage.ImagesBucket,
+                                        ssImagePaths,
+                                        userId,
+                                        "DeleteUserDataAsync.SearchServiceImages",
+                                        cancellationToken);
+                                }
+
                                 // Eliminar imágenes primero (FK constraint)
                                 var sqlImages = @"DELETE FROM ""SearchServiceImages""
                                       WHERE ""SearchServiceId"" = ANY(ARRAY[" + servicesArray + @"]::integer[])";
                                 var imagesDeleted = await _context.Database.ExecuteSqlRawAsync(sqlImages, cancellationToken);
+
+                                // 🛡️ GDPR-FA1 (extensión): borrar SearchServiceFavorite de OTROS
+                                // usuarios que tengan estos servicios como favoritos. Sin esto, los
+                                // favoritos quedan apuntando a SearchServiceId inexistente → FK error
+                                // si hay constraint, o filas huérfanas en frontend ("favorito roto").
+                                var sqlOtherFavs = @"DELETE FROM ""SearchServiceFavorites""
+                                      WHERE ""SearchServiceId"" = ANY(ARRAY[" + servicesArray + @"]::integer[])";
+                                await _context.Database.ExecuteSqlRawAsync(sqlOtherFavs, cancellationToken);
 
                                 // Eliminar servicios sin contrataciones asociadas
                                 var sqlServices = @"DELETE FROM ""SearchServices""
@@ -1762,6 +2222,27 @@ namespace newApi.Services
                             }
                         }
 
+                        // 🛡️ GDPR-S1.c FIX: purgar avatar del experto en Supabase Storage ANTES de
+                        // borrar el ExpertProfile. ProfilePictureObjectName apunta a ImagesBucket
+                        // (bucket público). Si se borra solo la fila, el avatar queda accesible
+                        // indefinidamente por URL pública.
+                        var avatarObjectName = await _context.ExpertProfiles
+                            .IgnoreQueryFilters()
+                            .AsNoTracking()
+                            .Where(ep => ep.Id == expertProfileId)
+                            .Select(ep => ep.ProfilePictureObjectName)
+                            .FirstOrDefaultAsync(cancellationToken);
+
+                        if (!string.IsNullOrWhiteSpace(avatarObjectName))
+                        {
+                            await TryDeleteStorageObjectsAsync(
+                                _storage.ImagesBucket,
+                                new[] { avatarObjectName },
+                                userId,
+                                "DeleteUserDataAsync.ExpertAvatar",
+                                cancellationToken);
+                        }
+
                         // ✅ Eliminar perfil de experto (no depende de servicios, FK es nullable)
                         // ✅ FIX: Usar SQL directo para evitar ExecutionStrategy dentro de transacción manual
                         var expertProfileDeleted = await _context.Database.ExecuteSqlRawAsync(
@@ -1803,6 +2284,44 @@ namespace newApi.Services
                     hasDeletes = true;
                 }
 
+                // 🛡️ GDPR-R1 FIX: DELETE explícito de RefreshTokens. La FK tiene OnDelete.Cascade
+                // pero el User es SOFT delete (UPDATE IsDeleted=true), no hard DELETE → cascade NO
+                // se dispara. Sin esta limpieza, los tokens (Token + CreatedByIp + DeviceInfo)
+                // quedan en BD ligados a usuario soft-deleted. Aunque IsRevoked/IsExpired
+                // bloquean el uso, son datos de auth/IP del usuario → GDPR Art 17 violación.
+                var refreshTokensDeleted = await _context.Database.ExecuteSqlRawAsync(
+                    @"DELETE FROM ""RefreshTokens"" WHERE ""UserId"" = {0}",
+                    new object[] { userId }, cancellationToken);
+                if (refreshTokensDeleted > 0)
+                {
+                    hasDeletes = true;
+                    await _loggingService.LogInfoAsync(
+                        message: "GDPR-R1: RefreshTokens deleted",
+                        details: $"Deleted {refreshTokensDeleted} RefreshToken(s) for user {userId}. Tokens/IPs/DeviceInfo purgados.",
+                        userId: null,
+                        source: "AccountDeletionService.DeleteUserDataAsync.R1",
+                        relatedEntityType: "RefreshToken",
+                        relatedEntityId: null);
+                }
+
+                // 🛡️ GDPR-R2 FIX: DELETE explícito de UserMfaSettings. Mismo motivo que R1 — la
+                // FK Cascade no aplica con soft-delete. Contiene TotpSecret (cifrado pero datos
+                // de auth) y RecoveryCodesEncrypted del usuario eliminado.
+                var mfaDeleted = await _context.Database.ExecuteSqlRawAsync(
+                    @"DELETE FROM ""UserMfaSettings"" WHERE ""UserId"" = {0}",
+                    new object[] { userId }, cancellationToken);
+                if (mfaDeleted > 0)
+                {
+                    hasDeletes = true;
+                    await _loggingService.LogInfoAsync(
+                        message: "GDPR-R2: UserMfaSettings deleted",
+                        details: $"Deleted {mfaDeleted} UserMfaSettings row(s) for user {userId}. TotpSecret y RecoveryCodes purgados.",
+                        userId: null,
+                        source: "AccountDeletionService.DeleteUserDataAsync.R2",
+                        relatedEntityType: "UserMfaSettings",
+                        relatedEntityId: null);
+                }
+
                 // ✅ BATCH SAVE: Un solo SaveChangesAsync para todos los deletes (mejor performance)
                 if (hasDeletes)
                 {
@@ -1813,6 +2332,18 @@ namespace newApi.Services
                 // ✅ MEJORA: Soft delete en lugar de hard delete para permitir recuperación y cumplimiento legal
                 // El query filter en AppDbContext excluirá automáticamente usuarios con IsDeleted = true
 
+                // 🛡️ GDPR-U1 FIX: anonimizar PII del User en el MISMO UPDATE del soft-delete.
+                // Antes solo se ponía IsDeleted=true/DeletedAt, dejando Email/Name/PhoneNumber
+                // intactos para siempre — visible a cualquiera con IgnoreQueryFilters() o consulta
+                // directa SQL (violación GDPR Art 17). Estrategia:
+                //   - Name → '[Usuario eliminado]' (NOT NULL)
+                //   - Email → 'deleted-{userId}@deleted.local' (NOT NULL + unique → tokeniza con id)
+                //   - GoogleId → 'deleted-{userId}' (NOT NULL + unique → tokeniza con id)
+                //   - Password → NULL (nullable, evita reuso de hash)
+                //   - PhoneNumber → NULL (nullable)
+                //   - PhoneVerified → false
+                //   - SubscriptionPlanId → NULL (corta vínculo con plan, ya cancelado en N6)
+                // Idempotente: solo aplica si IsDeleted=false (evita rehacer el delete).
                 // ✅ FIX CRÍTICO: ExecuteSqlRawAsync con RETURNING puede no retornar el número de filas correctamente
                 // en Entity Framework Core dentro de transacciones manuales. Usar UPDATE sin RETURNING y verificar después.
                 // ✅ IDEMPOTENCIA: Verificar que el usuario aún existe y no está eliminado
@@ -1823,10 +2354,17 @@ namespace newApi.Services
                     @"UPDATE ""Users""
                       SET ""IsDeleted"" = true,
                           ""DeletedAt"" = CURRENT_TIMESTAMP,
-                          ""Role"" = CASE 
-                              WHEN ""Role"" = 1 THEN 0 
-                              ELSE ""Role"" 
-                          END
+                          ""Role"" = CASE
+                              WHEN ""Role"" = 1 THEN 0
+                              ELSE ""Role""
+                          END,
+                          ""Name"" = '[Usuario eliminado]',
+                          ""Email"" = 'deleted-' || {0}::text || '@deleted.local',
+                          ""GoogleId"" = 'deleted-' || {0}::text,
+                          ""Password"" = NULL,
+                          ""PhoneNumber"" = NULL,
+                          ""PhoneVerified"" = false,
+                          ""SubscriptionPlanId"" = NULL
                       WHERE ""Id"" = {0} AND (""IsDeleted"" IS NULL OR ""IsDeleted"" = false)",
                     new object[] { userId }, cancellationToken);
 
@@ -1897,6 +2435,52 @@ namespace newApi.Services
                         relatedEntityType: "User",
                         relatedEntityId: userId
                     );
+                }
+
+                // 🛡️ GDPR-R5 FIX: anonimizar Logs históricos del usuario justo antes del log
+                // final. Los logs son auditoría legal (España: retención 6 años), pero el
+                // contenido (Details + AdditionalData JSON) puede tener PII (nombres, emails,
+                // direcciones serializadas). Estrategia: UserId→NULL, Details→placeholder,
+                // AdditionalData→NULL. Mantenemos Message/Source/CreatedAt para auditoría.
+                // NOTA: los logs ESCRITOS DURANTE este mismo flow tienen userId=null (revisar
+                // los LogInfoAsync de las fases) o userId=userId. El WHERE UserId={0} solo
+                // captura los segundos — los logs históricos pre-delete y los del propio delete
+                // que pasaron userId=userId. Los nuevos posteriores a este punto no se ven.
+                try
+                {
+                    var logsAnonymized = await _context.Database.ExecuteSqlRawAsync(
+                        @"UPDATE ""Logs""
+                          SET ""UserId"" = NULL,
+                              ""Details"" = CASE WHEN ""Details"" IS NOT NULL AND ""Details"" != ''
+                                  THEN '[Datos eliminados por GDPR Art 17]'
+                                  ELSE ""Details"" END,
+                              ""AdditionalData"" = NULL
+                          WHERE ""UserId"" = {0} AND ""UserId"" IS NOT NULL",
+                        new object[] { userId }, cancellationToken);
+
+                    if (logsAnonymized > 0)
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "GDPR-R5: Historical Logs anonymized",
+                            details: $"Anonymized {logsAnonymized} historical Log row(s) for user {userId}: UserId=NULL, Details='[Datos eliminados]', AdditionalData=NULL. Auditoría preservada (Message/Source/CreatedAt) sin PII.",
+                            userId: null,
+                            source: "AccountDeletionService.DeleteUserDataAsync.R5",
+                            relatedEntityType: "Log",
+                            relatedEntityId: null);
+                    }
+                }
+                catch (Exception logEx)
+                {
+                    // No abortar el delete si la anonimización de logs falla — la cuenta ya está
+                    // soft-deleted en este punto. Crítico para que el admin sepa que hay PII
+                    // residual en logs históricos que limpiar manualmente.
+                    await _loggingService.LogCriticalAsync(
+                        message: "GDPR-R5: Failed to anonymize historical Logs",
+                        details: $"User {userId} soft-deleted OK pero la anonimización de logs históricos falló: {logEx.Message}. ACCIÓN ADMIN: ejecutar manualmente UPDATE Logs SET UserId=NULL,Details='[Datos eliminados]',AdditionalData=NULL WHERE UserId={userId}.",
+                        userId: null,
+                        source: "AccountDeletionService.DeleteUserDataAsync.R5",
+                        relatedEntityType: "Log",
+                        relatedEntityId: null);
                 }
 
                 // ✅ LOG FINAL: Eliminación de datos completada

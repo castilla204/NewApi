@@ -218,9 +218,13 @@ namespace newApi.Services
             // ✅ P3-4: Bloqueo HARD - disputas pendientes y PaymentIntents activos
             // Antes de iniciar Fase 1 (procesamiento de dinero) verificamos invariantes que harían
             // inseguro continuar con la eliminación de la cuenta.
+            // 🛡️ W2 FIX (Round 8 A14): bloquear también disputes en estado "Resolving".
+            // Antes solo "Pending" → si una dispute pasaba a Resolving entre el check y el
+            // delete, se anonimizaba a media transacción de resolución del admin → race
+            // condition que dejaba la dispute huérfana sin reporter ni resolución completa.
             var hasPendingDispute = await _context.Disputes
                 .AsNoTracking()
-                .AnyAsync(d => d.Status == "Pending"
+                .AnyAsync(d => (d.Status == "Pending" || d.Status == "Resolving")
                                && (d.ReporterId == userId
                                    || d.SearchHire.ClientId == userId
                                    || d.SearchHire.ExpertId == userId),

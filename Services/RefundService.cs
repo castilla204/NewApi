@@ -972,12 +972,50 @@ namespace newApi.Services
                     
                     try
                     {
-                        // Ô£à CR├ìTICO: Verificar si el dinero ya fue procesado (prevenir duplicados)
+                        // ✅ CRÍTICO: Verificar si el dinero ya fue procesado (prevenir duplicados)
                         var existingRefund = await _context.FinancialTransactions
                             .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&
                                                        ft.RelatedEntityId == searchHireId &&
                                                        ft.TransactionType == "Refund" &&
                                                        ft.StripePaymentIntentId == servicePayment.StripePaymentIntentId);
+
+                        // 🛡️ W1 FIX (Round 8 A15): SUM check para refunds acumulativos.
+                        // El guard `existingRefund` solo verifica "¿existe UN refund?" pero NO valida
+                        // que la suma de refunds previos + el nuevo refund <= Amount original del
+                        // ServicePayment. Escenario malo: admin parcial refund 50€ + chargeback auto
+                        // 60€ = 110€ > 100€ ServicePayment → cliente sobre-reembolsado, plataforma
+                        // pierde dinero. Validar SUMA aquí antes de procesar. Idempotente: re-llamar
+                        // con misma key no hace nada porque Stripe lo deduplica, pero protegemos en BD.
+                        var sumOfExistingRefunds = await _context.FinancialTransactions
+                            .Where(ft => ft.RelatedEntityType == "SearchHire" &&
+                                         ft.RelatedEntityId == searchHireId &&
+                                         ft.TransactionType == "Refund" &&
+                                         ft.StripePaymentIntentId == servicePayment.StripePaymentIntentId)
+                            .SumAsync(ft => ft.Amount);
+
+                        var serviceAmountAbs = Math.Abs(servicePayment.Amount); // ServicePayment es negativo
+                        var sumExistingAbs = Math.Abs(sumOfExistingRefunds);    // Refunds son positivos pero validamos abs
+                        var newRefundAbs = clientRefundAmountForStripe;          // Lo que SE VA a reembolsar
+
+                        if (sumExistingAbs + newRefundAbs > serviceAmountAbs + 0.01m) // tolerancia 1 céntimo redondeo
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL W1: Refund acumulativo excede ServicePayment original — bloqueado",
+                                details: $"SearchHire {searchHireId}: sumPriorRefunds={sumExistingAbs:F2}€, newRefund={newRefundAbs:F2}€, total={sumExistingAbs + newRefundAbs:F2}€ > ServicePayment={serviceAmountAbs:F2}€. Stripe PI: {servicePayment.StripePaymentIntentId}. NO se procesa. ACCIÓN ADMIN: revisar manualmente — posible doble admin refund o chargeback duplicado.",
+                                userId: searchHire.ClientId,
+                                source: "StripeRefundService.ProcessMoneyDistributionAsync.W1",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                additionalData: new
+                                {
+                                    SearchHireId = searchHireId,
+                                    SumPriorRefunds = sumExistingAbs,
+                                    NewRefundAmount = newRefundAbs,
+                                    ServicePaymentAmount = serviceAmountAbs,
+                                    StripePaymentIntentId = servicePayment.StripePaymentIntentId
+                                });
+                            return false; // Abort: no procesar refund que excede
+                        }
                         
                         var existingTransfer = await _context.FinancialTransactions
                             .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&

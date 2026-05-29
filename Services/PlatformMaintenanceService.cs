@@ -138,6 +138,9 @@ namespace newApi.Services
                 relatedEntityId: null);
         }
 
+        // 🛡️ W3 FIX (Round 8 A8): DisableConcurrentExecution para evitar duplicación en HPA multi-replica Render
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
+        [Hangfire.AutomaticRetry(Attempts = 0)]
         public async Task CleanupOldProcessedWebhookEventsAsync()
         {
             // Retención 30 días: Stripe reintenta máx ~3 días entre eventos, mantenemos 10x ese
@@ -174,6 +177,9 @@ namespace newApi.Services
             }
         }
 
+        // 🛡️ W3 FIX (Round 8 A8): DisableConcurrentExecution para evitar duplicación en HPA multi-replica
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 1800)]
+        [Hangfire.AutomaticRetry(Attempts = 0)]
         public async Task ProcessExpiringPaymentIntentsAsync()
         {
             // SearchHires con CaptureStatus="Pending" y CreatedAt > 6.5 días: el PI autorizado está
@@ -288,6 +294,9 @@ namespace newApi.Services
         /// 5/6 sitios pre-commit; este watchdog cubre cualquier caso donde el Schedule falla o se pierde).
         /// Solo considera timers NO expirados y NO procesados (EndTime futuro o pasado reciente).
         /// </summary>
+        // 🛡️ W3 FIX (Round 8 A8): DisableConcurrentExecution para evitar duplicación en HPA multi-replica
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
+        [Hangfire.AutomaticRetry(Attempts = 0)]
         public async Task RescueOrphanedAppointmentTimersAsync()
         {
             try
@@ -355,6 +364,9 @@ namespace newApi.Services
         /// nunca corrió o falló silenciosamente (Hangfire perdido, etc.). Solo log Critical: requiere
         /// reconciliación manual por admin (puede involucrar reembolso o transfer adicional via Stripe Dashboard).
         /// </summary>
+        // 🛡️ W3 FIX (Round 8 A8): DisableConcurrentExecution para evitar duplicación en HPA multi-replica
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 1200)]
+        [Hangfire.AutomaticRetry(Attempts = 0)]
         public async Task DetectUnreconciledFinalizedHiresAsync()
         {
             try

@@ -2900,6 +2900,34 @@ namespace newApi.Controllers
                         }
                         break;
 
+                    // 🛡️ Round 9 — A6 FIX: PSD2 / SCA (3D Secure). Cuando la tarjeta del cliente requiere
+                    // autenticación adicional (≥30€ EEA), Stripe emite payment_intent.requires_action.
+                    // El cliente debe completar el challenge en el redirect de Checkout; Stripe re-emitirá
+                    // payment_intent.succeeded o payment_intent.payment_failed después.
+                    // NO mover el SearchHire de estado — solo observabilidad para detectar tasas anómalas
+                    // de abandono SCA (señal de fraude o problemas de UX con la pasarela).
+                    case "payment_intent.requires_action":
+                        var requiresActionPi = stripeEvent.Data.Object as PaymentIntent;
+                        if (requiresActionPi != null)
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "PSD2 SCA challenge requerido (3DS)",
+                                details: $"PaymentIntent {requiresActionPi.Id} requiere acción del cliente (NextAction={requiresActionPi.NextAction?.Type}). Esperando a que el cliente complete la autenticación en el redirect de Stripe.",
+                                source: "SubscriptionController.HandleGeneralStripeWebhook.requires_action",
+                                relatedEntityType: "PaymentIntent",
+                                relatedEntityId: null,
+                                additionalData: new
+                                {
+                                    PaymentIntentId = requiresActionPi.Id,
+                                    Amount = requiresActionPi.Amount,
+                                    Currency = requiresActionPi.Currency,
+                                    NextActionType = requiresActionPi.NextAction?.Type,
+                                    Status = requiresActionPi.Status,
+                                    Metadata = requiresActionPi.Metadata
+                                });
+                        }
+                        break;
+
                     // ⏳ A-v (ALTO): con CAPTURA MANUAL, una autorización no capturada expira a ~7 días y
                     // Stripe emite payment_intent.canceled. Antes caía en default → el hire quedaba colgado en
                     // 'pending' para siempre. Ahora se cancela y se notifica (no hubo cobro → sin refund).
@@ -2908,6 +2936,29 @@ namespace newApi.Controllers
                         if (canceledPaymentIntent != null)
                         {
                             await HandlePaymentIntentCanceled(canceledPaymentIntent);
+                        }
+                        break;
+
+                    // 🛡️ Round 9 — A6 FIX: checkout.session.expired (Stripe vence sesiones tras 24h sin
+                    // completar). Antes caía en default → la sesión abandonada permanecía como pendiente
+                    // en BD sin trazabilidad. Loguear para limpieza y métricas de funnel.
+                    case "checkout.session.expired":
+                        var expiredSession = stripeEvent.Data.Object as Session;
+                        if (expiredSession != null)
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "Checkout session expirada sin pago",
+                                details: $"Sesión {expiredSession.Id} expiró sin completarse (TTL ~24h). Metadata: {JsonSerializer.Serialize(expiredSession.Metadata ?? new Dictionary<string, string>())}",
+                                source: "SubscriptionController.HandleGeneralStripeWebhook.session.expired",
+                                relatedEntityType: "CheckoutSession",
+                                relatedEntityId: null,
+                                additionalData: new
+                                {
+                                    SessionId = expiredSession.Id,
+                                    Mode = expiredSession.Mode,
+                                    ExpiresAt = expiredSession.ExpiresAt,
+                                    Metadata = expiredSession.Metadata
+                                });
                         }
                         break;
 
@@ -3083,6 +3134,24 @@ namespace newApi.Controllers
                         break;
 
                     default:
+                        // 🛡️ Round 9 — A6 FIX: antes el default ignoraba en silencio cualquier evento
+                        // desconocido. Si Stripe introduce un nuevo event type relevante (p.ej.
+                        // radar.early_fraud_warning.created, review.opened, treasury.*), perdíamos la
+                        // señal por completo. Ahora lo logueamos con throttle implícito (idempotencia
+                        // por EventId ya filtra duplicados) para detectar nuevos tipos sin spam.
+                        await _loggingService.LogInfoAsync(
+                            message: $"Stripe webhook event no manejado: {stripeEvent.Type}",
+                            details: $"Event {stripeEvent.Id} de tipo '{stripeEvent.Type}' recibido pero no procesado. Si este tipo se vuelve recurrente, considerar añadir un handler explícito.",
+                            source: "SubscriptionController.HandleGeneralStripeWebhook.default",
+                            relatedEntityType: "StripeEvent",
+                            relatedEntityId: null,
+                            additionalData: new
+                            {
+                                EventId = stripeEvent.Id,
+                                EventType = stripeEvent.Type,
+                                StripeAccount = stripeEvent.Account,
+                                Created = stripeEvent.Created
+                            });
                         break;
                 }
 

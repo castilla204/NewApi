@@ -1653,6 +1653,16 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     svc => svc.DetectUnreconciledFinalizedHiresAsync(),
     Hangfire.Cron.Daily(6, 0),
     n29UtcOptions);
+
+// 🛡️ T4: cada hora escala disputas Pending cuyo deadline 48h del experto ya pasó sin
+// respuesta. Flip atómico Pending→Resolving + encolar RescueStuckResolvingDisputeAsync
+// (que mueve dinero a favor del cliente). Sin esto, una disputa quedaba indefinida en
+// Pending bloqueando el dinero. AutomaticRetry=0 + DisableConcurrentExecution.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "stale-disputes-escalator",
+    svc => svc.EscalateStaleDisputesAsync(),
+    "0 * * * *", // cada hora en punto
+    n29UtcOptions);
 /*
 RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     "cleanup-expired-refresh-tokens",

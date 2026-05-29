@@ -95,8 +95,41 @@ namespace newApi.Services
             if (user == null || user.Email == "dcastillaa@gmail.com")
                 return false;
 
+            // 🛡️ Round 15 — R4 FIX: cuando se bloquea (transición false→true), revocar
+            // INMEDIATAMENTE todos los refresh tokens activos del usuario. Antes solo togglea
+            // el flag → AccessTokens siguen vivos hasta 1h y RefreshTokens hasta 90d (sólo se
+            // revocaban perezosamente en el siguiente intento de refresh, AuthController:71).
+            // Ahora la transición a Banned cierra refresh tokens; AccessTokens siguen vivos
+            // hasta exp (max 1h con R2 fix) — pendiente OnTokenValidated lookup para cierre
+            // instantáneo (TIER 2 deferred).
+            var wasBlocked = user.IsBlocked;
             user.IsBlocked = !user.IsBlocked;
             await _context.SaveChangesAsync();
+
+            if (!wasBlocked && user.IsBlocked)
+            {
+                try
+                {
+                    var activeTokens = await _context.RefreshTokens
+                        .Where(rt => rt.UserId == userId && !rt.IsRevoked && rt.ExpiresAt > DateTime.UtcNow)
+                        .ToListAsync();
+                    foreach (var t in activeTokens)
+                    {
+                        t.IsRevoked = true;
+                        t.RevokedAt = DateTime.UtcNow;
+                        t.RevokedByIp = "Admin-Block";
+                    }
+                    if (activeTokens.Count > 0)
+                    {
+                        await _context.SaveChangesAsync();
+                    }
+                }
+                catch
+                {
+                    // Best-effort: si el bloqueo principal ya commiteó, no abortamos por fallo de revocación.
+                    // El AuthController.RefreshToken (línea 71) seguirá rechazando refresh por IsBlocked.
+                }
+            }
             return true;
         }
 
@@ -352,7 +385,8 @@ namespace newApi.Services
             {
                 Token = refreshToken,
                 UserId = user.Id,
-                ExpiresAt = DateTime.UtcNow.AddDays(30),
+                // 🛡️ Round 15 — R2 FIX: 90 días uniforme con AuthController.RefreshToken.
+                ExpiresAt = DateTime.UtcNow.AddDays(90),
                 CreatedByIp = "GoogleAuth",
                 DeviceInfo = null
             };
@@ -1611,7 +1645,10 @@ namespace newApi.Services
             {
                 Token = token,
                 UserId = userId,
-                ExpiresAt = DateTime.UtcNow.AddDays(30), // ✅ BEST PRACTICE 2024: 30 días (estándar industria - balance seguridad/UX)
+                // 🛡️ Round 15 — R2 FIX: 90 días (era 30d). Uniforme con AuthController.
+                // Justificación: app es mobile-first, mejor UX que el usuario no re-loguee cada mes.
+                // Rotación + detección de reuso siguen activas → seguridad real intacta.
+                ExpiresAt = DateTime.UtcNow.AddDays(90),
                 CreatedByIp = ipAddress,
                 DeviceInfo = GetDeviceInfo()
             };

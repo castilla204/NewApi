@@ -92,7 +92,10 @@ namespace newApi.Controllers
                 // 3. Generar nuevo Access Token
                 var user = storedToken.User;
                 var newAccessToken = GenerateJwtToken(user);
-                var newAccessTokenExpiration = DateTime.UtcNow.AddMinutes(30);
+                // 🛡️ Round 15 — R2 FIX: access TTL 1h uniforme con UserService.GenerateJwtToken
+                // (era 30min aquí pero 1h en login → inconsistencia). 1h balancea seguridad y UX
+                // de mobile (menos rotación → menos batería + menos llamadas).
+                var newAccessTokenExpiration = DateTime.UtcNow.AddHours(1);
 
                 // 4. ✅ ROTACIÓN DE TOKENS: Revocar token actual y generar uno nuevo
                 storedToken.IsRevoked = true;
@@ -103,7 +106,13 @@ namespace newApi.Controllers
                 {
                     Token = GenerateSecureToken(),
                     UserId = user.Id,
-                    ExpiresAt = DateTime.UtcNow.AddDays(7),
+                    // 🛡️ Round 15 — R2 FIX: 90 días (era 7d → cada rotación acortaba la sesión).
+                    // El usuario se quejaba "no se mantenga su sesión, tiene que iniciar sesión
+                    // todo el rato". Causa raíz: login emitía 30d pero AuthController.RefreshToken
+                    // emitía 7d en cada rotación → tras 1ª rotación (en <1h) sesión cae a 7d.
+                    // Ahora ambos emiten 90d (límite superior cómodo para mobile sin sacrificar
+                    // seguridad — la rotación + detección de reuse cubre los riesgos).
+                    ExpiresAt = DateTime.UtcNow.AddDays(90),
                     CreatedByIp = GetClientIpAddress(),
                     DeviceInfo = GetDeviceInfo()
                 };
@@ -222,7 +231,8 @@ namespace newApi.Controllers
                 issuer: _configuration["Jwt:Issuer"],
                 audience: _configuration["Jwt:Audience"],
                 claims: claims,
-                expires: DateTime.UtcNow.AddMinutes(30),
+                // 🛡️ Round 15 — R2 FIX: 1h uniforme con UserService.GenerateJwtToken.
+                expires: DateTime.UtcNow.AddHours(1),
                 notBefore: DateTime.UtcNow,
                 signingCredentials: creds
             );

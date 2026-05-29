@@ -12,10 +12,13 @@ namespace newApi.Services
     {
         private readonly AppDbContext _context;
         private readonly string _domain = "https://inspecciono.com";
+        // 📜 Round 9 — A2 FIX: audit log de transiciones de estado (opcional para no romper instantiation manual)
+        private readonly ISearchHireStatusAuditService? _statusAudit;
 
-        public SearchHireService(AppDbContext context)
+        public SearchHireService(AppDbContext context, ISearchHireStatusAuditService? statusAudit = null)
         {
             _context = context;
+            _statusAudit = statusAudit;
         }
 
         public async Task<(IEnumerable<SearchHireResponseDto> hires, int totalCount)> GetClientHires(int userId, int page, int pageSize)
@@ -125,10 +128,23 @@ namespace newApi.Services
                 hire.UpdatedAt = DateTime.UtcNow;
             }
 
+            // 📜 Round 9 — A2: audit log ANTES de mutar
+            var oldStatusForAudit = hire.StatusId;
             hire.StatusId = targetStatus.Id;
             if (status != "completed")
             {
                 hire.UpdatedAt = DateTime.UtcNow;
+            }
+            if (_statusAudit != null)
+            {
+                await _statusAudit.RecordTransitionAsync(
+                    searchHireId: hire.Id,
+                    oldStatusId: oldStatusForAudit,
+                    newStatusId: targetStatus.Id,
+                    changedByUserId: userId,
+                    source: "SearchHireService.UpdateHireStatus",
+                    reason: $"Transición solicitada por usuario {userId} a estado '{status}'",
+                    additionalData: new { TargetStatus = status });
             }
             await _context.SaveChangesAsync();
             return (true, string.Empty);

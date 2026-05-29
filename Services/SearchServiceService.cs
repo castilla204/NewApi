@@ -2469,6 +2469,27 @@ namespace newApi.Services
                     return true; // Ya está "eliminado"
                 }
 
+                // 🛡️ Round 13 — N7 FIX: bloquear el delete si hay hires activos asociados.
+                // Antes: el delete pasaba siempre y dejaba hires vivos sobre un servicio "fantasma"
+                // (IsActive=false) que el cliente seguía viendo en su panel sin entender qué pasó.
+                // El modelo ya tenía la intención (FK SearchHire→SearchService con DeleteBehavior.Restrict),
+                // pero el soft delete eludía esa protección.
+                //
+                // Política: NO permitir desactivar el servicio si tiene hires en estados no-finalizadores
+                // (pending, awaiting_client_decision, disputed). El experto debe esperar a que se cierren
+                // (o cancelarlas explícitamente) antes de retirar el servicio del catálogo.
+                var openHiresCount = await _context.SearchHires
+                    .Include(sh => sh.Status)
+                    .Where(sh => sh.SearchServiceId == serviceId && sh.Status != null && !sh.Status.IsFinalizationStatus)
+                    .CountAsync();
+
+                if (openHiresCount > 0)
+                {
+                    // No marcamos inactivo. El controller debe interpretar `false` como "no se pudo borrar"
+                    // y mostrar un mensaje al usuario.
+                    return false;
+                }
+
                 // Marcar como inactivo (soft delete)
                 searchService.IsActive = false;
                 await _context.SaveChangesAsync();

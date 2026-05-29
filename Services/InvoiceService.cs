@@ -238,8 +238,15 @@ namespace newApi.Services
                                         totalesColumn.Item().Text($"IAE: {_fiscal.IaeCode}").FontSize(9);
                                     if (!string.IsNullOrWhiteSpace(searchHire.ClientVatNumber))
                                         totalesColumn.Item().Text($"NIF cliente: {searchHire.ClientVatCountryCode}{searchHire.ClientVatNumber}").FontSize(9);
-                                    if (iva == 0m && !string.IsNullOrWhiteSpace(searchHire.ClientVatNumber)
-                                        && !string.Equals(searchHire.ClientVatCountryCode, "ES", StringComparison.OrdinalIgnoreCase))
+                                    // 🛡️ Round 13 — N9 FIX: solo imprimir el texto de "operación intracomunitaria"
+                                    // si el país del VAT del cliente es EFECTIVAMENTE de la UE. Antes bastaba
+                                    // con country != ES → habría disparado erróneamente para clientes con
+                                    // VAT GB (post-Brexit), CH, NO, LI, US, CA, etc., que NO son operaciones
+                                    // intracomunitarias y necesitan distinto texto/referencia legal.
+                                    var clientVatCountry = searchHire.ClientVatCountryCode;
+                                    var clientIsEuButNotEs = newApi.Common.EuVatCountries.IsEu(clientVatCountry)
+                                        && !string.Equals(clientVatCountry, "ES", StringComparison.OrdinalIgnoreCase);
+                                    if (iva == 0m && !string.IsNullOrWhiteSpace(searchHire.ClientVatNumber) && clientIsEuButNotEs)
                                     {
                                         totalesColumn.Item().PaddingTop(5)
                                             .Text("Operación intracomunitaria — Inversión del sujeto pasivo (art. 84.Uno.2º Ley 37/1992 / art. 196 Dir. 2006/112/CE). IVA NO repercutido.")

@@ -3000,6 +3000,14 @@ namespace newApi.Controllers
                         await HandleChargeRefunded(stripeEvent.Data.Object as Charge);
                         break;
 
+                    // 🛡️ V11 FIX: charge.refund.updated — el status de un refund existente cambia
+                    // (pending → succeeded / failed / requires_action). Caso crítico: refund a
+                    // tarjeta caducada/cerrada del cliente puede fallar DESPUÉS de la creación
+                    // → cliente nunca recibe el dinero, nadie se entera. Log Critical si failed.
+                    case "charge.refund.updated":
+                        await HandleChargeRefundUpdated(stripeEvent.Data.Object as Refund);
+                        break;
+
                     // 🛡️ A4: charge.failed — el cargo falló a nivel de "charge" (no de payment_intent).
                     case "charge.failed":
                         await HandleChargeFailed(stripeEvent.Data.Object as Charge);
@@ -6431,6 +6439,70 @@ namespace newApi.Controllers
                 details: $"Dispute {dispute.Id} ({eventType}) for {amount}€. PaymentIntentId: {dispute.PaymentIntentId}, Status: {dispute.Status}.",
                 source: "SubscriptionController.HandleChargeDisputeFundsEvent",
                 relatedEntityType: "Dispute");
+        }
+
+        /// <summary>
+        /// 🛡️ V11 FIX: charge.refund.updated — el status de un Refund cambia tras su creación.
+        /// Cases típicos:
+        ///   - pending → succeeded: refund llegó al cliente (no requiere acción, info).
+        ///   - pending → failed: refund rechazado por el banco emisor (tarjeta cerrada/caducada
+        ///     entre creación del refund y procesamiento). DINERO BLOQUEADO en plataforma.
+        ///   - pending → requires_action: cliente necesita confirmar 3DS (raro en refunds).
+        /// Sin este handler, refunds "failed" pasaban desapercibidos → cliente no recibía dinero
+        /// y el FinancialTransaction local seguía marcado como Refund OK → ledger incorrecto.
+        /// </summary>
+        private async Task HandleChargeRefundUpdated(Refund? refund)
+        {
+            if (refund == null) return;
+
+            var amount = refund.Amount / 100m;
+            var refundId = refund.Id;
+            var status = refund.Status ?? "unknown";
+            var paymentIntentId = refund.PaymentIntentId;
+            var failureReason = refund.FailureReason;
+
+            // Solo loguear Critical en escenarios problemáticos. Estados normales son info.
+            if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "canceled", StringComparison.OrdinalIgnoreCase))
+            {
+                // Buscar FinancialTransaction local del refund para correlacionar
+                var localFt = await _context.FinancialTransactions
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(ft => ft.StripeRefundId == refundId);
+
+                await _loggingService.LogCriticalAsync(
+                    message: $"CRITICAL V11: Refund {refundId} cambió a status '{status}' — dinero bloqueado",
+                    details: $"Refund {refundId} ({amount}€) sobre PI {paymentIntentId} pasó a '{status}'. " +
+                             $"FailureReason: {failureReason ?? "n/a"}. " +
+                             (localFt != null
+                                ? $"FT local id={localFt.Id} UserId={localFt.UserId} sigue como 'Refund' OK pero el dinero NO llegó al cliente. "
+                                : "No hay FT local para este refund (posible refund manual desde Stripe Dashboard). ") +
+                             $"ACCIÓN ADMIN: contactar al cliente, validar tarjeta actualizada, reintentar refund manualmente o emitir transferencia bancaria alternativa.",
+                    userId: localFt?.UserId,
+                    source: "SubscriptionController.HandleChargeRefundUpdated.V11",
+                    relatedEntityType: "Refund",
+                    relatedEntityId: localFt?.RelatedEntityId,
+                    additionalData: new
+                    {
+                        RefundId = refundId,
+                        PaymentIntentId = paymentIntentId,
+                        Amount = amount,
+                        Status = status,
+                        FailureReason = failureReason,
+                        LocalFinancialTransactionId = localFt?.Id
+                    });
+            }
+            else
+            {
+                // succeeded / pending / requires_action → info para auditoría
+                await _loggingService.LogInfoAsync(
+                    message: $"V11: Refund {refundId} status update '{status}'",
+                    details: $"Refund {refundId} ({amount}€) sobre PI {paymentIntentId}. Status: {status}.",
+                    userId: null,
+                    source: "SubscriptionController.HandleChargeRefundUpdated.V11",
+                    relatedEntityType: "Refund",
+                    relatedEntityId: null);
+            }
         }
 
         /// <summary>

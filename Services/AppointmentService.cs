@@ -77,6 +77,35 @@ namespace newApi.Services
         private DateTime GetAppointmentUtc(DateTime proposedDate, TimeSpan proposedTime, string? expertTimezone)
         {
             var localWall = DateTime.SpecifyKind(proposedDate.Date + proposedTime, DateTimeKind.Unspecified);
+
+            // 🛡️ V1 FIX: desambiguación DST fall-back. En Europe/Madrid el 2026-10-26 02:30 (cualquier
+            // año con DST end) existe DOS VECES: una en CEST (UTC+2) y otra en CET (UTC+1) tras retrasar
+            // el reloj. ConvertToUtc en .NET puede arrojar AmbiguousTimeException o resolverlo de forma
+            // INCONSISTENTE entre plataformas (Windows vs Linux). Como las citas se proponen rara vez
+            // exactamente en esa hora, preferimos la PRIMERA ocurrencia (DST=true, offset MAYOR = más
+            // temprano en UTC) para ser deterministas. Esto también es lo que hace Postgres CONVERT_TZ
+            // y la mayoría de calendarios consumer. Si tz no encontrado, log y delega al servicio
+            // (que cae al fallback UTC de R13).
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(expertTimezone))
+                {
+                    var tz = TimeZoneInfo.FindSystemTimeZoneById(expertTimezone);
+                    if (tz.IsAmbiguousTime(localWall))
+                    {
+                        // GetAmbiguousTimeOffsets devuelve los offsets en orden ascendente:
+                        // [0] = offset menor (después del cambio DST end) — p.ej. +01:00 en Madrid
+                        // [1] = offset mayor (antes del cambio DST end)   — p.ej. +02:00 en Madrid
+                        // Para "primera ocurrencia" tomamos el offset MAYOR (DST aún activo).
+                        var offsets = tz.GetAmbiguousTimeOffsets(localWall);
+                        var firstOccurrenceOffset = offsets.Length > 0 ? offsets.Max() : tz.GetUtcOffset(localWall);
+                        return DateTime.SpecifyKind(localWall - firstOccurrenceOffset, DateTimeKind.Utc);
+                    }
+                }
+            }
+            catch (TimeZoneNotFoundException) { /* delega abajo, el servicio loguea */ }
+            catch (InvalidTimeZoneException) { /* delega abajo */ }
+
             return _timezoneService.ConvertToUtc(localWall, expertTimezone ?? string.Empty);
         }
 

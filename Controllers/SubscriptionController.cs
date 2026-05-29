@@ -2439,11 +2439,28 @@ namespace newApi.Controllers
                                         "SubscriptionController.account.updated");
                                 }
 
-                                // Approved -> Rejected: el experto operativo pasa a rechazado.
-                                // Activar manejo de hires activos (refund de los no prestados, manual review de los ya prestados).
-                                if (currentPreviousStatus == StripeStatus.Approved && state.Status == StripeStatus.Rejected)
+                                // 🛡️ V10 FIX: expandir cobertura — antes solo Approved→Rejected disparaba el
+                                // manejo de hires activos. PERO Stripe puede degradar la cuenta a Disabled /
+                                // Restricted / RequirementsPastDue / Deauthorized SIN pasar por Rejected.
+                                // En esos casos transfers_enabled se pone false → cualquier hire Pending del
+                                // experto se queda zombi (no puede recibir transfer post-captura) y el
+                                // cliente sigue con el dinero retenido sin saberlo. Si Stripe envía además
+                                // capability.updated, el handler de línea ~2540 también dispara, pero
+                                // capability.updated NO está garantizado en todos los flujos de degradación
+                                // (sobre todo cuando es la plataforma quien restringe vía Dashboard).
+                                // Defensa: detectar cualquier salida de Approved hacia un estado que bloquea
+                                // transfers. La función HandleApprovedAccountRejection es idempotente, así que
+                                // si capability.updated dispara después, no hay doble cancelación.
+                                var blocksTransfers = state.Status == StripeStatus.Rejected
+                                                   || state.Status == StripeStatus.Disabled
+                                                   || state.Status == StripeStatus.Restricted
+                                                   || state.Status == StripeStatus.RequirementsPastDue
+                                                   || state.Status == StripeStatus.Deauthorized;
+
+                                if (currentPreviousStatus == StripeStatus.Approved && blocksTransfers)
                                 {
-                                    await HandleApprovedAccountRejection(profileToUpdate.Id, state.DisabledReason ?? "rejected");
+                                    await HandleApprovedAccountRejection(profileToUpdate.Id,
+                                        state.DisabledReason ?? $"account_updated_to_{state.Status}");
                                 }
                                 
                                 await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, profileToUpdate.UserId);

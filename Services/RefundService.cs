@@ -401,7 +401,7 @@ namespace newApi.Services
                         message: "CRITICAL: Original payment not found - money distribution failed",
                         details: $"SearchHire {searchHireId} finalization failed because the original payment (ServicePayment) transaction was not found in the database. " +
                                 $"This indicates a data consistency issue. " +
-                                $"Status: {statusValue}, Reason: {reason}, ClientId: {searchHire.ClientId}, ExpertId: {searchHire.ExpertId}, Amount: {searchHire.Amount}Ôé¼. " +
+                                $"Status: {statusValue}, Reason: {reason}, ClientId: {searchHire.ClientId}, ExpertId: {searchHire.ExpertId}, Amount: {searchHire.Amount}€. " +
                                 $"ACTION REQUIRED: Verify FinancialTransactions table for SearchHire {searchHireId} and ServicePayment transaction.",
                         userId: initiatedByUserId ?? searchHire.ClientId,
                         source: "StripeRefundService.ProcessMoneyDistributionAsync",
@@ -437,9 +437,9 @@ namespace newApi.Services
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Insufficient Stripe platform balance for money distribution",
                             details: $"SearchHire {searchHireId} finalization failed due to insufficient Stripe platform balance. " +
-                                    $"Available Balance: {availableEur}Ôé¼, Required Outflow: {totalOutflow}Ôé¼ (Client Refund: {clientRefundAmountForStripe:F2}Ôé¼ with tax, Expert Transfer: {expertAmountBase:F2}Ôé¼ base). " +
+                                    $"Available Balance: {availableEur}€, Required Outflow: {totalOutflow}€ (Client Refund: {clientRefundAmountForStripe:F2}€ with tax, Expert Transfer: {expertAmountBase:F2}€ base). " +
                                     $"Distribution Plan: Client={config.ClientPercentage}%, Expert={config.ExpertPercentage}%, Platform={config.PlatformPercentage}%. " +
-                                    $"Base amounts: Client={clientRefundAmount:F2}Ôé¼, Expert={expertAmount:F2}Ôé¼, Platform={platformAmount:F2}Ôé¼. " +
+                                    $"Base amounts: Client={clientRefundAmount:F2}€, Expert={expertAmount:F2}€, Platform={platformAmount:F2}€. " +
                                     $"Status: {statusValue}, Reason: {reason}, PaymentIntentId: {servicePayment.StripePaymentIntentId}. " +
                                     $"ACTION REQUIRED: Wait for balance to be available (from PaymentIntent capture) or manually verify Stripe balance and retry distribution.",
                             userId: initiatedByUserId ?? searchHire.ClientId,
@@ -473,7 +473,7 @@ namespace newApi.Services
                         message: "CRITICAL: Error checking Stripe balance - money distribution failed",
                         details: $"SearchHire {searchHireId} finalization failed due to error checking Stripe platform balance. " +
                                 $"Stripe Error: {balanceEx.Message}, Type: {balanceEx.StripeError?.Type}, Code: {balanceEx.StripeError?.Code}. " +
-                                $"Required outflow: {clientRefundAmountForStripe + expertAmountBase}Ôé¼ (Client Refund: {clientRefundAmountForStripe:F2}Ôé¼ with tax, Expert Transfer: {expertAmountBase:F2}Ôé¼ base). " +
+                                $"Required outflow: {clientRefundAmountForStripe + expertAmountBase}€ (Client Refund: {clientRefundAmountForStripe:F2}€ with tax, Expert Transfer: {expertAmountBase:F2}€ base). " +
                                 $"ACTION REQUIRED: Verify Stripe balance manually and retry distribution if balance is sufficient.",
                         userId: initiatedByUserId ?? searchHire.ClientId,
                         source: "StripeRefundService.ProcessMoneyDistributionAsync",
@@ -511,8 +511,8 @@ namespace newApi.Services
                                         $"Current status: {paymentIntent.Status}. " +
                                         $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
                                         $"1) Ensure PaymentIntent is captured " +
-                                        $"2) Transfer {expertAmount:F2}Ôé¼ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) " +
-                                        $"3) Platform retains {platformAmount:F2}Ôé¼.",
+                                        $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) " +
+                                        $"3) Platform retains {platformAmount:F2}€.",
                                 userId: initiatedByUserId ?? searchHire.ClientId,
                                 source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                 relatedEntityType: "SearchHire",
@@ -1109,9 +1109,9 @@ namespace newApi.Services
                                     message: "CRITICAL: Expert Stripe account missing - money distribution failed",
                                     details: $"SearchHire {searchHireId} finalization failed because Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) has no Stripe account configured. " +
                                             $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
-                                            $"1) Refund {clientRefundAmount:F2}Ôé¼ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) " +
-                                            $"2) Transfer {expertAmount:F2}Ôé¼ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) - REQUIRES MANUAL SETUP " +
-                                            $"3) Platform retains {platformAmount:F2}Ôé¼. " +
+                                            $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) " +
+                                            $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) - REQUIRES MANUAL SETUP " +
+                                            $"3) Platform retains {platformAmount:F2}€. " +
                                             $"Configuration: Client {config.ClientPercentage}%, Expert {config.ExpertPercentage}%, Platform {config.PlatformPercentage}%",
                                     userId: searchHire.ExpertId,
                                     source: "StripeRefundService.ProcessMoneyDistributionAsync",
@@ -1447,11 +1447,11 @@ namespace newApi.Services
                                         await _loggingService.LogCriticalAsync(
                                             message: "CRITICAL: Failed to reverse transfer after refund failure",
                                             details: $"SearchHire {searchHireId} finalization failed: refund failed and transfer reversal also failed. " +
-                                                    $"EXPERT ALREADY RECEIVED {expertAmount:F2}Ôé¼ - MANUAL INTERVENTION REQUIRED. " +
+                                                    $"EXPERT ALREADY RECEIVED {expertAmount:F2}€ - MANUAL INTERVENTION REQUIRED. " +
                                                     $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
-                                                    $"1) Refund {clientRefundAmount:F2}Ôé¼ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) " +
-                                                    $"2) Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) already received {expertAmount:F2}Ôé¼ - NO ACTION NEEDED " +
-                                                    $"3) Platform retains {platformAmount:F2}Ôé¼. " +
+                                                    $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) " +
+                                                    $"2) Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) already received {expertAmount:F2}€ - NO ACTION NEEDED " +
+                                                    $"3) Platform retains {platformAmount:F2}€. " +
                                                     $"TransferId: {createdTransferId}, RefundError: {refundEx.Message}, ReversalError: {revEx.Message}",
                                             userId: initiatedByUserId ?? searchHire.ClientId,
                                             source: "StripeRefundService.ProcessMoneyDistributionAsync",
@@ -1482,9 +1482,9 @@ namespace newApi.Services
                                     message: "CRITICAL: Refund failed - money distribution rolled back",
                                     details: $"SearchHire {searchHireId} finalization failed: refund to client failed. " +
                                             $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
-                                            $"1) Refund {clientRefundAmount:F2}Ôé¼ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) - FAILED " +
-                                            $"2) Transfer {expertAmount:F2}Ôé¼ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) - NOT PROCESSED " +
-                                            $"3) Platform retains {platformAmount:F2}Ôé¼. " +
+                                            $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) - FAILED " +
+                                            $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) - NOT PROCESSED " +
+                                            $"3) Platform retains {platformAmount:F2}€. " +
                                             $"RefundError: {refundEx.Message}",
                                     userId: initiatedByUserId ?? searchHire.ClientId,
                                     source: "StripeRefundService.ProcessMoneyDistributionAsync",
@@ -1737,7 +1737,7 @@ namespace newApi.Services
                             // Refund exitoso - notificar al cliente
                             await _loggingService.LogInfoAsync(
                                 message: "Reembolso procesado",
-                                details: $"Se proces├│ tu reembolso de {clientRefundAmountForStripe:F2}Ôé¼ por el servicio #{searchHireId}. El dinero llegar├í a tu cuenta en 5-10 d├¡as h├íbiles.",
+                                details: $"Se proces├│ tu reembolso de {clientRefundAmountForStripe:F2}€ por el servicio #{searchHireId}. El dinero llegar├í a tu cuenta en 5-10 d├¡as h├íbiles.",
                                 userId: searchHire.ClientId,
                                 source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                 relatedEntityType: "SearchHire",
@@ -1751,7 +1751,7 @@ namespace newApi.Services
                             // Transfer exitoso - notificar al experto
                             await _loggingService.LogInfoAsync(
                                 message: "Pago recibido",
-                                details: $"Has recibido {expertAmountForStripe:F2}Ôé¼ por el servicio #{searchHireId}. El dinero est├í disponible en tu cuenta de Stripe.",
+                                details: $"Has recibido {expertAmountForStripe:F2}€ por el servicio #{searchHireId}. El dinero est├í disponible en tu cuenta de Stripe.",
                                 userId: searchHire.ExpertId.Value,
                                 source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                 relatedEntityType: "SearchHire",
@@ -1778,7 +1778,7 @@ namespace newApi.Services
                                 details: $"El estado del servicio #{searchHireId} se actualiz├│ correctamente, pero hubo un error al procesar el pago. " +
                                         $"Error de Stripe: {ex.Message}. " +
                                         $"Se requiere procesamiento manual del pago. " +
-                                        $"Plan de distribuci├│n: Cliente={clientRefundAmount:F2}Ôé¼ ({config.ClientPercentage}%), Experto={expertAmount:F2}Ôé¼ ({config.ExpertPercentage}%), Plataforma={platformAmount:F2}Ôé¼ ({config.PlatformPercentage}%). " +
+                                        $"Plan de distribuci├│n: Cliente={clientRefundAmount:F2}€ ({config.ClientPercentage}%), Experto={expertAmount:F2}€ ({config.ExpertPercentage}%), Plataforma={platformAmount:F2}€ ({config.PlatformPercentage}%). " +
                                         $"Estado: {statusValue}, Raz├│n: {reason}. " +
                                         $"Transfer={(createdTransferId != null ? $"Creado ({createdTransferId})" : "No intentado")}, Refund={(createdRefundId != null ? $"Creado ({createdRefundId})" : "No intentado")}.",
                                 userId: searchHire.ExpertId.Value,
@@ -1807,7 +1807,7 @@ namespace newApi.Services
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Stripe exception during money distribution transaction",
                             details: $"Stripe exception occurred during money distribution transaction for SearchHire {searchHireId}. " +
-                                    $"Distribution Plan: Client={clientRefundAmount}Ôé¼ ({config.ClientPercentage}%), Expert={expertAmount}Ôé¼ ({config.ExpertPercentage}%), Platform={platformAmount}Ôé¼ ({config.PlatformPercentage}%). " +
+                                    $"Distribution Plan: Client={clientRefundAmount}€ ({config.ClientPercentage}%), Expert={expertAmount}€ ({config.ExpertPercentage}%), Platform={platformAmount}€ ({config.PlatformPercentage}%). " +
                                     $"Stripe Error: {ex.Message}, Type: {ex.StripeError?.Type}, Code: {ex.StripeError?.Code}, DeclineCode: {ex.StripeError?.DeclineCode}, Param: {ex.StripeError?.Param}. " +
                                     $"PaymentIntentId: {servicePayment.StripePaymentIntentId}, ExpertAccountId: {searchHire.Expert?.ExpertProfile?.StripeAccountId}. " +
                                     $"Transaction Status: Transfer={(createdTransferId != null ? $"Created ({createdTransferId})" : "Not attempted")}, Refund={(createdRefundId != null ? $"Created ({createdRefundId})" : "Not attempted")}. " +
@@ -1846,7 +1846,7 @@ namespace newApi.Services
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Unexpected exception during money distribution transaction",
                             details: $"An unexpected exception occurred during money distribution transaction for SearchHire {searchHireId}. " +
-                                    $"Distribution Plan: Client={clientRefundAmount}Ôé¼ ({config.ClientPercentage}%), Expert={expertAmount}Ôé¼ ({config.ExpertPercentage}%), Platform={platformAmount}Ôé¼ ({config.PlatformPercentage}%). " +
+                                    $"Distribution Plan: Client={clientRefundAmount}€ ({config.ClientPercentage}%), Expert={expertAmount}€ ({config.ExpertPercentage}%), Platform={platformAmount}€ ({config.PlatformPercentage}%). " +
                                     $"Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
                                     $"PaymentIntentId: {servicePayment.StripePaymentIntentId}, ExpertAccountId: {searchHire.Expert?.ExpertProfile?.StripeAccountId}. " +
                                     $"Transaction Status: Transfer={(createdTransferId != null ? $"Created ({createdTransferId})" : "Not attempted")}, Refund={(createdRefundId != null ? $"Created ({createdRefundId})" : "Not attempted")}. " +

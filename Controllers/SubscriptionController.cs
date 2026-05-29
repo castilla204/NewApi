@@ -1613,7 +1613,9 @@ namespace newApi.Controllers
                     Metadata = new Dictionary<string, string>
                     {
                         { "userId", userId.ToString() },
-                        { "amount", request.Amount.ToString() }
+                        // 🛡️ A9 FIX: InvariantCulture para separador "." universal (evita 1,5 vs 1.5 en es-ES)
+                        // → si webhook handler parsea con culture distinta, no rompe el round-trip
+                        { "amount", request.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture) }
                     }
                 };
 
@@ -1854,7 +1856,8 @@ namespace newApi.Controllers
                     {
                         { "userId", userId.ToString() },
                         { "serviceId", request.ServiceId.ToString() },
-                        { "amount", amountToCharge.ToString() },
+                        // 🛡️ A9 FIX: InvariantCulture para consistencia hash idempotency + parse webhook
+                        { "amount", amountToCharge.ToString(System.Globalization.CultureInfo.InvariantCulture) },
                         { "pendingHire", "true" }
                     },
                     // ✅ CAPTURA MANUAL: Autoriza el pago pero no lo captura hasta validar todo en el webhook
@@ -4863,7 +4866,8 @@ namespace newApi.Controllers
                     {
                         { "userId", userId.ToString() },
                         { "serviceId", service.Id.ToString() },
-                        { "amount", service.Price.ToString() },
+                        // 🛡️ A9 FIX: InvariantCulture (consistencia hash idempotency Stripe)
+                        { "amount", service.Price.ToString(System.Globalization.CultureInfo.InvariantCulture) },
                         { "searchId", request.SearchId.ToString() },
                         { "pendingHire", "true" }
                     },

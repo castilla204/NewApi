@@ -10,9 +10,14 @@ namespace newApi.Controllers
     /// Controlador de compatibilidad para mantener las rutas del frontend
     /// Redirige a SystemStatusController
     /// </summary>
+    // 🛡️ A1 SECURITY FIX (Round 7): quitar [AllowAnonymous] a nivel controller. Los GETs
+    // de lectura pública (status, category) mantienen [AllowAnonymous] individualmente,
+    // pero los POST/PUT/DELETE que MUTAN StatusConfigurations (% reparto del dinero del
+    // marketplace) requieren [Authorize(Roles="Admin")] obligatorio. Antes cualquiera
+    // sin auth podía crear/editar/borrar status configs y modificar el reparto $$$.
     [Route("api/[controller]")]
     [ApiController]
-    [AllowAnonymous] // Permitir acceso sin autenticación para compatibilidad
+    [Authorize(Roles = "Admin")]
     public class AppointmentConfigController : ControllerBase
     {
         private readonly AppDbContext _context;
@@ -26,6 +31,7 @@ namespace newApi.Controllers
         /// Redirige a SystemStatusController
         /// </summary>
         [HttpGet("appointment-status")]
+        [AllowAnonymous] // 🛡️ A1: solo lectura pública, sin auth required
         public async Task<IActionResult> GetAppointmentStatusConfigs()
         {
             try
@@ -60,6 +66,7 @@ namespace newApi.Controllers
         /// Redirige a SystemStatusController
         /// </summary>
         [HttpGet("service-type-category")]
+        [AllowAnonymous] // 🛡️ A1: solo lectura pública
         public async Task<IActionResult> GetServiceTypeCategoryConfigs()
         {
             try
@@ -90,6 +97,7 @@ namespace newApi.Controllers
         /// Para el panel de administración
         /// </summary>
         [HttpGet("appointment-status-configs")]
+        [AllowAnonymous] // 🛡️ A1: solo lectura pública
         public async Task<IActionResult> GetAppointmentStatusConfigurations()
         {
             try

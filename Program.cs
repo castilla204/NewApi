@@ -1710,6 +1710,26 @@ if (app.Environment.IsDevelopment())
 // 0. Response Caching PRIMERO (antes de routing para cachear respuestas)
 app.UseResponseCaching();
 
+// 🛡️ A6 FIX: Security headers + HSTS (Round 7). Antes faltaban TODOS:
+//   - HSTS (Strict-Transport-Security): fuerza HTTPS, previene downgrade attacks
+//   - X-Content-Type-Options: nosniff (previene MIME confusion)
+//   - X-Frame-Options: DENY (anti-clickjacking; complementa el meta CSP frontend)
+//   - Referrer-Policy: strict-origin-when-cross-origin (no leak full URL en cross-site)
+//   - Permissions-Policy: deshabilita APIs sensibles por defecto
+// Solo en producción — en dev no aplica (HTTPS opcional, debugging fácil).
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts(); // Strict-Transport-Security: max-age=2592000 por default (30 días)
+}
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    context.Response.Headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=(), payment=(self)";
+    await next();
+});
+
 // 1. Routing PRIMERO (necesario para que funcionen los endpoints)
 app.UseRouting();
 

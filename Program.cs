@@ -1665,6 +1665,18 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     svc => svc.EscalateStaleDisputesAsync(),
     "0 * * * *", // cada hora en punto
     n29UtcOptions);
+
+// 🛡️ Round 12 — D3: notificación proactiva al experto cuando un requirement Stripe entra
+// en ventana de 3 días antes del deadline. Defensa en profundidad: Stripe envía sus propios
+// compliance emails pero SIN SLA garantizado. Sin esto, el experto puede ser sorprendido por
+// transfers bloqueados sin previo aviso.
+// Daily a las 09:00 UTC (= 11:00 Madrid summer, 10:00 winter — hora razonable para que el
+// email no se pierda en la noche europea).
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "upcoming-stripe-deadlines-notifier",
+    svc => svc.NotifyUpcomingStripeDeadlinesAsync(),
+    Hangfire.Cron.Daily(9, 0),
+    n29UtcOptions);
 /*
 RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     "cleanup-expired-refresh-tokens",

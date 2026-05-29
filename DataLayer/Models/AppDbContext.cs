@@ -35,6 +35,8 @@ namespace newApi.DataLayer.Models
         public DbSet<SearchService> SearchServices { get; set; }
         public DbSet<SearchServiceImage> SearchServiceImages { get; set; }
         public DbSet<SearchHire> SearchHires { get; set; }
+        // 📜 Round 9 — A2 FIX: audit log inmutable de cambios de estado de SearchHire (GDPR Art 5(2) accountability).
+        public DbSet<SearchHireStatusHistory> SearchHireStatusHistories { get; set; }
         public DbSet<ReviewImage> ReviewImages { get; set; }
         public DbSet<Review> Reviews { get; set; }
         public DbSet<Dispute> Disputes { get; set; }
@@ -296,6 +298,24 @@ namespace newApi.DataLayer.Models
                 .WithOne(s => s.SearchHire)
                 .HasForeignKey<SearchHire>(sh => sh.SearchId)
                 .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull para preservar SearchHires cuando se eliminan Searches
+
+            // 📜 Round 9 — A2 FIX: audit log de transiciones de estado de SearchHire.
+            // Append-only por convención (sin método para borrar). Cascade desde SearchHire
+            // (si se elimina la hire, su historial también — los registros fiscales clave
+            // viven en FinancialTransactions con retención 6 años independiente).
+            modelBuilder.Entity<SearchHireStatusHistory>()
+                .HasOne(h => h.SearchHire)
+                .WithMany()
+                .HasForeignKey(h => h.SearchHireId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<SearchHireStatusHistory>()
+                .HasIndex(h => h.SearchHireId)
+                .HasDatabaseName("IX_SearchHireStatusHistory_SearchHireId");
+
+            modelBuilder.Entity<SearchHireStatusHistory>()
+                .HasIndex(h => h.CreatedAt)
+                .HasDatabaseName("IX_SearchHireStatusHistory_CreatedAt");
 
             modelBuilder.Entity<Review>()
                 .HasOne(r => r.Reviewer)

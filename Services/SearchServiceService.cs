@@ -473,7 +473,13 @@ namespace newApi.Services
                           AND ss.""ServiceTypeId"" = @serviceTypeId
                           AND ss.""IsActive"" = true
                           AND ep.""IsOnVacation"" = false
-                          AND ((ep.""StripeStatus"" = 1 AND ep.""OnboardingCompleted"" = true) OR ep.""StripeStatus"" = 0 OR ep.""StripeStatus"" = 2)
+                          -- 🛡️ T6 FIX: alinear con filtro LINQ línea ~89. Antes permitía:
+                          --   StripeStatus=1 (Pending) AND OnboardingCompleted=true  ← raro pero estaba
+                          --   StripeStatus=0 (NotRequested)  ← BUG: experto sin Stripe NO puede recibir transfers
+                          --   StripeStatus=2 (Approved)
+                          -- Ahora solo Approved+OnboardingCompleted O PendingVerification (6),
+                          -- igual que el filtro LINQ de GetAllServices.
+                          AND ((ep.""StripeStatus"" = 2 AND ep.""OnboardingCompleted"" = true) OR ep.""StripeStatus"" = 6)
                           AND ep.""Latitude"" IS NOT NULL
                           AND ep.""Latitude"" != ''
                           AND ep.""Longitude"" IS NOT NULL
@@ -844,7 +850,8 @@ namespace newApi.Services
                       AND ss.""ServiceTypeId"" = @serviceTypeId
                       AND ss.""IsActive"" = true
                       AND ep.""IsOnVacation"" = false
-                      AND ((ep.""StripeStatus"" = 1 AND ep.""OnboardingCompleted"" = true) OR ep.""StripeStatus"" = 0 OR ep.""StripeStatus"" = 2)
+                      -- 🛡️ T6 FIX: solo Approved+OnboardingCompleted O PendingVerification (alineado con filtro LINQ línea ~89)
+                      AND ((ep.""StripeStatus"" = 2 AND ep.""OnboardingCompleted"" = true) OR ep.""StripeStatus"" = 6)
                       AND ep.""Latitude"" IS NOT NULL
                       AND ep.""Latitude"" != ''
                       AND ep.""Longitude"" IS NOT NULL
@@ -860,7 +867,8 @@ namespace newApi.Services
                       AND ss.""ServiceTypeId"" = @serviceTypeId
                       AND ss.""IsActive"" = true
                       AND ep.""IsOnVacation"" = false
-                      AND ((ep.""StripeStatus"" = 1 AND ep.""OnboardingCompleted"" = true) OR ep.""StripeStatus"" = 0 OR ep.""StripeStatus"" = 2)
+                      -- 🛡️ T6 FIX: solo Approved+OnboardingCompleted O PendingVerification (alineado con filtro LINQ línea ~89)
+                      AND ((ep.""StripeStatus"" = 2 AND ep.""OnboardingCompleted"" = true) OR ep.""StripeStatus"" = 6)
                       AND ep.""Latitude"" IS NOT NULL
                       AND ep.""Latitude"" != ''
                       AND ep.""Longitude"" IS NOT NULL
@@ -1245,6 +1253,29 @@ namespace newApi.Services
                     .FirstOrDefaultAsync(ep => ep.Id == request.ExpertProfileId && ep.UserId == userId);
                 if (expertProfile == null)
                 {
+                    return (false, null, null);
+                }
+
+                // 🛡️ T5 FIX: validar estado Stripe Connect ANTES de permitir crear servicio.
+                // El filtro de búsqueda (línea ~89) ya excluye servicios cuyo experto no esté
+                // operativo (Approved con OnboardingCompleted=true OR PendingVerification), pero
+                // sin este gate al CREAR, un experto sin Stripe podía publicar un servicio que
+                // luego NUNCA aparecería en búsquedas → mala UX. Peor aún: si el experto está
+                // Deauthorized/Rejected/Restricted/Disabled, NUNCA recibirá transfers — cliente
+                // podría llegar al checkout vía link directo y pagar; el cobro sí funciona pero
+                // el transfer post-captura falla → dinero atascado en la plataforma.
+                // Estados permitidos para CREAR servicio (alineado con el filtro de búsqueda):
+                //   - Approved + OnboardingCompleted=true
+                //   - PendingVerification (Stripe revisando documentación)
+                var allowedForCreate =
+                    (expertProfile.StripeStatus == StripeStatus.Approved && expertProfile.OnboardingCompleted) ||
+                    expertProfile.StripeStatus == StripeStatus.PendingVerification;
+
+                if (!allowedForCreate)
+                {
+                    // No usamos LogCritical (no es bug, es UX). Warning + return false claro.
+                    // El controller convierte (false, null, null) en BadRequest con mensaje genérico,
+                    // pero el log queda en BD para diagnóstico admin.
                     return (false, null, null);
                 }
 
@@ -2548,6 +2579,14 @@ namespace newApi.Services
             { "CN", (39.9042m, 116.4074m) },     // Pekín, China
             { "IN", (28.6139m, 77.2090m) },      // Nueva Delhi, India
         };
+
+        /// <summary>
+        /// Coordenadas de la capital del país (público para endpoints ligeros de geolocalización por IP).
+        /// </summary>
+        public (decimal Latitude, decimal Longitude) GetCountryCapitalCoordinates(string? countryCode)
+        {
+            return GetCapitalCoordinates(countryCode);
+        }
 
         /// <summary>
         /// Obtiene las coordenadas de la capital de un país

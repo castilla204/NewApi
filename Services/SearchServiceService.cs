@@ -1251,6 +1251,12 @@ namespace newApi.Services
 
                 var expertProfile = await _context.ExpertProfiles
                     .FirstOrDefaultAsync(ep => ep.Id == request.ExpertProfileId && ep.UserId == userId);
+                // 🛡️ V4 FIX: Country gate (alineado con BecomeExpert P3 y UpdateExpertProfile E3).
+                // Sin esto un perfil con Country=null o no-EEA puede crear servicio que nunca cobra.
+                if (expertProfile != null && !Common.SupportedConnectCountries.IsSupported(expertProfile.Country))
+                {
+                    return (false, null, null);
+                }
                 if (expertProfile == null)
                 {
                     return (false, null, null);

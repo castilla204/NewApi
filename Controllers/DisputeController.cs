@@ -1686,6 +1686,17 @@ namespace newApi.Controllers
                     var bucketName = _configuration["GoogleCloud:BucketName"];
                     var disputeFiles = new List<DisputeFile>();
                     
+                    // 🛡️ V3 FIX: whitelist de Content-Type real (defensa en profundidad — atacante
+                    // puede renombrar .exe a .pdf, pero Content-Type vendrá del OS y se podrá detectar).
+                    var allowedMimeTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        "image/jpeg", "image/png", "image/gif",
+                        "application/pdf",
+                        "application/msword",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "video/mp4", "video/x-msvideo", "video/quicktime"
+                    };
+
                     foreach (var file in request.Files)
                     {
                         if (file.Length > 0)
@@ -1693,10 +1704,16 @@ namespace newApi.Controllers
                             // Validate file type and size
                             var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".gif", ".pdf", ".doc", ".docx", ".mp4", ".avi", ".mov" };
                             var fileExtension = Path.GetExtension(file.FileName).ToLowerInvariant();
-                            
+
                             if (!allowedExtensions.Any(ext => ext == fileExtension))
                             {
                                 return BadRequest(new { message = $"File type {fileExtension} is not allowed. Allowed types: {string.Join(", ", allowedExtensions)}" });
+                            }
+
+                            // 🛡️ V3 FIX: validar Content-Type real del IFormFile
+                            if (!string.IsNullOrEmpty(file.ContentType) && !allowedMimeTypes.Contains(file.ContentType))
+                            {
+                                return BadRequest(new { message = $"Content type '{file.ContentType}' no coincide con tipos permitidos. Archivo rechazado por seguridad." });
                             }
 
                             if (file.Length > 10 * 1024 * 1024) // 10MB limit

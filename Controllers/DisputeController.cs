@@ -150,7 +150,11 @@ namespace newApi.Controllers
 
                 if (hireStatus == SearchHireStatus.Pending.ToStringValue())
                 {
-                    return BadRequest(new { message = "El servicio aún no ha sido aceptado por el experto. Puedes cancelarlo, pero todavía no se puede abrir disputa." });
+                    // 🛡️ Round 14 — Q5 FIX: el mensaje anterior decía "Puedes cancelarlo" pero NO
+                    // existe endpoint público para que el cliente cancele un hire pending. Mensaje
+                    // engañoso eliminado. Si el cliente quiere cancelar, debe contactar con soporte
+                    // o esperar a que el experto haga algo (lo que disparará el flujo de citas).
+                    return BadRequest(new { message = "El servicio aún no ha sido aceptado por el experto. Todavía no se puede abrir disputa. Si necesitas cancelar la contratación, contacta con soporte en info@inspecciono.com." });
                 }
 
                 var terminalStatuses = new[]
@@ -2278,6 +2282,14 @@ namespace newApi.Controllers
                                 try
                                 {
                                     memoryStream.Position = 0;
+                                    // 🛡️ Round 14 — Q9-P1 FIX: idempotency key por dispute+filename+size.
+                                    // Sin esto, un retry de red al subir evidencia duplicaba el file
+                                    // en Stripe (cada FileService.CreateAsync sin key crea nuevo file_xxx).
+                                    // Clave determinista evita duplicados y consume menos cuota Stripe.
+                                    var fileIdempotencyOptions = new Stripe.RequestOptions
+                                    {
+                                        IdempotencyKey = $"dispute-{dispute.Id}-file-{file.FileName}-{file.Length}"
+                                    };
                                     var stripeFile = await new Stripe.FileService().CreateAsync(new Stripe.FileCreateOptions
                                     {
                                         File = new Stripe.MultipartFileContent
@@ -2287,7 +2299,7 @@ namespace newApi.Controllers
                                             Type = file.ContentType
                                         },
                                         Purpose = "dispute_evidence"
-                                    });
+                                    }, fileIdempotencyOptions);
                                     if (stripeFile != null && !string.IsNullOrEmpty(stripeFile.Id))
                                     {
                                         stripeFileIds.Add(stripeFile.Id);

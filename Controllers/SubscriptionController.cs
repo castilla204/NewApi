@@ -909,7 +909,17 @@ namespace newApi.Controllers
                 Account account;
                 try
                 {
-                    account = await accountService.CreateAsync(accountOptions);
+                    // 🛡️ Round 14 — Q9-P1 FIX: idempotency key determinista por userId.
+                    // Sin esto, un retry de red (cliente con conexión lenta, timeout, retry de
+                    // axios) generaba un Connect account NUEVO en Stripe cada vez → cuentas
+                    // huérfanas zombies acumuladas. La clave por userId garantiza que el experto
+                    // tenga UN único acct para siempre (Stripe rechaza con idempotency_error si
+                    // el body difiere, lo cual es exactamente lo que queremos).
+                    var accountIdempotencyOptions = new Stripe.RequestOptions
+                    {
+                        IdempotencyKey = $"account-onboarding-{userId}"
+                    };
+                    account = await accountService.CreateAsync(accountOptions, accountIdempotencyOptions);
                 }
                 catch (StripeException ex)
                 {
@@ -2744,6 +2754,37 @@ namespace newApi.Controllers
                                             .Include(sh => sh.Status)
                                             .Where(sh => sh.ExpertId == capabilityProfile.UserId && activeStatusValues.Contains(sh.Status.StatusValue))
                                             .CountAsync();
+
+                                        // 🛡️ Round 14 — Q12 FIX: degradar StripeStatus SIEMPRE que una capability se
+                                        // vuelva inactive, no solo cuando haya hires activos. Antes: si el experto no
+                                        // tenía hires activos en el momento del webhook, se ignoraba → StripeStatus
+                                        // quedaba en Approved, servicios visibles públicamente, clientes contrataban,
+                                        // transfer fallaba en finalize → dinero atascado.
+                                        // Ahora: re-evaluamos el estado live de Stripe y aplicamos el StripeStatus
+                                        // resultante (Restricted/Disabled). HandleApprovedAccountRejection sigue
+                                        // disparándose solo si hay hires activos (la lógica de cancelar+refund no
+                                        // tiene sentido sin hires).
+                                        try
+                                        {
+                                            var accountService = new Stripe.AccountService();
+                                            var refreshedAccount = await accountService.GetAsync(capabilityAccountId);
+                                            var refreshedState = EvaluateStripeAccount(refreshedAccount);
+                                            ApplyStripeAccountState(capabilityProfile, refreshedState);
+                                            await _context.SaveChangesAsync();
+                                        }
+                                        catch (Exception evalEx)
+                                        {
+                                            await _loggingService.LogWarningAsync(
+                                                message: "Q12: capability.updated re-eval falló — fallback a Restricted",
+                                                details: $"AccountId {capabilityAccountId}, ExpertProfileId {capabilityProfile.Id}: {evalEx.Message}. Marcando Restricted como precaución.",
+                                                userId: capabilityProfile.UserId,
+                                                source: "SubscriptionController.capability.updated.Q12",
+                                                relatedEntityType: "ExpertProfile",
+                                                relatedEntityId: capabilityProfile.Id);
+                                            capabilityProfile.StripeStatus = StripeStatus.Restricted;
+                                            try { await _context.SaveChangesAsync(); } catch { /* swallow */ }
+                                        }
+
                                         if (activeHiresCount > 0)
                                         {
                                             await _loggingService.LogCriticalAsync(
@@ -3283,6 +3324,38 @@ namespace newApi.Controllers
                     // 🛡️ A4: charge.failed — el cargo falló a nivel de "charge" (no de payment_intent).
                     case "charge.failed":
                         await HandleChargeFailed(stripeEvent.Data.Object as Charge);
+                        break;
+
+                    // 🛡️ Round 14 — Q4 FIX: Stripe Radar Early Fraud Warning.
+                    // Stripe detecta sospecha de fraude ~48h-7d post-cobro (antes de que el banco
+                    // del cliente real abra chargeback formal). Si refundamos PROACTIVAMENTE
+                    // ahora: ahorro la dispute fee (~15€) + protejo el dispute rate de la
+                    // plataforma (métrica que Stripe usa para suspender Connect accounts).
+                    //
+                    // El handler NO refunda automáticamente — solo alerta CRÍTICO al admin con
+                    // todo el contexto. Refund proactivo requiere decisión humana porque puede
+                    // afectar al experto (clawback del transfer ya hecho).
+                    //
+                    // Doc: https://docs.stripe.com/disputes/prevention/early-fraud-warnings
+                    case "radar.early_fraud_warning.created":
+                        var efw = stripeEvent.Data.Object as Stripe.Radar.EarlyFraudWarning;
+                        if (efw != null)
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "🚨 STRIPE RADAR — Early Fraud Warning (acción admin)",
+                                details: $"Stripe detectó posible fraude en charge {efw.ChargeId} (FraudType={efw.FraudType}, Actionable={efw.Actionable}). ACCIÓN ADMIN: revisar y refundar proactivamente ANTES de que el banco abra chargeback (ahorro ~15€ dispute fee + protege dispute rate). EFW Id: {efw.Id}.",
+                                source: "SubscriptionController.HandleGeneralStripeWebhook.radar.efw",
+                                relatedEntityType: "Charge",
+                                relatedEntityId: null,
+                                additionalData: new
+                                {
+                                    EfwId = efw.Id,
+                                    ChargeId = efw.ChargeId,
+                                    FraudType = efw.FraudType,
+                                    Actionable = efw.Actionable,
+                                    EfwCreated = efw.Created
+                                });
+                        }
                         break;
 
                     case "payout.paid":

@@ -1307,6 +1307,55 @@ namespace newApi.Services
                             }
                             createdTransferId = transfer.Id;
 
+                            // 🌍 Round 14 — Q7 F1: telemetría de fees de conversión cross-currency.
+                            // Si transferCurrency != "eur" (cliente EUR → experto GB/CH/US/CA), Stripe
+                            // aplica un exchange rate + fee (~2%) que sale del balance EUR de la
+                            // plataforma. Antes no leíamos balance_transaction → ceguera total al
+                            // sangrado financiero. Ahora expandimos y logueamos el fee real para que
+                            // admin pueda detectar drift de margen vs el % de plataforma pactado.
+                            // Best-effort: si falla la expansión, no rompe el flujo.
+                            if (!string.Equals(transferCurrency, "eur", StringComparison.OrdinalIgnoreCase))
+                            {
+                                try
+                                {
+                                    if (!string.IsNullOrEmpty(transfer.BalanceTransactionId))
+                                    {
+                                        var balanceTxSvc = new BalanceTransactionService();
+                                        var bt = await balanceTxSvc.GetAsync(transfer.BalanceTransactionId);
+                                        await _loggingService.LogInfoAsync(
+                                            message: $"Q7: Cross-currency transfer cost EUR->{transferCurrency.ToUpperInvariant()}",
+                                            details: $"SearchHire {searchHireId}: transfer {transfer.Id}. Gross={bt.Amount/100m} {bt.Currency}, Fee={bt.Fee/100m} {bt.Currency}, Net={bt.Net/100m} {bt.Currency}, ExchangeRate={bt.ExchangeRate}. Platform absorbe la fee.",
+                                            userId: searchHire.ExpertId,
+                                            source: "StripeRefundService.ProcessMoneyDistributionAsync.Q7",
+                                            relatedEntityType: "SearchHire",
+                                            relatedEntityId: searchHireId,
+                                            additionalData: new
+                                            {
+                                                TransferId = transfer.Id,
+                                                BalanceTransactionId = transfer.BalanceTransactionId,
+                                                GrossCents = bt.Amount,
+                                                FeeCents = bt.Fee,
+                                                NetCents = bt.Net,
+                                                Currency = bt.Currency,
+                                                ExchangeRate = bt.ExchangeRate,
+                                                DestinationCurrency = transferCurrency
+                                            });
+                                    }
+                                }
+                                catch (Exception btEx)
+                                {
+                                    // Telemetría es best-effort; no afecta el flujo de transfer.
+                                    try
+                                    {
+                                        await _loggingService.LogWarningAsync(
+                                            message: "Q7: no se pudo leer balance_transaction del transfer",
+                                            details: $"Transfer {transfer.Id}: {btEx.Message}",
+                                            source: "StripeRefundService.ProcessMoneyDistributionAsync.Q7");
+                                    }
+                                    catch { /* swallow */ }
+                                }
+                            }
+
                             // 🔧 FIX (#1): NO registrar como Payout activo un transfer que YA está revertido.
                             // Escenario: en un intento anterior este transfer se creó y, al fallar el refund, se
                             // REVIRTIÓ + se hizo rollback (sin dejar fila Payout). En el reintento, CreateAsync con la

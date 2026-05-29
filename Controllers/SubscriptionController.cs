@@ -1133,7 +1133,12 @@ namespace newApi.Controllers
                 var accountLinkOptions = new Stripe.AccountLinkCreateOptions
                 {
                     Account = expertProfile.StripeAccountId,
-                    RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert-panel?refresh=true", // URL si necesita refrescar
+                    // 🛡️ Round 13 — N12 FIX: alinear con los otros 6 puntos del controller que ya usan
+                    // /refresh-onboarding. Antes apuntaba a /expert-panel?refresh=true pero ExpertPanelPage
+                    // no maneja ese query param → el usuario era devuelto al panel sin contexto cuando el
+                    // AccountLink expiraba. /refresh-onboarding → StripeOnboardingReturnPage que ya
+                    // regenera link y redirige a Stripe transparente.
+                    RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
                     ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert-panel", // URL de retorno después de actualizar datos
                     Type = linkType // ✅ account_update para cuentas aprobadas, account_onboarding para requirements pendientes
                 };
@@ -2758,6 +2763,24 @@ namespace newApi.Controllers
                         break;
 
                     default:
+                        // 🛡️ Round 13 — N10 FIX: paridad con A6 (round 9) en el webhook general.
+                        // Antes este default era silencioso: cualquier nuevo event type Connect
+                        // (treasury.*, radar.*, terminal.*, identity.* si Stripe los empezase a
+                        // entregar al Connect endpoint) pasaba desapercibido. Ahora se loguea con
+                        // idempotencia por EventId — sin spam, máxima observabilidad.
+                        await _loggingService.LogInfoAsync(
+                            message: $"Stripe Connect webhook event no manejado: {stripeEvent.Type}",
+                            details: $"Event {stripeEvent.Id} de tipo '{stripeEvent.Type}' recibido al endpoint Connect pero no procesado. Si este tipo se vuelve recurrente, considerar añadir un handler explícito.",
+                            source: "SubscriptionController.HandleStripeWebhook.default",
+                            relatedEntityType: "StripeEvent",
+                            relatedEntityId: null,
+                            additionalData: new
+                            {
+                                EventId = stripeEvent.Id,
+                                EventType = stripeEvent.Type,
+                                StripeAccount = stripeEvent.Account,
+                                Created = stripeEvent.Created
+                            });
                         break;
                 }
 
@@ -3658,6 +3681,47 @@ namespace newApi.Controllers
                         details: $"PaymentIntentId: {session.PaymentIntentId}. Error: {cancelEx.Message}. El cliente {userId} pagó pero no se le ha refundeado/cancelado. URGENTE.",
                         userId: userId,
                         source: "SubscriptionController.HandlePendingHireCompleted.R9",
+                        relatedEntityType: "PaymentIntent",
+                        relatedEntityId: null);
+                }
+                return;
+            }
+
+            // 🛡️ Round 13 — N7 FIX: race window análoga a R9 (vacation mode) para service.IsActive.
+            // Si el experto desactivó (eliminó del catálogo) el servicio ENTRE checkout y webhook,
+            // se creaba un SearchHire sobre un servicio "fantasma" — cliente cobrado, experto sin
+            // saber del hire, servicio invisible. Mismo refund automático + log critical.
+            if (!service.IsActive)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "N7: Webhook llegó pero el servicio fue desactivado por el experto → refund automático",
+                    details: $"User {userId} pagó por servicio {service.Id} (experto {expertuserid}), pero el experto eliminó el servicio del catálogo entre checkout y webhook. PaymentIntentId: {session.PaymentIntentId}. ACCIÓN AUTO: cancel del PI. ACCIÓN ADMIN: notificar al cliente que el servicio ya no está disponible.",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted.N7",
+                    relatedEntityType: "SearchService",
+                    relatedEntityId: service.Id,
+                    additionalData: new
+                    {
+                        ExpertUserId = expertuserid,
+                        ExpertProfileId = expertProfile?.Id,
+                        PaymentIntentId = session.PaymentIntentId,
+                        Action = "auto_refund_service_deleted_race"
+                    });
+
+                try
+                {
+                    var piSvc = new Stripe.PaymentIntentService();
+                    await piSvc.CancelAsync(session.PaymentIntentId,
+                        new Stripe.PaymentIntentCancelOptions { CancellationReason = "abandoned" },
+                        new Stripe.RequestOptions { IdempotencyKey = $"n7-service-deleted-cancel-{session.PaymentIntentId}" });
+                }
+                catch (Exception cancelEx)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "N7: cancel del PI falló — admin debe procesar refund manualmente",
+                        details: $"PaymentIntentId: {session.PaymentIntentId}. Error: {cancelEx.Message}. El cliente {userId} pagó pero no se le ha refundeado/cancelado por servicio desactivado. URGENTE.",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted.N7",
                         relatedEntityType: "PaymentIntent",
                         relatedEntityId: null);
                 }

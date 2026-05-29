@@ -2130,20 +2130,29 @@ namespace newApi.Services
                         // 🛡️ N4 FIX: desconectar cuenta Stripe Connect ANTES de borrar el ExpertProfile.
                         // Sin esto, el StripeAccountId se pierde de la BD pero la cuenta sigue ACTIVA en
                         // Stripe indefinidamente (viola GDPR Art 17 + posibles saldos no liquidados).
+                        //
+                        // 🛡️ Round 13 — N4+N14 EXTENSION: leer también PendingStripeAccountId. Si el
+                        // experto abandonó el onboarding (acct_x creado pero nunca completó details_submitted),
+                        // el acct queda solo en PendingStripeAccountId. El N4 original solo borraba
+                        // StripeAccountId → al hacer GDPR delete, el acct pending quedaba huérfano en
+                        // Stripe (con email + país + datos KYC parciales del usuario).
                         string? stripeAccountIdToDelete = null;
+                        string? pendingStripeAccountIdToDelete = null;
                         try
                         {
-                            stripeAccountIdToDelete = await _context.ExpertProfiles
+                            var pair = await _context.ExpertProfiles
                                 .IgnoreQueryFilters()
                                 .Where(ep => ep.Id == expertProfileId)
-                                .Select(ep => ep.StripeAccountId)
+                                .Select(ep => new { ep.StripeAccountId, ep.PendingStripeAccountId })
                                 .FirstOrDefaultAsync(cancellationToken);
+                            stripeAccountIdToDelete = pair?.StripeAccountId;
+                            pendingStripeAccountIdToDelete = pair?.PendingStripeAccountId;
                         }
                         catch (Exception readEx)
                         {
                             await _loggingService.LogWarningAsync(
-                                message: "N4: failed to read StripeAccountId before delete",
-                                details: $"ExpertProfile {expertProfileId} (User {userId}): no se pudo leer StripeAccountId antes del delete; la cuenta Stripe podría quedar zombi. Error: {readEx.Message}",
+                                message: "N4: failed to read StripeAccountId/PendingStripeAccountId before delete",
+                                details: $"ExpertProfile {expertProfileId} (User {userId}): no se pudo leer IDs Stripe antes del delete; la cuenta Stripe podría quedar zombi. Error: {readEx.Message}",
                                 userId: userId,
                                 source: "AccountDeletionService.DeleteUserDataAsync.N4Read",
                                 relatedEntityType: "ExpertProfile",
@@ -2223,6 +2232,70 @@ namespace newApi.Services
                                     source: "AccountDeletionService.DeleteUserDataAsync.N4Delete",
                                     relatedEntityType: "ExpertProfile",
                                     relatedEntityId: expertProfileId);
+                            }
+                        }
+
+                        // 🛡️ Round 13 — N4+N14 FIX: borrar también PendingStripeAccountId si es
+                        // distinto del StripeAccountId. Cubre el caso "usuario abandonó onboarding"
+                        // donde el acct quedó solo en PendingStripeAccountId.
+                        // (Si ambos coinciden, ya se borró arriba — saltarlo.)
+                        if (!string.IsNullOrEmpty(pendingStripeAccountIdToDelete)
+                            && !string.Equals(pendingStripeAccountIdToDelete, stripeAccountIdToDelete, StringComparison.Ordinal))
+                        {
+                            // Nullear primero (mismo patrón R5-F4)
+                            try
+                            {
+                                await _context.Database.ExecuteSqlInterpolatedAsync(
+                                    $"UPDATE \"ExpertProfiles\" SET \"PendingStripeAccountId\" = NULL WHERE \"Id\" = {expertProfileId}",
+                                    cancellationToken);
+                            }
+                            catch (Exception nullEx)
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "N4+N14: failed to null PendingStripeAccountId before Stripe delete",
+                                    details: $"ExpertProfile {expertProfileId}: continuando con Stripe.Delete pese a error nulling: {nullEx.Message}",
+                                    userId: userId,
+                                    source: "AccountDeletionService.DeleteUserDataAsync.N4N14",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfileId);
+                            }
+
+                            try
+                            {
+                                var stripeAccountService = new Stripe.AccountService();
+                                await stripeAccountService.DeleteAsync(pendingStripeAccountIdToDelete);
+                                await _loggingService.LogInfoAsync(
+                                    message: "N4+N14: Pending Stripe Connect account deleted",
+                                    details: $"Cuenta Stripe Connect PENDIENTE {pendingStripeAccountIdToDelete} (onboarding abandonado) eliminada para User {userId}.",
+                                    userId: userId,
+                                    source: "AccountDeletionService.DeleteUserDataAsync.N4N14Delete",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfileId);
+                            }
+                            catch (Stripe.StripeException stripeEx) when (stripeEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                            {
+                                // Ya no existe — perfecto.
+                                await _loggingService.LogInfoAsync(
+                                    message: "N4+N14: Pending Stripe account already gone (404)",
+                                    details: $"Pending Stripe account {pendingStripeAccountIdToDelete} ya no existe — OK.",
+                                    userId: userId,
+                                    source: "AccountDeletionService.DeleteUserDataAsync.N4N14Delete",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfileId);
+                            }
+                            catch (Exception stripeEx)
+                            {
+                                // Cuentas pending típicamente no tienen balance (no se hicieron transfers),
+                                // así que cualquier error es probablemente capability/state. Log critical
+                                // pero NO abortar el delete (GDPR Art 17 prevalece).
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL N4+N14: Failed to delete pending Stripe account",
+                                    details: $"User {userId} ExpertProfile {expertProfileId}: pending account {pendingStripeAccountIdToDelete} NO se pudo borrar: {stripeEx.Message}. ACCIÓN ADMIN: revisar y borrar manualmente en Stripe Dashboard.",
+                                    userId: userId,
+                                    source: "AccountDeletionService.DeleteUserDataAsync.N4N14Delete",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfileId,
+                                    additionalData: new { PendingStripeAccountId = pendingStripeAccountIdToDelete, Error = stripeEx.Message });
                             }
                         }
 

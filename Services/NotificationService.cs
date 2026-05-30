@@ -29,6 +29,16 @@ namespace newApi.Services
         /// Sends a service completion email requesting a review
         /// </summary>
         Task SendServiceCompletionEmailAsync(string toEmail, string userName, string serviceName, string expertName, int searchHireId);
+
+        /// <summary>
+        /// 🛡️ Round 16: envía un código OTP de verificación de email (registro / reset password / step-up).
+        /// El envío es SÍNCRONO con throwOnError=true porque el usuario está esperando en pantalla.
+        /// </summary>
+        /// <param name="toEmail">Email destinatario.</param>
+        /// <param name="code">Código de 6 dígitos en plano (NO se almacena, solo se envía).</param>
+        /// <param name="purpose">Propósito del OTP — cambia el copy del email.</param>
+        /// <param name="expirationMinutes">Minutos hasta expiración (default 10 — NIST SHALL).</param>
+        Task SendVerificationCodeEmailAsync(string toEmail, string code, newApi.DataLayer.Models.PostGresModels.EmailVerificationPurpose purpose, int expirationMinutes = 10);
     }
 
     /// <summary>
@@ -137,6 +147,47 @@ namespace newApi.Services
         {
             BackgroundJob.Enqueue(() => SendServiceCompletionEmailJob(toEmail, userName, serviceName, expertName, searchHireId));
             await Task.CompletedTask;
+        }
+
+        /// <inheritdoc />
+        public async Task SendVerificationCodeEmailAsync(string toEmail, string code, newApi.DataLayer.Models.PostGresModels.EmailVerificationPurpose purpose, int expirationMinutes = 10)
+        {
+            // 🛡️ ENVÍO SÍNCRONO: el usuario espera la pantalla "introduce tu código". No podemos
+            // encolar en Hangfire (latencia variable). throwOnError=true para que el endpoint
+            // pueda devolver 503 si SMTP cae (el cliente pedirá reenvío).
+            var (subject, title, intro) = purpose switch
+            {
+                newApi.DataLayer.Models.PostGresModels.EmailVerificationPurpose.PasswordReset =>
+                    ("Código para restablecer tu contraseña",
+                     "Restablece tu contraseña",
+                     "Has solicitado restablecer tu contraseña. Usa el siguiente código para confirmar tu identidad:"),
+                newApi.DataLayer.Models.PostGresModels.EmailVerificationPurpose.StepUp =>
+                    ("Código de confirmación de seguridad",
+                     "Confirma tu identidad",
+                     "Para completar esta acción necesitamos verificar que eres tú. Introduce el siguiente código:"),
+                _ => // EmailVerification
+                    ("Verifica tu correo en Inspecciono",
+                     "Verifica tu correo",
+                     "¡Bienvenido! Para activar tu cuenta introduce el siguiente código de verificación:")
+            };
+
+            // El código se renderiza en un bloque destacado, monoespaciado, sin botón de acción
+            // (los códigos OTP NO deben ir como enlace clicable — phishing risk).
+            var content = $@"
+                <p style='margin:0 0 16px 0;'>{intro}</p>
+                <table role='presentation' cellpadding='0' cellspacing='0' style='margin:24px auto;'>
+                    <tr>
+                        <td align='center' style='background-color:#F3F4F6;border:1px solid #E5E7EB;border-radius:10px;padding:20px 36px;'>
+                            <span style='font-family:""SF Mono"",Menlo,Consolas,monospace;font-size:32px;font-weight:700;letter-spacing:10px;color:#111827;'>{code}</span>
+                        </td>
+                    </tr>
+                </table>
+                <p style='margin:0 0 8px 0;font-size:13px;color:#6B7280;'>Este código caduca en <strong>{expirationMinutes} minutos</strong> y solo puede usarse una vez.</p>
+                <p style='margin:0;font-size:13px;color:#9CA3AF;'>Si no has solicitado esto, ignora este correo. Tu cuenta sigue segura.</p>";
+
+            // Sin actionUrl — explícitamente. Los OTPs NUNCA llevan link clicable.
+            var htmlBody = GenerateEmailTemplate(title, content, actionText: null, actionUrl: null, headerIcon: "🔐");
+            await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }
 
         #region Background Jobs

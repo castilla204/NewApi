@@ -185,6 +185,24 @@ namespace newApi.DataLayer.Models
             modelBuilder.Entity<User>()
                 .HasQueryFilter(u => !u.IsDeleted);
 
+            // 🛡️ Round 16: índices para login/lookup rápido.
+            // Email: el lookup principal en login-password (case-insensitive — normalizar antes a lowercase).
+            // No es UNIQUE porque conviven OAuth-only y password users + soft delete (mismo email puede reactivarse).
+            // El uniqueness lógico ya se valida en el service layer (Register/GoogleAuth/AppleAuth).
+            modelBuilder.Entity<User>()
+                .HasIndex(u => u.Email)
+                .HasDatabaseName("IX_Users_Email");
+
+            // GoogleId: lookup en GoogleAuth para detectar usuario existente vía OAuth.
+            modelBuilder.Entity<User>()
+                .HasIndex(u => u.GoogleId)
+                .HasDatabaseName("IX_Users_GoogleId");
+
+            // AppleId: lookup en AppleAuth (sub claim del identityToken). Stable per (user, team).
+            modelBuilder.Entity<User>()
+                .HasIndex(u => u.AppleId)
+                .HasDatabaseName("IX_Users_AppleId");
+
             modelBuilder.Entity<Notification>()
                 .HasOne(n => n.User)
                 .WithMany()

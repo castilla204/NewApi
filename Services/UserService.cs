@@ -359,7 +359,10 @@ namespace newApi.Services
                     Email = payload.Email?.Trim(),
                     GoogleId = payload.Subject,
                     CreatedAt = DateTime.UtcNow,
-                    Role = isAdminEmail ? UserRole.Admin : UserRole.Client
+                    Role = isAdminEmail ? UserRole.Admin : UserRole.Client,
+                    // 🛡️ Round 16: Google ya verifica el email del usuario, podemos confiar.
+                    EmailVerified = true,
+                    EmailVerifiedAt = DateTime.UtcNow,
                 };
 
                 _context.Users.Add(user);

@@ -1433,6 +1433,25 @@ builder.Services.AddScoped<IInvoiceService, newApi.Services.InvoiceService>();
 builder.Services.AddScoped<IStripeValidationService, StripeValidationService>();
 builder.Services.AddScoped<RefreshTokenCleanupService>(); // ✅ SEGURIDAD 2025: Limpieza de refresh tokens
 builder.Services.AddScoped<MfaService>(); // ✅ SEGURIDAD 2025: Autenticación Multifactor (MFA/2FA)
+
+// 🛡️ Round 16: hashing de passwords (BCrypt) + verificación OTP por email + Sign in with Apple.
+builder.Services.AddScoped<IPasswordHashingService, PasswordHashingService>();
+builder.Services.AddScoped<IEmailVerificationService, EmailVerificationService>();
+builder.Services.AddScoped<IAppleAuthService, AppleAuthService>();
+// HttpClient nombrado para HIBP Pwned Passwords API (k-anonimato — timeout corto + retry).
+builder.Services.AddHttpClient("hibp", c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(3);
+    c.DefaultRequestHeaders.Add("User-Agent", "Inspecciono-PasswordCheck");
+    c.DefaultRequestHeaders.Add("Add-Padding", "true"); // anti-traffic-analysis HIBP feature
+});
+// HttpClient nombrado para descargar JWKS de Apple (caché interna con MemoryCache).
+builder.Services.AddHttpClient("apple-jwks", c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(5);
+    c.BaseAddress = new Uri("https://appleid.apple.com/");
+});
+// (AddMemoryCache ya está registrado más arriba en Program.cs:820)
 builder.Services.AddScoped<ITimezoneService, TimezoneService>(); // ✅ Servicio para detección de timezone y country desde coordenadas
 builder.Services.AddScoped<IFavoriteService, FavoriteService>(); // ✅ FAVORITOS: Gestión de servicios favoritos
 builder.Services.AddScoped<ISupabaseRealtimeService, SupabaseRealtimeService>(); // ✅ SUPABASE REALTIME: Reemplaza SignalR para chat en tiempo real

@@ -17,7 +17,7 @@ namespace newApi.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.0")
+                .HasAnnotation("ProductVersion", "10.0.8")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -232,6 +232,12 @@ namespace newApi.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ProposedDate");
@@ -295,6 +301,11 @@ namespace newApi.Migrations
                     b.HasIndex("IsExpired");
 
                     b.HasIndex("TimerType");
+
+                    b.HasIndex("AppointmentId", "TimerType")
+                        .IsUnique()
+                        .HasDatabaseName("IX_AppointmentTimers_Appt_Type_Active")
+                        .HasFilter("\"IsExpired\" = false");
 
                     b.ToTable("AppointmentTimers");
                 });
@@ -468,6 +479,9 @@ namespace newApi.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("StripeDisputeId")
+                        .HasColumnType("text");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ReporterId");
@@ -520,6 +534,83 @@ namespace newApi.Migrations
                     b.HasIndex("UploadedByUserId");
 
                     b.ToTable("DisputeFiles");
+                });
+
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.EmailVerificationCode", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("AttemptCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
+                    b.Property<byte[]>("CodeHash")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<DateTime?>("ConsumedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("MaxAttempts")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(5);
+
+                    b.Property<int>("Purpose")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("RequestIp")
+                        .HasMaxLength(45)
+                        .HasColumnType("character varying(45)");
+
+                    b.Property<byte[]>("Salt")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("VerificationToken")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("VerifyIp")
+                        .HasMaxLength(45)
+                        .HasColumnType("character varying(45)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex(new[] { "Email", "Purpose" }, "IX_EmailVerificationCodes_Email_Purpose");
+
+                    b.HasIndex(new[] { "Email", "Purpose", "CreatedAt" }, "IX_EmailVerificationCodes_Email_Purpose_CreatedAt");
+
+                    b.HasIndex(new[] { "ExpiresAt" }, "IX_EmailVerificationCodes_ExpiresAt");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex(new[] { "VerificationToken" }, "IX_EmailVerificationCodes_VerificationToken")
+                        .IsUnique();
+
+                    b.ToTable("EmailVerificationCodes");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.ExpertAvailability", b =>
@@ -633,6 +724,12 @@ namespace newApi.Migrations
                     b.Property<int>("UserId")
                         .HasColumnType("integer");
 
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
                     b.HasKey("Id");
 
                     b.HasIndex("UserId")
@@ -651,6 +748,9 @@ namespace newApi.Migrations
 
                     b.Property<decimal>("Amount")
                         .HasColumnType("numeric");
+
+                    b.Property<long>("AmountCents")
+                        .HasColumnType("bigint");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -680,11 +780,57 @@ namespace newApi.Migrations
                     b.Property<int?>("UserId")
                         .HasColumnType("integer");
 
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("StripePaymentIntentId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_FT_StripePaymentIntent_Chargeback_uq")
+                        .HasFilter("\"StripePaymentIntentId\" IS NOT NULL AND \"TransactionType\" = 'Chargeback'");
+
+                    b.HasIndex("StripeRefundId")
+                        .IsUnique()
+                        .HasFilter("\"StripeRefundId\" IS NOT NULL");
 
                     b.HasIndex("UserId");
 
+                    b.HasIndex("RelatedEntityType", "RelatedEntityId")
+                        .IsUnique()
+                        .HasFilter("\"TransactionType\" = 'ServicePayment'");
+
+                    b.HasIndex("StripeTransferId", "TransactionType")
+                        .IsUnique()
+                        .HasFilter("\"StripeTransferId\" IS NOT NULL");
+
                     b.ToTable("FinancialTransactions");
+                });
+
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.InvoiceCounter", b =>
+                {
+                    b.Property<string>("SeriesCode")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("Year")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("NextNumber")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("SeriesCode", "Year");
+
+                    b.ToTable("InvoiceCounters");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.Like", b =>
@@ -1248,11 +1394,23 @@ namespace newApi.Migrations
                     b.Property<decimal?>("BaseAmount")
                         .HasColumnType("numeric");
 
+                    b.Property<string>("CaptureStatus")
+                        .HasColumnType("text");
+
                     b.Property<bool?>("ClientApproved")
                         .HasColumnType("boolean");
 
                     b.Property<int?>("ClientId")
                         .HasColumnType("integer");
+
+                    b.Property<decimal?>("ClientPercentageSnapshot")
+                        .HasColumnType("numeric");
+
+                    b.Property<string>("ClientVatCountryCode")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ClientVatNumber")
+                        .HasColumnType("text");
 
                     b.Property<DateTime?>("CompletionDeadline")
                         .HasColumnType("timestamp with time zone");
@@ -1269,11 +1427,23 @@ namespace newApi.Migrations
                     b.Property<int?>("ExpertId")
                         .HasColumnType("integer");
 
+                    b.Property<decimal?>("ExpertPercentageSnapshot")
+                        .HasColumnType("numeric");
+
                     b.Property<string>("ExpertTimezone")
                         .HasColumnType("text");
 
                     b.Property<string>("ExpertTransferId")
                         .HasColumnType("text");
+
+                    b.Property<decimal?>("PlatformPercentageSnapshot")
+                        .HasColumnType("numeric");
+
+                    b.Property<DateTime?>("RefundFailedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("RequiresManualReview")
+                        .HasColumnType("boolean");
 
                     b.Property<int?>("SearchId")
                         .HasColumnType("integer");
@@ -1289,6 +1459,12 @@ namespace newApi.Migrations
 
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
 
                     b.HasKey("Id");
 
@@ -1342,6 +1518,51 @@ namespace newApi.Migrations
                     b.HasIndex("SearchHireId");
 
                     b.ToTable("SearchHireDeliverables");
+                });
+
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchHireStatusHistory", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AdditionalDataJson")
+                        .HasColumnType("text");
+
+                    b.Property<int?>("ChangedByUserId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("NewStatusId")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("OldStatusId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<int>("SearchHireId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("IX_SearchHireStatusHistory_CreatedAt");
+
+                    b.HasIndex("SearchHireId")
+                        .HasDatabaseName("IX_SearchHireStatusHistory_SearchHireId");
+
+                    b.ToTable("SearchHireStatusHistory");
                 });
 
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchParameter", b =>
@@ -2026,6 +2247,9 @@ namespace newApi.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("AppleId")
+                        .HasColumnType("text");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -2036,8 +2260,16 @@ namespace newApi.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<bool>("EmailVerified")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("EmailVerifiedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("FailedLoginAttempts")
+                        .HasColumnType("integer");
+
                     b.Property<string>("GoogleId")
-                        .IsRequired()
                         .HasColumnType("text");
 
                     b.Property<bool>("IsBlocked")
@@ -2046,12 +2278,18 @@ namespace newApi.Migrations
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean");
 
+                    b.Property<DateTime?>("LockedUntil")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text");
 
                     b.Property<string>("Password")
                         .HasColumnType("text");
+
+                    b.Property<DateTime?>("PasswordChangedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("PhoneNumber")
                         .HasColumnType("text");
@@ -2065,7 +2303,19 @@ namespace newApi.Migrations
                     b.Property<int?>("SubscriptionPlanId")
                         .HasColumnType("integer");
 
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
                     b.HasKey("Id");
+
+                    b.HasIndex(new[] { "AppleId" }, "IX_Users_AppleId");
+
+                    b.HasIndex(new[] { "Email" }, "IX_Users_Email");
+
+                    b.HasIndex(new[] { "GoogleId" }, "IX_Users_GoogleId");
 
                     b.HasIndex("SubscriptionPlanId");
 
@@ -2331,6 +2581,16 @@ namespace newApi.Migrations
                     b.Navigation("UploadedByUser");
                 });
 
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.EmailVerificationCode", b =>
+                {
+                    b.HasOne("newApi.DataLayer.Models.PostGresModels.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.ExpertAvailability", b =>
                 {
                     b.HasOne("newApi.DataLayer.Models.PostGresModels.ExpertProfile", "Expert")
@@ -2574,6 +2834,17 @@ namespace newApi.Migrations
                 {
                     b.HasOne("newApi.DataLayer.Models.PostGresModels.SearchHire", "SearchHire")
                         .WithMany("Deliverables")
+                        .HasForeignKey("SearchHireId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("SearchHire");
+                });
+
+            modelBuilder.Entity("newApi.DataLayer.Models.PostGresModels.SearchHireStatusHistory", b =>
+                {
+                    b.HasOne("newApi.DataLayer.Models.PostGresModels.SearchHire", "SearchHire")
+                        .WithMany()
                         .HasForeignKey("SearchHireId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();

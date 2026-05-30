@@ -12,12 +12,23 @@ namespace newApi.DataLayer.Models.PostGresModels
         public int Id { get; set; }
         public string Name { get; set; }
         public string Email { get; set; }
+        // 🛡️ Round 16: ahora almacena el HASH BCrypt del password (no plain). Null si
+        // el usuario solo usa OAuth (Google/Apple). Reutiliza la columna text existente.
         public string? Password { get; set; }
-        public string GoogleId { get; set; }
+        public string? GoogleId { get; set; }
+        // 🛡️ Round 16: Apple identifier (sub claim del JWT identityToken). Stable per
+        // (user, team). Null si el usuario no usa Apple Sign In.
+        public string? AppleId { get; set; }
         public string? PhoneNumber { get; set; }
         public bool PhoneVerified { get; set; }
         public DateTime CreatedAt { get; set; }
         public bool IsBlocked { get; set; }
+        // 🛡️ Round 16: email verification + login security tracking
+        public bool EmailVerified { get; set; } = false;
+        public DateTime? EmailVerifiedAt { get; set; }
+        public DateTime? PasswordChangedAt { get; set; }
+        public int FailedLoginAttempts { get; set; } = 0;
+        public DateTime? LockedUntil { get; set; }
         public UserRole Role { get; set; }
         // ✅ SOFT DELETE: Para permitir recuperación y cumplimiento legal
         public bool IsDeleted { get; set; } = false;

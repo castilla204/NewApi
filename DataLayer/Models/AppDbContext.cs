@@ -51,6 +51,8 @@ namespace newApi.DataLayer.Models
         public DbSet<MessageAttachment> MessageAttachments { get; set; }
         public DbSet<SearchHireDeliverable> SearchHireDeliverables { get; set; }
         public DbSet<ProcessedWebhookEvent> ProcessedWebhookEvents { get; set; }
+        // 🛡️ Round 16: códigos OTP para verificación de email en registro/reset/step-up.
+        public DbSet<EmailVerificationCode> EmailVerificationCodes { get; set; }
         public DbSet<Appointment> Appointments { get; set; }
         public DbSet<AppointmentTimer> AppointmentTimers { get; set; }
         public DbSet<RefreshToken> RefreshTokens { get; set; }
@@ -182,6 +184,24 @@ namespace newApi.DataLayer.Models
             // NOTA: Para acceder a usuarios eliminados, usar .IgnoreQueryFilters()
             modelBuilder.Entity<User>()
                 .HasQueryFilter(u => !u.IsDeleted);
+
+            // 🛡️ Round 16: índices para login/lookup rápido.
+            // Email: el lookup principal en login-password (case-insensitive — normalizar antes a lowercase).
+            // No es UNIQUE porque conviven OAuth-only y password users + soft delete (mismo email puede reactivarse).
+            // El uniqueness lógico ya se valida en el service layer (Register/GoogleAuth/AppleAuth).
+            modelBuilder.Entity<User>()
+                .HasIndex(u => u.Email)
+                .HasDatabaseName("IX_Users_Email");
+
+            // GoogleId: lookup en GoogleAuth para detectar usuario existente vía OAuth.
+            modelBuilder.Entity<User>()
+                .HasIndex(u => u.GoogleId)
+                .HasDatabaseName("IX_Users_GoogleId");
+
+            // AppleId: lookup en AppleAuth (sub claim del identityToken). Stable per (user, team).
+            modelBuilder.Entity<User>()
+                .HasIndex(u => u.AppleId)
+                .HasDatabaseName("IX_Users_AppleId");
 
             modelBuilder.Entity<Notification>()
                 .HasOne(n => n.User)
@@ -538,16 +558,66 @@ namespace newApi.DataLayer.Models
                     .HasDefaultValue("Success");
                 entity.Property(e => e.ProcessedAt)
                     .HasDefaultValueSql("CURRENT_TIMESTAMP");
-                
+
                 // Índice único para evitar duplicados
                 entity.HasIndex(e => e.EventId)
                     .IsUnique();
-                
+
                 // Índice para búsquedas por cuenta
                 entity.HasIndex(e => e.StripeAccountId);
-                
+
                 // Índice para búsquedas por usuario
                 entity.HasIndex(e => e.UserId);
+            });
+
+            // 🛡️ Round 16: Configuración de EmailVerificationCode (OTP de email).
+            modelBuilder.Entity<EmailVerificationCode>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Email)
+                    .IsRequired()
+                    .HasMaxLength(320);
+                entity.Property(e => e.CodeHash)
+                    .IsRequired();
+                entity.Property(e => e.Salt)
+                    .IsRequired();
+                entity.Property(e => e.VerificationToken)
+                    .IsRequired()
+                    .HasMaxLength(64);
+                entity.Property(e => e.CreatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.AttemptCount)
+                    .HasDefaultValue(0);
+                entity.Property(e => e.MaxAttempts)
+                    .HasDefaultValue(5);
+                entity.Property(e => e.RequestIp)
+                    .HasMaxLength(45);
+                entity.Property(e => e.VerifyIp)
+                    .HasMaxLength(45);
+
+                // FK opcional a User (puede emitirse OTP pre-registro sin User asociado).
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .IsRequired(false)
+                    .OnDelete(DeleteBehavior.SetNull);
+
+                // 🔎 Búsquedas frecuentes durante verify (último OTP activo por email+purpose).
+                entity.HasIndex(e => new { e.Email, e.Purpose })
+                    .HasDatabaseName("IX_EmailVerificationCodes_Email_Purpose");
+
+                // 🔑 Token opaco devuelto al cliente — único + lookup O(log n) en verify-email.
+                entity.HasIndex(e => e.VerificationToken)
+                    .IsUnique()
+                    .HasDatabaseName("IX_EmailVerificationCodes_VerificationToken");
+
+                // 🧹 Cleanup job: filtra códigos expirados/no consumidos.
+                entity.HasIndex(e => e.ExpiresAt)
+                    .HasDatabaseName("IX_EmailVerificationCodes_ExpiresAt");
+
+                // 🛡️ Anti-flooding: rate-limit por (email, purpose) en ventana corta.
+                entity.HasIndex(e => new { e.Email, e.Purpose, e.CreatedAt })
+                    .HasDatabaseName("IX_EmailVerificationCodes_Email_Purpose_CreatedAt");
             });
 
             // Configuración de ServiceTypeCategory

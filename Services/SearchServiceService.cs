@@ -1338,12 +1338,42 @@ namespace newApi.Services
                     return (false, null, null);
                 }
 
+                // 🌍 Currency: normalizar el valor recibido y advertir si no coincide con
+                // la default_currency del Stripe Connect account del experto. Solo Warning;
+                // la validación dura se hace en checkout (RefundService/SearchHire), aquí el
+                // experto puede tener pendiente el onboarding o estar cambiando de divisa.
+                var resolvedCurrency = Common.SupportedCurrenciesList.Normalize(request.Currency) ?? "EUR";
+
+                if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                {
+                    try
+                    {
+                        var stripeAccount = await new Stripe.AccountService().GetAsync(expertProfile.StripeAccountId);
+                        var accountDefault = stripeAccount?.DefaultCurrency;
+                        if (!string.IsNullOrEmpty(accountDefault) &&
+                            !string.Equals(accountDefault, resolvedCurrency, StringComparison.OrdinalIgnoreCase))
+                        {
+                            _logger.LogWarning(
+                                "Currency mismatch on CreateSearchService: requested {RequestedCurrency} but Stripe Connect account {StripeAccountId} (expert {ExpertProfileId}) default_currency is {AccountDefaultCurrency}. Service will be created; final validation runs at checkout.",
+                                resolvedCurrency, expertProfile.StripeAccountId, expertProfile.Id, accountDefault.ToUpperInvariant());
+                        }
+                    }
+                    catch (Exception stripeEx)
+                    {
+                        // No bloquear creación si Stripe no responde: la divisa se revalida en checkout.
+                        _logger.LogWarning(stripeEx,
+                            "Could not verify Stripe Connect default_currency for expert {ExpertProfileId} (account {StripeAccountId}). Allowing CreateSearchService with currency {RequestedCurrency}; will revalidate at checkout.",
+                            expertProfile.Id, expertProfile.StripeAccountId, resolvedCurrency);
+                    }
+                }
+
                 var searchService = new SearchService
                 {
                     ExpertProfileId = request.ExpertProfileId,
                     CategoryId = request.CategoryId,
                     ServiceTypeId = request.ServiceTypeId,
                     Price = request.Price,
+                    Currency = resolvedCurrency,
                     Conditions = request.Conditions,
                     DurationInHours = request.DurationInHours ?? 0,
                     CreatedAt = DateTime.UtcNow,
@@ -1362,19 +1392,20 @@ namespace newApi.Services
                     // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
                     using var recoveryScope = _serviceScopeFactory.CreateScope();
                     var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    
+
                     var recoveryService = new SearchService
                     {
                         ExpertProfileId = request.ExpertProfileId,
                         CategoryId = request.CategoryId,
                         ServiceTypeId = request.ServiceTypeId,
                         Price = request.Price,
+                        Currency = resolvedCurrency,
                         Conditions = request.Conditions,
                         DurationInHours = request.DurationInHours ?? 0,
                         CreatedAt = DateTime.UtcNow,
                         IsActive = true
                     };
-                    
+
                     recoveryContext.SearchServices.Add(recoveryService);
                     await recoveryContext.SaveChangesAsync();
                     serviceId = recoveryService.Id; // ✅ FIX: Guardar ID del servicio recuperado
@@ -1385,19 +1416,20 @@ namespace newApi.Services
                     // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
                     using var recoveryScope = _serviceScopeFactory.CreateScope();
                     var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    
+
                     var recoveryService = new SearchService
                     {
                         ExpertProfileId = request.ExpertProfileId,
                         CategoryId = request.CategoryId,
                         ServiceTypeId = request.ServiceTypeId,
                         Price = request.Price,
+                        Currency = resolvedCurrency,
                         Conditions = request.Conditions,
                         DurationInHours = request.DurationInHours ?? 0,
                         CreatedAt = DateTime.UtcNow,
                         IsActive = true
                     };
-                    
+
                     recoveryContext.SearchServices.Add(recoveryService);
                     await recoveryContext.SaveChangesAsync();
                     serviceId = recoveryService.Id; // ✅ FIX: Guardar ID del servicio recuperado

@@ -1838,7 +1838,16 @@ if (!app.Environment.IsDevelopment())
 app.Use(async (context, next) =>
 {
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
-    context.Response.Headers["X-Frame-Options"] = "DENY";
+    // Hangfire dashboard se incrusta en iframe desde el panel admin (mismo origen API o cross-site con cookie).
+    var path = context.Request.Path.Value ?? "";
+    if (path.StartsWith("/hangfire", StringComparison.OrdinalIgnoreCase))
+    {
+        context.Response.Headers["X-Frame-Options"] = "SAMEORIGIN";
+    }
+    else
+    {
+        context.Response.Headers["X-Frame-Options"] = "DENY";
+    }
     context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
     context.Response.Headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=(), payment=(self)";
     await next();

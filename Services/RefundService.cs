@@ -415,7 +415,8 @@ namespace newApi.Services
 
                 // MODIFICACI├ôN: Estimar fees de Stripe y warning si platformAmount no cubre (para evitar p├®rdidas, seg├║n gu├¡as 2025)
                 // ✅ Usar baseAmount para calcular fees (fees se calculan sobre el monto base, no sobre tax)
-                var stripeFeeEstimate = baseAmount * 0.029m + 0.30m; // 2.9% + 0.30€ estándar para EUR
+                // 🌍 Currency-aware: el fixed fee de Stripe varía por divisa (EUR 0.25€, GBP 0.20£, USD 0.30$, etc.)
+                var stripeFeeEstimate = GetStripeFeeEstimate(baseAmount, searchHire.Currency);
                 if (platformAmount < stripeFeeEstimate)
                 {
                     // Opcional: Fallar si es cr├¡tico, pero por ahora warning
@@ -1295,6 +1296,45 @@ namespace newApi.Services
                             expertAccount?.DefaultCurrency,
                             searchHire.ExpertCountry);
 
+                        // 🛡️ FIX: validar coherencia divisa SearchHire vs cuenta Stripe del experto ANTES
+                        // de llamar a Stripe. Si el SearchHire fue creado/cobrado en una divisa distinta a la
+                        // default_currency del Connect account, NO desperdiciamos llamada a Stripe solo para
+                        // recibir StripeException "currency_mismatch": abortamos limpio, marcamos para revisión
+                        // manual, y el admin reconcilia (re-cobro en divisa correcta o transfer manual).
+                        // NOTA: aunque el flujo actual usa transferCurrency (derivado del expert account) para
+                        // evitar el rechazo de Stripe, una discordancia con searchHire.Currency revela una
+                        // inconsistencia de datos (ej. experto cambió de país tras el cobro) que merece
+                        // intervención humana antes de mover dinero con conversión silenciosa.
+                        var expectedCurrency = (searchHire.Currency ?? "EUR").ToLowerInvariant();
+                        var accountCurrency = (expertAccount?.DefaultCurrency ?? "eur").ToLowerInvariant();
+                        if (expectedCurrency != accountCurrency)
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "Currency mismatch — transfer aborted",
+                                details: $"SearchHire #{searchHire.Id} Currency={expectedCurrency} but expert account {expertStripeAccountId} default currency={accountCurrency}. Cannot transfer.",
+                                userId: searchHire.ExpertId,
+                                source: "RefundService.ProcessMoneyDistribution",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                additionalData: new
+                                {
+                                    SearchHireId = searchHire.Id,
+                                    SearchHireCurrency = expectedCurrency,
+                                    ExpertStripeAccountId = expertStripeAccountId,
+                                    ExpertAccountDefaultCurrency = accountCurrency,
+                                    ExpertCountry = searchHire.ExpertCountry,
+                                    Status = statusValue
+                                });
+                            searchHire.RequiresManualReview = true;
+                            searchHire.RefundFailedAt = DateTime.UtcNow;
+                            await _context.SaveChangesAsync();
+                            if (transaction != null)
+                            {
+                                await transaction.RollbackAsync();
+                            }
+                            return false;
+                        }
+
                         var transferOptions = new TransferCreateOptions
                         {
                             Amount = checked((long)Math.Round(expertAmountForStripe * 100)), // ✅ Usar monto base (sin tax) - transfers no incluyen tax. Round (no truncar) para no perder céntimos ni descuadrar el ledger.
@@ -1864,6 +1904,7 @@ namespace newApi.Services
                                         UserId = searchHire.ExpertId,
                                         Amount = -clawbackAmountEur,
                                         AmountCents = -clawbackCents,
+                                        Currency = searchHire.Currency, // 🌍 Round 25: snapshot ISO 4217 desde el hire asociado
                                         TransactionType = "TransferReversal",
                                         RelatedEntityType = "SearchHire",
                                         RelatedEntityId = searchHireId,
@@ -1953,6 +1994,7 @@ namespace newApi.Services
                                 UserId = searchHire.ClientId,
                                 Amount = Math.Round(clientRefundAmountForStripe, 2), // 🔧 redondeado a céntimo para casar con Stripe
                                 AmountCents = checked((long)Math.Round(clientRefundAmountForStripe * 100)), // céntimos exactos refundados
+                                Currency = searchHire.Currency, // 🌍 Round 25: snapshot ISO 4217 desde el hire asociado
                                 TransactionType = "Refund",
                                 RelatedEntityType = "SearchHire",
                                 RelatedEntityId = searchHireId,
@@ -1994,6 +2036,7 @@ namespace newApi.Services
                                 UserId = searchHire.ExpertId.Value,
                                 Amount = Math.Round(expertAmountForStripe, 2), // 🔧 redondeado a céntimo para casar con Stripe
                                 AmountCents = checked((long)Math.Round(expertAmountForStripe * 100)), // céntimos exactos transferidos
+                                Currency = searchHire.Currency, // 🌍 Round 25: snapshot ISO 4217 desde el hire asociado
                                 TransactionType = "Payout",
                                 RelatedEntityType = "SearchHire",
                                 RelatedEntityId = searchHireId,
@@ -2432,6 +2475,7 @@ namespace newApi.Services
                     UserId = payout.UserId,
                     Amount = -reverseAmount,
                     AmountCents = -remainderCents,
+                    Currency = payout.Currency, // 🌍 Round 25: heredar del Payout original (mismo SearchHire)
                     // 🛡️ B2 FIX: TransactionType distinto del clawback ("TransferReversal") para que
                     // HandleChargeDisputeClosed (caso "won") pueda discriminar al calcular el monto
                     // a reintegrar al experto: solo lo revertido POR EL CHARGEBACK debe reintegrarse,
@@ -2493,6 +2537,30 @@ namespace newApi.Services
                     relatedEntityId: searchHireId);
                 throw; // Hangfire reintenta
             }
+        }
+
+        /// <summary>
+        /// 🌍 Estimación currency-aware de la fee que cobra Stripe por procesar el cargo.
+        /// El cargo es 2.9% del monto + una cantidad fija que depende de la divisa de origen.
+        /// Las tarifas reales varían por región de la tarjeta (europea vs internacional);
+        /// usamos el fixed amount conservador en la divisa fuente como referencia para los
+        /// guard-rails de platformAmount. No es exacto al céntimo — sólo orientativo.
+        /// </summary>
+        private static decimal GetStripeFeeEstimate(decimal baseAmount, string? currency)
+        {
+            // Conservative estimate — Stripe charges 2.9% + fixed amount in source currency.
+            // Real fees depend on card region (European vs international).
+            var normalized = string.IsNullOrWhiteSpace(currency) ? "EUR" : currency.ToUpperInvariant();
+            decimal fixedFee = normalized switch
+            {
+                "EUR" => 0.25m,
+                "GBP" => 0.20m,
+                "USD" => 0.30m,
+                "MXN" => 5.00m,
+                "BRL" => 0.50m,
+                _ => 0.30m, // safe default
+            };
+            return baseAmount * 0.029m + fixedFee;
         }
 
         private static AppointmentStatus? MapAppointmentStatus(string statusValue)

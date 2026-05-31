@@ -424,6 +424,38 @@ string? GetSecretValue(string secretName, string? defaultValue = null)
         }
     }
 
+    // 🛡️ Round 17+: en Dev, fallback a builder.Configuration (appsettings.Development.json
+    // está en .gitignore — es seguro poner secrets ahí para dev local). Esto evita tener que
+    // configurar env vars en cada terminal y replica el comportamiento de Render localmente.
+    //
+    // Estructura esperada en appsettings.Development.json:
+    //   {
+    //     "Secrets": {
+    //       "email-smtp-host": "smtp.hostinger.com",
+    //       "email-smtp-port": "465",
+    //       "email-smtp-username": "info@inspecciono.com",
+    //       "email-smtp-password": "<tu_password>"
+    //     }
+    //   }
+    if (isDevelopment)
+    {
+        foreach (var name in namesToTry)
+        {
+            // Buscar en "Secrets:<name>" (estructura organizada)
+            var fromConfig = builder.Configuration[$"Secrets:{name}"];
+            if (!string.IsNullOrEmpty(fromConfig))
+            {
+                return fromConfig;
+            }
+            // También en raíz por compatibilidad
+            fromConfig = builder.Configuration[name];
+            if (!string.IsNullOrEmpty(fromConfig))
+            {
+                return fromConfig;
+            }
+        }
+    }
+
     return defaultValue;
 }
 

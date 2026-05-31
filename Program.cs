@@ -1495,6 +1495,15 @@ builder.Services.AddScoped<ITimezoneService, TimezoneService>(); // ✅ Servicio
 builder.Services.AddScoped<IFavoriteService, FavoriteService>(); // ✅ FAVORITOS: Gestión de servicios favoritos
 builder.Services.AddScoped<ISupabaseRealtimeService, SupabaseRealtimeService>(); // ✅ SUPABASE REALTIME: Reemplaza SignalR para chat en tiempo real
 builder.Services.AddScoped<IStripeReconciliationService, StripeReconciliationService>(); // P2-5: reconciliación diaria BD↔Stripe
+builder.Services.AddScoped<IExchangeRateService, ExchangeRateService>(); // 💱 Multi-Currency Display: FX rates con cache 24h + BD snapshot
+// 💱 HttpClient nombrado para Frankfurter (ECB-backed, sin API key, refresco diario por Hangfire).
+// Timeout 5s — la API responde típicamente en <500ms; un timeout corto evita bloquear el job de
+// refresco si el provider tiene latencia anómala (el siguiente ciclo lo intentará otra vez).
+builder.Services.AddHttpClient("frankfurter", c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(5);
+    c.BaseAddress = new Uri("https://api.frankfurter.app/");
+});
 
 // Background services - AppointmentTimerBackgroundService migrated to Hangfire
 
@@ -1760,6 +1769,16 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IEmailVerificationService>(
     "cleanup-expired-otp-codes",
     svc => svc.CleanupExpiredCodesAsync(),
     "0 3 * * *", // 03:00 UTC daily
+    n29UtcOptions);
+
+// 💱 Multi-Currency Display: refresco diario de tasas Frankfurter (ECB-backed).
+// Se ejecuta a las 06:00 UTC para garantizar que el ECB ya publicó (lo hace ~04:00 UTC). La
+// implementación es a prueba de fallos: si el provider está caído, el job logea warning y la
+// cache/snapshot anterior siguen sirviéndose — no genera 5xx al usuario ni rompe el digest.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IExchangeRateService>(
+    "refresh-exchange-rates",
+    svc => svc.RefreshRatesAsync(),
+    "0 6 * * *", // 06:00 UTC daily (después del ECB publish ~04:00 UTC)
     n29UtcOptions);
 
 // ✅ OPTIMIZADO: Usar solo scheduled jobs para eventos específicos

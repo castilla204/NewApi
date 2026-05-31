@@ -547,6 +547,18 @@ namespace newApi.Controllers
                 requestIp: GetClientIpAddress(),
                 shouldSendEmail: shouldSendEmail);
 
+            if (!issue.Success && shouldSendEmail)
+            {
+                // SMTP falló — no podemos enviar OTP. Devolvemos 503 visible al cliente
+                // para que muestre error y el usuario pueda reintentar (no se queda colgado
+                // en la pantalla de OTP esperando un email que nunca llegó).
+                return StatusCode(503, new
+                {
+                    code = "email_send_failed",
+                    message = issue.ErrorMessage ?? "No pudimos enviar el código por correo. Inténtalo de nuevo en unos segundos."
+                });
+            }
+
             // Stash en MemoryCache: { token → (name, passwordHash) }. TTL 15min (mayor que OTP TTL).
             // Si el OTP se verifica, leemos esto para crear el User. Si caduca, se pierde.
             _registrationCache.Set($"reg:{issue.VerificationToken}",
@@ -835,6 +847,15 @@ namespace newApi.Controllers
                 userId: user?.Id,
                 requestIp: GetClientIpAddress(),
                 shouldSendEmail: shouldSend);
+
+            if (!issue.Success && shouldSend)
+            {
+                return StatusCode(503, new
+                {
+                    code = "email_send_failed",
+                    message = issue.ErrorMessage ?? "No pudimos enviar el código. Inténtalo de nuevo en unos segundos."
+                });
+            }
 
             return Ok(new
             {

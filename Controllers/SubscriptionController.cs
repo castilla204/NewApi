@@ -4549,6 +4549,8 @@ namespace newApi.Controllers
                                 SearchHireId = searchHireId, // ✅ FIX: Usar searchHireId guardado
                                 StatusId = awaitingStatus.Id,
                                 // ProposedDate, ProposedTime, Location son nullable - se asignarán en ProposeAppointment
+                                // 🌍 Round 21: snapshot del timezone del experto al crear la cita.
+                                ProposerTimezone = expertTimezone ?? "Europe/Madrid",
                                 CreatedAt = DateTime.UtcNow,
                                 UpdatedAt = DateTime.UtcNow
                             };
@@ -7348,6 +7350,31 @@ namespace newApi.Controllers
                     details: $"Payout {payout.Id} of {amount}€ paid for account '{accountId ?? "platform"}'.",
                     source: "SubscriptionController.HandlePayoutEvent",
                     relatedEntityType: "Payout");
+
+                // 🌍 Round 21: actualizar LastPayoutDate del ExpertProfile asociado a la cuenta Connect.
+                // En "separate charges & transfers" payout.Destination es el external account (banco/tarjeta),
+                // así que la cuenta Connect del experto se identifica por stripeEvent.Account (= accountId).
+                // Para payouts de la plataforma (accountId == null) no hay experto que actualizar.
+                if (!string.IsNullOrEmpty(accountId))
+                {
+                    var expertProfile = await _context.ExpertProfiles
+                        .FirstOrDefaultAsync(ep => ep.StripeAccountId == accountId);
+
+                    if (expertProfile != null)
+                    {
+                        // Stripe.Payout.ArrivalDate es DateTime no-nullable; si llega por defecto (MinValue) usar UtcNow.
+                        expertProfile.LastPayoutDate = payout.ArrivalDate != default ? payout.ArrivalDate : DateTime.UtcNow;
+                        await _context.SaveChangesAsync();
+                    }
+                    else
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "payout.paid for unknown ExpertProfile",
+                            details: $"No ExpertProfile found with StripeAccountId='{accountId}' for Payout {payout.Id}. Cannot update LastPayoutDate.",
+                            source: "SubscriptionController.HandlePayoutEvent",
+                            relatedEntityType: "Payout");
+                    }
+                }
             }
         }
 

@@ -47,12 +47,19 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// Se detecta automáticamente desde las coordenadas al registrarse o actualizar ubicación
         /// </summary>
         public string? Country { get; set; }
-        
+
         /// <summary>
         /// Nombre de la ciudad del experto (ej: "Madrid", "Barcelona", "México City")
         /// Se detecta automáticamente desde las coordenadas usando Google Geocoding API
         /// </summary>
         public string? City { get; set; }
+
+        /// <summary>
+        /// 🌍 Round 21: timestamp del último payout exitoso (payout.paid webhook).
+        /// Permite al experto ver en dashboard cuándo recibió pago la última vez.
+        /// Nullable porque expertos nuevos no lo tienen aún.
+        /// </summary>
+        public DateTime? LastPayoutDate { get; set; }
         
         public virtual User User { get; set; }
         public virtual ICollection<newApi.DataLayer.Models.PostGresModels.SearchService> SearchServices { get; set; }

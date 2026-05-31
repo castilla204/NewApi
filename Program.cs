@@ -648,6 +648,13 @@ catch
     builder.Configuration["Email:FromName"] = "Inspecciono";
 }
 
+// ✅ SMTP env validation: avisa en producción si falta SmtpHost (evita OTPs silenciosos)
+var isDev = builder.Environment.IsDevelopment();
+if (!isDev && string.IsNullOrEmpty(builder.Configuration["Email:SmtpHost"]))
+{
+    configLogger.LogWarning("⚠️ PRODUCTION: Email:SmtpHost is empty. OTP emails will fail. Set 'email-smtp-host' in Render env vars.");
+}
+
 // Configurar la cadena de conexi�n seg�n el entorno
 // ✅ MIGRACIÓN A RENDER POSTGRESQL: Base de datos principal en Render
 // Supabase se mantiene SOLO para Realtime (chat en directo y notificaciones)
@@ -2410,6 +2417,29 @@ logger.LogInformation("========================================");
 // Esto permite que Render.com detecte el puerto rápidamente
 
 var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+
+// ✅ Background task: Auto-aplicar migraciones EF Core pendientes
+// (e.g. EmailVerificationCodes) sin intervención manual en Render
+lifetime.ApplicationStarted.Register(() =>
+{
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            using var scope = app.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var migLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+            migLogger.LogInformation("[MIGRATIONS] Applying pending EF Core migrations...");
+            await db.Database.MigrateAsync();
+            migLogger.LogInformation("[MIGRATIONS] ✅ Migrations applied successfully");
+        }
+        catch (Exception ex)
+        {
+            var migLogger = app.Services.GetRequiredService<ILogger<Program>>();
+            migLogger.LogError(ex, "[MIGRATIONS] ❌ Failed to apply migrations");
+        }
+    });
+});
 
 // ✅ Background task: Inicialización pesada DESPUÉS de que el servidor inicie
 lifetime.ApplicationStarted.Register(() =>

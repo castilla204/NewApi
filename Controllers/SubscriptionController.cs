@@ -2145,26 +2145,28 @@ namespace newApi.Controllers
                     
                     await _loggingService.LogCriticalAsync(
                         message: "CRITICAL: Webhook secret not configured for Connect events",
-                        details: $"Both WebhookSecret and GeneralWebhookSecret are empty. Event type: {eventType}, Account: {accountId}. " +
-                                $"INSTRUCCIONES: 1) Ve al Dashboard de Stripe → Developers → Webhooks → Tu endpoint → Signing secret. " +
-                                $"2) Copia el secret (whsec_...). " +
+                        details: $"Stripe:WebhookSecret is empty for /webhook endpoint. Event type: {eventType}, Account: {accountId}. " +
+                                $"This is the CONNECT endpoint secret (from Stripe Dashboard → Connect → Webhooks → Your Connect endpoint → Signing secret). " +
+                                $"If using general platform webhooks (payment_intent.*, charge.*), configure Stripe:GeneralWebhookSecret SEPARATELY for the /webhook-general endpoint. " +
+                                $"INSTRUCCIONES: 1) Ve al Dashboard de Stripe → Developers → Webhooks → endpoint de CONNECT (NO el general). " +
+                                $"2) Copia el secret específico de Connect (whsec_...). " +
                                 $"3) Configúralo con: dotnet user-secrets set \"Stripe:WebhookSecret\" \"whsec_...\" " +
                                 $"O como variable de entorno: STRIPE_WEBHOOK_SECRET=whsec_...",
                         source: "SubscriptionController.HandleStripeWebhook",
                         relatedEntityType: "Webhook",
                         relatedEntityId: null,
-                        additionalData: new { 
+                        additionalData: new {
                             HasWebhookSecret = !string.IsNullOrEmpty(WebhookSecret),
                             HasGeneralWebhookSecret = !string.IsNullOrEmpty(GeneralWebhookSecret),
                             EventType = eventType,
                             AccountId = accountId,
                             HasSignature = !string.IsNullOrEmpty(signatureHeader),
-                            Instructions = "Configure webhook secret from Stripe Dashboard → Developers → Webhooks → Your endpoint → Signing secret"
+                            Instructions = "Configure Stripe:WebhookSecret (CONNECT endpoint) — distinct from Stripe:GeneralWebhookSecret (platform events)"
                         }
                     );
-                    return BadRequest(new { 
-                        error = "Webhook secret not configured",
-                        instructions = "Configure Stripe:WebhookSecret from Stripe Dashboard → Developers → Webhooks → Your endpoint → Signing secret",
+                    return BadRequest(new {
+                        error = "Webhook secret not configured (CONNECT endpoint)",
+                        instructions = "Configure Stripe:WebhookSecret (CONNECT endpoint signing secret) — this is distinct from Stripe:GeneralWebhookSecret (which is for /webhook-general). Source: Stripe Dashboard → Connect → Webhooks → Your Connect endpoint → Signing secret",
                         eventType = eventType,
                         accountId = accountId
                     });
@@ -3234,8 +3236,54 @@ namespace newApi.Controllers
                                 decimal.TryParse(session.Metadata.GetValueOrDefault("amount", "0"), out decimal amount) &&
                                 bool.TryParse(session.Metadata.GetValueOrDefault("pendingHire", "false"), out bool pendingHire))
                             {
+                                // 🚨 P1 FIX (Finding #1): validar explícitamente userId>0 y amount>0 ANTES de
+                                // procesar. Si vienen 0 (metadata corrupta), antes pasaba silente al else o se
+                                // procesaba con userId=0 → FK violation. Ahora log CRÍTICO inmediato + abort.
+                                if (userId <= 0 || amount <= 0)
+                                {
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL P1: Invalid userId/amount in checkout.session metadata",
+                                        details: $"Session {session.Id} parsed userId={userId} amount={amount} pendingHire={pendingHire}. Metadata corrupta — el cobro pudo haber pasado pero NO se procesa hire. ACCIÓN ADMIN: refund manual del PaymentIntent {session.PaymentIntentId} desde Stripe Dashboard.",
+                                        source: "SubscriptionController.HandleGeneralStripeWebhook",
+                                        relatedEntityType: "Payment",
+                                        relatedEntityId: null,
+                                        additionalData: new
+                                        {
+                                            SessionId = session.Id,
+                                            PaymentIntentId = session.PaymentIntentId,
+                                            UserId = userId,
+                                            Amount = amount,
+                                            PendingHire = pendingHire,
+                                            Metadata = session.Metadata
+                                        });
+                                    if (eventMarkedProcessing && currentEventId != null)
+                                    {
+                                        await MarkEventAsProcessedAsync(currentEventId, currentEventType ?? stripeEvent.Type, currentAccountId, null, "Failed", "Invalid userId/amount in metadata");
+                                        eventMarkedProcessing = false;
+                                    }
+                                    return StatusCode(500, new { error = "Invalid userId/amount in metadata - Stripe will retry" });
+                                }
+
                                 if (pendingHire && int.TryParse(session.Metadata.GetValueOrDefault("serviceId", "0"), out int serviceId))
                                 {
+                                    // 🚨 P1 FIX (Finding #1): validar serviceId>0 antes de delegar.
+                                    if (serviceId <= 0)
+                                    {
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL P1: Invalid serviceId in checkout.session metadata (pendingHire=true)",
+                                            details: $"Session {session.Id} parsed serviceId={serviceId} con pendingHire=true. NO se crea hire. ACCIÓN ADMIN: refund manual del PaymentIntent {session.PaymentIntentId}.",
+                                            userId: userId,
+                                            source: "SubscriptionController.HandleGeneralStripeWebhook",
+                                            relatedEntityType: "Payment",
+                                            relatedEntityId: null,
+                                            additionalData: new { SessionId = session.Id, PaymentIntentId = session.PaymentIntentId, ServiceId = serviceId, Metadata = session.Metadata });
+                                        if (eventMarkedProcessing && currentEventId != null)
+                                        {
+                                            await MarkEventAsProcessedAsync(currentEventId, currentEventType ?? stripeEvent.Type, currentAccountId, null, "Failed", "Invalid serviceId in metadata");
+                                            eventMarkedProcessing = false;
+                                        }
+                                        return StatusCode(500, new { error = "Invalid serviceId in metadata - Stripe will retry" });
+                                    }
                                     await HandlePendingHireCompleted(userId, amount, serviceId, session.Metadata, session);
                                 }
                                 else
@@ -3321,6 +3369,12 @@ namespace newApi.Controllers
                         await HandleChargeRefundUpdated(stripeEvent.Data.Object as Refund);
                         break;
 
+                    // 🛡️ Finding #7 FIX: charge.refund.created — registrar la creación del refund para
+                    // poder detectar refunds rechazados temprano (antes de que llegue charge.refund.updated).
+                    case "charge.refund.created":
+                        await HandleChargeRefundCreated(stripeEvent.Data.Object as Refund);
+                        break;
+
                     // 🛡️ A4: charge.failed — el cargo falló a nivel de "charge" (no de payment_intent).
                     case "charge.failed":
                         await HandleChargeFailed(stripeEvent.Data.Object as Charge);
@@ -3341,19 +3395,62 @@ namespace newApi.Controllers
                         var efw = stripeEvent.Data.Object as Stripe.Radar.EarlyFraudWarning;
                         if (efw != null)
                         {
+                            // 🚨 Finding #18 FIX: marcar el hire correspondiente como RequiresManualReview
+                            // para que aparezca en el digest del admin. Antes solo se logueaba — el hire
+                            // seguía completable normalmente mientras Stripe ya sospechaba fraude.
+                            int? hireIdForEfw = null;
+                            int? efwUserId = null;
+                            if (!string.IsNullOrEmpty(efw.ChargeId))
+                            {
+                                try
+                                {
+                                    // Resolver PaymentIntent desde ChargeId vía Stripe
+                                    var chargeSvc = new Stripe.ChargeService();
+                                    var chargeFromEfw = await chargeSvc.GetAsync(efw.ChargeId);
+                                    var piId = chargeFromEfw?.PaymentIntentId;
+                                    if (!string.IsNullOrEmpty(piId))
+                                    {
+                                        var (hid, _, cid) = await FindHireForPaymentIntentAsync(piId);
+                                        hireIdForEfw = hid;
+                                        efwUserId = cid;
+                                        if (hid.HasValue)
+                                        {
+                                            var efwHire = await _context.SearchHires.FirstOrDefaultAsync(h => h.Id == hid.Value);
+                                            if (efwHire != null && !efwHire.RequiresManualReview)
+                                            {
+                                                efwHire.RequiresManualReview = true;
+                                                efwHire.UpdatedAt = DateTime.UtcNow;
+                                                await _context.SaveChangesAsync();
+                                            }
+                                        }
+                                    }
+                                }
+                                catch (Exception efwLookupEx)
+                                {
+                                    // Best-effort: aunque falle el lookup, el log critical sigue su curso
+                                    await _loggingService.LogWarningAsync(
+                                        message: "EFW hire lookup failed (best-effort)",
+                                        details: $"EfwId={efw.Id} ChargeId={efw.ChargeId}: {efwLookupEx.Message}",
+                                        source: "SubscriptionController.HandleGeneralStripeWebhook.radar.efw",
+                                        relatedEntityType: "Charge");
+                                }
+                            }
+
                             await _loggingService.LogCriticalAsync(
                                 message: "🚨 STRIPE RADAR — Early Fraud Warning (acción admin)",
-                                details: $"Stripe detectó posible fraude en charge {efw.ChargeId} (FraudType={efw.FraudType}, Actionable={efw.Actionable}). ACCIÓN ADMIN: revisar y refundar proactivamente ANTES de que el banco abra chargeback (ahorro ~15€ dispute fee + protege dispute rate). EFW Id: {efw.Id}.",
+                                details: $"Stripe detectó posible fraude en charge {efw.ChargeId} (FraudType={efw.FraudType}, Actionable={efw.Actionable}). ACCIÓN ADMIN: revisar y refundar proactivamente ANTES de que el banco abra chargeback (ahorro ~15€ dispute fee + protege dispute rate). EFW Id: {efw.Id}." + (hireIdForEfw.HasValue ? $" SearchHire {hireIdForEfw} marcado RequiresManualReview." : " (no se encontró SearchHire asociado)"),
+                                userId: efwUserId,
                                 source: "SubscriptionController.HandleGeneralStripeWebhook.radar.efw",
                                 relatedEntityType: "Charge",
-                                relatedEntityId: null,
+                                relatedEntityId: hireIdForEfw,
                                 additionalData: new
                                 {
                                     EfwId = efw.Id,
                                     ChargeId = efw.ChargeId,
                                     FraudType = efw.FraudType,
                                     Actionable = efw.Actionable,
-                                    EfwCreated = efw.Created
+                                    EfwCreated = efw.Created,
+                                    SearchHireId = hireIdForEfw
                                 });
                         }
                         break;
@@ -3376,6 +3473,20 @@ namespace newApi.Controllers
 
                     case "transfer.failed":
                         await HandleTransferFailed(stripeEvent.Data.Object as Transfer);
+                        break;
+
+                    // 🛡️ Finding #19 FIX: transfer.created — informational. La plataforma crea el Transfer
+                    // localmente al ejecutar ProcessMoneyDistribution; este evento confirma que Stripe lo
+                    // aceptó. Útil para detectar transfers creados externamente (Dashboard) sin contraparte
+                    // en FT. Idempotencia: EventId-level vía TryBeginProcessingEventAsync.
+                    case "transfer.created":
+                        await HandleTransferCreated(stripeEvent.Data.Object as Transfer);
+                        break;
+
+                    // 🛡️ Finding #20 FIX: balance.available — visibilidad del saldo de plataforma para
+                    // detectar caídas inesperadas (chargebacks, disputas, payouts fallidos).
+                    case "balance.available":
+                        await HandleBalanceAvailable(stripeEvent.Data.Object);
                         break;
 
                     case "invoice.payment_succeeded":
@@ -3592,6 +3703,21 @@ namespace newApi.Controllers
             var service = await _context.SearchServices.FindAsync(serviceId);
             if (service == null)
             {
+                // 🚨 P1 FIX (Finding #1): el servicio no existe (borrado, ID corrupto, etc.) pero
+                // el cliente YA pagó. Antes salía silente → dinero atrapado sin hire ni log crítico.
+                // Ahora log CRÍTICO + intento de cancel/refund para no perder el caso.
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL P1: SearchService not found - payment received without service",
+                    details: $"Webhook checkout.session.completed: ServiceId={serviceId} no existe en SearchServices, pero el cliente {userId} pagó. PaymentIntentId: {session.PaymentIntentId}. ACCIÓN AUTO: cancel/refund del PI. ACCIÓN ADMIN: verificar y notificar al cliente.",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted",
+                    relatedEntityType: "SearchService",
+                    relatedEntityId: serviceId,
+                    additionalData: new { ServiceId = serviceId, PaymentIntentId = session.PaymentIntentId, SessionId = session.Id });
+                if (!string.IsNullOrEmpty(session.PaymentIntentId))
+                {
+                    await CancelOrRefundDuplicatePaymentIntentAsync(session.PaymentIntentId, userId, 0);
+                }
                 return; // ✅ CORRECTO: Salir silenciosamente en método async Task
             }
 
@@ -6698,24 +6824,46 @@ namespace newApi.Controllers
                     && paymentIntent.Metadata.TryGetValue("userId", out var uid)
                     && int.TryParse(uid, out var parsedUid) ? parsedUid : (int?)null;
 
-                await _loggingService.LogWarningAsync(
-                    message: "Payment succeeded without local ServicePayment record",
-                    details: $"PaymentIntent {paymentIntent.Id} succeeded ({amount}€) but no ServicePayment FinancialTransaction exists. " +
-                             (indicatesHire
-                                ? "Metadata indicates a pending hire — verify checkout.session.completed was processed (possible event ordering issue or dropped event). Money may be collected without a hire."
-                                : "No hire metadata present — likely a non-hire payment, informational only."),
-                    userId: userId,
-                    source: "SubscriptionController.HandlePaymentIntentSucceeded",
-                    relatedEntityType: "Payment",
-                    relatedEntityId: null,
-                    additionalData: new
-                    {
-                        PaymentIntentId = paymentIntent.Id,
-                        Amount = amount,
-                        Currency = paymentIntent.Currency,
-                        IndicatesHire = indicatesHire
-                    }
-                );
+                // 🚨 P1 FIX (Finding #1): si la metadata indica que era un hire pero NO hay ServicePayment local,
+                // es indicio de que la metadata se corrompió o el evento checkout.session.completed se perdió →
+                // dinero capturado sin hire creado. Esto SIEMPRE es crítico (no warning). Si no hay metadata de hire,
+                // sigue siendo warning (puede ser un load_money u otro pago no-hire).
+                if (indicatesHire)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL P1: Payment succeeded WITHOUT local ServicePayment record (hire metadata present)",
+                        details: $"PaymentIntent {paymentIntent.Id} succeeded ({amount}€) PERO no existe FinancialTransaction ServicePayment. Metadata indica hire pendiente → checkout.session.completed posiblemente se perdió/corrupto. Dinero CAPTURADO sin hire. ACCIÓN URGENTE ADMIN: refund manual + verificar metadata.",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePaymentIntentSucceeded",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: null,
+                        additionalData: new
+                        {
+                            PaymentIntentId = paymentIntent.Id,
+                            Amount = amount,
+                            Currency = paymentIntent.Currency,
+                            IndicatesHire = true,
+                            Metadata = paymentIntent.Metadata
+                        });
+                }
+                else
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Payment succeeded without local ServicePayment record",
+                        details: $"PaymentIntent {paymentIntent.Id} succeeded ({amount}€) but no ServicePayment FinancialTransaction exists. No hire metadata present — likely a non-hire payment, informational only.",
+                        userId: userId,
+                        source: "SubscriptionController.HandlePaymentIntentSucceeded",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: null,
+                        additionalData: new
+                        {
+                            PaymentIntentId = paymentIntent.Id,
+                            Amount = amount,
+                            Currency = paymentIntent.Currency,
+                            IndicatesHire = false
+                        }
+                    );
+                }
             }
             catch (Exception ex)
             {
@@ -6833,6 +6981,21 @@ namespace newApi.Controllers
                         StripePaymentIntentId = dispute.PaymentIntentId,
                         CreatedAt = DateTime.UtcNow
                     });
+
+                    // 🚨 Finding #17 FIX: marcar el SearchHire como Disputed para que la UI/admin
+                    // refleje el estado financiero real. Antes el hire seguía "Completed" mientras
+                    // la plataforma había perdido fondos → confusión total.
+                    var hireToMark = await _context.SearchHires.FirstOrDefaultAsync(h => h.Id == hireId.Value);
+                    if (hireToMark != null)
+                    {
+                        var disputedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
+                        if (disputedStatusId != hireToMark.StatusId)
+                        {
+                            hireToMark.StatusId = disputedStatusId;
+                            hireToMark.UpdatedAt = DateTime.UtcNow;
+                        }
+                    }
+
                     await _context.SaveChangesAsync();
 
                     // 🛡️ T9 FIX: detectar dispute interna activa antes de encolar reversal automático.
@@ -6959,11 +7122,49 @@ namespace newApi.Controllers
 
         /// <summary>
         /// charge.dispute.funds_withdrawn / funds_reinstated — movimiento de fondos por una disputa.
+        /// 🛡️ Finding #9 FIX: en funds_reinstated, crear un FT "ChargebackReinstated" para que la
+        /// contabilidad refleje la reversa del cargo del chargeback (Stripe devuelve los fondos a la
+        /// plataforma). Idempotente: filtrado por StripePaymentIntentId + tipo.
         /// </summary>
         private async Task HandleChargeDisputeFundsEvent(string eventType, Stripe.Dispute? dispute)
         {
             if (dispute == null) return;
             var amount = dispute.Amount / 100m;
+
+            if (string.Equals(eventType, "charge.dispute.funds_reinstated", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrEmpty(dispute.PaymentIntentId))
+            {
+                var (hireId, expertId, clientId) = await FindHireForPaymentIntentAsync(dispute.PaymentIntentId);
+                if (hireId.HasValue)
+                {
+                    // 🛡️ Finding #9 FIX: crear el offsetting credit del Chargeback original.
+                    var alreadyReinstated = await _context.FinancialTransactions.AnyAsync(ft =>
+                        ft.RelatedEntityType == "SearchHire" && ft.RelatedEntityId == hireId.Value &&
+                        ft.TransactionType == "ChargebackReinstated" && ft.StripePaymentIntentId == dispute.PaymentIntentId);
+                    if (!alreadyReinstated)
+                    {
+                        _context.FinancialTransactions.Add(new FinancialTransaction
+                        {
+                            UserId = clientId,
+                            Amount = amount, // POSITIVO: la plataforma recupera el cargo retirado
+                            AmountCents = dispute.Amount,
+                            TransactionType = "ChargebackReinstated",
+                            RelatedEntityType = "SearchHire",
+                            RelatedEntityId = hireId.Value,
+                            StripePaymentIntentId = dispute.PaymentIntentId,
+                            CreatedAt = DateTime.UtcNow
+                        });
+                        await _context.SaveChangesAsync();
+                    }
+                    await _loggingService.LogWarningAsync(
+                        message: $"Dispute funds_reinstated: ledger offset created (hire {hireId})",
+                        details: $"Dispute {dispute.Id} funds_reinstated for {amount}€. PI {dispute.PaymentIntentId}. SearchHire {hireId}. FT 'ChargebackReinstated' creada (offsetting credit del Chargeback original).",
+                        source: "SubscriptionController.HandleChargeDisputeFundsEvent",
+                        relatedEntityType: "Dispute");
+                    return;
+                }
+            }
+
             await _loggingService.LogWarningAsync(
                 message: $"Dispute funds event: {eventType}",
                 details: $"Dispute {dispute.Id} ({eventType}) for {amount}€. PaymentIntentId: {dispute.PaymentIntentId}, Status: {dispute.Status}.",
@@ -6976,6 +7177,39 @@ namespace newApi.Controllers
         /// "Refund" local para este PaymentIntent, fue un reembolso externo (Dashboard de Stripe)
         /// y se avisa para reconciliar el ledger.
         /// </summary>
+        /// <summary>
+        /// 🛡️ Finding #7 FIX: charge.refund.created — registra la creación del refund (informational).
+        /// Útil para detectar refunds creados externamente (Stripe Dashboard) que no están en el ledger
+        /// local. La conciliación pesada sigue ocurriendo en charge.refunded / charge.refund.updated.
+        /// Idempotencia: EventId-level (TryBeginProcessingEventAsync evita doble proceso).
+        /// </summary>
+        private async Task HandleChargeRefundCreated(Refund? refund)
+        {
+            if (refund == null) return;
+            var localFt = await _context.FinancialTransactions.AsNoTracking()
+                .FirstOrDefaultAsync(ft => ft.StripeRefundId == refund.Id);
+            var hasLocalRecord = localFt != null;
+            var amount = refund.Amount / 100m;
+            await _loggingService.LogInfoAsync(
+                message: $"charge.refund.created received (localRecord={hasLocalRecord})",
+                details: $"Refund {refund.Id} created ({amount}€) on PI {refund.PaymentIntentId}. Status: {refund.Status}, Reason: {refund.Reason ?? "n/a"}. " +
+                         (hasLocalRecord
+                            ? "Local FinancialTransaction exists — internal-initiated refund."
+                            : "NO local FT — likely external (Stripe Dashboard) refund. Will be reconciled on charge.refunded."),
+                source: "SubscriptionController.HandleChargeRefundCreated",
+                relatedEntityType: "Refund",
+                relatedEntityId: localFt?.RelatedEntityId,
+                additionalData: new
+                {
+                    RefundId = refund.Id,
+                    refund.PaymentIntentId,
+                    Amount = amount,
+                    refund.Status,
+                    refund.Reason,
+                    HasLocalFt = hasLocalRecord
+                });
+        }
+
         private async Task HandleChargeRefundUpdated(Refund? refund)
         {
             // 🛡️ V11 FIX: si refund pasa a failed/canceled, log Critical (cliente no recibió dinero)
@@ -6986,9 +7220,44 @@ namespace newApi.Controllers
             {
                 var localFt = await _context.FinancialTransactions.AsNoTracking()
                     .FirstOrDefaultAsync(ft => ft.StripeRefundId == refund.Id);
+
+                // 🛡️ Finding #3 FIX: crear FinancialTransaction "RefundFailed" para preservar el rastro
+                // de auditoría del fallo del refund. Idempotente: si ya existe RefundFailed para este
+                // StripeRefundId, no duplica.
+                var alreadyTrackedFailure = await _context.FinancialTransactions.AnyAsync(ft =>
+                    ft.StripeRefundId == refund.Id && ft.TransactionType == "RefundFailed");
+                if (!alreadyTrackedFailure)
+                {
+                    _context.FinancialTransactions.Add(new FinancialTransaction
+                    {
+                        UserId = localFt?.UserId,
+                        Amount = 0, // Solo marcador de fallo, no movimiento real
+                        AmountCents = 0,
+                        TransactionType = "RefundFailed",
+                        RelatedEntityType = localFt?.RelatedEntityType ?? "Refund",
+                        RelatedEntityId = localFt?.RelatedEntityId,
+                        StripeRefundId = refund.Id,
+                        StripePaymentIntentId = refund.PaymentIntentId,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                    try
+                    {
+                        await _context.SaveChangesAsync();
+                    }
+                    catch (Exception saveEx)
+                    {
+                        // Best-effort: el log critical sigue funcionando aunque el insert falle
+                        await _loggingService.LogWarningAsync(
+                            message: "RefundFailed FT insert failed (best-effort)",
+                            details: $"RefundId={refund.Id}: {saveEx.Message}",
+                            source: "SubscriptionController.HandleChargeRefundUpdated",
+                            relatedEntityType: "Refund");
+                    }
+                }
+
                 await _loggingService.LogCriticalAsync(
                     message: $"CRITICAL V11: Refund {refund.Id} cambió a '{status}' — cliente no recibe dinero",
-                    details: $"Refund {refund.Id} ({refund.Amount / 100m}€) PI {refund.PaymentIntentId}. FailureReason: {refund.FailureReason ?? "n/a"}. ACCIÓN ADMIN: contactar cliente, validar tarjeta actualizada, reintentar refund manual o emitir transferencia bancaria alternativa.",
+                    details: $"Refund {refund.Id} ({refund.Amount / 100m}€) PI {refund.PaymentIntentId}. FailureReason: {refund.FailureReason ?? "n/a"}. ACCIÓN ADMIN: contactar cliente, validar tarjeta actualizada, reintentar refund manual o emitir transferencia bancaria alternativa. RefundFailed FT registrada para auditoría.",
                     userId: localFt?.UserId,
                     source: "SubscriptionController.HandleChargeRefundUpdated.V11",
                     relatedEntityType: "Refund",
@@ -7522,6 +7791,124 @@ namespace newApi.Controllers
             {
                 try { await transferFailedTransaction.RollbackAsync(); } catch { }
                 throw; // re-lanzar → el endpoint devuelve 500 y Stripe reintenta
+            }
+        }
+
+        /// <summary>
+        /// 🛡️ Finding #19 FIX: transfer.created — informational. Confirma que Stripe aceptó un transfer
+        /// que la plataforma creó (ProcessMoneyDistribution → TransferCreateOptions). Útil para detectar
+        /// transfers externos (Dashboard) sin contraparte local en FT "Payout".
+        /// </summary>
+        private async Task HandleTransferCreated(Transfer? transfer)
+        {
+            if (transfer == null) return;
+            var amount = transfer.Amount / 100m;
+            var localPayout = await _context.FinancialTransactions.AsNoTracking()
+                .FirstOrDefaultAsync(ft => ft.StripeTransferId == transfer.Id && ft.TransactionType == "Payout");
+            var hasLocal = localPayout != null;
+
+            if (!hasLocal)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "transfer.created sin FT Payout local",
+                    details: $"Transfer {transfer.Id} ({amount}€ → {transfer.Destination}) creado en Stripe pero no hay FT 'Payout' local con ese StripeTransferId. Posible transfer externo (Dashboard). ACCIÓN: reconciliar el ledger.",
+                    source: "SubscriptionController.HandleTransferCreated",
+                    relatedEntityType: "Transfer",
+                    additionalData: new
+                    {
+                        TransferId = transfer.Id,
+                        Amount = amount,
+                        Destination = transfer.Destination,
+                        Currency = transfer.Currency
+                    });
+            }
+            else
+            {
+                await _loggingService.LogInfoAsync(
+                    message: "transfer.created reconciled with local Payout",
+                    details: $"Transfer {transfer.Id} ({amount}€) confirmed by Stripe. Local Payout FT exists (SearchHire {localPayout?.RelatedEntityId}).",
+                    source: "SubscriptionController.HandleTransferCreated",
+                    relatedEntityType: "Transfer",
+                    relatedEntityId: localPayout?.RelatedEntityId);
+            }
+        }
+
+        /// <summary>
+        /// 🛡️ Finding #20 FIX: balance.available — observabilidad del saldo de plataforma para detectar
+        /// caídas (chargebacks/disputas/payouts fallidos). Si algún saldo se vuelve negativo, log CRITICAL.
+        /// Usa StripeEntity como tipo base (Balance hereda) y reflexión para evitar dependencia rígida del
+        /// nombre exacto del tipo amount en la versión actual de Stripe.NET (cambia entre versiones).
+        /// </summary>
+        private async Task HandleBalanceAvailable(object? balanceObj)
+        {
+            if (balanceObj == null) return;
+            try
+            {
+                // Reflexión para leer Available/Pending sin acoplarnos al tipo concreto BalanceAmount,
+                // cuyo nombre/namespace varía entre versiones de Stripe.NET (v50 reestructuró el subtree).
+                var type = balanceObj.GetType();
+                var availableProp = type.GetProperty("Available");
+                var pendingProp = type.GetProperty("Pending");
+
+                var available = availableProp?.GetValue(balanceObj) as System.Collections.IEnumerable;
+                var pending = pendingProp?.GetValue(balanceObj) as System.Collections.IEnumerable;
+
+                long minAvailable = 0, minPending = 0;
+                var availableSummaryParts = new List<string>();
+                var pendingSummaryParts = new List<string>();
+
+                if (available != null)
+                {
+                    foreach (var item in available)
+                    {
+                        var amountObj = item.GetType().GetProperty("Amount")?.GetValue(item);
+                        var amount = amountObj == null ? 0L : Convert.ToInt64(amountObj);
+                        var currency = item.GetType().GetProperty("Currency")?.GetValue(item)?.ToString() ?? "?";
+                        availableSummaryParts.Add($"{currency}:{amount / 100m:F2}");
+                        if (amount < minAvailable) minAvailable = amount;
+                    }
+                }
+                if (pending != null)
+                {
+                    foreach (var item in pending)
+                    {
+                        var amountObj = item.GetType().GetProperty("Amount")?.GetValue(item);
+                        var amount = amountObj == null ? 0L : Convert.ToInt64(amountObj);
+                        var currency = item.GetType().GetProperty("Currency")?.GetValue(item)?.ToString() ?? "?";
+                        pendingSummaryParts.Add($"{currency}:{amount / 100m:F2}");
+                        if (amount < minPending) minPending = amount;
+                    }
+                }
+
+                var availableSummary = string.Join(", ", availableSummaryParts);
+                var pendingSummary = string.Join(", ", pendingSummaryParts);
+                var anyNegative = minAvailable < 0 || minPending < 0;
+
+                if (anyNegative)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Platform balance has NEGATIVE values",
+                        details: $"Stripe balance.available event reports negative amount(s). Available=[{availableSummary}] Pending=[{pendingSummary}]. Posibles pérdidas no reconciliadas (chargebacks, disputas, payouts fallidos). REVISIÓN URGENTE.",
+                        source: "SubscriptionController.HandleBalanceAvailable",
+                        relatedEntityType: "Balance",
+                        additionalData: new { Available = availableSummary, Pending = pendingSummary });
+                }
+                else
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "Platform balance snapshot",
+                        details: $"Available=[{availableSummary}] Pending=[{pendingSummary}]",
+                        source: "SubscriptionController.HandleBalanceAvailable",
+                        relatedEntityType: "Balance");
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "balance.available handler failed",
+                    details: ex.Message,
+                    source: "SubscriptionController.HandleBalanceAvailable",
+                    relatedEntityType: "Balance");
             }
         }
 

@@ -51,13 +51,28 @@ namespace newApi.Configuration
         /// 🛡️ N24 TODO arquitectural: actualmente es un flag muerto sin lógica de tracking del
         /// umbral anual. Cuando la plataforma vaya a darse de alta como autónoma, AÑADIR:
         ///  - Tracking acumulado de ingresos B2C cross-border año-a-fecha (YTD) por país de cliente.
-        ///  - Job mensual que compare YTD vs 10000 y emita Critical cuando se acerque (ej 80%).
+        ///  - Job mensual que compare YTD vs OssThresholdEur y emita Critical cuando se acerque (OssThresholdWarningPercent).
         ///  - Auto-flip OssRegistered=true cuando se supere + alerta admin para registro AEAT modelo 369.
         ///  - Recalcular TaxBehavior en checkout para que aplique tax del país del cliente (no SP).
         /// Sin esto, cruzar el umbral sin registrarse en OSS = incumplimiento fiscal (cada país UE
         /// reclamaría su IVA local cuando el portal lo detecte por intercambio de información AEAT-VAT).
+        /// El job (Hangfire diario) que consuma estas opciones se añadirá en Services/OssThresholdMonitorJob.cs
+        /// junto con la columna OssThresholdAlertSentAt en una tabla nueva PlatformOssCountryStats (migración
+        /// separada). Las opciones de abajo ya están preparadas para que el job las lea sin recompilar.
         /// </summary>
         public bool OssRegistered { get; set; } = false;
+
+        /// <summary>
+        /// Umbral anual UE de ventas B2C cross-border que obliga al registro en OSS (modelo 369 en AEAT).
+        /// Directiva 2017/2455 art. 59c lo fija en 10.000€/año agregados (no por país). Configurable por si la UE lo actualiza.
+        /// </summary>
+        public decimal OssThresholdEur { get; set; } = 10000m;
+
+        /// <summary>
+        /// Porcentaje del umbral a partir del cual el job emite alerta Critical (default 80% = 8.000€).
+        /// Da margen administrativo (>=30 días) para iniciar el alta OSS antes de cruzar el límite.
+        /// </summary>
+        public int OssThresholdWarningPercent { get; set; } = 80;
 
         /// <summary>Prefijo de la serie de facturación (ej. "INSP-"). Se concatena con año y nº.</summary>
         public string InvoiceSeriesPrefix { get; set; } = "INSP-";

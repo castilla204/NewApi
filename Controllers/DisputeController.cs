@@ -1274,6 +1274,8 @@ namespace newApi.Controllers
                         Amount = dispute.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
                         BaseAmount = dispute.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
                         TaxAmount = dispute.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
+                        // Round 24: snapshot currency del cargo real (Round 21).
+                        ChargeCurrency = string.IsNullOrEmpty(dispute.SearchHire.Currency) ? "EUR" : dispute.SearchHire.Currency,
                         ExpertTimezone = dispute.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
                         ExpertCountry = dispute.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                         // 🛡️ Round 10 — P-C FIX (V8 snapshots): exponer al frontend
@@ -1290,7 +1292,9 @@ namespace newApi.Controllers
                         {
                             Id = dispute.SearchHire.SearchService.Id,
                             ServiceTypeName = dispute.SearchHire.SearchService.ServiceType?.Name ?? "",
-                            Price = dispute.SearchHire.SearchService.Price
+                            Price = dispute.SearchHire.SearchService.Price,
+                            // Round 24: poblar Currency (default 'EUR' si null).
+                            Currency = string.IsNullOrEmpty(dispute.SearchHire.SearchService.Currency) ? "EUR" : dispute.SearchHire.SearchService.Currency
                         }
                     }
                 };

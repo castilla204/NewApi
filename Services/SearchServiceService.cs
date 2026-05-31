@@ -381,6 +381,8 @@ namespace newApi.Services
                         Longitude = firstService.ExpertProfile.Longitude,
                         // ✅ NUEVO: Precio del servicio
                         Price = firstService.Price,
+                        // Round 24: currency original del precio (ISO 4217). Default 'EUR' si null.
+                        Currency = string.IsNullOrEmpty(firstService.Currency) ? "EUR" : firstService.Currency,
                         // ✅ NUEVO: Datos adicionales solicitados (descripciones, tipos y horarios)
                         ServiceDescription = firstService.Conditions,
                         ServiceTypeName = firstService.ServiceType?.Name ?? "Unknown",
@@ -465,8 +467,10 @@ namespace newApi.Services
                 if (hasBounds)
                 {
                     // ✅ CORREGIDO: Usar SQL directo con parámetros para filtrar por bounds (más eficiente y seguro)
+                    // Round 24: añadido ss.""Currency"" al SELECT para que MapMarkerDto contenga la
+                    // moneda original del precio (UI lo necesita para convertir a la preferencia del usuario).
                     var sqlQuery = @"
-                        SELECT ss.""Id"", ss.""Price"", ep.""Latitude"", ep.""Longitude""
+                        SELECT ss.""Id"", ss.""Price"", ep.""Latitude"", ep.""Longitude"", COALESCE(ss.""Currency"", 'EUR') AS ""Currency""
                         FROM ""SearchServices"" ss
                         INNER JOIN ""ExpertProfiles"" ep ON ss.""ExpertProfileId"" = ep.""Id""
                         WHERE ss.""CategoryId"" = @categoryId
@@ -548,7 +552,9 @@ namespace newApi.Services
                                     ServiceId = reader.GetInt32(0),
                                     Price = reader.GetDecimal(1),
                                     Latitude = reader.GetString(2),
-                                    Longitude = reader.GetString(3)
+                                    Longitude = reader.GetString(3),
+                                    // Round 24: currency leído desde el SELECT (col índice 4)
+                                    Currency = reader.IsDBNull(4) ? "EUR" : reader.GetString(4)
                                 });
                             }
                         }
@@ -563,6 +569,7 @@ namespace newApi.Services
                 }
 
                 // ✅ Sin bounds: Cargar todos los marcadores (solo 4 campos)
+                // Round 24: incluir Currency para conversión multi-moneda en frontend.
                 var allMarkers = await query
                     .Select(ss => new MapMarkerDto
                     {
@@ -570,7 +577,8 @@ namespace newApi.Services
                         ServiceId = ss.Id,
                         Latitude = ss.ExpertProfile.Latitude,
                         Longitude = ss.ExpertProfile.Longitude,
-                        Price = ss.Price
+                        Price = ss.Price,
+                        Currency = string.IsNullOrEmpty(ss.Currency) ? "EUR" : ss.Currency
                     })
                     .Take(maxResults)
                     .ToListAsync(cancellationToken);
@@ -610,6 +618,8 @@ namespace newApi.Services
                     {
                         Id = ss.Id,
                         Price = ss.Price,
+                        // Round 24: currency original del precio para conversión en frontend.
+                        Currency = ss.Currency,
                         ServiceDescription = ss.Conditions,  // ✅ Descripción del servicio
                         ServiceTypeName = ss.ServiceType.Name,
                         ExpertId = (int?)ss.ExpertProfileId,
@@ -693,6 +703,8 @@ namespace newApi.Services
                     {
                         Id = s.Id,
                         Price = s.Price,
+                        // Round 24: poblar Currency en el DTO (default 'EUR' si null).
+                        Currency = string.IsNullOrEmpty(s.Currency) ? "EUR" : s.Currency,
                         ServiceDescription = s.ServiceDescription ?? string.Empty,  // ✅ Descripción
                         ServiceTypeName = s.ServiceTypeName ?? string.Empty,
                         ExpertName = s.ExpertName ?? string.Empty,
@@ -2798,6 +2810,8 @@ namespace newApi.Services
                             ServiceTypeId = ss.ServiceTypeId,
                             ServiceTypeName = ss.ServiceType.Name,
                             Price = ss.Price,
+                            // Round 24: currency original del precio.
+                            Currency = ss.Currency,
                             // Solo primeras 2 imágenes (suficiente para homepage) - Cargar datos sin procesar URLs
                             Images = ss.Images
                                 .OrderBy(img => img.Id)
@@ -2927,6 +2941,8 @@ namespace newApi.Services
                         ServiceTypeId = s.ServiceTypeId,
                         ServiceTypeName = s.ServiceTypeName,
                         Price = s.Price,
+                        // Round 24: poblar Currency (default 'EUR' si null).
+                        Currency = string.IsNullOrEmpty(s.Currency) ? "EUR" : s.Currency,
                         // Procesar URLs de imágenes en memoria (no en SQL)
                         ImageUrls = s.Images
                             .Select(img =>
@@ -3057,6 +3073,8 @@ namespace newApi.Services
                         ServiceTypeId = ss.ServiceTypeId,
                         ServiceTypeName = ss.ServiceType.Name,
                         Price = ss.Price,
+                        // Round 24: currency original del precio.
+                        Currency = ss.Currency,
                         // Solo primeras 2 imágenes (suficiente para homepage) - Cargar datos sin procesar URLs
                         Images = ss.Images
                             .OrderBy(img => img.Id)
@@ -3146,6 +3164,8 @@ namespace newApi.Services
                         ServiceTypeId = s.ServiceTypeId,
                         ServiceTypeName = s.ServiceTypeName,
                         Price = s.Price,
+                        // Round 24: poblar Currency (default 'EUR' si null).
+                        Currency = string.IsNullOrEmpty(s.Currency) ? "EUR" : s.Currency,
                         // Procesar URLs de imágenes en memoria (no en SQL)
                         ImageUrls = s.Images
                             .Select(img =>
@@ -3285,6 +3305,8 @@ namespace newApi.Services
                             ServiceTypeId = ss.ServiceTypeId,
                             ServiceTypeName = ss.ServiceType.Name,
                             Price = ss.Price,
+                            // Round 24: currency original del precio.
+                            Currency = ss.Currency,
                             // Solo primeras 2 imágenes (suficiente para homepage) - Cargar datos sin procesar URLs
                             Images = ss.Images
                                 .OrderBy(img => img.Id)
@@ -3349,6 +3371,8 @@ namespace newApi.Services
                             ServiceTypeId = s.ServiceTypeId,
                             ServiceTypeName = s.ServiceTypeName,
                             Price = s.Price,
+                            // Round 24: poblar Currency (default 'EUR' si null).
+                            Currency = string.IsNullOrEmpty(s.Currency) ? "EUR" : s.Currency,
                             // Procesar URLs de imágenes en memoria (no en SQL)
                             ImageUrls = s.Images
                                 .Select(img =>

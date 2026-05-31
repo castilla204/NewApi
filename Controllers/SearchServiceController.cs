@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using newApi.Common;
 using newApi.Services;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
@@ -660,6 +661,20 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "La duración debe ser mayor que 0" });
                 }
 
+                // 🌍 Currency: normalizar y validar contra SupportedCurrenciesList.
+                // Si el front no envía nada, deja vacío → fallback EUR en el service.
+                // Si envía una divisa no soportada, también fallback EUR (no romper la creación
+                // por algo recuperable; el service loguea Warning si mismatch con Stripe Connect).
+                if (!string.IsNullOrWhiteSpace(request.Currency))
+                {
+                    var normalized = global::newApi.Common.SupportedCurrenciesList.Normalize(request.Currency);
+                    request.Currency = normalized ?? "EUR";
+                }
+                else
+                {
+                    request.Currency = "EUR";
+                }
+
                 // ✅ VALIDACIÓN: Verificar que al menos un tipo de entregable esté seleccionado
                 if (string.IsNullOrWhiteSpace(request.SelectedDeliverableTypes))
                 {
@@ -773,6 +788,7 @@ namespace newApi.Controllers
                         service.ServiceTypeId,
                         ServiceTypeName = service.ServiceType?.Name,
                         service.Price,
+                        service.Currency,
                         service.Conditions,
                         service.DurationInHours,
                         service.CreatedAt,

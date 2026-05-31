@@ -410,6 +410,14 @@ namespace newApi.DataLayer.Models
                 .HasForeignKey(ft => ft.UserId)
                 .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull en lugar de Cascade para preservar transacciones al eliminar usuario
 
+            // 🌍 Round 25: snapshot del currency en cada FinancialTransaction (3-letter ISO 4217).
+            // Siempre debe igualar al SearchHire.Currency al momento de la transacción.
+            // Default "EUR" para registros legacy pre-migración que no tenían la columna.
+            modelBuilder.Entity<FinancialTransaction>()
+                .Property(ft => ft.Currency)
+                .HasMaxLength(3)
+                .HasDefaultValue("EUR");
+
             // 🔁 C1: índices únicos PARCIALES en el ledger = última línea de defensa anti doble-pago/
             // doble-reembolso (además de las claves de idempotencia de Stripe + los guardas en código).
             // (1) Cada refund de Stripe se registra UNA vez. (2) Cada transfer: un Payout y una

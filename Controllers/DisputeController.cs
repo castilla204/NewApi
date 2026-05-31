@@ -2126,9 +2126,10 @@ namespace newApi.Controllers
         }
 
         /// <summary>
-        /// DEBUG: Obtiene información de una disputa para debugging
+        /// DEBUG: Obtiene información de una disputa para debugging (solo Admin)
         /// </summary>
         [HttpGet("{disputeId}/debug")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> GetDisputeDebug(int disputeId)
         {
             try

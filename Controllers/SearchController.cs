@@ -100,6 +100,7 @@ namespace newApi.Controllers
         }
 
         [HttpGet("debug-auth")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> DebugAuth()
         {
             var claims = User.Claims.Select(c => new { c.Type, c.Value }).ToList();

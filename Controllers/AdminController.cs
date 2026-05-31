@@ -440,6 +440,44 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// Establece la cookie de sesión Hangfire sin exponer el JWT en la URL del iframe.
+        /// </summary>
+        [HttpPost("hangfire-session")]
+        [Authorize(Roles = "Admin")]
+        public IActionResult EstablishHangfireSession()
+        {
+            var authHeader = Request.Headers.Authorization.FirstOrDefault();
+            var token = authHeader?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true
+                ? authHeader["Bearer ".Length..].Trim()
+                : null;
+
+            if (string.IsNullOrEmpty(token))
+            {
+                return Unauthorized(new { message = "Token Bearer requerido" });
+            }
+
+            var isHttps = Request.IsHttps ||
+                Request.Headers["X-Forwarded-Proto"].ToString()
+                    .Equals("https", StringComparison.OrdinalIgnoreCase);
+
+            var cookieOptions = new Microsoft.AspNetCore.Http.CookieOptions
+            {
+                HttpOnly = true,
+                SameSite = isHttps
+                    ? Microsoft.AspNetCore.Http.SameSiteMode.None
+                    : Microsoft.AspNetCore.Http.SameSiteMode.Lax,
+                Secure = isHttps,
+                Expires = DateTimeOffset.UtcNow.AddHours(1),
+                Path = "/hangfire",
+            };
+
+            Response.Cookies.Append("HangfireAuthToken", token, cookieOptions);
+
+            var dashboardUrl = $"{Request.Scheme}://{Request.Host}/hangfire";
+            return Ok(new { dashboardUrl });
+        }
+
+        /// <summary>
         /// Request model para establecer modo Stripe
         /// </summary>
         public class SetStripeModeRequest

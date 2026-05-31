@@ -322,9 +322,25 @@ namespace newApi.Services
                 var serviceName = searchHire.SearchService.ServiceType.Name;
                 var expertName = searchHire.Expert?.Name ?? "Experto eliminado";
 
+                // Round 24: añadir importe cobrado con currency en el cuerpo del email para que
+                // el cliente vea inmediatamente cuánto se le ha cobrado sin tener que abrir el PDF.
+                var chargeCurrency = string.IsNullOrEmpty(searchHire.Currency) ? "EUR" : searchHire.Currency.ToUpperInvariant();
+                var amountFormatted = searchHire.Amount.ToString("N2", System.Globalization.CultureInfo.GetCultureInfo("es-ES"));
+                var preferredCurrency = searchHire.Client?.PreferredCurrency;
+                var convertedLine = string.Empty;
+                if (!string.IsNullOrEmpty(preferredCurrency)
+                    && !preferredCurrency.Equals(chargeCurrency, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Conversion display-only — el cargo real ya se hizo en chargeCurrency.
+                    // Si en el futuro hay un ExchangeRateService disponible, calcular aquí el converted.
+                    convertedLine = $@"<p style='margin:0 0 12px 0;color:#6B7280;font-size:12px;'>(Tu moneda preferida es {preferredCurrency.ToUpperInvariant()} — el cargo real es en {chargeCurrency}.)</p>";
+                }
+
                 var content = $@"
                     <p style='margin:0 0 12px 0;'>Hola {searchHire.Client.Name},</p>
                     <p style='margin:0 0 12px 0;'>¡Gracias por confiar en Inspecciono! La contratación del servicio <strong>{serviceName}</strong> con el experto <strong>{expertName}</strong> se ha procesado correctamente.</p>
+                    <p style='margin:0 0 12px 0;'><strong>Monto cobrado: {amountFormatted} {chargeCurrency}</strong></p>
+                    {convertedLine}
                     <p style='margin:0 0 12px 0;'>Adjunto a este correo encontrarás la factura en formato PDF con el desglose de impuestos correspondiente.</p>
                     <p style='margin:0 0 16px 0;'>El experto se pondrá en contacto contigo pronto para coordinar los detalles.</p>
                     <p style='margin:0;font-size:13px;color:#6B7280;'>Si tienes alguna pregunta, no dudes en contactarnos.</p>";

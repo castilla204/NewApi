@@ -764,6 +764,8 @@ namespace newApi.Controllers
                     Amount = searchHire.Amount,
                     BaseAmount = searchHire.BaseAmount,
                     TaxAmount = searchHire.TaxAmount,
+                    // Round 24: currency real del cargo, snapshot inmutable (Round 21).
+                    ChargeCurrency = string.IsNullOrEmpty(searchHire.Currency) ? "EUR" : searchHire.Currency,
                     ExpertTimezone = searchHire.ExpertTimezone,
                     ExpertCountry = searchHire.ExpertCountry,
                     // 🛡️ Round 10 — P-C FIX (V8 snapshots): exponer al frontend para que use
@@ -787,6 +789,8 @@ namespace newApi.Controllers
                         ServiceTypeCategoryName = searchHire.SearchService.ServiceType?.ServiceTypeCategory?.Name,
                         RequiresAppointment = false,
                         Price = searchHire.SearchService.Price,
+                        // Round 24: poblar Currency (default 'EUR' si null).
+                        Currency = string.IsNullOrEmpty(searchHire.SearchService.Currency) ? "EUR" : searchHire.SearchService.Currency,
                         ExpertLatitude = searchHire.SearchService.ExpertProfile?.Latitude,
                         ExpertLongitude = searchHire.SearchService.ExpertProfile?.Longitude,
                         LocationRange = searchHire.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50

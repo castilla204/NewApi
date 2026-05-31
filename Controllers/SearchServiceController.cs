@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using newApi.Common;
 using newApi.Services;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
@@ -666,7 +667,7 @@ namespace newApi.Controllers
                 // por algo recuperable; el service loguea Warning si mismatch con Stripe Connect).
                 if (!string.IsNullOrWhiteSpace(request.Currency))
                 {
-                    var normalized = newApi.Common.SupportedCurrenciesList.Normalize(request.Currency);
+                    var normalized = global::newApi.Common.SupportedCurrenciesList.Normalize(request.Currency);
                     request.Currency = normalized ?? "EUR";
                 }
                 else

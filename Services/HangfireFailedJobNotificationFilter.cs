@@ -43,6 +43,56 @@ namespace newApi.Services
                 if (jobMethod == "SendEmailBackgroundJob" || jobType == "LoggingService")
                 {
                     Console.Error.WriteLine($"[HANGFIRE FILTER] Alert-email job {jobId} ({jobMethod}) failed definitively; skipping critical-log to avoid an email storm. Exception: {exception?.Message}");
+
+                    // 🛡️ E2: aunque saltamos el LogCriticalAsync (que reenviaría email y crearía bucle),
+                    // SÍ enrutamos al canal alternativo (Slack/Telegram). AlertChannelService usa HTTP,
+                    // no SMTP, así que no realimenta el bucle aunque el SMTP esté caído. Sin esto,
+                    // un fallo de email crítico (eliminación de cuenta, refund, dispute) desaparecía
+                    // silenciosamente del radar de ops si SMTP llevaba >16min caído.
+                    try
+                    {
+                        var capturedJobId = jobId;
+                        var capturedJobMethod = jobMethod;
+                        var capturedJobType = jobType;
+                        var capturedExceptionType = exception?.GetType().Name;
+                        var capturedExceptionMessage = exception?.Message;
+                        var capturedRecipient = job.Job.Args.Count > 0 ? job.Job.Args[0]?.ToString() : null;
+                        var capturedSubject = job.Job.Args.Count > 1 ? job.Job.Args[1]?.ToString() : null;
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                using var alertScope = _serviceScopeFactory.CreateScope();
+                                var alertChannel = alertScope.ServiceProvider.GetService<IAlertChannelService>();
+                                if (alertChannel != null && (alertChannel.GetStatus().SlackConfigured || alertChannel.GetStatus().TelegramConfigured))
+                                {
+                                    await alertChannel.SendCriticalAsync(
+                                        $"[CRITICAL] Email delivery job exhausted retries (SMTP down?)",
+                                        new
+                                        {
+                                            event_type = "email_job_permanently_failed",
+                                            HangfireJobId = capturedJobId,
+                                            JobType = capturedJobType,
+                                            JobMethod = capturedJobMethod,
+                                            Recipient = capturedRecipient,
+                                            Subject = capturedSubject,
+                                            ExceptionType = capturedExceptionType,
+                                            ExceptionMessage = capturedExceptionMessage,
+                                            FailedAt = DateTime.UtcNow
+                                        });
+                                }
+                            }
+                            catch (Exception alertEx)
+                            {
+                                Console.Error.WriteLine($"[HANGFIRE FILTER] AlertChannel fallback for email job {capturedJobId} failed: {alertEx.Message}");
+                            }
+                        });
+                    }
+                    catch (Exception captureEx)
+                    {
+                        Console.Error.WriteLine($"[HANGFIRE FILTER] Could not schedule AlertChannel fallback for email job {jobId}: {captureEx.Message}");
+                    }
+
                     return;
                 }
 

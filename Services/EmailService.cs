@@ -57,18 +57,23 @@ namespace newApi.Services
                     return;
                 }
 
-                // ✅ LOG: Intentando enviar email
-                Console.WriteLine($"[EMAIL SERVICE] [START] Intentando enviar email a: {toEmail}, Subject: {subject}");
-                System.Diagnostics.Debug.WriteLine($"[EMAIL SERVICE] START: Sending to {toEmail}");
+                // ✅ LOG: Intentando enviar email (estructurado vía ILogger)
+                _logger.LogInformation(
+                    "[EMAIL SERVICE] [START] Intentando enviar email. To: {To}, Subject: {Subject}",
+                    toEmail,
+                    subject);
 
                 // Determinar si usar SSL/TLS según el puerto
                 // Puerto 465 = SSL implícito (conexión SSL desde el inicio) - puede tener problemas en .NET
                 // Puerto 587 = STARTTLS (conexión normal, luego upgrade a TLS) - más confiable
                 var useSsl = _smtpPort == 465 || _smtpPort == 587;
-                
-                Console.WriteLine($"[EMAIL SERVICE] [CONFIG] Configurando cliente SMTP. Host: {_smtpHost}, Port: {_smtpPort}, SSL: {useSsl}");
-                Console.WriteLine($"[EMAIL SERVICE] [CONFIG] NOTA: Puerto 465 puede tener problemas. Si falla, prueba puerto 587");
-                
+
+                _logger.LogDebug(
+                    "[EMAIL SERVICE] [CONFIG] Configurando cliente SMTP. Host: {Host}, Port: {Port}, SSL: {Ssl}",
+                    _smtpHost,
+                    _smtpPort,
+                    useSsl);
+
                 // ⚠️ IMPORTANTE: Para puerto 465, puede haber problemas de timeout
                 // Recomendación: Usar puerto 587 con STARTTLS que es más confiable
                 using var client = new SmtpClient(_smtpHost, _smtpPort)
@@ -78,11 +83,9 @@ namespace newApi.Services
                     DeliveryMethod = SmtpDeliveryMethod.Network,
                     Timeout = 60000 // 60 segundos
                 };
-                
+
                 // Para puerto 587, .NET usa STARTTLS automáticamente cuando EnableSsl = true
                 // Para puerto 465, .NET intenta SSL implícito pero puede tener problemas
-
-                Console.WriteLine($"[EMAIL SERVICE] [CONFIG] Cliente SMTP configurado. Timeout: {client.Timeout}ms");
 
                 using var message = new MailMessage
                 {
@@ -93,96 +96,84 @@ namespace newApi.Services
                 };
 
                 message.To.Add(toEmail);
-                Console.WriteLine($"[EMAIL SERVICE] [CONFIG] Mensaje preparado. To: {toEmail}, From: {_fromEmail}");
 
-                // ✅ LOG: Antes de enviar
-                Console.WriteLine($"[EMAIL SERVICE] [DEBUG] Antes de SendMailAsync. Host: {_smtpHost}, Port: {_smtpPort}, SSL: {useSsl}, From: {_fromEmail}");
-                System.Diagnostics.Debug.WriteLine($"[EMAIL SERVICE] DEBUG: Before SendMailAsync. Host: {_smtpHost}, Port: {_smtpPort}");
-                
+                _logger.LogDebug(
+                    "[EMAIL SERVICE] [CONFIG] Mensaje preparado. To: {To}, From: {From}, Timeout: {TimeoutMs}ms",
+                    toEmail,
+                    _fromEmail,
+                    client.Timeout);
+
                 try
                 {
-                    Console.WriteLine($"[EMAIL SERVICE] [SEND] Iniciando SendMailAsync...");
-                    
                     // Agregar timeout adicional con Task.WhenAny (60 segundos)
                     var sendTask = client.SendMailAsync(message);
                     var timeoutTask = Task.Delay(TimeSpan.FromSeconds(60));
-                    
-                    Console.WriteLine($"[EMAIL SERVICE] [SEND] Tareas creadas, esperando resultado...");
-                    
+
                     var completedTask = await Task.WhenAny(sendTask, timeoutTask);
-                    
-                    Console.WriteLine($"[EMAIL SERVICE] [SEND] Tarea completada. SendTask.IsCompleted: {sendTask.IsCompleted}, TimeoutTask.IsCompleted: {timeoutTask.IsCompleted}");
-                    
+
                     if (completedTask == timeoutTask && !sendTask.IsCompleted)
                     {
                         // El timeout se completó antes que el envío
-                        Console.WriteLine($"[EMAIL SERVICE] [SEND] TIMEOUT detectado!");
+                        _logger.LogError(
+                            "[EMAIL SERVICE] [SEND] TIMEOUT detectado al enviar email. To: {To}, Subject: {Subject}",
+                            toEmail,
+                            subject);
                         throw new TimeoutException("El envio del email excedio el tiempo limite de 60 segundos");
                     }
-                    
+
                     // Asegurar que se complete o lance excepción
-                    if (sendTask.IsFaulted)
-                    {
-                        Console.WriteLine($"[EMAIL SERVICE] [SEND] SendTask tiene errores, re-lanzando excepcion...");
-                        await sendTask; // Esto lanzará la excepción
-                    }
-                    else if (!sendTask.IsCompleted)
-                    {
-                        Console.WriteLine($"[EMAIL SERVICE] [SEND] Esperando que SendTask se complete...");
-                        await sendTask;
-                    }
-                    else
-                    {
-                        Console.WriteLine($"[EMAIL SERVICE] [SEND] SendTask ya completado, obteniendo resultado...");
-                        await sendTask; // Asegurar que se procese cualquier excepción
-                    }
-                    
+                    await sendTask; // Si está faulted, esto lanza la excepción
+
                     // ✅ LOG: Email enviado exitosamente
-                    Console.WriteLine($"[EMAIL SERVICE] [SUCCESS] Email enviado exitosamente a: {toEmail}, Subject: {subject}");
-                    System.Diagnostics.Debug.WriteLine($"[EMAIL SERVICE] SUCCESS: Email sent to {toEmail}");
+                    _logger.LogInformation(
+                        "[EMAIL SERVICE] [SUCCESS] Email enviado exitosamente. To: {To}, Subject: {Subject}",
+                        toEmail,
+                        subject);
                 }
                 catch (TimeoutException timeoutEx)
                 {
-                    // ✅ LOG: Timeout específico
-                    Console.WriteLine($"[EMAIL SERVICE] [TIMEOUT ERROR] Timeout al enviar email a: {toEmail}");
-                    Console.WriteLine($"[EMAIL SERVICE] [TIMEOUT ERROR] Message: {timeoutEx.Message}");
-                    System.Diagnostics.Debug.WriteLine($"[EMAIL SERVICE] TIMEOUT: {timeoutEx.Message}");
+                    // ✅ LOG: Timeout específico (estructurado)
+                    _logger.LogError(
+                        timeoutEx,
+                        "[EMAIL SERVICE] [TIMEOUT ERROR] Timeout al enviar email. To: {To}, Subject: {Subject}",
+                        toEmail,
+                        subject);
                     throw; // Re-lanzar para que el catch externo lo capture
                 }
                 catch (SmtpException smtpEx)
                 {
-                    // ✅ LOG: Error SMTP específico
-                    Console.WriteLine($"[EMAIL SERVICE] [SMTP ERROR] Error SMTP al enviar email a: {toEmail}");
-                    Console.WriteLine($"[EMAIL SERVICE] [SMTP ERROR] StatusCode: {smtpEx.StatusCode}");
-                    Console.WriteLine($"[EMAIL SERVICE] [SMTP ERROR] Message: {smtpEx.Message}");
-                    System.Diagnostics.Debug.WriteLine($"[EMAIL SERVICE] SMTP ERROR: {smtpEx.StatusCode} - {smtpEx.Message}");
+                    // ✅ LOG: Error SMTP específico (estructurado)
+                    _logger.LogError(
+                        smtpEx,
+                        "[EMAIL SERVICE] [SMTP ERROR] Error SMTP al enviar email. To: {To}, Subject: {Subject}, StatusCode: {StatusCode}",
+                        toEmail,
+                        subject,
+                        smtpEx.StatusCode);
                     throw; // Re-lanzar para que el catch externo lo capture
                 }
                 catch (Exception sendEx)
                 {
-                    // ✅ LOG: Error general al enviar
-                    Console.WriteLine($"[EMAIL SERVICE] [SEND ERROR] Error al enviar email a: {toEmail}");
-                    Console.WriteLine($"[EMAIL SERVICE] [SEND ERROR] Type: {sendEx.GetType().Name}");
-                    Console.WriteLine($"[EMAIL SERVICE] [SEND ERROR] Message: {sendEx.Message}");
-                    System.Diagnostics.Debug.WriteLine($"[EMAIL SERVICE] SEND ERROR: {sendEx.GetType().Name} - {sendEx.Message}");
+                    // ✅ LOG: Error general al enviar (estructurado)
+                    _logger.LogError(
+                        sendEx,
+                        "[EMAIL SERVICE] [SEND ERROR] Error al enviar email. To: {To}, Subject: {Subject}, ExceptionType: {ExceptionType}",
+                        toEmail,
+                        subject,
+                        sendEx.GetType().Name);
                     throw; // Re-lanzar para que el catch externo lo capture
                 }
             }
             catch (Exception ex)
             {
-                // ✅ LOG: Error al enviar email
-                Console.WriteLine($"[EMAIL SERVICE] [FATAL ERROR] ERROR al enviar email a: {toEmail}, Subject: {subject}");
-                Console.WriteLine($"[EMAIL SERVICE] [FATAL ERROR] Exception Type: {ex.GetType().FullName}");
-                Console.WriteLine($"[EMAIL SERVICE] [FATAL ERROR] Error Message: {ex.Message}");
-                Console.WriteLine($"[EMAIL SERVICE] [FATAL ERROR] StackTrace: {ex.StackTrace ?? "NULL"}");
-                if (ex.InnerException != null)
-                {
-                    Console.WriteLine($"[EMAIL SERVICE] [FATAL ERROR] InnerException Type: {ex.InnerException.GetType().FullName}");
-                    Console.WriteLine($"[EMAIL SERVICE] [FATAL ERROR] InnerException Message: {ex.InnerException.Message}");
-                    Console.WriteLine($"[EMAIL SERVICE] [FATAL ERROR] InnerException StackTrace: {ex.InnerException.StackTrace ?? "NULL"}");
-                }
-                // También usar System.Diagnostics para asegurar que se vea
-                System.Diagnostics.Debug.WriteLine($"[EMAIL SERVICE] ERROR: {ex.Message}");
+                // ✅ LOG: Error al enviar email (estructurado vía ILogger)
+                // Incluye ex completo → InnerException, StackTrace, Type accesibles por las sinks
+                _logger.LogError(
+                    ex,
+                    "[EMAIL SERVICE] [FATAL ERROR] ERROR al enviar email. To: {To}, Subject: {Subject}, ExceptionType: {ExceptionType}, InnerExceptionType: {InnerExceptionType}",
+                    toEmail,
+                    subject,
+                    ex.GetType().FullName,
+                    ex.InnerException?.GetType().FullName ?? "NONE");
                 // ✅ FIX: si el llamador lo pide (jobs de Hangfire), PROPAGAR el fallo para que el job
                 // pueda reintentar/escalar. Antes se tragaba SIEMPRE → las alertas por email se perdían
                 // en silencio y los reintentos quedaban muertos. Llamadores fire-and-forget (default
@@ -213,10 +204,14 @@ namespace newApi.Services
                     return;
                 }
 
-                Console.WriteLine($"[EMAIL SERVICE] [START] Intentando enviar email con adjunto a: {toEmail}, Subject: {subject}, Attachment: {attachmentFileName}");
+                _logger.LogInformation(
+                    "[EMAIL SERVICE] [START] Intentando enviar email con adjunto. To: {To}, Subject: {Subject}, Attachment: {AttachmentFileName}",
+                    toEmail,
+                    subject,
+                    attachmentFileName);
 
                 var useSsl = _smtpPort == 465 || _smtpPort == 587;
-                
+
                 using var client = new SmtpClient(_smtpHost, _smtpPort)
                 {
                     EnableSsl = useSsl,
@@ -240,39 +235,40 @@ namespace newApi.Services
                 var attachment = new Attachment(attachmentStream, attachmentFileName, attachmentContentType);
                 message.Attachments.Add(attachment);
 
-                Console.WriteLine($"[EMAIL SERVICE] [CONFIG] Mensaje con adjunto preparado. To: {toEmail}, Attachment: {attachmentFileName} ({attachmentBytes.Length} bytes)");
+                _logger.LogDebug(
+                    "[EMAIL SERVICE] [CONFIG] Mensaje con adjunto preparado. To: {To}, Attachment: {AttachmentFileName}, SizeBytes: {SizeBytes}",
+                    toEmail,
+                    attachmentFileName,
+                    attachmentBytes.Length);
 
                 // Enviar con timeout
                 var sendTask = client.SendMailAsync(message);
                 var timeoutTask = Task.Delay(TimeSpan.FromSeconds(60));
-                
+
                 var completedTask = await Task.WhenAny(sendTask, timeoutTask);
-                
+
                 if (completedTask == timeoutTask && !sendTask.IsCompleted)
                 {
                     throw new TimeoutException("El envio del email con adjunto excedio el tiempo limite de 60 segundos");
                 }
-                
-                if (sendTask.IsFaulted)
-                {
-                    await sendTask; // Esto lanzará la excepción
-                }
-                else if (!sendTask.IsCompleted)
-                {
-                    await sendTask;
-                }
-                else
-                {
-                    await sendTask;
-                }
-                
-                Console.WriteLine($"[EMAIL SERVICE] [SUCCESS] Email con adjunto enviado exitosamente a: {toEmail}, Subject: {subject}");
+
+                await sendTask; // Si está faulted, esto lanza la excepción
+
+                _logger.LogInformation(
+                    "[EMAIL SERVICE] [SUCCESS] Email con adjunto enviado exitosamente. To: {To}, Subject: {Subject}, Attachment: {AttachmentFileName}",
+                    toEmail,
+                    subject,
+                    attachmentFileName);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[EMAIL SERVICE] [FATAL ERROR] ERROR al enviar email con adjunto a: {toEmail}, Subject: {subject}");
-                Console.WriteLine($"[EMAIL SERVICE] [FATAL ERROR] Exception Type: {ex.GetType().FullName}");
-                Console.WriteLine($"[EMAIL SERVICE] [FATAL ERROR] Error Message: {ex.Message}");
+                _logger.LogError(
+                    ex,
+                    "[EMAIL SERVICE] [FATAL ERROR] ERROR al enviar email con adjunto. To: {To}, Subject: {Subject}, Attachment: {AttachmentFileName}, ExceptionType: {ExceptionType}",
+                    toEmail,
+                    subject,
+                    attachmentFileName,
+                    ex.GetType().FullName);
                 throw;
             }
         }

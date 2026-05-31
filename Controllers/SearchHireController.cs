@@ -206,6 +206,9 @@ namespace newApi.Controllers
                     // ✅ STRIPE TAX: Si no hay pago de Stripe (creación directa), usar Amount como BaseAmount y TaxAmount = 0
                     BaseAmount = searchService.Price, // Sin pago Stripe, el precio completo es la base
                     TaxAmount = 0, // Sin pago Stripe, no hay tax calculado
+                    // 🌍 Round 21: snapshot del currency del SearchService — inmutable durante toda la vida del hire.
+                    // Fallback "EUR" para defenderse de servicios legacy sin currency seteado.
+                    Currency = searchService.Currency ?? "EUR",
                     CreatedAt = DateTime.UtcNow,
                     ExpertAvailabilityId = currentAvailability?.Id, // Guardar la disponibilidad usada
                     ExpertTimezone = expertTimezone, // ✅ INTERNACIONALIZACIÓN: Snapshot del timezone del lugar de contratación
@@ -508,6 +511,17 @@ namespace newApi.Controllers
                 await _loggingService.LogInfoAsync(
                     message: "Contratación creada exitosamente",
                     details: $"SearchHire {searchHire.Id} creada para Search {dto.SearchId}, Cliente {userId}, Experto {dto.ExpertId}",
+                    userId: userId,
+                    source: "SearchHireController.CreateSearchHire",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHire.Id
+                );
+
+                // 🌍 Round 21: aserción explícita del snapshot de currency — facilita auditar que
+                // el hire heredó el currency correcto del SearchService al momento de la creación.
+                await _loggingService.LogInfoAsync(
+                    message: "Hire currency snapshot",
+                    details: $"Hire {searchHire.Id} created with Currency={searchHire.Currency} from service {searchService.Id}",
                     userId: userId,
                     source: "SearchHireController.CreateSearchHire",
                     relatedEntityType: "SearchHire",

@@ -1986,7 +1986,11 @@ namespace newApi.Controllers
                         {
                             PriceData = new SessionLineItemPriceDataOptions
                             {
-                                Currency = "eur",
+                                // 🌍 Round 25 FIX (M4-1): no hardcodear "eur" — Stripe rechaza el checkout
+                                // si el currency del PriceData no coincide con el del Stripe Account del experto
+                                // (Connect Express). Usamos el SearchService.Currency (ISO 4217 en mayúsculas)
+                                // y lo pasamos a Stripe en minúsculas como exige la API.
+                                Currency = service.Currency.ToLowerInvariant(),
                                 UnitAmount = checked((long)Math.Round(amountToCharge * 100)),
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {
@@ -4348,6 +4352,9 @@ namespace newApi.Controllers
                     Amount = totalAmount, // Total con IVA (€110)
                     BaseAmount = baseAmount, // Base sin IVA (€90.91) ✅ STRIPE TAX
                     TaxAmount = taxAmount, // IVA (€19.09) ✅ STRIPE TAX
+                    // 🌍 Round 21: snapshot del currency del SearchService — inmutable durante toda la vida del hire.
+                    // Fallback "EUR" para defenderse de servicios legacy sin currency seteado.
+                    Currency = service.Currency ?? "EUR",
                     CreatedAt = DateTime.UtcNow,
                     CompletionDeadline = DateTime.UtcNow.AddDays(7),
                     ExpertAvailabilityId = currentAvailabilityId, // Guardar la disponibilidad usada
@@ -4374,6 +4381,16 @@ namespace newApi.Controllers
                     await _context.SaveChangesAsync(); // ✅ SAVE FIRST to get the real ID
                     searchHireId = searchHire.Id;
 
+                // 🌍 Round 21: aserción explícita del snapshot de currency — facilita auditar que
+                // el hire heredó el currency correcto del SearchService al momento de la creación.
+                await _loggingService.LogInfoAsync(
+                    message: "Hire currency snapshot",
+                    details: $"Hire {searchHire.Id} created with Currency={searchHire.Currency} from service {service.Id}",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHire.Id);
+
                 // Migrar chat pre-contratación → conversación post-hire
                 try
                 {
@@ -4396,6 +4413,7 @@ namespace newApi.Controllers
                     UserId = userId,
                     Amount = -totalAmount, // 🔧 FIX (#3): registrar lo REALMENTE cobrado (con IVA), coherente con SearchHire.Amount. Antes -service.Price (base) descuadraba el ledger interno con tax exclusive y mostraba un importe erróneo al usuario.
                     AmountCents = -checked((long)Math.Round(totalAmount * 100)), // 🔧 céntimos exactos cobrados (con IVA)
+                    Currency = searchHire.Currency, // 🌍 Round 25: snapshot ISO 4217 desde el hire recién creado
                     TransactionType = "ServicePayment",
                     RelatedEntityType = "SearchHire",
                         RelatedEntityId = searchHireId, // ✅ FIX: Usar searchHireId guardado
@@ -4906,12 +4924,21 @@ namespace newApi.Controllers
         /// </summary>
         private async Task LogCriticalRefundFailure(string paymentIntentId, int userId, int serviceId, Exception error, [System.Runtime.CompilerServices.CallerMemberName] string callerMember = "")
         {
+            // 🌍 Round 25: heredar el currency del ServicePayment original si lo encontramos.
+            // Si no, default "EUR" — es solo un marcador (Amount=0) y no afecta a la contabilidad.
+            var originalCurrency = await _context.FinancialTransactions
+                .Where(ft => ft.StripePaymentIntentId == paymentIntentId
+                          && ft.TransactionType == "ServicePayment")
+                .Select(ft => ft.Currency)
+                .FirstOrDefaultAsync() ?? "EUR";
+
             // 💾 Registrar fallo crítico en base de datos para seguimiento
             var criticalError = new FinancialTransaction
             {
                 UserId = userId,
                 Amount = 0, // No hay monto en caso de error
                 AmountCents = 0,
+                Currency = originalCurrency,
                 TransactionType = "CriticalRefundFailure",
                 RelatedEntityType = "ErrorRecovery",
                 RelatedEntityId = 0,
@@ -5128,11 +5155,19 @@ namespace newApi.Controllers
                 var refund = await refundService.CreateAsync(refundOptions, refundRequestOptions);
                 // 💾 Registrar refund en base de datos
                 var refundAmount = (decimal)refund.Amount / 100; // Convertir de céntimos a euros
+                // 🌍 Round 25: heredar el currency del ServicePayment original (mismo PaymentIntent).
+                // Fallback "EUR" para registros legacy donde el original no tenía currency.
+                var refundCurrency = await _context.FinancialTransactions
+                    .Where(ft => ft.StripePaymentIntentId == paymentIntentId
+                              && ft.TransactionType == "ServicePayment")
+                    .Select(ft => ft.Currency)
+                    .FirstOrDefaultAsync() ?? "EUR";
                 var refundTransaction = new FinancialTransaction
                 {
                     UserId = userId,
                     Amount = refundAmount,
                     AmountCents = refund.Amount, // 🔧 céntimos exactos devueltos por Stripe (fuente de verdad)
+                    Currency = refundCurrency,
                     TransactionType = "Refund",
                     RelatedEntityType = refundType == "automatic_error_refund" ? "ErrorRecovery" : "SearchHire",
                     RelatedEntityId = 0, // Se puede especificar si es necesario
@@ -5328,7 +5363,11 @@ namespace newApi.Controllers
                         {
                             PriceData = new SessionLineItemPriceDataOptions
                             {
-                                Currency = "eur",
+                                // 🌍 Round 25 FIX (M4-1): no hardcodear "eur" — Stripe rechaza el checkout
+                                // si el currency del PriceData no coincide con el del Stripe Account del experto
+                                // (Connect Express). Usamos el SearchService.Currency (ISO 4217 en mayúsculas)
+                                // y lo pasamos a Stripe en minúsculas como exige la API.
+                                Currency = service.Currency.ToLowerInvariant(),
                                 UnitAmount = checked((long)Math.Round(service.Price * 100)),
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {
@@ -6972,11 +7011,17 @@ namespace newApi.Controllers
                     ft.TransactionType == "Chargeback" && ft.StripePaymentIntentId == dispute.PaymentIntentId);
                 if (!alreadyMarked)
                 {
+                    // 🌍 Round 25: snapshot currency desde el SearchHire asociado al chargeback.
+                    var hireCurrency = await _context.SearchHires
+                        .Where(h => h.Id == hireId.Value)
+                        .Select(h => h.Currency)
+                        .FirstOrDefaultAsync() ?? "EUR";
                     _context.FinancialTransactions.Add(new FinancialTransaction
                     {
                         UserId = clientId,
                         Amount = -amount,
                         AmountCents = -dispute.Amount, // 🔧 céntimos exactos retirados por Stripe (fuente de verdad)
+                        Currency = hireCurrency,
                         TransactionType = "Chargeback",
                         RelatedEntityType = "SearchHire",
                         RelatedEntityId = hireId.Value,
@@ -7145,11 +7190,17 @@ namespace newApi.Controllers
                         ft.TransactionType == "ChargebackReinstated" && ft.StripePaymentIntentId == dispute.PaymentIntentId);
                     if (!alreadyReinstated)
                     {
+                        // 🌍 Round 25: snapshot currency desde el SearchHire (mismo del Chargeback original).
+                        var hireCurrency = await _context.SearchHires
+                            .Where(h => h.Id == hireId.Value)
+                            .Select(h => h.Currency)
+                            .FirstOrDefaultAsync() ?? "EUR";
                         _context.FinancialTransactions.Add(new FinancialTransaction
                         {
                             UserId = clientId,
                             Amount = amount, // POSITIVO: la plataforma recupera el cargo retirado
                             AmountCents = dispute.Amount,
+                            Currency = hireCurrency,
                             TransactionType = "ChargebackReinstated",
                             RelatedEntityType = "SearchHire",
                             RelatedEntityId = hireId.Value,
@@ -7235,6 +7286,7 @@ namespace newApi.Controllers
                         UserId = localFt?.UserId,
                         Amount = 0, // Solo marcador de fallo, no movimiento real
                         AmountCents = 0,
+                        Currency = localFt?.Currency ?? "EUR", // 🌍 Round 25: heredar del FT Refund original
                         TransactionType = "RefundFailed",
                         RelatedEntityType = localFt?.RelatedEntityType ?? "Refund",
                         RelatedEntityId = localFt?.RelatedEntityId,
@@ -7767,6 +7819,7 @@ namespace newApi.Controllers
                         UserId = failedTransaction.UserId,
                         Amount = 0,
                         AmountCents = 0,
+                        Currency = searchHire.Currency, // 🌍 Round 25: snapshot ISO 4217 desde el hire asociado
                         TransactionType = "TransferFailed",
                         RelatedEntityType = "SearchHire",
                         RelatedEntityId = searchHire.Id,

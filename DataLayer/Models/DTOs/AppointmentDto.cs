@@ -28,7 +28,15 @@ namespace newApi.DataLayer.Models.DTOs
         /// Timezone IANA usado para la conversión (ej: "Europe/Madrid", "America/Mexico_City")
         /// </summary>
         public string? Timezone { get; set; }
-        
+
+        /// <summary>
+        /// 🌍 Round 21: Timezone IANA del experto capturado en el momento de creación de la cita.
+        /// Inmutable: si el experto cambia su timezone después, este campo conserva el original
+        /// para que el dashboard muestre la hora histórica correctamente.
+        /// Null para citas legacy creadas antes de Round 21 (asumir Europe/Madrid).
+        /// </summary>
+        public string? ProposerTimezone { get; set; }
+
         /// <summary>
         /// País del experto al momento de la contratación (ISO 3166-1 alpha-2, ej: "ES", "MX")
         /// </summary>

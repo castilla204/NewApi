@@ -790,6 +790,11 @@ namespace newApi.Migrations
 
                     b.HasIndex("StripePaymentIntentId")
                         .IsUnique()
+                        .HasDatabaseName("IX_FT_StripePaymentIntent_ServicePayment_uq")
+                        .HasFilter("\"StripePaymentIntentId\" IS NOT NULL AND \"TransactionType\" = 'ServicePayment'");
+
+                    b.HasIndex("StripePaymentIntentId")
+                        .IsUnique()
                         .HasDatabaseName("IX_FT_StripePaymentIntent_Chargeback_uq")
                         .HasFilter("\"StripePaymentIntentId\" IS NOT NULL AND \"TransactionType\" = 'Chargeback'");
 

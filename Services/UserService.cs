@@ -302,6 +302,22 @@ namespace newApi.Services
             var settings = new GoogleJsonWebSignature.ValidationSettings { Audience = clientIds };
             var payload = await GoogleJsonWebSignature.ValidateAsync(request.AccessToken, settings);
 
+            // 🛡️ SEGURIDAD CRÍTICA: Rechazar si Google no ha verificado el email.
+            // Sin esta comprobación, un atacante con un ID token de email no verificado
+            // podría enlazar a cuentas existentes vía fallback por email.
+            if (!payload.EmailVerified)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Google auth rejected: email not verified",
+                    details: $"Google sub {payload.Subject} attempted login with unverified email {payload.Email}",
+                    userId: null,
+                    source: "UserService.GoogleAuth",
+                    relatedEntityType: "User",
+                    relatedEntityId: null
+                );
+                return (false, null, null, "email_not_verified");
+            }
+
             // Query user (sin AsNoTracking para poder actualizar si es necesario)
             // ✅ FIX: Usar IgnoreQueryFilters para encontrar usuarios incluso si están eliminados
             // pero luego verificar IsDeleted para rechazar el login
@@ -360,7 +376,8 @@ namespace newApi.Services
                     GoogleId = payload.Subject,
                     CreatedAt = DateTime.UtcNow,
                     Role = isAdminEmail ? UserRole.Admin : UserRole.Client,
-                    // 🛡️ Round 16: Google ya verifica el email del usuario, podemos confiar.
+                    // 🛡️ Round 16: Google ya verificó payload.EmailVerified arriba antes de llegar aquí,
+                    // así que podemos confiar en marcar el email como verificado.
                     EmailVerified = true,
                     EmailVerifiedAt = DateTime.UtcNow,
                 };

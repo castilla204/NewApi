@@ -565,11 +565,21 @@ namespace newApi.Controllers
                 new PendingRegistration(email, name, passwordHash),
                 TimeSpan.FromMinutes(15));
 
+            // linkedAccount=true cuando vamos a vincular password a una cuenta OAuth existente
+            // (existe el user, no tiene password, no está bloqueado ni eliminado). El frontend
+            // usa este flag para mostrar copy del tipo "Vincularemos tu cuenta de Google a una
+            // contraseña" en lugar de "Te crearemos una cuenta nueva".
+            bool linkedAccount = existing != null
+                && string.IsNullOrEmpty(existing.Password)
+                && !existing.IsBlocked
+                && !existing.IsDeleted;
+
             // Siempre 200, anti-enum.
             return Ok(new
             {
                 verificationToken = issue.VerificationToken,
                 expiresAt = issue.ExpiresAt,
+                linkedAccount,
                 message = "Te hemos enviado un código de verificación a tu correo."
             });
         }
@@ -611,10 +621,16 @@ namespace newApi.Controllers
 
             // ─── Crear o actualizar User ─────────────────────────────────────────────
             // Si existe usuario con ese email (caso OAuth-only añadiendo password):
-            var user = await _context.Users
+            var preExistingUser = await _context.Users
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(u => u.Email.ToLower() == pending.Email);
 
+            // Capturamos AHORA si era una vinculación (user OAuth sin password) — más abajo
+            // mutamos user.Password y perderíamos el estado original. El frontend usa este flag
+            // para mostrar "Contraseña vinculada" vs "Cuenta creada".
+            bool wasLinked = preExistingUser != null && string.IsNullOrEmpty(preExistingUser.Password);
+
+            var user = preExistingUser;
             if (user != null)
             {
                 if (user.IsBlocked) return Unauthorized(new { code = "account_blocked", message = "Cuenta bloqueada." });
@@ -669,6 +685,7 @@ namespace newApi.Controllers
             return Ok(new
             {
                 token = $"{accessToken}|{refreshToken}",
+                accountAction = wasLinked ? "password_linked" : "account_created",
                 user = new
                 {
                     id = user.Id,
@@ -839,8 +856,11 @@ namespace newApi.Controllers
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(u => u.Email.ToLower() == email);
 
-            // shouldSend=true solo si user existe + tiene password + no eliminado/bloqueado.
-            bool shouldSend = user != null && !user.IsBlocked && !user.IsDeleted && !string.IsNullOrEmpty(user.Password);
+            // shouldSend=true si user existe + no eliminado/bloqueado.
+            // OJO: NO exigimos que tenga password. Esto permite a usuarios OAuth-only (Google/Apple/etc.)
+            // usar este mismo flujo para AÑADIR una contraseña inicial a su cuenta. ResetPassword
+            // se comporta igual en ambos casos: sobrescribe el hash (o lo crea si era null).
+            bool shouldSend = user != null && !user.IsBlocked && !user.IsDeleted;
             var issue = await _emailVerifier.IssueAsync(
                 email: email,
                 purpose: EmailVerificationPurpose.PasswordReset,
@@ -861,12 +881,16 @@ namespace newApi.Controllers
             {
                 verificationToken = issue.VerificationToken,
                 expiresAt = issue.ExpiresAt,
-                message = "Si el email está registrado, te enviaremos un código de recuperación."
+                message = "Si el email está registrado, te enviaremos un código para restablecer o crear tu contraseña."
             });
         }
 
         /// <summary>
         /// Completa el flujo de reset: verifica OTP + cambia password + emite tokens (login automático).
+        /// DUAL-PURPOSE: este endpoint sirve tanto para RESET (sobrescribir un hash existente) como
+        /// para SET INICIAL (crear el primer hash de un usuario OAuth-only que se registró con
+        /// Google/Apple/etc. y aún no tenía password). En ambos casos la lógica es idéntica:
+        /// asignamos un nuevo hash a user.Password — no importa si antes era null o ya existía.
         /// </summary>
         [HttpPost("reset-password")]
         public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequestDto request)
@@ -905,6 +929,9 @@ namespace newApi.Controllers
                 return Unauthorized(new { code = "verification_failed", message = "No se pudo completar la operación." });
             }
 
+            // Asignación unconditional: si user.Password era null (OAuth-only) ahora pasa a tener
+            // hash → el usuario podrá iniciar sesión también con email+password. Si ya tenía hash
+            // previo, simplemente lo sobrescribimos (flujo de reset clásico).
             user.Password = _passwordHasher.Hash(request.NewPassword);
             user.PasswordChangedAt = DateTime.UtcNow;
             user.FailedLoginAttempts = 0;
@@ -952,7 +979,13 @@ namespace newApi.Controllers
                 .FirstOrDefaultAsync(u => u.AppleId == claims.Sub);
 
             // ─── Si no existe AppleId, intentar match por email (link de cuentas) ───
-            if (user == null && !string.IsNullOrEmpty(claims.Email))
+            // 🛡️ Guards: solo auto-linkamos si Apple confirma el email real (no proxy)
+            // y si la cuenta existente NO tiene password (OAuth-only). Si tiene password,
+            // forzamos al usuario a loguearse con ella primero — evita takeover por email.
+            if (user == null
+                && !string.IsNullOrEmpty(claims.Email)
+                && claims.EmailVerified
+                && !claims.IsPrivateEmail)
             {
                 var emailLower = claims.Email.Trim().ToLowerInvariant();
                 user = await _context.Users
@@ -963,6 +996,14 @@ namespace newApi.Controllers
                 {
                     if (user.IsBlocked) return Unauthorized(new { code = "account_blocked", message = "Cuenta bloqueada." });
                     if (user.IsDeleted) return Unauthorized(new { code = "account_deleted", message = "Cuenta eliminada." });
+                    if (!string.IsNullOrEmpty(user.Password))
+                    {
+                        return Unauthorized(new
+                        {
+                            code = "account_has_password",
+                            message = "Ya existe una cuenta con ese email. Inicia sesión con tu contraseña y vincula Apple desde tu perfil."
+                        });
+                    }
                     user.AppleId = claims.Sub;
                     user.EmailVerified = true; // Apple verifica
                     user.EmailVerifiedAt ??= DateTime.UtcNow;

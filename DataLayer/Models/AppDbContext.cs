@@ -44,6 +44,8 @@ namespace newApi.DataLayer.Models
         public DbSet<FinancialTransaction> FinancialTransactions { get; set; }
         // 🔧 FISCAL FLIP: contadores de numeración correlativa de facturas (PK compuesta SeriesCode+Year).
         public DbSet<InvoiceCounter> InvoiceCounters { get; set; }
+        // 💱 Multi-Currency Display: snapshots diarios de tasas Frankfurter/ECB (cache + fallback).
+        public DbSet<ExchangeRateSnapshot> ExchangeRateSnapshots { get; set; }
         public DbSet<ServiceType> ServiceTypes { get; set; }
         public DbSet<ServiceTypeCategory> ServiceTypeCategories { get; set; }
         public DbSet<Conversation> Conversations { get; set; }
@@ -761,6 +763,19 @@ namespace newApi.DataLayer.Models
                 entity.HasKey(ic => new { ic.SeriesCode, ic.Year });
                 entity.Property(ic => ic.SeriesCode).HasMaxLength(32).IsRequired();
                 entity.Property(ic => ic.NextNumber).IsRequired();
+            });
+
+            // 💱 Multi-Currency Display: ExchangeRateSnapshot. Indexamos (BaseCurrency, FetchedAt DESC)
+            // para que la lectura cold-start ("último snapshot por moneda base") sea O(log n) sin sort.
+            modelBuilder.Entity<ExchangeRateSnapshot>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.BaseCurrency).HasMaxLength(3).IsRequired();
+                entity.Property(e => e.RatesJson).HasColumnType("jsonb").IsRequired();
+                entity.Property(e => e.Source).HasMaxLength(64).IsRequired();
+                entity.HasIndex(e => new { e.BaseCurrency, e.FetchedAt })
+                    .HasDatabaseName("IX_ExchangeRateSnapshots_Base_Fetched")
+                    .IsDescending(false, true);
             });
 
             // Configuración de la nueva arquitectura de estados

@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using System.Security.Claims;
 using System.Globalization;
 using Microsoft.Extensions.DependencyInjection;
+using newApi.Common;
 using newApi.Services;
 using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.DTOs;
@@ -922,6 +923,75 @@ public class UserController : ControllerBase
         catch (Exception ex)
         {
             return StatusCode(500, new { message = "Failed to toggle vacation mode" });
+        }
+    }
+
+    /// <summary>
+    /// 🌍 Round 22: Permite al usuario fijar la divisa que verá en la interfaz.
+    /// Persistente entre sesiones. Null en BD = auto-detección por IP/país.
+    /// Valida contra <see cref="SupportedCurrenciesList"/>.
+    /// </summary>
+    [HttpPost("preferred-currency")]
+    [Authorize]
+    public async Task<IActionResult> SetPreferredCurrency([FromBody] PreferredCurrencyDto dto)
+    {
+        try
+        {
+            if (dto == null || string.IsNullOrWhiteSpace(dto.Currency))
+            {
+                return BadRequest(new { message = "Currency is required" });
+            }
+
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            {
+                return Unauthorized(new { message = "Invalid user identification" });
+            }
+
+            // Validar contra la lista canónica (Normalize → null si no es soportada).
+            var normalized = SupportedCurrenciesList.Normalize(dto.Currency);
+            if (normalized == null)
+            {
+                return BadRequest(new
+                {
+                    message = "Unsupported currency",
+                    supported = SupportedCurrenciesList.Codes
+                });
+            }
+
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+            if (user == null)
+            {
+                return NotFound(new { message = "User not found" });
+            }
+
+            user.PreferredCurrency = normalized;
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                message = "Preferred currency updated",
+                user = new
+                {
+                    user.Id,
+                    user.Name,
+                    user.Email,
+                    user.PreferredCurrency,
+                    Role = user.Role.ToString()
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            await _loggingService.LogErrorAsync(
+                message: "Failed to set preferred currency",
+                details: $"Exception while updating PreferredCurrency: {ex.Message}",
+                userId: int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int uid) ? uid : (int?)null,
+                source: "UserController.SetPreferredCurrency",
+                relatedEntityType: "User",
+                additionalData: new { Error = ex.Message, ErrorType = ex.GetType().Name }
+            );
+            return StatusCode(500, new { message = "Failed to update preferred currency" });
         }
     }
 

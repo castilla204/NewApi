@@ -256,6 +256,48 @@ namespace newApi.Services
                 }
             }
             
+            // 🛡️ E2: Para CRITICAL, propagar SIEMPRE a canal alternativo (Slack/Telegram) si está
+            // configurado, ANTES del save a BD. Render logs son efímeros (~24h) y si SMTP no está
+            // configurado o falla, este es el único rastro durable garantizado para ops.
+            // Fire-and-forget: no bloquea el flujo principal de logging ni gateado por éxito del save.
+            if (logLevel == "Critical")
+            {
+                try
+                {
+                    using var alertScope = _serviceScopeFactory.CreateScope();
+                    var alertChannel = alertScope.ServiceProvider.GetService<IAlertChannelService>();
+                    if (alertChannel != null)
+                    {
+                        var criticalPayload = new
+                        {
+                            Source = source,
+                            UserId = userId,
+                            RelatedEntityType = relatedEntityType,
+                            RelatedEntityId = relatedEntityId,
+                            Details = details,
+                            AdditionalData = additionalData
+                        };
+                        var criticalMsg = $"[CRITICAL] {message}";
+                        _ = Task.Run(async () =>
+                        {
+                            try { await alertChannel.SendCriticalAsync(criticalMsg, criticalPayload); }
+                            catch (Exception alertEx)
+                            {
+                                Console.Error.WriteLine($"[LOGGING SERVICE] [ALERT CHANNEL CRITICAL] Falló envío: {alertEx.Message}");
+                            }
+                        });
+                    }
+                    else
+                    {
+                        Console.Error.WriteLine($"[LOGGING SERVICE] [ALERT CHANNEL CRITICAL] IAlertChannelService no resuelto. Configura Slack/Telegram webhook para SLA. Original: {message}");
+                    }
+                }
+                catch (Exception alertResolveEx)
+                {
+                    Console.Error.WriteLine($"[LOGGING SERVICE] [ALERT CHANNEL CRITICAL] No se pudo resolver IAlertChannelService: {alertResolveEx.Message}");
+                }
+            }
+
             // ✅ BEST PRACTICE: Usar scope separado para logging independiente de transacciones externas
             // Esto asegura que los logs se guarden incluso si hay rollbacks en otras transacciones
             using var scope = _serviceScopeFactory.CreateScope();
@@ -941,7 +983,7 @@ namespace newApi.Services
                     string templateHtml;
                     try 
                     {
-                        var path = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "Resources", "EmailTemplate.html");
+                        var path = System.IO.Path.Combine(System.AppContext.BaseDirectory, "Resources", "EmailTemplate.html");
                         if (System.IO.File.Exists(path))
                         {
                             templateHtml = System.IO.File.ReadAllText(path);
@@ -1076,10 +1118,15 @@ namespace newApi.Services
             catch (Exception emailEx)
             {
                 // ✅ LOG: Error al enviar email en Hangfire (se reintentará automáticamente)
+                // 🛡️ E2: aplanar cadena completa de InnerException para no perder contexto cuando
+                // el async unwrap de Task.WhenAny (EmailService) trunca el stack trace al frame de
+                // SendMailAsync. ExceptionChainToString recorre toda la cadena.
+                var exceptionChain = ExceptionChainToString(emailEx);
                 Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ERROR] ERROR al enviar email a: {toEmail}, UserId: {userId}");
                 Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ERROR] Exception Type: {emailEx.GetType().FullName}");
                 Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ERROR] Error Message: {emailEx.Message}");
                 Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ERROR] StackTrace: {emailEx.StackTrace ?? "NULL"}");
+                Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ERROR] ExceptionChain:\n{exceptionChain}");
                 if (emailEx.InnerException != null)
                 {
                     Console.WriteLine($"[LOGGING SERVICE] [HANGFIRE ERROR] InnerException Type: {emailEx.InnerException.GetType().FullName}");
@@ -1144,6 +1191,39 @@ namespace newApi.Services
             using var sha = SHA256.Create();
             var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(raw));
             return Convert.ToHexString(bytes);
+        }
+
+        /// <summary>
+        /// 🛡️ E2: Aplana recursivamente toda la cadena ex.InnerException (incluido AggregateException)
+        /// en una cadena con formato "Type: Message\nStackTrace\n → InnerType: InnerMessage\n...".
+        /// Mitiga la pérdida de contexto en async unwrap (Task.WhenAny en EmailService) donde el
+        /// stack trace del frame externo (Hangfire job → SendMailAsync) queda truncado.
+        /// </summary>
+        private static string ExceptionChainToString(Exception? ex, int depth = 0, int maxDepth = 10)
+        {
+            if (ex == null || depth > maxDepth) return string.Empty;
+            var sb = new StringBuilder();
+            var indent = new string(' ', depth * 2);
+            sb.Append(indent).Append(ex.GetType().FullName).Append(": ").AppendLine(ex.Message);
+            if (!string.IsNullOrEmpty(ex.StackTrace))
+            {
+                sb.Append(indent).Append("StackTrace: ").AppendLine(ex.StackTrace);
+            }
+            if (ex is AggregateException agg)
+            {
+                int i = 0;
+                foreach (var inner in agg.InnerExceptions)
+                {
+                    sb.Append(indent).Append(" → [AggregateInner ").Append(i++).AppendLine("]");
+                    sb.Append(ExceptionChainToString(inner, depth + 1, maxDepth));
+                }
+            }
+            else if (ex.InnerException != null)
+            {
+                sb.Append(indent).AppendLine(" → InnerException:");
+                sb.Append(ExceptionChainToString(ex.InnerException, depth + 1, maxDepth));
+            }
+            return sb.ToString();
         }
 
         /// <summary>

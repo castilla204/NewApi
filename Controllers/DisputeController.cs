@@ -662,6 +662,38 @@ namespace newApi.Controllers
                             }
                         }
 
+                        // 🚨 E2 FIX: marca CRITICAL en el audit trail ANTES de mover dinero, para que
+                        // la causalidad "admin resolvió → distribución de dinero" sea explícita en logs.
+                        // Sin esto, un fallo posterior en ProcessMoneyDistributionAsync aparece sin
+                        // un evento "resolve" que lo originó (solo el Info de la fase de notificación).
+                        {
+                            var resolverAdminId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                            var decisionWinner = request.Action.ToLower() == "refund_client" ? "client" : "expert";
+                            await _loggingService.LogCriticalAsync(
+                                message: $"Dispute {disputeId} resolved by admin; processing money distribution",
+                                details: $"Admin {resolverAdminId} resolved Dispute {disputeId} with decision '{decisionWinner}'. " +
+                                         $"SearchHire {dispute.SearchHire.Id}, Reporter {dispute.ReporterId}, " +
+                                         $"Client {dispute.SearchHire.ClientId}, Expert {dispute.SearchHire.ExpertId}, " +
+                                         $"Amount {dispute.SearchHire.Amount}€. " +
+                                         $"Expected outcome: {(decisionWinner == "client" ? "full refund to client" : "transfer to expert")}.",
+                                userId: resolverAdminId,
+                                source: "DisputeController.ResolveDispute",
+                                relatedEntityType: "Dispute",
+                                relatedEntityId: disputeId,
+                                additionalData: new {
+                                    DisputeId = disputeId,
+                                    SearchHireId = dispute.SearchHire.Id,
+                                    Decision = decisionWinner,
+                                    Action = request.Action.ToLower(),
+                                    ReporterId = dispute.ReporterId,
+                                    ClientId = dispute.SearchHire.ClientId,
+                                    ExpertId = dispute.SearchHire.ExpertId,
+                                    Amount = dispute.SearchHire.Amount,
+                                    ResolverAdminId = resolverAdminId,
+                                    ResolutionComments = request.ResolutionComments
+                                });
+                        }
+
                         switch (request.Action.ToLower())
                         {
                             case "refund_client":

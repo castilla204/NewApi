@@ -82,79 +82,91 @@ namespace newApi.Services
             // sin ella, Npgsql usa autocommit y el lock se libera al cerrar el comando (ms después),
             // dejando un race fatal con CompleteService/timers concurrentes. Mismo patrón ya
             // aplicado en SearchHireController.CompleteService (D2 FIX previo).
-            using var transaction = await _context.Database.BeginTransactionAsync();
-
-            // 🛡️ R22 FIX: SELECT FOR UPDATE dentro del scope de lectura para serializar transiciones
-            // con CompleteService (que también muta StatusId tras fix D2). Sin esto, dos updates
-            // concurrentes (admin + cliente completing) pueden colisionar y dejar estado inconsistente.
-            // El lock vive hasta el siguiente SaveChanges + commit dentro de la transacción.
-            var hire = await _context.SearchHires
-                .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {hireId} AND \"ExpertId\" = {userId} FOR UPDATE")
-                .Include(sh => sh.SearchService)
-                    .ThenInclude(ss => ss.SelectedDeliverableTypes)
-                        .ThenInclude(ssdt => ssdt.DeliverableType)
-                .Include(sh => sh.Deliverables)
-                .Include(sh => sh.Status)
-                .FirstOrDefaultAsync();
-            
-            if (hire == null)
-                return (false, "Servicio no encontrado o no tienes permisos para modificarlo");
-
-            // 🔒 VALIDACIÓN DE TRANSICIÓN (P2): este setter manual NO mueve dinero ni sincroniza la cita.
-            // Solo se permiten transiciones administrativas entre estados NO finales. Rechazar:
-            //  (a) salir de un estado de finalización (no revivir un hire ya cerrado),
-            //  (b) destinos de finalización/dinero (completed, cancelled, disputed, transfer_failed,
-            //      dispute_resolved_*, cancelaciones por timer) -> deben ir por CompleteService /
-            //      resolve-dispute / timers, no por este endpoint.
-            if (hire.Status != null && hire.Status.IsFinalizationStatus)
+            //
+            // 🛡️ Round 16 — S4 FIX (race): con EnableRetryOnFailure(3) activo en Program.cs,
+            // un BeginTransactionAsync "pelado" puede ser reintentado por la estrategia interna de
+            // EF Core soltando el FOR UPDATE antes del Commit (lock evaporado entre reintentos).
+            // Envolvemos toda la unidad de trabajo en CreateExecutionStrategy().ExecuteAsync para
+            // garantizar que cualquier retry vuelve a abrir la transacción y re-emite el SELECT
+            // FOR UPDATE desde cero. Mismo patrón usado en SearchHireController.CompleteService
+            // (línea ~1080) y DisputeController (línea ~1408).
+            var strategy = _context.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
             {
-                return (false, "No se puede cambiar el estado de un servicio ya finalizado");
-            }
+                using var transaction = await _context.Database.BeginTransactionAsync();
 
-            var targetStatus = await _context.SystemStatuses
-                .FirstOrDefaultAsync(s => s.StatusValue == status && s.StatusType == "SearchHireStatus");
-            if (targetStatus == null)
-            {
-                return (false, $"Status '{status}' does not exist for SearchHire entities");
-            }
-            if (targetStatus.IsFinalizationStatus)
-            {
-                return (false, "Esta transición debe realizarse a través de su flujo correspondiente (finalización, disputa o cancelación)");
-            }
+                // 🛡️ R22 FIX: SELECT FOR UPDATE dentro del scope de lectura para serializar transiciones
+                // con CompleteService (que también muta StatusId tras fix D2). Sin esto, dos updates
+                // concurrentes (admin + cliente completing) pueden colisionar y dejar estado inconsistente.
+                // El lock vive hasta el siguiente SaveChanges + commit dentro de la transacción.
+                var hire = await _context.SearchHires
+                    .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {hireId} AND \"ExpertId\" = {userId} FOR UPDATE")
+                    .Include(sh => sh.SearchService)
+                        .ThenInclude(ss => ss.SelectedDeliverableTypes)
+                            .ThenInclude(ssdt => ssdt.DeliverableType)
+                    .Include(sh => sh.Deliverables)
+                    .Include(sh => sh.Status)
+                    .FirstOrDefaultAsync();
 
-            // Validar archivos obligatorios cuando se cambia a "Completed"
-            if (status == "completed")
-            {
-                var validationResult = await ValidateRequiredDeliverables(hire);
-                if (!validationResult.IsValid)
+                if (hire == null)
+                    return (false, "Servicio no encontrado o no tienes permisos para modificarlo");
+
+                // 🔒 VALIDACIÓN DE TRANSICIÓN (P2): este setter manual NO mueve dinero ni sincroniza la cita.
+                // Solo se permiten transiciones administrativas entre estados NO finales. Rechazar:
+                //  (a) salir de un estado de finalización (no revivir un hire ya cerrado),
+                //  (b) destinos de finalización/dinero (completed, cancelled, disputed, transfer_failed,
+                //      dispute_resolved_*, cancelaciones por timer) -> deben ir por CompleteService /
+                //      resolve-dispute / timers, no por este endpoint.
+                if (hire.Status != null && hire.Status.IsFinalizationStatus)
                 {
-                    return (false, validationResult.ErrorMessage);
+                    return (false, "No se puede cambiar el estado de un servicio ya finalizado");
                 }
 
-                hire.UpdatedAt = DateTime.UtcNow;
-            }
+                var targetStatus = await _context.SystemStatuses
+                    .FirstOrDefaultAsync(s => s.StatusValue == status && s.StatusType == "SearchHireStatus");
+                if (targetStatus == null)
+                {
+                    return (false, $"Status '{status}' does not exist for SearchHire entities");
+                }
+                if (targetStatus.IsFinalizationStatus)
+                {
+                    return (false, "Esta transición debe realizarse a través de su flujo correspondiente (finalización, disputa o cancelación)");
+                }
 
-            // 📜 Round 9 — A2: audit log ANTES de mutar
-            var oldStatusForAudit = hire.StatusId;
-            hire.StatusId = targetStatus.Id;
-            if (status != "completed")
-            {
-                hire.UpdatedAt = DateTime.UtcNow;
-            }
-            if (_statusAudit != null)
-            {
-                await _statusAudit.RecordTransitionAsync(
-                    searchHireId: hire.Id,
-                    oldStatusId: oldStatusForAudit,
-                    newStatusId: targetStatus.Id,
-                    changedByUserId: userId,
-                    source: "SearchHireService.UpdateHireStatus",
-                    reason: $"Transición solicitada por usuario {userId} a estado '{status}'",
-                    additionalData: new { TargetStatus = status });
-            }
-            await _context.SaveChangesAsync();
-            await transaction.CommitAsync();
-            return (true, string.Empty);
+                // Validar archivos obligatorios cuando se cambia a "Completed"
+                if (status == "completed")
+                {
+                    var validationResult = await ValidateRequiredDeliverables(hire);
+                    if (!validationResult.IsValid)
+                    {
+                        return (false, validationResult.ErrorMessage);
+                    }
+
+                    hire.UpdatedAt = DateTime.UtcNow;
+                }
+
+                // 📜 Round 9 — A2: audit log ANTES de mutar
+                var oldStatusForAudit = hire.StatusId;
+                hire.StatusId = targetStatus.Id;
+                if (status != "completed")
+                {
+                    hire.UpdatedAt = DateTime.UtcNow;
+                }
+                if (_statusAudit != null)
+                {
+                    await _statusAudit.RecordTransitionAsync(
+                        searchHireId: hire.Id,
+                        oldStatusId: oldStatusForAudit,
+                        newStatusId: targetStatus.Id,
+                        changedByUserId: userId,
+                        source: "SearchHireService.UpdateHireStatus",
+                        reason: $"Transición solicitada por usuario {userId} a estado '{status}'",
+                        additionalData: new { TargetStatus = status });
+                }
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+                return (true, string.Empty);
+            });
         }
 
         private async Task<(bool IsValid, string ErrorMessage)> ValidateRequiredDeliverables(SearchHire hire)

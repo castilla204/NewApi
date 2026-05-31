@@ -31,7 +31,14 @@ namespace newApi.DataLayer.Models.DTOs
         /// Monto de IVA/tax calculado por Stripe Tax. Si es null o 0, no hay tax aplicado.
         /// </summary>
         public decimal? TaxAmount { get; set; }
-        
+
+        /// <summary>
+        /// Round 24: currency en la que se realizó el cargo (ISO 4217). Default 'EUR' para
+        /// hires legacy. Refunds/disputes muestran SIEMPRE este currency — nunca convertir
+        /// el principal del reembolso a otra moneda.
+        /// </summary>
+        public string ChargeCurrency { get; set; } = "EUR";
+
         // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto al momento de la contratación
         /// <summary>
         /// Timezone IANA del experto al momento de crear la contratación (ej: "Europe/Madrid", "America/Mexico_City")
@@ -61,7 +68,12 @@ namespace newApi.DataLayer.Models.DTOs
         public string? ServiceTypeCategoryName { get; set; }
         public bool RequiresAppointment { get; set; }
         public decimal Price { get; set; }
-        
+
+        /// <summary>
+        /// Round 24: currency original del precio del servicio (ISO 4217). Default 'EUR'.
+        /// </summary>
+        public string Currency { get; set; } = "EUR";
+
         // ✅ NUEVOS CAMPOS: Información de ubicación del experto para validación de citas
         public string? ExpertLatitude { get; set; } // Coordenadas del experto al momento de la contratación
         public string? ExpertLongitude { get; set; } // Coordenadas del experto al momento de la contratación
@@ -180,6 +192,12 @@ namespace newApi.DataLayer.Models.DTOs
         public int ServiceTypeId { get; set; }
         public string ServiceTypeName { get; set; }
         public decimal Price { get; set; }
+
+        /// <summary>
+        /// Round 24: currency original del precio (ISO 4217). Default 'EUR' para retro-compat.
+        /// </summary>
+        public string Currency { get; set; } = "EUR";
+
         public List<string> ImageUrls { get; set; } = new List<string>(); // Solo primeras 2-3 imágenes
         public HomepageExpertDto Expert { get; set; }
         public int CompletedSearches { get; set; }

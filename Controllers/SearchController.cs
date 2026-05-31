@@ -359,6 +359,8 @@ namespace newApi.Controllers
                         Amount = s.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
                         BaseAmount = s.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
                         TaxAmount = s.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
+                        // Round 24: snapshot currency del cargo real (Round 21).
+                        ChargeCurrency = string.IsNullOrEmpty(s.SearchHire.Currency) ? "EUR" : s.SearchHire.Currency,
                         ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
                         ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                         // 🛡️ Round 10 — P-C FIX (V8 snapshots): exponer al frontend
@@ -396,6 +398,8 @@ namespace newApi.Controllers
                                 ServiceTypeCategoryName = s.SearchHire.SearchService.ServiceType?.ServiceTypeCategory?.Name,
                                 RequiresAppointment = s.SearchHire.SearchService.ServiceType?.RequiresAppointment ?? false,
                                 Price = s.SearchHire.SearchService.Price,
+                                // Round 24: poblar Currency (default 'EUR' si null).
+                                Currency = string.IsNullOrEmpty(s.SearchHire.SearchService.Currency) ? "EUR" : s.SearchHire.SearchService.Currency,
                                 ExpertLatitude = s.SearchHire.SearchService.ExpertProfile?.Latitude,
                                 ExpertLongitude = s.SearchHire.SearchService.ExpertProfile?.Longitude,
                                 LocationRange = s.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50
@@ -1056,6 +1060,8 @@ namespace newApi.Controllers
                             Amount = s.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
                             BaseAmount = s.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
                             TaxAmount = s.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
+                            // Round 24: snapshot currency del cargo real (Round 21).
+                            ChargeCurrency = string.IsNullOrEmpty(s.SearchHire.Currency) ? "EUR" : s.SearchHire.Currency,
                             ExpertTimezone = s.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
                             ExpertCountry = s.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                             // 🛡️ Round 10 — P-C FIX (V8 snapshots): exponer al frontend
@@ -1431,6 +1437,8 @@ namespace newApi.Controllers
                         Amount = search.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
                         BaseAmount = search.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
                         TaxAmount = search.SearchHire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
+                        // Round 24: snapshot currency del cargo real (Round 21).
+                        ChargeCurrency = string.IsNullOrEmpty(search.SearchHire.Currency) ? "EUR" : search.SearchHire.Currency,
                         ExpertTimezone = search.SearchHire.ExpertTimezone, // ✅ INTERNACIONALIZACIÓN
                         ExpertCountry = search.SearchHire.ExpertCountry, // ✅ INTERNACIONALIZACIÓN
                         // 🛡️ Round 10 — P-C FIX (V8 snapshots): exponer al frontend
@@ -1451,6 +1459,8 @@ namespace newApi.Controllers
                             ServiceTypeCategoryName = search.SearchHire.SearchService.ServiceType?.ServiceTypeCategory?.Name,
                             RequiresAppointment = search.SearchHire.SearchService.ServiceType?.RequiresAppointment ?? false,
                             Price = search.SearchHire.SearchService.Price,
+                            // Round 24: poblar Currency (default 'EUR' si null).
+                            Currency = string.IsNullOrEmpty(search.SearchHire.SearchService.Currency) ? "EUR" : search.SearchHire.SearchService.Currency,
                             // ✅ NUEVOS CAMPOS: Información de ubicación del experto
                             ExpertLatitude = search.SearchHire.SearchService.ExpertProfile?.Latitude,
                             ExpertLongitude = search.SearchHire.SearchService.ExpertProfile?.Longitude,

@@ -289,6 +289,14 @@ namespace newApi.DataLayer.Models
                 .HasForeignKey(ss => ss.ServiceTypeId)
                 .OnDelete(DeleteBehavior.Restrict);
 
+            // 🌍 Round 21: ISO 4217 currency (3 chars). Default "EUR" para backward-compat
+            // con todos los SearchService existentes. La validación de coincidencia con la
+            // default_currency del Stripe Account del experto se hace en CreateSearchService.
+            modelBuilder.Entity<SearchService>()
+                .Property(ss => ss.Currency)
+                .HasMaxLength(3)
+                .HasDefaultValue("EUR");
+
             modelBuilder.Entity<SearchServiceImage>()
                 .HasOne(ssi => ssi.SearchService)
                 .WithMany(ss => ss.Images)
@@ -318,6 +326,13 @@ namespace newApi.DataLayer.Models
                 .WithOne(s => s.SearchHire)
                 .HasForeignKey<SearchHire>(sh => sh.SearchId)
                 .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull para preservar SearchHires cuando se eliminan Searches
+
+            // 🌍 Round 21: snapshot inmutable del currency en el hire (3-letter ISO 4217).
+            // Default "EUR" para hires legacy pre-migración que no tenían la columna.
+            modelBuilder.Entity<SearchHire>()
+                .Property(sh => sh.Currency)
+                .HasMaxLength(3)
+                .HasDefaultValue("EUR");
 
             // 📜 Round 9 — A2 FIX: audit log de transiciones de estado de SearchHire.
             // Append-only por convención (sin método para borrar). Cascade desde SearchHire

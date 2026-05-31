@@ -344,6 +344,8 @@ namespace newApi.Controllers
                                 SearchHireId = searchHire.Id,
                                 StatusId = awaitingStatus.Id,
                                 // ProposedDate, ProposedTime, Location son nullable - se asignarán en ProposeAppointment
+                                // 🌍 Round 21: snapshot del timezone del experto al crear la cita.
+                                ProposerTimezone = searchHire.ExpertTimezone ?? expertTimezone ?? "Europe/Madrid",
                                 CreatedAt = DateTime.UtcNow,
                                 UpdatedAt = DateTime.UtcNow
                             };

@@ -1,4 +1,6 @@
-﻿namespace newApi.DataLayer.Models.PostGresModels
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
 {
     public class SearchService
     {
@@ -13,6 +15,16 @@
         /// Debe ser > 0. NO almacenar en céntimos ni en otra divisa sin añadir columna Currency.
         /// </summary>
         public decimal Price { get; set; }
+        /// <summary>
+        /// 🌍 Round 21: 3-letter ISO 4217 currency code (EUR, USD, GBP, MXN, etc).
+        /// Default "EUR" para backward-compat — todos los servicios existentes y nuevos
+        /// se cobran en euros salvo que explícitamente se cambie en creación.
+        ///
+        /// Stripe Connect Express NOTE: el currency debe coincidir con la default_currency
+        /// del Stripe Account del experto, sino transfer falla. Validar en CreateSearchService.
+        /// </summary>
+        [MaxLength(3)]
+        public string Currency { get; set; } = "EUR";
         public string Conditions { get; set; }
         public int? DurationInHours { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

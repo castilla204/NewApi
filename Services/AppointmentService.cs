@@ -534,6 +534,12 @@ namespace newApi.Services
 
                             SiteDetails = dto.SiteDetails,
 
+                            // 🌍 Round 21: capturar snapshot del timezone del experto. Preferir el del SearchHire
+                            // (ya snapshotted al crear el hire); si no está, el del ExpertProfile actual; fallback Europe/Madrid.
+                            ProposerTimezone = searchHire.ExpertTimezone
+                                ?? searchHire.SearchService?.ExpertProfile?.Timezone
+                                ?? "Europe/Madrid",
+
                             CreatedAt = DateTime.UtcNow,
 
                             UpdatedAt = DateTime.UtcNow
@@ -749,6 +755,11 @@ namespace newApi.Services
 
                         StatusId = awaitingStatusId,
 
+                        // 🌍 Round 21: snapshot del timezone del experto al crear la cita.
+                        ProposerTimezone = searchHire.ExpertTimezone
+                            ?? searchHire.SearchService?.ExpertProfile?.Timezone
+                            ?? "Europe/Madrid",
+
                         CreatedAt = DateTime.UtcNow,
 
                         UpdatedAt = DateTime.UtcNow
@@ -931,6 +942,13 @@ namespace newApi.Services
                 appointment.LastProposalAt = DateTime.UtcNow;
 
                 appointment.UpdatedAt = DateTime.UtcNow;
+
+                // 🌍 Round 21: rellenar ProposerTimezone si está vacío (cita legacy o auto-creada arriba sin valor).
+                // No sobrescribir si ya tiene snapshot — el snapshot original es inmutable.
+                if (string.IsNullOrEmpty(appointment.ProposerTimezone))
+                {
+                    appointment.ProposerTimezone = appointment.SearchHire?.ExpertTimezone ?? "Europe/Madrid";
+                }
 
 
 
@@ -5569,6 +5587,10 @@ namespace newApi.Services
                 ProposedTimeLocal = appointment.ProposedTime,
 
                 Timezone = appointment.SearchHire?.ExpertTimezone,
+
+                // 🌍 Round 21: snapshot inmutable del timezone del experto al momento de crear la cita.
+                // Si Null (citas legacy), el frontend cae a Timezone (del SearchHire) o Europe/Madrid.
+                ProposerTimezone = appointment.ProposerTimezone,
 
                 Location = appointment.Location,
 

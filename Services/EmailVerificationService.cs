@@ -59,6 +59,12 @@ namespace newApi.Services
             string verificationToken,
             string? requestIp,
             CancellationToken ct = default);
+
+        /// <summary>
+        /// 🧹 Hangfire job: borra códigos OTP expirados / no consumidos > 15 minutos.
+        /// Mantiene la tabla pequeña y respeta privacidad (no guardar hashes obsoletos).
+        /// </summary>
+        Task<int> CleanupExpiredCodesAsync();
     }
 
     /// <summary>Resultado de IssueAsync. Token opaco que el cliente debe devolver en Verify.</summary>
@@ -139,6 +145,7 @@ namespace newApi.Services
             var token = GenerateOpaqueToken();
             var expiresAt = DateTime.UtcNow.AddMinutes(DefaultTtlMinutes);
 
+            // Construimos la entidad EN MEMORIA (todavía no la añadimos al DbContext).
             var entity = new EmailVerificationCode
             {
                 Email = email,
@@ -150,10 +157,10 @@ namespace newApi.Services
                 ExpiresAt = expiresAt,
                 RequestIp = requestIp,
             };
-            _db.EmailVerificationCodes.Add(entity);
-            await _db.SaveChangesAsync(ct);
 
-            // ─── Enviar email (puede estar deshabilitado para anti-enum en pre-registro) ──
+            // ─── Enviar email PRIMERO (si procede) ────────────────────────────────────
+            // Importante: si shouldSendEmail=false (anti-enum cuando el email no existe),
+            // saltamos el envío pero SÍ persistimos para consumir el slot de rate-limit.
             if (shouldSendEmail)
             {
                 try
@@ -163,7 +170,7 @@ namespace newApi.Services
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Fallo al enviar OTP a {Email}", email);
-                    // Devolvemos error para que el endpoint mande 503. El código queda en BD pero sin email enviado.
+                    // Send falló → NO tocamos la BD (evita filas huérfanas sin email entregado).
                     return new EmailVerificationIssueResult(
                         Success: false,
                         VerificationToken: token,
@@ -171,6 +178,10 @@ namespace newApi.Services
                         ErrorMessage: "No pudimos enviar el correo en este momento. Intenta de nuevo en unos segundos.");
                 }
             }
+
+            // ─── Solo si el email se envió (o no había que enviarlo), persistimos ─────
+            _db.EmailVerificationCodes.Add(entity);
+            await _db.SaveChangesAsync(ct);
 
             return new EmailVerificationIssueResult(Success: true, VerificationToken: token, ExpiresAt: expiresAt);
         }
@@ -301,14 +312,27 @@ namespace newApi.Services
             // Generar código nuevo en la misma fila (resetea attempts).
             var code = GenerateNumericCode(CodeLength);
             var newSalt = RandomNumberGenerator.GetBytes(SaltLength);
-            entity.CodeHash = HashCode(code, newSalt);
+            var newHash = HashCode(code, newSalt);
+            var newCreatedAt = DateTime.UtcNow;
+            var newExpiresAt = DateTime.UtcNow.AddMinutes(DefaultTtlMinutes);
+
+            // ─── Snapshot de valores actuales para revertir si el envío falla ─────────
+            var oldCodeHash = entity.CodeHash;
+            var oldSalt = entity.Salt;
+            var oldAttemptCount = entity.AttemptCount;
+            var oldCreatedAt = entity.CreatedAt;
+            var oldExpiresAt = entity.ExpiresAt;
+            var oldRequestIp = entity.RequestIp;
+
+            // Asignamos los nuevos valores a la entidad rastreada (todavía sin SaveChanges).
+            entity.CodeHash = newHash;
             entity.Salt = newSalt;
             entity.AttemptCount = 0;
-            entity.CreatedAt = DateTime.UtcNow;
-            entity.ExpiresAt = DateTime.UtcNow.AddMinutes(DefaultTtlMinutes);
+            entity.CreatedAt = newCreatedAt;
+            entity.ExpiresAt = newExpiresAt;
             entity.RequestIp = requestIp;
-            await _db.SaveChangesAsync(ct);
 
+            // ─── Enviar email PRIMERO ────────────────────────────────────────────────
             try
             {
                 await _notifications.SendVerificationCodeEmailAsync(entity.Email, code, entity.Purpose, DefaultTtlMinutes);
@@ -316,10 +340,34 @@ namespace newApi.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Fallo reenvío OTP a {Email}", entity.Email);
-                return new EmailVerificationIssueResult(false, verificationToken, entity.ExpiresAt, "No pudimos enviar el correo. Intenta de nuevo.");
+                // Revertimos las asignaciones en memoria para que el change-tracker no las flushee
+                // si el caller hiciera otro SaveChanges en el mismo scope.
+                entity.CodeHash = oldCodeHash;
+                entity.Salt = oldSalt;
+                entity.AttemptCount = oldAttemptCount;
+                entity.CreatedAt = oldCreatedAt;
+                entity.ExpiresAt = oldExpiresAt;
+                entity.RequestIp = oldRequestIp;
+                return new EmailVerificationIssueResult(false, verificationToken, oldExpiresAt, "No pudimos enviar el correo. Intenta de nuevo.");
             }
 
+            // ─── Solo si el email se envió correctamente, persistimos los cambios ────
+            await _db.SaveChangesAsync(ct);
+
             return new EmailVerificationIssueResult(true, verificationToken, entity.ExpiresAt);
+        }
+
+        /// <inheritdoc />
+        public async Task<int> CleanupExpiredCodesAsync()
+        {
+            // Borra todas las filas con ConsumedAt=null AND CreatedAt < ahora - 15min.
+            // Buffer de 5 min sobre el TTL para asegurar que ningún flujo en vuelo se rompa.
+            var cutoff = DateTime.UtcNow.AddMinutes(-15);
+            var deleted = await _db.EmailVerificationCodes
+                .Where(c => c.ConsumedAt == null && c.CreatedAt < cutoff)
+                .ExecuteDeleteAsync();
+            _logger.LogInformation("[OTP-CLEANUP] Borrados {Count} OTPs expirados (cutoff={Cutoff})", deleted, cutoff);
+            return deleted;
         }
 
         // ── Helpers ─────────────────────────────────────────────────────────────────

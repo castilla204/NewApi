@@ -1747,6 +1747,21 @@ Hangfire.RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     Hangfire.Cron.Daily(3),
     n29UtcOptions);
 
+// 🛡️ Round 16: cleanup diario de EmailVerificationCodes (OTPs no consumidos > 15 min).
+// Mantiene la tabla pequeña (esperamos miles/día en alta de usuarios + reset password)
+// y respeta privacidad (no se conservan hashes de códigos caducados indefinidamente).
+// Cutoff = TTL real (10 min) + buffer (5 min) → ningún flujo en vuelo se rompe.
+// NOTA SMTP: el resto del sistema sigue usando puerto 465 (SSL implícito) para envío de
+// emails — los OTP de email salen por ese mismo canal. Si en producción se observan
+// fallos específicos de entrega OTP (timeouts, handshake), considerar migrar a 587
+// (STARTTLS) que .NET soporta mejor (ver EmailService.cs:66 y 73). Mientras no haya
+// incidencias reportadas, NO tocar el puerto: los demás emails transaccionales funcionan.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IEmailVerificationService>(
+    "cleanup-expired-otp-codes",
+    svc => svc.CleanupExpiredCodesAsync(),
+    "0 3 * * *", // 03:00 UTC daily
+    n29UtcOptions);
+
 // ✅ OPTIMIZADO: Usar solo scheduled jobs para eventos específicos
 // Los recurring jobs fueron eliminados porque:
 // 1. Los scheduled jobs se programan cuando ocurre el evento (más eficiente)

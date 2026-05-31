@@ -50,6 +50,12 @@
         public DateTime EndDate { get; set; }
         public string Status { get; set; }
         public decimal Price { get; set; }
+
+        /// <summary>
+        /// Round 24: currency del precio de la suscripción (ISO 4217). Default 'EUR'.
+        /// </summary>
+        public string Currency { get; set; } = "EUR";
+
         public string BillingPeriod { get; set; }
         public DateTime NextBillingDate { get; set; }
     }

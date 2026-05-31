@@ -119,6 +119,38 @@ namespace newApi.Services
             return finalHtml;
         }
 
+        /// <summary>
+        /// Round 24 — formatea un importe con currency real (charge) y opcional con conversión a la
+        /// moneda preferida del usuario en línea secundaria. Devuelve HTML listo para inyectar en
+        /// el {{CONTENT}} de la plantilla.
+        ///
+        /// Ejemplos:
+        ///   FormatCurrencyAmount(120.50m, "EUR", null, null)           → "120,50 EUR"
+        ///   FormatCurrencyAmount(120.50m, "EUR", "USD", 130m)          → "120,50 EUR <small>(≈ 130,00 USD)</small>"
+        ///
+        /// NO hace conversión por sí mismo — el caller debe pasar el converted amount precalculado
+        /// (típicamente vía ExchangeRateService.ConvertAsync) para mantener este método sin
+        /// dependencias y testeable como string formatter puro.
+        /// </summary>
+        public static string FormatCurrencyAmount(
+            decimal amount,
+            string chargeCurrency = "EUR",
+            string? userPreferredCurrency = null,
+            decimal? convertedAmount = null)
+        {
+            var charge = string.IsNullOrEmpty(chargeCurrency) ? "EUR" : chargeCurrency.ToUpperInvariant();
+            var primary = amount.ToString("N2", CultureInfo.GetCultureInfo("es-ES"));
+            if (string.IsNullOrEmpty(userPreferredCurrency)
+                || userPreferredCurrency.Equals(charge, StringComparison.OrdinalIgnoreCase)
+                || !convertedAmount.HasValue)
+            {
+                return $"<strong>{primary} {charge}</strong>";
+            }
+            var pref = userPreferredCurrency.ToUpperInvariant();
+            var secondary = convertedAmount.Value.ToString("N2", CultureInfo.GetCultureInfo("es-ES"));
+            return $"<strong>{primary} {charge}</strong> <small style='color:#6B7280;'>(≈ {secondary} {pref})</small>";
+        }
+
         #endregion
 
         /// <inheritdoc />

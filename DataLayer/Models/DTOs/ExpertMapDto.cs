@@ -19,6 +19,11 @@ namespace newApi.DataLayer.Models.DTOs
         public decimal Price { get; set; }
 
         /// <summary>
+        /// Round 24: currency original del precio (ISO 4217). Default 'EUR' para retro-compat.
+        /// </summary>
+        public string Currency { get; set; } = "EUR";
+
+        /// <summary>
         /// Descripción del servicio (SearchService.Conditions)
         /// </summary>
         public string ServiceDescription { get; set; }
@@ -56,6 +61,11 @@ namespace newApi.DataLayer.Models.DTOs
         public string Latitude { get; set; } = string.Empty;
         public string Longitude { get; set; } = string.Empty;
         public decimal Price { get; set; }
+
+        /// <summary>
+        /// Round 24: currency original del precio (ISO 4217). Default 'EUR' para retro-compat.
+        /// </summary>
+        public string Currency { get; set; } = "EUR";
     }
 
     public class MapMarkersResponseDto
@@ -72,6 +82,11 @@ namespace newApi.DataLayer.Models.DTOs
     {
         public int Id { get; set; }
         public decimal Price { get; set; }
+
+        /// <summary>
+        /// Round 24: currency original del precio (ISO 4217). Default 'EUR' para retro-compat.
+        /// </summary>
+        public string Currency { get; set; } = "EUR";
         public string ServiceTypeName { get; set; } = string.Empty;
         public string ServiceDescription { get; set; } = string.Empty;  // ✅ Descripción del servicio
         public string ExpertName { get; set; } = string.Empty;

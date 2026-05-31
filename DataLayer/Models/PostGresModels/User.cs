@@ -33,6 +33,12 @@ namespace newApi.DataLayer.Models.PostGresModels
         // ✅ SOFT DELETE: Para permitir recuperación y cumplimiento legal
         public bool IsDeleted { get; set; } = false;
         public DateTime? DeletedAt { get; set; }
+        /// <summary>
+        /// 🌍 Round 22: 3-letter ISO currency for display. Null = auto-detect from IP/country.
+        /// User can override via top-nav selector. Persisted across sessions.
+        /// </summary>
+        [MaxLength(3)]
+        public string? PreferredCurrency { get; set; }
         public virtual ExpertProfile ExpertProfile { get; set; }
         public virtual ICollection<Search> Searches { get; set; }
         public virtual ICollection<Like> Likes { get; set; }

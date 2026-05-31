@@ -1,18 +1,20 @@
 using System.Net;
 using System.Net.Mail;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace newApi.Services
 {
     public interface IEmailService
     {
         Task SendEmailAsync(string toEmail, string subject, string body, bool isHtml = true, bool throwOnError = false);
-        Task SendEmailWithAttachmentAsync(string toEmail, string subject, string body, byte[] attachmentBytes, string attachmentFileName, string attachmentContentType = "application/pdf", bool isHtml = true);
+        Task SendEmailWithAttachmentAsync(string toEmail, string subject, string body, byte[] attachmentBytes, string attachmentFileName, string attachmentContentType = "application/pdf", bool isHtml = true, bool throwOnError = false);
     }
 
     public class EmailService : IEmailService
     {
         private readonly IConfiguration _configuration;
+        private readonly ILogger<EmailService> _logger;
         private readonly string _smtpHost;
         private readonly int _smtpPort;
         private readonly string _smtpUsername;
@@ -20,9 +22,10 @@ namespace newApi.Services
         private readonly string _fromEmail;
         private readonly string _fromName;
 
-        public EmailService(IConfiguration configuration)
+        public EmailService(IConfiguration configuration, ILogger<EmailService> logger)
         {
             _configuration = configuration;
+            _logger = logger;
             // Configuración flexible: puede ser Gmail, hosting propio, SendGrid, etc.
             _smtpHost = _configuration["Email:SmtpHost"] ?? "";
             _smtpPort = int.TryParse(_configuration["Email:SmtpPort"], out int port) ? port : 587;
@@ -39,10 +42,18 @@ namespace newApi.Services
                 // Si no hay configuración de email, no enviar (modo desarrollo)
                 if (string.IsNullOrEmpty(_smtpHost) || string.IsNullOrEmpty(_smtpUsername) || string.IsNullOrEmpty(_smtpPassword))
                 {
-                    // ✅ LOG: Configuración de email faltante
-                    Console.WriteLine($"[EMAIL SERVICE] [CONFIG MISSING] Email no enviado - Configuracion SMTP faltante. To: {toEmail}, Subject: {subject}");
-                    Console.WriteLine($"[EMAIL SERVICE] [CONFIG MISSING] Host={_smtpHost ?? "NULL"}, Username={_smtpUsername ?? "NULL"}, Password={(string.IsNullOrEmpty(_smtpPassword) ? "NULL" : "***")}");
-                    System.Diagnostics.Debug.WriteLine($"[EMAIL SERVICE] CONFIG MISSING: Host={_smtpHost ?? "NULL"}");
+                    // ✅ LOG: Configuración de email faltante (estructurado vía ILogger)
+                    _logger.LogWarning(
+                        "[EMAIL SERVICE] SMTP no configurado - Email no enviado. To: {To}, Subject: {Subject}, Host: {Host}",
+                        toEmail,
+                        subject,
+                        string.IsNullOrEmpty(_smtpHost) ? "NULL" : _smtpHost);
+                    // ✅ FIX: si el llamador exige propagación (Hangfire / jobs críticos), no nos podemos
+                    // tragar el "config missing" en silencio porque el job creería que el email salió.
+                    if (throwOnError)
+                    {
+                        throw new InvalidOperationException("SMTP not configured: SmtpHost/Username/Password missing");
+                    }
                     return;
                 }
 
@@ -183,14 +194,22 @@ namespace newApi.Services
             }
         }
 
-        public async Task SendEmailWithAttachmentAsync(string toEmail, string subject, string body, byte[] attachmentBytes, string attachmentFileName, string attachmentContentType = "application/pdf", bool isHtml = true)
+        public async Task SendEmailWithAttachmentAsync(string toEmail, string subject, string body, byte[] attachmentBytes, string attachmentFileName, string attachmentContentType = "application/pdf", bool isHtml = true, bool throwOnError = false)
         {
             try
             {
                 // Si no hay configuración de email, no enviar (modo desarrollo)
                 if (string.IsNullOrEmpty(_smtpHost) || string.IsNullOrEmpty(_smtpUsername) || string.IsNullOrEmpty(_smtpPassword))
                 {
-                    Console.WriteLine($"[EMAIL SERVICE] [CONFIG MISSING] Email con adjunto no enviado - Configuracion SMTP faltante. To: {toEmail}, Subject: {subject}");
+                    _logger.LogWarning(
+                        "[EMAIL SERVICE] SMTP no configurado - Email con adjunto no enviado. To: {To}, Subject: {Subject}, Host: {Host}",
+                        toEmail,
+                        subject,
+                        string.IsNullOrEmpty(_smtpHost) ? "NULL" : _smtpHost);
+                    if (throwOnError)
+                    {
+                        throw new InvalidOperationException("SMTP not configured: SmtpHost/Username/Password missing");
+                    }
                     return;
                 }
 

@@ -64,4 +64,10 @@
 	  <Compile Remove="VERSION_6_COMMITS_AGO\**" />
 	</ItemGroup>
 
+	<ItemGroup>
+		<Content Include="Resources\**\*">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+	</ItemGroup>
+
 </Project>

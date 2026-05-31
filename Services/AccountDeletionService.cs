@@ -404,7 +404,24 @@ namespace newApi.Services
                             RetryRecommended = true,
                             MoneyAlreadyProcessed = moneyAlreadyProcessed,
                             TransfersCompleted = disputesCreated.Count,
-                            TransfersFailed = processingErrors.Count
+                            TransfersFailed = processingErrors.Count,
+                            // 🛡️ E2-error-logging-coverage: detalle por SearchHire para reconciliación manual GDPR.
+                            // Sin esto, el admin sólo ve contadores y debe correlacionar a mano qué hires se movieron.
+                            ProcessedTransactions = disputesCreated.Select(d => new
+                            {
+                                d.SearchHireId,
+                                d.DisputeId,
+                                d.Reason,
+                                d.AffectedPartyName,
+                                d.AffectedPartyEmail
+                            }).ToList(),
+                            FailedTransactions = processingErrors.Select(e => new
+                            {
+                                e.SearchHireId,
+                                e.Amount,
+                                e.ErrorType,
+                                e.ErrorMessage
+                            }).ToList()
                         }
                     );
 
@@ -478,7 +495,23 @@ namespace newApi.Services
                             RetryRecommended = errorCategory == "Deadlock" || errorCategory == "ConnectionError",
                             MoneyAlreadyProcessed = moneyAlreadyProcessed,
                             TransfersCompleted = disputesCreated.Count,
-                            TransfersFailed = processingErrors.Count
+                            TransfersFailed = processingErrors.Count,
+                            // 🛡️ E2-error-logging-coverage: detalle por SearchHire para reconciliación manual GDPR.
+                            ProcessedTransactions = disputesCreated.Select(d => new
+                            {
+                                d.SearchHireId,
+                                d.DisputeId,
+                                d.Reason,
+                                d.AffectedPartyName,
+                                d.AffectedPartyEmail
+                            }).ToList(),
+                            FailedTransactions = processingErrors.Select(e => new
+                            {
+                                e.SearchHireId,
+                                e.Amount,
+                                e.ErrorType,
+                                e.ErrorMessage
+                            }).ToList()
                         }
                     );
 
@@ -517,7 +550,23 @@ namespace newApi.Services
                             TimeoutDuration = _transactionTimeout.TotalMinutes,
                             MoneyAlreadyProcessed = moneyAlreadyProcessed,
                             TransfersCompleted = disputesCreated.Count,
-                            TransfersFailed = processingErrors.Count
+                            TransfersFailed = processingErrors.Count,
+                            // 🛡️ E2-error-logging-coverage: detalle por SearchHire para reconciliación manual GDPR.
+                            ProcessedTransactions = disputesCreated.Select(d => new
+                            {
+                                d.SearchHireId,
+                                d.DisputeId,
+                                d.Reason,
+                                d.AffectedPartyName,
+                                d.AffectedPartyEmail
+                            }).ToList(),
+                            FailedTransactions = processingErrors.Select(e => new
+                            {
+                                e.SearchHireId,
+                                e.Amount,
+                                e.ErrorType,
+                                e.ErrorMessage
+                            }).ToList()
                         }
                     );
 
@@ -581,7 +630,23 @@ namespace newApi.Services
                             ErrorCategory = "Unknown",
                             MoneyAlreadyProcessed = moneyAlreadyProcessed,
                             TransfersCompleted = disputesCreated.Count,
-                            TransfersFailed = processingErrors.Count
+                            TransfersFailed = processingErrors.Count,
+                            // 🛡️ E2-error-logging-coverage: detalle por SearchHire para reconciliación manual GDPR.
+                            ProcessedTransactions = disputesCreated.Select(d => new
+                            {
+                                d.SearchHireId,
+                                d.DisputeId,
+                                d.Reason,
+                                d.AffectedPartyName,
+                                d.AffectedPartyEmail
+                            }).ToList(),
+                            FailedTransactions = processingErrors.Select(e => new
+                            {
+                                e.SearchHireId,
+                                e.Amount,
+                                e.ErrorType,
+                                e.ErrorMessage
+                            }).ToList()
                         }
                     );
 

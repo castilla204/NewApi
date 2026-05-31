@@ -408,8 +408,14 @@ namespace newApi.Services
             }
             catch (TaskCanceledException ex)
             {
-                _logger.LogWarning(ex, "R13: Timeout Google Timezone API para ({Latitude}, {Longitude}). Usando UTC fallback.",
-                    latitude, longitude);
+                // 🚨 R13 escalation: timeout en Google Timezone API es un fallo silencioso peligroso.
+                // El experto puede quedar con TZ='UTC' incorrecto y no enterarse hasta que las citas
+                // aparezcan desplazadas 12h+ (si está p.ej. en Asia/Tokyo). Logueamos ERROR para que
+                // el admin lo vea en alertas, pero mantenemos el fallback UTC para no romper los flows
+                // que asumen string válido (ver guard inicial del método).
+                _logger.LogError(ex, "R13: Timeout Google Timezone API ({Timeout}s) para ({Latitude}, {Longitude}). " +
+                    "Timezone del experto MAY ser incorrectamente UTC. El usuario debe corregirlo manualmente en ajustes.",
+                    _httpClient.Timeout.TotalSeconds, latitude, longitude);
                 return "UTC";
             }
             catch (Exception ex)

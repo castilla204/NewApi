@@ -465,13 +465,17 @@ namespace newApi.Services
 
                         // Ô£à VALIDACI├ôN: Verificar que la cita tenga al menos 24 horas de anticipaci├│n
 
-                        var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
+                        // 🛡️ FIX #5: dto.ProposedDate viene en hora LOCAL del experto (ver CreateAppointmentDto).
+                        // Marcamos Unspecified para evitar que EF/serialización lo trate como UTC y eviten
+                        // doble-conversiones. proposedDateTime se usa SOLO para display y para ValidateAvailability
+                        // (que espera la hora local de pared del experto).
+                        var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate.Date + dto.ProposedTime, DateTimeKind.Unspecified);
 
                         // 🔧 FIX zona horaria: comparar contra UTC REAL (la cita se guarda en hora local del experto).
                         var proposedUtc = GetAppointmentUtc(dto.ProposedDate, dto.ProposedTime, searchHire.ExpertTimezone);
                         var timeUntilAppointment = proposedUtc - DateTime.UtcNow;
 
-                        
+
 
                         if (timeUntilAppointment.TotalHours < 24)
 
@@ -483,7 +487,7 @@ namespace newApi.Services
 
                                 $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
 
-                                $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} UTC"
+                                $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} (hora local del experto) = {proposedUtc:dd/MM/yyyy HH:mm} UTC"
 
                             );
 
@@ -513,7 +517,8 @@ namespace newApi.Services
 
                             StatusId = awaitingStatusId,
 
-                            ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc),
+                            // 🛡️ Round 20: ProposedDate representa hora LOCAL del experto, no UTC. Marcar Unspecified evita que EF Core haga UTC-conversion implícita y que MapToDto T7 trate este valor como si fuera UTC.
+                            ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Unspecified),
 
                             ProposedTime = dto.ProposedTime,
 
@@ -862,13 +867,16 @@ namespace newApi.Services
 
                 // Ô£à VALIDACI├ôN: Verificar que la cita tenga al menos 24 horas de anticipaci├│n
 
-                var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc).Date + dto.ProposedTime;
+                // 🛡️ FIX #9: dto.ProposedDate viene en hora LOCAL del experto (ver ProposeAppointmentDto).
+                // Marcamos Unspecified para no confundirla con UTC. proposedDateTime se usa para display y
+                // para ValidateAvailability (que opera en hora local del experto).
+                var proposedDateTime = DateTime.SpecifyKind(dto.ProposedDate.Date + dto.ProposedTime, DateTimeKind.Unspecified);
 
                 // 🔧 FIX zona horaria: comparar contra UTC REAL (la cita se guarda en hora local del experto).
                 var proposedUtc = GetAppointmentUtc(dto.ProposedDate, dto.ProposedTime, appointment.SearchHire?.ExpertTimezone);
                 var timeUntilAppointment = proposedUtc - DateTime.UtcNow;
 
-                
+
 
                 if (timeUntilAppointment.TotalHours < 24)
 
@@ -880,7 +888,7 @@ namespace newApi.Services
 
                         $"Tiempo restante: {timeUntilAppointment.TotalHours:F1} horas. " +
 
-                        $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} UTC"
+                        $"Fecha/hora propuesta: {proposedDateTime:dd/MM/yyyy HH:mm} (hora local del experto) = {proposedUtc:dd/MM/yyyy HH:mm} UTC"
 
                     );
 
@@ -1140,12 +1148,26 @@ namespace newApi.Services
 
                 return await strategy.ExecuteAsync(async () =>
                 {
+                    // 🛡️ FIX #3 (R6): variables capturadas dentro de la tx, usadas POST-commit para programar
+                    // Hangfire SIN exponer el job al riesgo de rollback. Si la tx falla, NO se llega a programar.
+                    int? scheduledTransitionTimerId = null;
+                    TimeSpan? scheduledTransitionDelay = null;
+                    bool needsImmediateTransition = false;
+                    int? confirmedAppointmentId = null;
+
                     // Ô£à PROTECCI├ôN: Abrir transacci├│n ANTES del FOR UPDATE para que el bloqueo funcione
                     using (var transaction = await _context.Database.BeginTransactionAsync())
                     {
                         try
                         {
                             // Ô£à PROTECCI├ôN: Usar row-level locking DENTRO de la transacci├│n para evitar doble procesamiento
+                            // 🛡️ FIX #2 (concurrencia Cancel vs Confirm): el FOR UPDATE serializa los escritores —
+                            // el segundo en entrar BLOQUEA hasta el commit del primero, y al desbloquearse RELEE el
+                            // estado fresco; los guards de estado (invalidStatesForConfirm, currentStatus !=
+                            // "appointment_proposed") rechazarán la operación si el primero ya cambió el estado.
+                            // Semántica: gana el escritor que llega primero al lock; el cliente del segundo recibe
+                            // 400 con mensaje claro y debe reintentar/recargar. NO se soporta resolución
+                            // automática de conflictos cancel↔confirm; el usuario actúa sobre estado obsoleto.
                             var appointment = await _context.Appointments
                                 .FromSqlInterpolated($"SELECT *, xmin FROM \"Appointments\" WHERE \"Id\" = {dto.AppointmentId} FOR UPDATE")
                                 .Include(a => a.SearchHire)
@@ -1279,19 +1301,13 @@ namespace newApi.Services
                                 _context.AppointmentTimers.Add(awaitingReportTransitionTimer);
                                 await _context.SaveChangesAsync();
 
-                                // 🛡️ R6 partial: Schedule sigue dentro de tx por simplicidad — refactor
-                                // completo requeriría reestructurar el if/else. Mitigación: el handler
-                                // ProcessAppointmentToAwaitingReportAsync re-valida estado del appointment
-                                // (idempotente), así que un job huérfano por rollback es no-op silencioso.
-                                // Riesgo residual aceptado: orden de magnitud menor que el original.
-                                var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                                    service => service.ProcessAppointmentToAwaitingReportAsync(appointment.Id),
-                                    timeUntil3HoursAfter
-                                );
-
-                                // Guardar el JobId en el timer
-                                awaitingReportTransitionTimer.HangfireJobId = jobId;
-                                await _context.SaveChangesAsync();
+                                // 🛡️ FIX #3 (R6): NO programamos Hangfire dentro de la tx — si el commit falla, el
+                                // job quedaría huérfano. Capturamos el timerId y el delay, y programamos POST-commit.
+                                // Si la programación post-commit falla (no debería), el watchdog rescata por estado
+                                // (ProcessOverdueTimersAsync barrido por-tipo en ~3117 + barrido por-estado en ~3158).
+                                scheduledTransitionTimerId = awaitingReportTransitionTimer.Id;
+                                scheduledTransitionDelay = timeUntil3HoursAfter;
+                                confirmedAppointmentId = appointment.Id;
                                 }
                                 else
                                 {
@@ -1301,8 +1317,9 @@ namespace newApi.Services
                                     // programar el timer, así que encolamos la transición INMEDIATA para no dejar
                                     // los fondos atascados en appointment_confirmed. ProcessAppointmentToAwaitingReportAsync
                                     // revalida estado (idempotente) y es seguro sin timer previo.
-                                    BackgroundJob.Enqueue<IAppointmentService>(
-                                        s => s.ProcessAppointmentToAwaitingReportAsync(appointment.Id));
+                                    // 🛡️ FIX #3 (R6): aplicado también aquí — diferimos el Enqueue a post-commit.
+                                    needsImmediateTransition = true;
+                                    confirmedAppointmentId = appointment.Id;
                                 }
                             }
 
@@ -1349,6 +1366,69 @@ namespace newApi.Services
                             throw;
                         }
                     } // Cierre del using var transaction
+
+                    // 🛡️ FIX #3 (R6): Programación de Hangfire DESPUÉS del commit, fuera de la tx, para evitar
+                    // jobs huérfanos si el commit falla. Si esto falla, los watchdogs (ProcessOverdueTimersAsync
+                    // barrido por-timer y por-estado) rescatan el flujo.
+                    if (scheduledTransitionTimerId.HasValue && scheduledTransitionDelay.HasValue && confirmedAppointmentId.HasValue)
+                    {
+                        try
+                        {
+                            var apptId = confirmedAppointmentId.Value;
+                            var jobId = BackgroundJob.Schedule<IAppointmentService>(
+                                service => service.ProcessAppointmentToAwaitingReportAsync(apptId),
+                                scheduledTransitionDelay.Value
+                            );
+                            // Persistir el JobId en una nueva tx corta (best-effort). Si falla, el job vive en
+                            // Hangfire y el handler igualmente revalida estado al ejecutarse (idempotente).
+                            try
+                            {
+                                await _context.Database.ExecuteSqlInterpolatedAsync(
+                                    $"UPDATE \"AppointmentTimers\" SET \"HangfireJobId\" = {jobId} WHERE \"Id\" = {scheduledTransitionTimerId.Value}");
+                            }
+                            catch (Exception updateEx)
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "Could not persist HangfireJobId after post-commit schedule",
+                                    details: $"Timer {scheduledTransitionTimerId.Value} scheduled as Hangfire job {jobId} but UPDATE failed: {updateEx.Message}. Job will still fire; handler is idempotent.",
+                                    userId: userId,
+                                    source: "AppointmentService.ConfirmAppointmentAsync",
+                                    relatedEntityType: "AppointmentTimer",
+                                    relatedEntityId: scheduledTransitionTimerId.Value);
+                            }
+                        }
+                        catch (Exception scheduleEx)
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Post-commit Hangfire schedule failed for awaiting_report_transition timer",
+                                details: $"Timer {scheduledTransitionTimerId.Value} created but Hangfire schedule failed: {scheduleEx.Message}. " +
+                                         $"Watchdog (ProcessOverdueTimersAsync) will rescue via timer-type or state sweep.",
+                                userId: userId,
+                                source: "AppointmentService.ConfirmAppointmentAsync",
+                                relatedEntityType: "AppointmentTimer",
+                                relatedEntityId: scheduledTransitionTimerId.Value);
+                        }
+                    }
+                    else if (needsImmediateTransition && confirmedAppointmentId.HasValue)
+                    {
+                        try
+                        {
+                            var apptId = confirmedAppointmentId.Value;
+                            BackgroundJob.Enqueue<IAppointmentService>(
+                                s => s.ProcessAppointmentToAwaitingReportAsync(apptId));
+                        }
+                        catch (Exception enqueueEx)
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Post-commit Hangfire immediate enqueue failed for awaiting_report transition",
+                                details: $"Appointment {confirmedAppointmentId.Value}: Enqueue failed: {enqueueEx.Message}. " +
+                                         $"Watchdog (ProcessOverdueTimersAsync state sweep) will rescue.",
+                                userId: userId,
+                                source: "AppointmentService.ConfirmAppointmentAsync",
+                                relatedEntityType: "Appointment",
+                                relatedEntityId: confirmedAppointmentId.Value);
+                        }
+                    }
 
                 // Ô£à C├ôDIGO POST-COMMIT: Ejecutar fuera de la transacci├│n para evitar errores de NpgsqlTransaction
                 // ÔÜá´©Å IMPORTANTE: Si estas operaciones fallan, no deben afectar la respuesta ya que la transacci├│n principal ya se complet├│
@@ -3265,8 +3345,10 @@ namespace newApi.Services
                 // marcado in-memory no serializa. Este UPDATE condicional es atómico: solo UN ejecutor
                 // voltea false->true (1 fila); el resto recibe 0 y sale. En fallo se RE-ABRE en el catch
                 // (este método se traga la excepción y confía en el watchdog, que ignora timers expirados).
+                // 🛡️ FIX #4: ExpiredAt usa el reloj del servidor de BD (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+                // en vez de DateTime.UtcNow del app — elimina clock-skew entre réplicas en el audit trail.
                 var timerClaimed = await _context.Database.ExecuteSqlInterpolatedAsync(
-                    $"UPDATE \"AppointmentTimers\" SET \"IsExpired\" = true, \"ExpiredAt\" = {DateTime.UtcNow} WHERE \"Id\" = {timerId} AND \"IsExpired\" = false");
+                    $"UPDATE \"AppointmentTimers\" SET \"IsExpired\" = true, \"ExpiredAt\" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') WHERE \"Id\" = {timerId} AND \"IsExpired\" = false");
                 if (timerClaimed == 0)
                 {
                     return; // otro ejecutor ya reclamó este timer
@@ -4140,6 +4222,34 @@ namespace newApi.Services
                             }
                         }
                         break;
+
+                    default:
+                        // 🛡️ FIX #1 (S2-timers): el switch cubre proposal/response/expert_report/client_decision.
+                        // El timer "awaiting_report_transition" se despacha por ProcessAwaitingReportTransitionTimerAsync
+                        // (wrapper) y por el barrido por-tipo en ProcessOverdueTimersAsync (línea ~3117), NUNCA debe
+                        // entrar aquí. Si llega un timer de tipo desconocido, RE-ABRIMOS el claim (línea 3269 lo puso
+                        // IsExpired=true) y avisamos con Critical para que el watchdog lo reintente o lo recoja una
+                        // rama futura, en vez de marcarlo "expirado" silenciosamente y dejar la cita atascada.
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Unknown timer type reached ProcessAppointmentTimerAsync switch",
+                            details: $"Timer {timerId} has TimerType='{timer.TimerType}' which is NOT handled by this method. " +
+                                     $"AppointmentId={timer.AppointmentId}, SearchHireId={timer.Appointment?.SearchHireId}. " +
+                                     $"Known types: proposal, response, expert_report, client_decision. The 'awaiting_report_transition' " +
+                                     $"type is dispatched separately via ProcessAwaitingReportTransitionTimerAsync. Re-opening claim so " +
+                                     $"the watchdog can route it correctly.",
+                            userId: timer.Appointment?.SearchHire?.ClientId,
+                            source: "AppointmentService.ProcessAppointmentTimerAsync",
+                            relatedEntityType: "AppointmentTimer",
+                            relatedEntityId: timerId);
+
+                        try
+                        {
+                            await _context.Database.ExecuteSqlInterpolatedAsync(
+                                $"UPDATE \"AppointmentTimers\" SET \"IsExpired\" = false, \"ExpiredAt\" = NULL WHERE \"Id\" = {timerId}");
+                        }
+                        catch { /* best-effort: watchdog (ProcessOverdueTimersAsync) recogerá el timer aun expirado */ }
+
+                        return; // No persistir cambios: salimos antes del SaveChangesAsync final
                 }
 
                 await _context.SaveChangesAsync();
@@ -5449,9 +5559,11 @@ namespace newApi.Services
 
                 ProposedTime = appointment.ProposedTime,
 
-                // 🔧 FIX i18n display: ProposedDate/Time se guardan en hora LOCAL del experto; exponemos esa hora
-                // local + su timezone IANA para que el frontend muestre la hora con su huso (y la convierta a la
-                // zona del que mira). Antes ProposedDateLocal/ProposedTimeLocal/Timezone llegaban siempre null.
+                // 🔧 FIX i18n display: ProposedDate/Time se guardan en hora LOCAL del experto (DateTimeKind.Unspecified
+                // tras FIX #6, ver línea ~517); exponemos esa hora local + su timezone IANA para que el frontend la
+                // muestre con su huso (y la convierta a la zona del que mira). Antes ProposedDateLocal/ProposedTimeLocal/
+                // Timezone llegaban siempre null. NO se hace conversión aquí: el valor en BD ya está en local del experto;
+                // Timezone le dice al frontend cómo interpretarlo.
                 ProposedDateLocal = appointment.ProposedDate,
 
                 ProposedTimeLocal = appointment.ProposedTime,

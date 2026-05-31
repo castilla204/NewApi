@@ -7,6 +7,11 @@
         public int? AIId { get; set; }
         public int CategoryId { get; set; }
         public int ServiceTypeId { get; set; }
+        /// <summary>
+        /// Precio del servicio CON IVA incluido, expresado en EUROS (no en céntimos).
+        /// Moneda base implícita: EUR. Para enviar a Stripe (que usa céntimos), multiplicar por 100.
+        /// Debe ser > 0. NO almacenar en céntimos ni en otra divisa sin añadir columna Currency.
+        /// </summary>
         public decimal Price { get; set; }
         public string Conditions { get; set; }
         public int? DurationInHours { get; set; }

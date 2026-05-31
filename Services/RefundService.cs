@@ -288,10 +288,43 @@ namespace newApi.Services
                 // ✅ STRIPE TAX: Calcular sobre BASE PRE-TAX (sin IVA) para distribución interna
                 // Esto asegura que las comisiones se calculen sobre el monto real, no sobre el tax
                 var baseAmount = searchHire.BaseAmount ?? searchHire.Amount; // Fallback para datos antiguos
-                
+
+                // 🛡️ FIX #4: validar coherencia tax. Si BaseAmount + TaxAmount != Amount (>0.05€ tolerancia),
+                // el tax fue mal calculado (drift en Stripe Tax o post-checkout). Log warning para que admin
+                // pueda detectar discrepancias antes de reembolsar sobre datos corruptos.
+                if (searchHire.BaseAmount.HasValue && searchHire.TaxAmount.HasValue)
+                {
+                    var expectedAmount = searchHire.BaseAmount.Value + searchHire.TaxAmount.Value;
+                    var taxDrift = Math.Abs(expectedAmount - searchHire.Amount);
+                    if (taxDrift > 0.05m)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "FIX#4: Tax drift detected — BaseAmount + TaxAmount != Amount",
+                            details: $"SearchHire {searchHireId}: Amount={searchHire.Amount}€, BaseAmount={searchHire.BaseAmount}€, TaxAmount={searchHire.TaxAmount}€, Expected (Base+Tax)={expectedAmount}€, Drift={taxDrift:F4}€ (>0.05€). " +
+                                    $"El tax pudo haberse aplicado mal (Stripe Tax drift post-checkout). Los cálculos de refund proporcional pueden estar desfasados. " +
+                                    $"ACCIÓN ADMIN: revisar PaymentIntent original y reconciliar manualmente si el drift es significativo. Status: {statusValue}, Reason: {reason}.",
+                            userId: initiatedByUserId ?? searchHire.ClientId,
+                            source: "StripeRefundService.ProcessMoneyDistributionAsync.Fix4",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId,
+                            additionalData: new
+                            {
+                                Status = statusValue,
+                                Amount = searchHire.Amount,
+                                BaseAmount = searchHire.BaseAmount,
+                                TaxAmount = searchHire.TaxAmount,
+                                ExpectedTotal = expectedAmount,
+                                Drift = taxDrift
+                            }
+                        );
+                    }
+                }
+
                 if (searchHire.BaseAmount == null)
                 {
                     // ⚠️ LOG WARNING: BaseAmount es null (datos antiguos o sin tax calculado)
+                    // 🛡️ FIX #6: notifyUser=true para que el cliente sepa que su refund se procesa
+                    // sobre datos potencialmente incompletos (no se queda colgado sin explicación).
                     await _loggingService.LogWarningAsync(
                         message: "BaseAmount is null - using Amount as fallback for money distribution",
                         details: $"SearchHire {searchHireId} does not have BaseAmount set. Using Amount ({searchHire.Amount}€) as fallback. " +
@@ -301,13 +334,14 @@ namespace newApi.Services
                         source: "StripeRefundService.ProcessMoneyDistributionAsync",
                         relatedEntityType: "SearchHire",
                         relatedEntityId: searchHireId,
-                        additionalData: new { 
+                        additionalData: new {
                             Status = statusValue,
                             Reason = reason,
                             Amount = searchHire.Amount,
                             BaseAmount = searchHire.BaseAmount,
                             TaxAmount = searchHire.TaxAmount
-                        }
+                        },
+                        notifyUser: true
                     );
                 }
 
@@ -453,7 +487,7 @@ namespace newApi.Services
                             source: "StripeRefundService.ProcessMoneyDistributionAsync",
                             relatedEntityType: "SearchHire",
                             relatedEntityId: searchHireId,
-                            additionalData: new { 
+                            additionalData: new {
                                 Status = statusValue,
                                 Reason = reason,
                                 AvailableBalance = availableEur,
@@ -464,9 +498,10 @@ namespace newApi.Services
                                 ExpertTransferAmountForStripe = expertAmountForStripe,
                                 PlatformAmount = platformAmount,
                                 PaymentIntentId = servicePayment.StripePaymentIntentId
-                            }
+                            },
+                            notifyUser: true // 🛡️ FIX #6: notificar al cliente y experto que el movimiento de dinero está retenido
                         );
-                        
+
                         // Ô£à NO necesitamos delay - LoggingService usa su propio DbContext scoped
                         // que se commitea independientemente de la transacci├│n de RefundService
                         // Esto asegura que el log sea visible inmediatamente post-commit sin interferencia
@@ -1340,6 +1375,35 @@ namespace newApi.Services
                                                 ExchangeRate = bt.ExchangeRate,
                                                 DestinationCurrency = transferCurrency
                                             });
+
+                                        // 🛡️ FIX #8: alertar si la FX fee es > 1% del margen de plataforma.
+                                        // Sin esto el sangrado de fees de conversión queda silencioso y solo se detecta
+                                        // en reconciliación mensual. Comparar fee absoluta con platformAmount (lo que
+                                        // se queda la plataforma); si > 1%, alertar para que admin pueda actuar.
+                                        if (bt.Fee > 0 && platformAmount > 0)
+                                        {
+                                            var feeEur = Math.Abs(bt.Fee) / 100m; // convertir céntimos a EUR
+                                            var feeRatioVsPlatform = feeEur / platformAmount;
+                                            if (feeRatioVsPlatform > 0.01m)
+                                            {
+                                                await _loggingService.LogWarningAsync(
+                                                    message: "FIX#8: FX fee excede 1% del margen de plataforma — drift de margen",
+                                                    details: $"SearchHire {searchHireId}: transfer cross-currency EUR->{transferCurrency.ToUpperInvariant()} costó FX fee={feeEur:F4}€ ({feeRatioVsPlatform:P2} del platformAmount={platformAmount:F2}€). " +
+                                                            $"Plataforma absorbe la fee, reduciendo el margen efectivo. ACCIÓN ADMIN: revisar reporte mensual de fees vs % platform configurado.",
+                                                    userId: searchHire.ExpertId,
+                                                    source: "StripeRefundService.ProcessMoneyDistributionAsync.Fix8",
+                                                    relatedEntityType: "SearchHire",
+                                                    relatedEntityId: searchHireId,
+                                                    additionalData: new
+                                                    {
+                                                        TransferId = transfer.Id,
+                                                        FxFeeEur = feeEur,
+                                                        PlatformAmountEur = platformAmount,
+                                                        FeeRatioVsPlatform = feeRatioVsPlatform,
+                                                        DestinationCurrency = transferCurrency
+                                                    });
+                                            }
+                                        }
                                     }
                                 }
                                 catch (Exception btEx)
@@ -1394,6 +1458,80 @@ namespace newApi.Services
                                     await transaction.RollbackAsync();
                                 }
                                 return false;
+                            }
+
+                            // 🛡️ FIX #1: re-verificar estado de la cuenta del experto DESPUÉS del transfer.
+                            // Si la cuenta fue desactivada entre la validación inicial (línea ~1216) y el
+                            // CreateAsync (línea ~1298), Stripe ya creó el transfer pero el destino puede
+                            // estar inválido. Si detectamos el cambio: revertir el transfer y abortar para
+                            // evitar que el ledger marque "Payout" cuando el experto no podrá recibir.
+                            try
+                            {
+                                var postTransferAccount = await accountService.GetAsync(expertStripeAccountId);
+                                if (postTransferAccount.PayoutsEnabled == false || postTransferAccount.Capabilities?.Transfers != "active")
+                                {
+                                    // Intentar revertir el transfer recién creado.
+                                    string reversalAttemptId = null;
+                                    string reversalErrorMsg = null;
+                                    try
+                                    {
+                                        var postTransferReversalSvc = new TransferReversalService();
+                                        var postTransferReversalOptions = new TransferReversalCreateOptions
+                                        {
+                                            Amount = checked((long)Math.Round(expertAmountForStripe * 100)),
+                                            Metadata = new Dictionary<string, string>
+                                            {
+                                                { "searchHireId", searchHireId.ToString() },
+                                                { "reason", "expert account became invalid mid-transaction" }
+                                            }
+                                        };
+                                        var postTransferReversalRequestOptions = new RequestOptions
+                                        {
+                                            IdempotencyKey = $"md-{searchHireId}-postcheck-reversal-{createdTransferId}"
+                                        };
+                                        var postReversal = await postTransferReversalSvc.CreateAsync(
+                                            createdTransferId, postTransferReversalOptions, postTransferReversalRequestOptions);
+                                        reversalAttemptId = postReversal.Id;
+                                    }
+                                    catch (Exception postRevEx)
+                                    {
+                                        reversalErrorMsg = postRevEx.Message;
+                                    }
+
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL FIX#1: Expert account became invalid AFTER transfer was created",
+                                        details: $"SearchHire {searchHireId}: la cuenta Stripe {expertStripeAccountId} pasó válida en la pre-validación pero está inválida tras CreateAsync (PayoutsEnabled={postTransferAccount.PayoutsEnabled}, TransfersCapability={postTransferAccount.Capabilities?.Transfers}). Transfer {createdTransferId} fue creado en Stripe. Intento de reversal: {(reversalAttemptId != null ? $"OK ({reversalAttemptId})" : $"FALLÓ ({reversalErrorMsg})")}. NO se persiste FT Payout. ACCIÓN ADMIN: reconciliar manualmente si la reversal falló.",
+                                        userId: searchHire.ExpertId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync.Fix1",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId,
+                                        additionalData: new
+                                        {
+                                            StripeAccountId = expertStripeAccountId,
+                                            TransferId = createdTransferId,
+                                            PostCheckPayoutsEnabled = postTransferAccount.PayoutsEnabled,
+                                            PostCheckTransfersCapability = postTransferAccount.Capabilities?.Transfers,
+                                            ReversalId = reversalAttemptId,
+                                            ReversalError = reversalErrorMsg
+                                        });
+
+                                    if (transaction != null)
+                                    {
+                                        await transaction.RollbackAsync();
+                                    }
+                                    return false;
+                                }
+                            }
+                            catch (StripeException postCheckEx)
+                            {
+                                // No abortamos por error en el re-check (best-effort); solo log warning.
+                                await _loggingService.LogWarningAsync(
+                                    message: "FIX#1: post-transfer account re-check failed (best-effort)",
+                                    details: $"SearchHire {searchHireId}: no se pudo re-verificar la cuenta {expertStripeAccountId} tras el transfer {createdTransferId}: {postCheckEx.Message}. El transfer ya está creado; continuamos con la persistencia del FT Payout.",
+                                    userId: searchHire.ExpertId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync.Fix1",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId);
                             }
                         }
 
@@ -1662,12 +1800,34 @@ namespace newApi.Services
                         var clawbackAmountEur = clawbackCents / 100m;
                         // 🔁 A2: dispara también si el refund YA estaba hecho (reintento de un clawback que
                         // falló antes), no solo cuando se acaba de crear el refund en esta ejecución.
+                        // 🛡️ FIX #9: re-leer marcador Chargeback JUSTO antes de evaluar el clawback.
+                        // hasChargeback se leyó al principio (~l.1152), entre medias hubo I/O a Stripe (segundos);
+                        // si llegó un charge.dispute.created en esa ventana e insertó FT Chargeback, el clawback
+                        // interno + la reversión total del chargeback (ReverseExpertTransferForChargeback)
+                        // intentarían revertir el MISMO transfer → doble-reversión. Re-leer ahora cierra esa ventana.
+                        var hasChargebackNow = hasChargeback
+                            || await _context.FinancialTransactions.AnyAsync(ft =>
+                                ft.RelatedEntityType == "SearchHire" &&
+                                ft.RelatedEntityId == searchHireId &&
+                                ft.TransactionType == "Chargeback" &&
+                                ft.StripePaymentIntentId == servicePayment.StripePaymentIntentId);
+                        if (hasChargebackNow && !hasChargeback)
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "FIX#9: Chargeback apareció entre la lectura inicial y el clawback — clawback OMITIDO",
+                                details: $"SearchHire {searchHireId}: un Chargeback (PaymentIntent {servicePayment.StripePaymentIntentId}) se insertó entre la lectura inicial de hasChargeback y este punto. Se OMITE el clawback interno para evitar doble-reversión del transfer {existingTransfer?.StripeTransferId}. La reversión total la hará ReverseExpertTransferForChargebackAsync.",
+                                userId: searchHire.ExpertId,
+                                source: "StripeRefundService.ProcessMoneyDistributionAsync.Fix9",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId);
+                        }
+
                         if (((needsRefund && !string.IsNullOrEmpty(createdRefundId)) || refundAlreadyProcessed)
                             && transferAlreadyProcessed
                             && existingTransfer != null
                             && !string.IsNullOrEmpty(existingTransfer.StripeTransferId)
                             && clawbackAmountEur >= 0.01m
-                            && !hasChargeback) // 🔁 R3: si hubo chargeback, la reversión TOTAL la hace ReverseExpertTransferForChargebackAsync → el clawback interno NO debe duplicarla (paths mutuamente excluyentes; evita doble-reversión en carrera)
+                            && !hasChargebackNow) // 🔁 R3 + 🛡️ FIX #9: hasChargebackNow incluye re-lectura justo antes del clawback (cierra la ventana de carrera con webhook)
                         {
                             var alreadyReversed = await _context.FinancialTransactions.AnyAsync(ft =>
                                 ft.RelatedEntityType == "SearchHire" &&
@@ -1761,16 +1921,27 @@ namespace newApi.Services
                                 }
                                 catch (Exception clawbackEx)
                                 {
-                                    // No revertimos el refund al cliente (debe quedar reembolsado); alertamos para intervención manual.
+                                    // 🛡️ FIX #11: clawback falló DESPUÉS de que refund/transfer ya fueron persistidos.
+                                    // NO revertimos el refund (debe quedar reembolsado). El reintento se dispara por:
+                                    // 1) Hangfire (RetryMoneyDistributionJobAsync) que llama de nuevo ProcessMoneyDistributionAsync
+                                    // 2) El guard clawbackPending (línea ~1103) detecta que hay refund+transfer pero NO
+                                    //    TransferReversal y permite re-entrar al bloque del clawback.
+                                    // Si Hangfire no lo detecta (sin enqueue automático aquí), alertamos como CRITICAL
+                                    // con notifyUser para que admin actúe. La FT TransferReversal NO se persistió, así
+                                    // que clawbackPending=true en la próxima ejecución.
                                     await _loggingService.LogCriticalAsync(
-                                        message: "CRITICAL: Failed to reverse prior expert transfer on client refund (clawback)",
+                                        message: "CRITICAL FIX#11: Failed to reverse prior expert transfer on client refund (clawback)",
                                         details: $"SearchHire {searchHireId}: the client was refunded but {clawbackAmountEur:F2}€ of the prior expert transfer {existingTransfer.StripeTransferId} (originally {existingTransfer.Amount:F2}€) could NOT be reversed. " +
-                                                 $"The expert may keep overpaid funds for a refunded order — MANUAL INTERVENTION REQUIRED. Error: {clawbackEx.Message}",
+                                                 $"The expert may keep overpaid funds for a refunded order — MANUAL INTERVENTION REQUIRED. " +
+                                                 $"RETRY: el guard clawbackPending (línea ~1103) detectará la falta de FT TransferReversal y permitirá reintentar el clawback en la próxima ejecución de ProcessMoneyDistributionAsync (Hangfire retry job o re-llamada manual). " +
+                                                 $"Error: {clawbackEx.Message}",
                                         userId: searchHire.ExpertId,
-                                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync.Fix11",
                                         relatedEntityType: "SearchHire",
                                         relatedEntityId: searchHireId,
-                                        additionalData: new { TransferId = existingTransfer.StripeTransferId, OriginalAmount = existingTransfer.Amount, ClawbackAmount = clawbackAmountEur, Error = clawbackEx.Message });
+                                        additionalData: new { TransferId = existingTransfer.StripeTransferId, OriginalAmount = existingTransfer.Amount, ClawbackAmount = clawbackAmountEur, Error = clawbackEx.Message, RetryMechanism = "clawbackPending guard on next ProcessMoneyDistributionAsync call" },
+                                        notifyUser: true // 🛡️ FIX #11: notificar admin que requiere intervención
+                                    );
                                 }
                             }
                         }

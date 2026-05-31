@@ -356,7 +356,7 @@ namespace newApi.Services
             string templateHtml;
             try 
             {
-                var path = Path.Combine(Directory.GetCurrentDirectory(), "Resources", "EmailTemplate.html");
+                var path = Path.Combine(AppContext.BaseDirectory, "Resources", "EmailTemplate.html");
                 if (File.Exists(path))
                     templateHtml = File.ReadAllText(path);
                 else

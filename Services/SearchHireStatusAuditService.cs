@@ -14,13 +14,22 @@ namespace newApi.Services
     /// CONTRATO
     /// --------
     /// - Idempotente a nivel de actor: el caller debe llamar UNA vez por transición.
-    /// - No abre transacción propia: si el caller tiene una transacción activa, la fila
-    ///   se inserta en ella; si falla SaveChanges del caller, la auditoría tampoco
-    ///   queda huérfana (es lo deseado).
-    /// - Best-effort: si falla la inserción del historial NO debe abortar la operación
-    ///   principal (loguea critical y sigue). El estado canónico vive en SearchHire.StatusId.
+    /// - **ATOMICIDAD CON LA MUTACIÓN DE ESTADO**: este servicio NO llama a SaveChangesAsync
+    ///   por su cuenta. Sólo hace _context.SearchHireStatusHistories.AddAsync(...). Esto
+    ///   significa que:
+    ///     * El caller DEBE mutar hire.StatusId y luego llamar a UN ÚNICO SaveChangesAsync
+    ///       que persistirá ambas cosas (mutación + auditoría) en la misma transacción.
+    ///     * Si ese SaveChangesAsync falla (o se hace rollback), la fila de auditoría se
+    ///       descarta junto con el cambio de estado: NO queda huérfana, NO queda en
+    ///       estado inconsistente.
+    ///     * NO es asíncrono/diferido: la auditoría no se "envía a una cola"; vive y muere
+    ///       con el SaveChangesAsync del caller. No reutilizar este patrón asumiendo lo
+    ///       contrario.
+    /// - Best-effort frente a fallos del propio servicio: si la construcción del entry o
+    ///   la serialización de additionalData fallan, NO se aborta la operación principal
+    ///   (loguea critical y sigue). El estado canónico vive en SearchHire.StatusId.
     ///
-    /// USO TÍPICO
+    /// USO TÍPICO (correcto — mutación y auditoría atómicas en un SaveChangesAsync):
     /// ----------
     /// <code>
     /// var oldStatus = hire.StatusId;
@@ -32,7 +41,16 @@ namespace newApi.Services
     ///     source: "SubscriptionController.HandlePendingHireCompleted",
     ///     reason: "Cliente aceptó la propuesta del experto",
     ///     additionalData: new { PaymentIntentId = pi.Id });
-    /// await _context.SaveChangesAsync();
+    /// await _context.SaveChangesAsync(); // <-- persiste mutación + auditoría juntas
+    /// </code>
+    ///
+    /// ANTI-PATRÓN (NO HACER):
+    /// ----------
+    /// <code>
+    /// hire.StatusId = newStatusId;
+    /// await _context.SaveChangesAsync();              // <-- estado persistido SIN auditoría
+    /// await _statusAudit.RecordTransitionAsync(...);  // <-- auditoría queda sin commit
+    /// // Si el proceso crashea aquí, hay estado nuevo SIN su entrada de historial.
     /// </code>
     /// </summary>
     public interface ISearchHireStatusAuditService
@@ -67,6 +85,28 @@ namespace newApi.Services
             string? reason = null,
             object? additionalData = null)
         {
+            // Precondición: searchHireId debe ser un id válido (> 0). Si es 0 o negativo
+            // significa que el caller pasó una variable no inicializada o un valor inválido;
+            // la inserción fallaría por FK contra SearchHires y la excepción quedaría
+            // silenciada en el catch best-effort. Detectamos y logueamos explícitamente
+            // SIN abortar la operación principal (consistente con el contrato best-effort).
+            if (searchHireId <= 0)
+            {
+                try
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "A2 FIX: RecordTransitionAsync invocado con searchHireId inválido",
+                        details: $"searchHireId={searchHireId} (debe ser > 0). Transición {oldStatusId} → {newStatusId} NO se registró. Probable bug en el caller (variable no inicializada).",
+                        userId: changedByUserId,
+                        source: "SearchHireStatusAuditService.RecordTransitionAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { OldStatusId = oldStatusId, NewStatusId = newStatusId, Source = source });
+                }
+                catch { /* swallow */ }
+                return;
+            }
+
             try
             {
                 string? additionalDataJson = null;

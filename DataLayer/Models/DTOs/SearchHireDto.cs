@@ -283,7 +283,7 @@ namespace newApi.DataLayer.Models.DTOs
         public int ExpertProfileId { get; set; }
         public int CategoryId { get; set; }
         public int ServiceTypeId { get; set; }
-        
+
         /// <summary>
         /// Precio del servicio CON IVA incluido.
         /// Este es el precio final que pagará el cliente.
@@ -291,7 +291,14 @@ namespace newApi.DataLayer.Models.DTOs
         /// Ejemplo: Si quieres que el cliente pague €110, establece Price = 110.
         /// </summary>
         public decimal Price { get; set; }
-        
+
+        /// <summary>
+        /// 🌍 Round 21: ISO 4217 currency code (EUR, USD, GBP, MXN, etc).
+        /// Default "EUR" para backward-compat — si el front no lo envía, se cobra en euros.
+        /// Debe coincidir con la default_currency del Stripe Account del experto.
+        /// </summary>
+        public string Currency { get; set; } = "EUR";
+
         public string Conditions { get; set; }
         public int? DurationInHours { get; set; }
         public List<IFormFile> Images { get; set; }

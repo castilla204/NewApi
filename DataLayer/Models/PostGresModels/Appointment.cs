@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using newApi.DataLayer.Models.enums;
 
 namespace newApi.DataLayer.Models.PostGresModels
@@ -15,6 +16,15 @@ namespace newApi.DataLayer.Models.PostGresModels
         public string? Location { get; set; } // ✅ Nullable: Se asigna cuando el cliente propone la cita
         public decimal? Latitude { get; set; }
         public decimal? Longitude { get; set; }
+
+        /// <summary>
+        /// 🌍 Round 21: IANA timezone del experto al momento de creación de la cita (ej "Europe/Madrid").
+        /// Inmutable — si el experto cambia su timezone después, esta cita conserva la original
+        /// para que el dashboard del usuario muestre la hora correctamente.
+        /// Nullable para backward-compat con citas existentes (que se asume Europe/Madrid).
+        /// </summary>
+        [MaxLength(64)]
+        public string? ProposerTimezone { get; set; }
         
         // ✅ NUEVOS CAMPOS: Información adicional del sitio
         public string? DoorNumber { get; set; } // Número de puerta, garaje, etc.

@@ -1,4 +1,5 @@
-﻿using System.ComponentModel.DataAnnotations.Schema;
+﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace newApi.DataLayer.Models.PostGresModels
 {
@@ -13,7 +14,16 @@ namespace newApi.DataLayer.Models.PostGresModels
         public virtual SystemStatus Status { get; set; }
         public string? ExpertTransferId { get; set; }
         public decimal Amount { get; set; }
-        
+
+        /// <summary>
+        /// 🌍 Round 21: snapshot del currency del SearchService al momento de crear el hire.
+        /// Inmutable durante toda la vida del hire — si el experto cambia el currency del
+        /// servicio después, los hires existentes mantienen el currency original con el que
+        /// el cliente pagó. Default "EUR" para backward-compat con hires legacy pre-migración.
+        /// </summary>
+        [MaxLength(3)]
+        public string Currency { get; set; } = "EUR";
+
         /// <summary>
         /// Base amount sin IVA/tax (pre-tax). Se calcula desde Stripe Tax breakdown.
         /// Si es null, se usa Amount como fallback para compatibilidad con datos existentes.

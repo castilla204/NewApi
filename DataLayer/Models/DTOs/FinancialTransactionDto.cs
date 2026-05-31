@@ -7,6 +7,13 @@ namespace newApi.DataLayer.Models.DTOs
     {
         public int Id { get; set; }
         public decimal Amount { get; set; }
+
+        /// <summary>
+        /// Round 24: currency en la que se ejecutó la transacción (ISO 4217). Default 'EUR'.
+        /// Se debe poblar desde SearchHire.Currency o SearchService.Currency relacionada.
+        /// </summary>
+        public string Currency { get; set; } = "EUR";
+
         public string TransactionType { get; set; } = string.Empty; // "Deposit", "ServicePayment", "Refund", "Payout"
         public string? RelatedEntityType { get; set; } // "SearchHire" para ServicePayment, NULL para Deposit
         public int? RelatedEntityId { get; set; }

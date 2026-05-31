@@ -22,7 +22,13 @@ namespace newApi.Services
     ///   2) Último snapshot persistido en <c>ExchangeRateSnapshots</c> (cold-start tras reinicio).
     ///   3) Fallback estático en código (último recurso, orden de magnitud razonable a 2026-05).
     ///
-    /// Cadena de escritura: job Hangfire diario 06:00 UTC → fetch Frankfurter → insert snapshot →
+    /// 🌍 Round 23 — Provider chain:
+    ///   a) PRIMARY:  fawazahmed0/currency-api vía jsDelivr (cubre LATAM: ARS, CLP, COP, MXN, BRL…).
+    ///   b) FALLBACK CDN: fawazahmed0 vía Cloudflare Pages (mismo dataset, distinta CDN).
+    ///   c) FALLBACK ECB: Frankfurter (datos del ECB; NO incluye ARS/CLP/COP — solo G10 + EU).
+    ///   d) Último recurso: <see cref="StaticFallbackEurBase"/> hardcodeado.
+    ///
+    /// Cadena de escritura: job Hangfire diario 06:00 UTC → fetch (chain) → insert snapshot →
     /// set IMemoryCache. Idempotente: dos ejecuciones el mismo día crean dos snapshots (queremos
     /// histórico de cuándo refrescamos), pero la cache queda con la última.
     /// </summary>
@@ -33,21 +39,52 @@ namespace newApi.Services
         private readonly AppDbContext _context;
         private readonly ILogger<ExchangeRateService> _logger;
 
-        // Frankfurter: API pública sin API key, datos del ECB publicados diariamente ~16:00 CET.
-        // Endpoint: {"base":"EUR","date":"2026-05-30","rates":{"USD":1.08,...}}.
-        // El cliente nombrado "frankfurter" trae BaseAddress fija; aquí solo pasamos el path relativo.
-        private const string FrankfurterClientName = "frankfurter";
-        private const string FrankfurterLatestPath = "latest?from={0}";
-        // Conservamos la URL absoluta como fallback si el cliente nombrado no se ha registrado
-        // (escenarios de tests unitarios que instancian el servicio a pelo).
-        private const string FrankfurterAbsoluteUrlTemplate = "https://api.frankfurter.app/latest?from={0}";
-        private const string ProviderId = "frankfurter";
+        // 🌍 Round 23: provider chain. Cada entrada es (clienteHttpFactory, pathRelativo, parserId,
+        // sourceLabel persistido en BD). Orden = prioridad descendente; el primero que responda
+        // con un payload válido gana. Si todos fallan, el caller cae al static dict.
+        //
+        // - fawazahmed0 publica EUR.json con claves en minúsculas: {"date":"2026-05-31","eur":{"usd":1.08,"ars":1234.5,...}}.
+        //   Las claves bajo "eur" son las divisas TARGET; los valores ya son "1 EUR = X target"
+        //   (misma semántica que Frankfurter, no hay que invertir nada).
+        // - Frankfurter publica: {"base":"EUR","date":"2026-05-30","rates":{"USD":1.08,...}}.
+        //   Claves en mayúsculas dentro de "rates".
+        private const string PrimaryClientName     = "fx-primary";       // jsDelivr CDN
+        private const string PrimaryPath           = "npm/@fawazahmed0/currency-api@latest/v1/currencies/{0}.json";
+        private const string PrimarySourceLabel    = "fawazahmed0";
+
+        private const string FallbackCdnClientName = "fx-fallback-cdn";  // Cloudflare Pages
+        private const string FallbackCdnPath       = "v1/currencies/{0}.json";
+        private const string FallbackCdnSourceLabel = "fawazahmed0-cdn";
+
+        private const string FallbackEcbClientName = "fx-fallback-ecb";  // Frankfurter (ECB)
+        private const string FallbackEcbPath       = "latest?from={0}";
+        private const string FallbackEcbSourceLabel = "frankfurter-fallback";
+        // URL absoluta de respaldo para tests unitarios que inyectan un factory sin clientes nombrados.
+        private const string FallbackEcbAbsoluteUrlTemplate = "https://api.frankfurter.app/latest?from={0}";
+
+        // Source label genérico usado cuando logueamos sin contexto del provider concreto
+        // (p.ej. arranque del job antes de saber cuál ganará). Persistimos el real en `PersistSnapshotAsync`.
+        private const string DefaultProviderLabel = "fawazahmed0";
+
         private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(24);
         private static readonly TimeSpan FallbackCacheTtl = TimeSpan.FromMinutes(5);
 
+        // 🌍 Round 23: whitelist de las 10 ISOs que el frontend expone (ver CurrenciesController).
+        // Filtramos el payload de fawazahmed0 (que trae ~200 monedas) antes de persistir para
+        // no llenar la BD con códigos que el selector ni siquiera muestra.
+        private static readonly HashSet<string> SupportedCurrenciesList =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "EUR", "USD", "GBP", "MXN", "BRL",
+                "ARS", "CLP", "COP", "JPY", "CNY",
+                // Extras que el StaticFallback aún tiene y que algún consumidor (RefundService,
+                // StripeCurrencyMapping) puede pedir aunque no estén en el selector UI:
+                "CHF", "CAD",
+            };
+
         // Fallback estático con orden de magnitud razonable a 2026-05. Solo se usa si
-        // upstream falla Y no hay caché previa. Mejor servir tasas "casi correctas" que
-        // romper la UI por completo.
+        // todos los providers fallan Y no hay caché previa. Mejor servir tasas "casi correctas"
+        // que romper la UI por completo.
         private static readonly IReadOnlyDictionary<string, decimal> StaticFallbackEurBase =
             new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
             {
@@ -109,7 +146,7 @@ namespace newApi.Services
                 }
 
                 // Si el provider/snapshot devuelve un subset que no contiene `to`, intentamos rebasar
-                // a través de EUR (la base canónica que siempre publica Frankfurter completa).
+                // a través de EUR (la base canónica que siempre publica el provider completa).
                 if (!string.Equals(from, "EUR", StringComparison.OrdinalIgnoreCase))
                 {
                     var eurRates = await GetAllRatesInternalAsync("EUR", CancellationToken.None).ConfigureAwait(false);
@@ -162,7 +199,7 @@ namespace newApi.Services
         // -------------------------------------------------------------------------
         // 🛡️ DisableConcurrentExecution: en HPA multi-replica Render, dos workers pueden disparar
         // el mismo recurring job en la misma ventana; el lock pesimista de Hangfire garantiza
-        // un único fetch real contra Frankfurter por ciclo. Timeout 120s (la API responde en <2s).
+        // un único fetch real contra el provider por ciclo. Timeout 120s (la API responde en <2s).
         [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 120)]
         // AutomaticRetry=0: no reintentar — el siguiente ciclo (24h después) lo arregla. Reintentar
         // contra un provider caído solo añade ruido al digest y no soluciona nada.
@@ -172,19 +209,19 @@ namespace newApi.Services
             const string baseCurrency = "EUR";
             try
             {
-                var fresh = await FetchFromUpstreamAsync(baseCurrency, CancellationToken.None).ConfigureAwait(false);
+                var (fresh, sourceLabel) = await FetchFromUpstreamAsync(baseCurrency, CancellationToken.None).ConfigureAwait(false);
 
                 // Persistir snapshot ANTES de actualizar la cache. Si la BD falla pero la red iba bien,
                 // queremos que el cold-start futuro lo encuentre; si solo refrescamos cache y reiniciamos
                 // antes del próximo ciclo, perdemos el dato.
                 var today = DateOnly.FromDateTime(DateTime.UtcNow);
-                await PersistSnapshotAsync(baseCurrency, fresh, ProviderId, today, CancellationToken.None)
+                await PersistSnapshotAsync(baseCurrency, fresh, sourceLabel, today, CancellationToken.None)
                     .ConfigureAwait(false);
 
                 _cache.Set(CacheKey(baseCurrency), (IReadOnlyDictionary<string, decimal>)fresh, CacheTtl);
                 _logger.LogInformation(
                     "ExchangeRateService.RefreshRatesAsync: snapshot persistido y cache refrescada con {Count} tasas (base={Base}, source={Provider}).",
-                    fresh.Count, baseCurrency, ProviderId);
+                    fresh.Count, baseCurrency, sourceLabel);
             }
             catch (Exception ex)
             {
@@ -212,7 +249,7 @@ namespace newApi.Services
             }
 
             // 2) Cold-start desde BD (cualquier reinicio del proceso pierde la cache). Si hay un
-            //    snapshot persistido lo hidratamos sin tocar Frankfurter — más rápido y respeta la
+            //    snapshot persistido lo hidratamos sin tocar el provider — más rápido y respeta la
             //    cuota del proveedor incluso si el servidor reinicia varias veces al día.
             var snapshotRates = await TryLoadLatestRatesAsync(normalizedBase, ct).ConfigureAwait(false);
             if (snapshotRates != null && snapshotRates.Count > 0)
@@ -226,9 +263,9 @@ namespace newApi.Services
             //    así que cacheamos siempre el resultado (live o fallback) para limitar la presión.
             try
             {
-                var fresh = await FetchFromUpstreamAsync(normalizedBase, ct).ConfigureAwait(false);
+                var (fresh, sourceLabel) = await FetchFromUpstreamAsync(normalizedBase, ct).ConfigureAwait(false);
                 // Persistir snapshot oportunístico: así el siguiente cold-start no llamará al provider.
-                await PersistSnapshotAsync(normalizedBase, fresh, ProviderId, DateOnly.FromDateTime(DateTime.UtcNow), ct)
+                await PersistSnapshotAsync(normalizedBase, fresh, sourceLabel, DateOnly.FromDateTime(DateTime.UtcNow), ct)
                     .ConfigureAwait(false);
                 _cache.Set(key, (IReadOnlyDictionary<string, decimal>)fresh, CacheTtl);
                 return fresh;
@@ -236,7 +273,7 @@ namespace newApi.Services
             catch (Exception ex)
             {
                 _logger.LogWarning(ex,
-                    "ExchangeRateService: upstream fetch falló para base {Base}. Sirviendo fallback estático.",
+                    "ExchangeRateService: provider chain agotada para base {Base}. Sirviendo fallback estático.",
                     normalizedBase);
                 var fallback = RebaseFromEur(normalizedBase);
                 // TTL corto para reintentar pronto cuando upstream se recupere.
@@ -245,25 +282,95 @@ namespace newApi.Services
             }
         }
 
-        private async Task<Dictionary<string, decimal>> FetchFromUpstreamAsync(string normalizedBase, CancellationToken ct)
+        /// <summary>
+        /// 🌍 Round 23 — Provider chain. Intenta en orden: fawazahmed0 (jsDelivr) → fawazahmed0 (Cloudflare)
+        /// → Frankfurter (ECB). Devuelve el primer payload válido junto a la etiqueta del provider
+        /// que ganó (para persistirla en <c>ExchangeRateSnapshots.Source</c> y diagnóstico).
+        /// Lanza si TODOS los providers fallan — el caller hace el último fallback estático.
+        /// </summary>
+        private async Task<(Dictionary<string, decimal> Rates, string Source)> FetchFromUpstreamAsync(
+            string normalizedBase,
+            CancellationToken ct)
         {
-            // Preferimos el HttpClient nombrado "frankfurter" (BaseAddress + Timeout configurados en
-            // Program.cs). Si no está registrado (p.ej. tests unitarios que inyectan un factory ad-hoc),
-            // caemos a un cliente genérico con URL absoluta para mantener el método autocontenido.
-            var client = _httpClientFactory.CreateClient(FrankfurterClientName);
+            // Lista (clientName, pathTemplate, parserKind, sourceLabel, absoluteFallbackUrl?).
+            // El parserKind discrimina entre el formato fawazahmed0 ("eur":{"usd":...}) y el de
+            // Frankfurter ("rates":{"USD":...}). Mismo método de parsing, distinta extracción.
+            var providers = new (string ClientName, string Path, ProviderPayloadFormat Format, string Source, string? AbsoluteFallback)[]
+            {
+                (PrimaryClientName,     string.Format(PrimaryPath,     normalizedBase.ToLowerInvariant()), ProviderPayloadFormat.Fawazahmed,  PrimarySourceLabel,    null),
+                (FallbackCdnClientName, string.Format(FallbackCdnPath, normalizedBase.ToLowerInvariant()), ProviderPayloadFormat.Fawazahmed,  FallbackCdnSourceLabel, null),
+                (FallbackEcbClientName, string.Format(FallbackEcbPath, normalizedBase),                    ProviderPayloadFormat.Frankfurter, FallbackEcbSourceLabel, string.Format(FallbackEcbAbsoluteUrlTemplate, normalizedBase)),
+            };
+
+            Exception? lastError = null;
+            foreach (var p in providers)
+            {
+                try
+                {
+                    var rates = await TryFetchOneAsync(p.ClientName, p.Path, p.Format, normalizedBase, p.AbsoluteFallback, ct)
+                        .ConfigureAwait(false);
+
+                    // Whitelist defensiva: aunque fawazahmed devuelve ~200 monedas, solo persistimos
+                    // las 10 ISOs que el selector UI expone (+ extras necesarias para Stripe Connect).
+                    // Evita llenar la BD con un blob JSON gigante de divisas que nadie pide.
+                    var filtered = FilterToSupported(rates, normalizedBase);
+                    if (filtered.Count > 1) // > 1 para asegurar que tenemos la base + al menos una target.
+                    {
+                        if (!ReferenceEquals(p, providers[0]))
+                        {
+                            _logger.LogInformation(
+                                "ExchangeRateService: provider primario falló, sirviendo desde {Source} ({Count} tasas).",
+                                p.Source, filtered.Count);
+                        }
+                        return (filtered, p.Source);
+                    }
+
+                    _logger.LogWarning(
+                        "ExchangeRateService: provider {Source} devolvió un payload válido pero sin tasas soportadas tras whitelist. Probando siguiente.",
+                        p.Source);
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                    _logger.LogWarning(ex,
+                        "ExchangeRateService: provider {Source} falló para base {Base}. Probando siguiente en la cadena.",
+                        p.Source, normalizedBase);
+                }
+            }
+
+            throw new InvalidOperationException(
+                $"ExchangeRateService: todos los providers de la cadena fallaron para base {normalizedBase}.",
+                lastError);
+        }
+
+        private async Task<Dictionary<string, decimal>> TryFetchOneAsync(
+            string clientName,
+            string path,
+            ProviderPayloadFormat format,
+            string normalizedBase,
+            string? absoluteFallbackUrl,
+            CancellationToken ct)
+        {
+            var client = _httpClientFactory.CreateClient(clientName);
             HttpResponseMessage response;
 
             if (client.BaseAddress != null)
             {
-                response = await client.GetAsync(string.Format(FrankfurterLatestPath, normalizedBase), ct)
-                    .ConfigureAwait(false);
+                response = await client.GetAsync(path, ct).ConfigureAwait(false);
+            }
+            else if (!string.IsNullOrEmpty(absoluteFallbackUrl))
+            {
+                // Tests unitarios o entornos sin el cliente nombrado registrado: usa la URL absoluta
+                // del fallback ECB (única para la que mantenemos URL absoluta). Para fawazahmed,
+                // exigimos el cliente nombrado — el setup de tests debe inyectarlo si quiere primaria.
+                client = _httpClientFactory.CreateClient();
+                client.Timeout = TimeSpan.FromSeconds(5);
+                response = await client.GetAsync(absoluteFallbackUrl, ct).ConfigureAwait(false);
             }
             else
             {
-                client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(5);
-                response = await client.GetAsync(string.Format(FrankfurterAbsoluteUrlTemplate, normalizedBase), ct)
-                    .ConfigureAwait(false);
+                throw new InvalidOperationException(
+                    $"HttpClient '{clientName}' no registrado y no hay URL absoluta de respaldo.");
             }
 
             using (response)
@@ -272,27 +379,97 @@ namespace newApi.Services
                 using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
                 using var doc = await JsonDocument.ParseAsync(stream, default, ct).ConfigureAwait(false);
 
-                if (!doc.RootElement.TryGetProperty("rates", out var ratesElement) ||
-                    ratesElement.ValueKind != JsonValueKind.Object)
+                return format switch
                 {
-                    throw new InvalidOperationException("Upstream payload missing 'rates' object");
-                }
-
-                var rates = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
-                {
-                    [normalizedBase] = 1.00m
+                    ProviderPayloadFormat.Fawazahmed => ParseFawazahmedPayload(doc.RootElement, normalizedBase),
+                    ProviderPayloadFormat.Frankfurter => ParseFrankfurterPayload(doc.RootElement, normalizedBase),
+                    _ => throw new InvalidOperationException($"Formato de provider desconocido: {format}")
                 };
-
-                foreach (var property in ratesElement.EnumerateObject())
-                {
-                    if (property.Value.ValueKind == JsonValueKind.Number &&
-                        property.Value.TryGetDecimal(out var rate))
-                    {
-                        rates[property.Name.ToUpperInvariant()] = rate;
-                    }
-                }
-                return rates;
             }
+        }
+
+        /// <summary>
+        /// fawazahmed0/currency-api payload: {"date":"2026-05-31","eur":{"usd":1.08,"ars":1234.5,...}}.
+        /// La propiedad raíz que contiene las tasas se llama igual que la base (en minúsculas);
+        /// los valores ya son "1 base = X target", misma semántica que Frankfurter.
+        /// </summary>
+        private static Dictionary<string, decimal> ParseFawazahmedPayload(JsonElement root, string normalizedBase)
+        {
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidOperationException("fawazahmed payload: root no es un objeto JSON");
+            }
+
+            var baseKey = normalizedBase.ToLowerInvariant();
+            if (!root.TryGetProperty(baseKey, out var ratesElement) ||
+                ratesElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidOperationException(
+                    $"fawazahmed payload: falta el objeto '{baseKey}' con las tasas");
+            }
+
+            return ExtractRates(ratesElement, normalizedBase);
+        }
+
+        /// <summary>
+        /// Frankfurter payload: {"base":"EUR","date":"2026-05-30","rates":{"USD":1.08,...}}.
+        /// Claves dentro de "rates" en MAYÚSCULAS; semántica idéntica a fawazahmed.
+        /// </summary>
+        private static Dictionary<string, decimal> ParseFrankfurterPayload(JsonElement root, string normalizedBase)
+        {
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("rates", out var ratesElement) ||
+                ratesElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidOperationException("Frankfurter payload: falta el objeto 'rates'");
+            }
+
+            return ExtractRates(ratesElement, normalizedBase);
+        }
+
+        /// <summary>
+        /// Extrae números de un objeto JSON {clave: número, ...} a Dictionary&lt;string, decimal&gt;,
+        /// normalizando claves a MAYÚSCULAS y garantizando que la base aparezca con valor 1.0.
+        /// </summary>
+        private static Dictionary<string, decimal> ExtractRates(JsonElement ratesElement, string normalizedBase)
+        {
+            var rates = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+            {
+                [normalizedBase] = 1.00m
+            };
+
+            foreach (var property in ratesElement.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.Number &&
+                    property.Value.TryGetDecimal(out var rate))
+                {
+                    rates[property.Name.ToUpperInvariant()] = rate;
+                }
+            }
+            return rates;
+        }
+
+        /// <summary>
+        /// Whitelist defensiva: filtra el dict de tasas a las divisas soportadas por la app.
+        /// La base siempre se mantiene (aunque por algún motivo no estuviera en la whitelist,
+        /// el caller necesita poder rebasar desde ella).
+        /// </summary>
+        private static Dictionary<string, decimal> FilterToSupported(
+            IDictionary<string, decimal> rates,
+            string normalizedBase)
+        {
+            var filtered = new Dictionary<string, decimal>(SupportedCurrenciesList.Count + 1, StringComparer.OrdinalIgnoreCase);
+            foreach (var (code, value) in rates)
+            {
+                if (SupportedCurrenciesList.Contains(code) && value > 0m)
+                {
+                    filtered[code.ToUpperInvariant()] = value;
+                }
+            }
+            // Defensivo: garantizamos la base. Si no estaba en la whitelist, la añadimos a 1.0
+            // para que GetRateAsync(base, base) y los rebases sigan funcionando.
+            filtered[normalizedBase] = 1.00m;
+            return filtered;
         }
 
         /// <summary>
@@ -427,5 +604,14 @@ namespace newApi.Services
             string.IsNullOrWhiteSpace(code) ? "EUR" : code.Trim().ToUpperInvariant();
 
         private static string CacheKey(string normalizedBase) => $"fxrates:{normalizedBase}";
+
+        /// <summary>Discrimina el formato del JSON publicado por cada provider.</summary>
+        private enum ProviderPayloadFormat
+        {
+            /// <summary>fawazahmed0: {"date":"...","eur":{"usd":...}} — clave raíz = base en lowercase.</summary>
+            Fawazahmed,
+            /// <summary>Frankfurter: {"base":"EUR","date":"...","rates":{"USD":...}} — siempre bajo "rates".</summary>
+            Frankfurter,
+        }
     }
 }

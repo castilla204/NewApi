@@ -1496,13 +1496,21 @@ builder.Services.AddScoped<IFavoriteService, FavoriteService>(); // ✅ FAVORITO
 builder.Services.AddScoped<ISupabaseRealtimeService, SupabaseRealtimeService>(); // ✅ SUPABASE REALTIME: Reemplaza SignalR para chat en tiempo real
 builder.Services.AddScoped<IStripeReconciliationService, StripeReconciliationService>(); // P2-5: reconciliación diaria BD↔Stripe
 builder.Services.AddScoped<IExchangeRateService, ExchangeRateService>(); // 💱 Multi-Currency Display: FX rates con cache 24h + BD snapshot
-// 💱 HttpClient nombrado para Frankfurter (ECB-backed, sin API key, refresco diario por Hangfire).
-// Timeout 5s — la API responde típicamente en <500ms; un timeout corto evita bloquear el job de
-// refresco si el provider tiene latencia anómala (el siguiente ciclo lo intentará otra vez).
-builder.Services.AddHttpClient("frankfurter", c =>
-{
+// 🌍 Round 23: provider chain for FX rates — primary fawazahmed (covers LATAM) + fallback Frankfurter (ECB).
+builder.Services.AddHttpClient("fx-primary", c => {
+    c.Timeout = TimeSpan.FromSeconds(5);
+    c.BaseAddress = new Uri("https://cdn.jsdelivr.net/");
+    c.DefaultRequestHeaders.Add("User-Agent", "Inspecciono/1.0 (.NET; +https://inspecciono.com)");
+});
+builder.Services.AddHttpClient("fx-fallback-cdn", c => {
+    c.Timeout = TimeSpan.FromSeconds(5);
+    c.BaseAddress = new Uri("https://latest.currency-api.pages.dev/");
+    c.DefaultRequestHeaders.Add("User-Agent", "Inspecciono/1.0 (.NET; +https://inspecciono.com)");
+});
+builder.Services.AddHttpClient("fx-fallback-ecb", c => {
     c.Timeout = TimeSpan.FromSeconds(5);
     c.BaseAddress = new Uri("https://api.frankfurter.app/");
+    c.DefaultRequestHeaders.Add("User-Agent", "Inspecciono/1.0 (.NET; +https://inspecciono.com)");
 });
 
 // Background services - AppointmentTimerBackgroundService migrated to Hangfire

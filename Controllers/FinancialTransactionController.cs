@@ -127,6 +127,7 @@ namespace newApi.Controllers
             {
                 Id = transaction.Id,
                 Amount = transaction.Amount,
+                Currency = transaction.Currency, // 🌍 Round 25: ISO 4217 snapshot heredado del SearchHire
                 TransactionType = transaction.TransactionType,
                 RelatedEntityType = transaction.RelatedEntityType,
                 RelatedEntityId = transaction.RelatedEntityId,

@@ -1,4 +1,6 @@
-﻿namespace newApi.DataLayer.Models.PostGresModels
+using System.ComponentModel.DataAnnotations;
+
+namespace newApi.DataLayer.Models.PostGresModels
 {
     public class FinancialTransaction
     {
@@ -20,6 +22,14 @@
         /// RESUMEN_P3_PENDIENTES.md para la lista de archivos pendientes de tocar.
         /// </summary>
         public long AmountCents { get; set; }
+
+        /// <summary>
+        /// 🌍 Round 25: ISO 4217 currency code (EUR, USD, GBP, etc).
+        /// Always equals the SearchHire.Currency at the time of the transaction.
+        /// Defaults to "EUR" for backward compat with historical records.
+        /// </summary>
+        [MaxLength(3)]
+        public string Currency { get; set; } = "EUR";
 
         public string TransactionType { get; set; } // "Deposit", "ServicePayment", "Refund", "Payout"
         public string? RelatedEntityType { get; set; } // "SearchHire" para ServicePayment, NULL para Deposit

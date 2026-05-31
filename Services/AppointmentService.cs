@@ -921,7 +921,8 @@ namespace newApi.Services
 
                 // Actualizar la cita - asegurar que los DateTime tengan Kind=UTC
 
-                appointment.ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Utc);
+                // 🌍 Round 25: ProposedDate representa hora LOCAL del experto. Unspecified evita conversion implicita por EF Core.
+                appointment.ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Unspecified);
 
                 appointment.ProposedTime = dto.ProposedTime;
 
@@ -4802,7 +4803,51 @@ namespace newApi.Services
                 };
 
                 _context.AppointmentTimers.Add(clientDecisionTimer);
-                await _context.SaveChangesAsync();
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException pgEx && pgEx.SqlState == "23505")
+                {
+                    // 🔧 Mismo patrón que expert_report (línea ~4478): el guard previo (cancelación
+                    // de timers activos) es TOCTOU; el índice único parcial
+                    // IX_AppointmentTimers_Appt_Type_Active (AppointmentId,TimerType WHERE !IsExpired)
+                    // es la garantía REAL. Si otra réplica/ejecución concurrente ya creó el timer
+                    // client_decision activo, la 2ª inserción viola el único (23505) → salimos
+                    // limpiamente: rollback de la transacción (revierte el cambio de estado del
+                    // appointment y del SearchHire) y devolvemos el appointment ya actualizado por
+                    // la ejecución concurrente ganadora. Así evitamos programar un job de Hangfire
+                    // duplicado.
+                    await _loggingService.LogWarningAsync(
+                        message: "Duplicate client_decision timer prevented by unique index",
+                        details: $"Concurrent SubmitExpertReportAsync detected for appointment {appointment.Id} " +
+                                $"(SearchHire {appointment.SearchHireId}, expert {expertId}). " +
+                                $"Unique index IX_AppointmentTimers_Appt_Type_Active rejected duplicate insert " +
+                                $"(SqlState 23505). Rolling back this transaction and returning the appointment " +
+                                $"state committed by the concurrent winner to avoid scheduling a duplicate Hangfire job.",
+                        userId: expertId,
+                        source: "AppointmentService.SubmitExpertReportAsync",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointment.Id
+                    );
+                    await transaction.RollbackAsync();
+
+                    // Devolver el estado ya commiteado por la ejecución concurrente ganadora.
+                    // Usamos un DbContext "fresco" (AsNoTracking) para no chocar con las entidades
+                    // que esta transacción rastreaba antes del rollback.
+                    var winningAppointment = await _context.Appointments
+                        .AsNoTracking()
+                        .Include(a => a.SearchHire)
+                            .ThenInclude(sh => sh.Client)
+                        .Include(a => a.SearchHire)
+                            .ThenInclude(sh => sh.Expert)
+                        .Include(a => a.SearchHire)
+                            .ThenInclude(sh => sh.Status)
+                        .Include(a => a.Status)
+                        .Include(a => a.Timers)
+                        .FirstAsync(a => a.Id == appointment.Id);
+                    return MapToDto(winningAppointment);
+                }
 
                 // 🛡️ R6 partial: Schedule pre-commit por simplicidad — mitigado por handler
                 // ProcessClientDecisionTimerAsync que re-valida estado del appointment (idempotente).

@@ -99,6 +99,11 @@ namespace newApi.Controllers
         [HttpGet("mappings")]
         public async Task<IActionResult> GetStatusMappings([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
+            if (!_authService.IsAdmin(User))
+            {
+                return Forbid();
+            }
+
             try
             {
                 // Validar parámetros
@@ -162,6 +167,11 @@ namespace newApi.Controllers
         [HttpGet("configurations")]
         public async Task<IActionResult> GetStatusConfigurations([FromQuery] string? statusValue = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
+            if (!_authService.IsAdmin(User))
+            {
+                return Forbid();
+            }
+
             try
             {
                 // Validar parámetros
@@ -645,6 +655,11 @@ namespace newApi.Controllers
         [HttpGet("debug-info")]
         public async Task<IActionResult> GetDebugInfo()
         {
+            if (!_authService.IsAdmin(User))
+            {
+                return Forbid();
+            }
+
             try
             {
                 var statuses = await _context.SystemStatuses

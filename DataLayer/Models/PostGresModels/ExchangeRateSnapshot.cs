@@ -4,17 +4,24 @@ using System.ComponentModel.DataAnnotations.Schema;
 namespace newApi.DataLayer.Models.PostGresModels
 {
     /// <summary>
-    /// 💱 Multi-Currency Display: snapshot diario de tasas de cambio publicadas por Frankfurter/ECB.
+    /// 💱 Multi-Currency Display: snapshot diario de tasas de cambio servido por una cadena de
+    /// proveedores con failover automático.
     ///
     /// Modelo display-only — la moneda de cobro real sigue siendo <see cref="SearchHire.Currency"/>
     /// (inmutable, ligada a Stripe). Estas tasas se usan para previsualizar precios en la moneda
     /// preferida del visitante (catálogo/búsqueda/detalle) y para el preview de checkout junto al
     /// importe real en la moneda del servicio.
     ///
-    /// La cadena de persistencia (job Hangfire diario 06:00 UTC → ECB publica ~04:00 UTC):
-    ///  - Primario: fetch desde Frankfurter (https://api.frankfurter.app/latest?from=EUR)
-    ///  - Cache: <see cref="Microsoft.Extensions.Caching.Memory.IMemoryCache"/> con TTL 24 h.
-    ///  - Fallback: lectura del último snapshot persistido (cold-start / outage del proveedor).
+    /// Cadena de proveedores (job Hangfire diario 06:00 UTC, se intentan en orden hasta el primer éxito):
+    ///  1. fawazahmed0       — primario (https://github.com/fawazahmed0/exchange-api, ~200+ monedas).
+    ///  2. fawazahmed0-cdn   — mismo dataset servido vía CDN (jsDelivr/Cloudflare) como fallback de red.
+    ///  3. frankfurter       — fallback ECB oficial (https://api.frankfurter.app/latest?from=EUR),
+    ///                         cobertura reducida (~30 monedas) pero altamente fiable.
+    ///  4. static            — last resort: lectura del último snapshot persistido en esta tabla
+    ///                         (cold-start / outage simultáneo de todos los proveedores remotos).
+    ///
+    /// Cache: <see cref="Microsoft.Extensions.Caching.Memory.IMemoryCache"/> con TTL 24 h sobre el
+    /// resultado consolidado.
     ///
     /// El campo <see cref="RatesJson"/> es JSONB en Postgres con el shape exacto del API:
     /// {"USD": 1.0921, "GBP": 0.8543, ...} — claves ISO 4217 alfa-3 mayúsculas.
@@ -43,12 +50,17 @@ namespace newApi.DataLayer.Models.PostGresModels
         public string RatesJson { get; set; } = "{}";
 
         /// <summary>
-        /// Identificador del proveedor que sirvió el snapshot (ej. "frankfurter", "openexchangerates",
-        /// "fallback"). Útil para auditoría cuando saltamos al secundario tras outage del primario.
+        /// Identificador del proveedor que sirvió el snapshot. Valores posibles emitidos por la
+        /// cadena actual:
+        ///  - "fawazahmed0"     → primario (API directa).
+        ///  - "fawazahmed0-cdn" → fallback vía CDN (mismo dataset, distinta red).
+        ///  - "frankfurter"     → fallback ECB cuando los anteriores fallan.
+        ///  - "static"          → last resort: reutilización del último snapshot persistido.
+        /// Útil para auditoría / alertas cuando el job degrada al siguiente eslabón tras un outage.
         /// </summary>
         [Required]
         [MaxLength(64)]
-        public string Source { get; set; } = "frankfurter";
+        public string Source { get; set; } = "fawazahmed0";
 
         /// <summary>
         /// Fecha efectiva publicada por el proveedor (ECB la publica una vez al día sobre las 16:00 CET).

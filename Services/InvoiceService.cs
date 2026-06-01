@@ -1,5 +1,6 @@
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using QuestPDF.Fluent;
 using QuestPDF.Helpers;
 using QuestPDF.Infrastructure;
@@ -14,17 +15,29 @@ namespace newApi.Services
         private readonly IEmailService _emailService;
         private readonly IInvoiceNumberService _invoiceNumberService;
         private readonly newApi.Configuration.PlatformFiscalProfile _fiscal;
+        // 🛡️ Round 27 — R27-T27-1/R27-A9-1 FIX: cache la reserva del número correlativo por
+        // hireId durante 6h para que Hangfire retry +60s/+300s/+600s reuse el mismo número.
+        // Sin esto, cada retry consume un número correlativo nuevo → huecos en serie fiscal
+        // (RD 1619/2012 art. 6.1.a) cuando IsVatRegistered=true se active.
+        // Limitación residual: cache es per-process. Cross-replica retry (raro con
+        // AutomaticRetry de Hangfire en backend único) o reinicio entre intentos puede
+        // todavía quemar un número. La defensa completa requiere persistir InvoiceNumber
+        // en SearchHires (documentado como TODO en GenerateInvoicePdfAsync).
+        private readonly IMemoryCache _memoryCache;
+        private static readonly TimeSpan InvoiceNumberCacheTtl = TimeSpan.FromHours(6);
 
         public InvoiceService(
             AppDbContext context,
             IEmailService emailService,
             IInvoiceNumberService invoiceNumberService,
-            Microsoft.Extensions.Options.IOptions<newApi.Configuration.PlatformFiscalProfile> fiscal)
+            Microsoft.Extensions.Options.IOptions<newApi.Configuration.PlatformFiscalProfile> fiscal,
+            IMemoryCache memoryCache)
         {
             _context = context;
             _emailService = emailService;
             _invoiceNumberService = invoiceNumberService;
             _fiscal = fiscal?.Value ?? new newApi.Configuration.PlatformFiscalProfile();
+            _memoryCache = memoryCache;
 
             // Configurar QuestPDF
             QuestPDF.Settings.License = LicenseType.Community;
@@ -75,12 +88,26 @@ namespace newApi.Services
             // 🔧 FISCAL FLIP: numeración condicional.
             //   IsReadyForFlip()=false → pseudo-número estable basado en hire ID (NO correlativo, NO fiscal).
             //   IsReadyForFlip()=true  → reserva número correlativo persistente desde InvoiceCounters (sin huecos).
-            // NOTA: si flip activo, llamar a GenerateInvoicePdfAsync MÁS DE UNA VEZ por hire consume números
-            // correlativos extra (TODO: persistir InvoiceNumber en SearchHire la 1ª vez para reutilizarlo).
+            //
+            // 🛡️ Round 27 — R27-T27-1/R27-A9-1 FIX: idempotencia mediante MemoryCache.
+            // ANTES: cada invocación llamaba NextAsync → quemaba un correlativo. Cuando
+            // SendInvoiceByEmailBackgroundJob fallaba (SMTP timeout 60s, p.ej. Hostinger puerto 465)
+            // Hangfire reintentaba 3 veces. Cada retry consumía un nuevo número correlativo. Para
+            // una sola factura con 3 retries: números 42, 43, 44 quemados, sólo 44 enviado → huecos
+            // 42 y 43 sin emitir documento ni audit trail (violación RD 1619/2012 art. 6.1.a).
+            // AHORA: cache la reserva por hireId durante 6h. Los retries dentro de esa ventana
+            // reusan el mismo número. Documentado en el comentario del campo _memoryCache que esto
+            // es una defensa parcial (cubre retry intra-proceso, no cross-replica/restart).
             string invoiceNumber;
             if (_fiscal.IsReadyForFlip())
             {
-                invoiceNumber = await _invoiceNumberService.NextAsync(_fiscal.InvoiceSeriesPrefix);
+                var cacheKey = $"R27-InvoiceNumber-Hire-{searchHire.Id}";
+                if (!_memoryCache.TryGetValue<string>(cacheKey, out var cachedNumber) || string.IsNullOrEmpty(cachedNumber))
+                {
+                    cachedNumber = await _invoiceNumberService.NextAsync(_fiscal.InvoiceSeriesPrefix);
+                    _memoryCache.Set(cacheKey, cachedNumber, InvoiceNumberCacheTtl);
+                }
+                invoiceNumber = cachedNumber!;
             }
             else
             {

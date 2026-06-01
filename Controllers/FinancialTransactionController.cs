@@ -109,9 +109,29 @@ namespace newApi.Controllers
                 _ => transaction.Amount >= 0 // Por defecto, positivo si amount >= 0
             };
 
-            // Formatear cantidad con signo
+            // 🛡️ Round 27 — R27-T27-1-3 FIX:
+            //   (1) Antes: $"{sign}€{transaction.Amount:F2}" producía '-€-100.00' para filas con
+            //       Amount<0 (ServicePayment/TransferReversal/ChargebackReversal). Usar Math.Abs.
+            //   (2) Antes: símbolo '€' hardcoded ignoraba transaction.Currency. Experto UK/USD/MXN
+            //       veía '+€42.50' en lugar de '+£42.50'. Mapear símbolo por divisa.
+            //   El snapshot Round 25 ya populaba transaction.Currency correctamente; faltaba reflejarlo.
             var sign = isPositive ? "+" : "-";
-            var amountFormatted = $"{sign}€{transaction.Amount:F2}";
+            var currencyCode = (transaction.Currency ?? "EUR").ToUpperInvariant();
+            var currencySymbol = currencyCode switch
+            {
+                "EUR" => "€",
+                "GBP" => "£",
+                "USD" => "$",
+                "MXN" => "MX$",
+                "ARS" => "AR$",
+                "BRL" => "R$",
+                "CHF" => "CHF ",
+                "JPY" => "¥",
+                "CAD" => "CA$",
+                "AUD" => "A$",
+                _ => currencyCode + " "
+            };
+            var amountFormatted = $"{sign}{currencySymbol}{Math.Abs(transaction.Amount):F2}";
 
             // Nombre amigable del tipo de transacción
             var transactionTypeDisplay = transaction.TransactionType switch

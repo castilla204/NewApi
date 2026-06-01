@@ -453,9 +453,30 @@ namespace newApi.Services
                 var now = DateTime.UtcNow;
                 var deadline = now.AddDays(3);
 
+                // 🛡️ Round 27 — R27-T27-2 FIX: dedup vía Notifications existentes.
+                // ANTES: el job corría diario (Cron.Daily 09:00 UTC) y para cada experto en la
+                // ventana de 3 días emitía LogWarningAsync(notifyUser=true) → nueva Notification
+                // + email. SIN throttle. Un experto con deadline a 70h recibía la misma alerta
+                // 3 días seguidos antes de que el deadline pasara → banner blindness + waste
+                // de SMTP/Hangfire. El comment original del método postulaba que cambiar el
+                // StripeStatus pararía el spam, pero el status QUEDA Approved durante toda la
+                // ventana de 3 días por definición (FutureDueAt es un plazo futuro).
+                // AHORA: query Notifications de las últimas 23h con título prefijo
+                // "⏰ Plazo Stripe próximo" y excluimos esos UserIds. 23h < 24h (gap entre runs)
+                // garantiza que al día siguiente la dedup expira limpiamente sin saltar uno.
+                var dedupCutoff = now.AddHours(-23);
+                var alreadyNotifiedUserIds = await _context.Notifications
+                    .AsNoTracking()
+                    .Where(n => n.UserId != null
+                                && n.CreatedAt >= dedupCutoff
+                                && n.Title.StartsWith("⏰ Plazo Stripe próximo"))
+                    .Select(n => n.UserId!.Value)
+                    .Distinct()
+                    .ToListAsync();
+
                 // Filtro: deadline en próximos 3 días, todavía no past_due, experto aprobado
                 // (los que ya están en RequirementsDue/RestrictedSoon ya recibieron notificación
-                // vía NotifyStripeStatusTransitionAsync al cambiar de estado).
+                // vía NotifyStripeStatusTransitionAsync al cambiar de estado), Y no avisado en 23h.
                 var experts = await _context.ExpertProfiles
                     .Include(ep => ep.User)
                     .Where(ep => ep.StripeFutureDueAt != null
@@ -463,7 +484,8 @@ namespace newApi.Services
                               && ep.StripeFutureDueAt <= deadline
                               && ep.StripeStatus == DataLayer.Models.PostGresModels.StripeStatus.Approved
                               && ep.User != null
-                              && !ep.User.IsDeleted)
+                              && !ep.User.IsDeleted
+                              && !alreadyNotifiedUserIds.Contains(ep.UserId)) // ← R27-T27-2 FIX
                     .Take(100) // paginar por seguridad si hay backlog
                     .ToListAsync();
 

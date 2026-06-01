@@ -286,17 +286,31 @@ namespace newApi.Services
             // que aún están en curso (refund encolado tras dispute resuelta, chargeback en proceso).
             // Si el delete procede ahora, las filas FT se anonimizan (UserId=null) y el operario
             // pierde la pista de qué refund/clawback corresponde a este usuario.
+            //
+            // 🛡️ Round 27 — R27-T27-1-6 FIX (CRÍTICO): el guard previo usaba `!ft.IsRefunded`,
+            // pero IsRefunded SÓLO se setea a true en la fila ServicePayment original cuando un
+            // refund settles (RefundService.cs:1643/1741/2012). NUNCA se setea en las filas con
+            // TransactionType='Refund'. Resultado: cualquier usuario con un Refund histórico
+            // (auto-refund por no-respuesta del experto, dispute resuelta a su favor, cancelación)
+            // quedaba PERMANENTEMENTE bloqueado de borrar su cuenta → violación GDPR Art 17.
+            // El path de admin (AccountDeletionController:83) llama al mismo método → admin
+            // tampoco podía desbloquear sin tocar SQL manualmente.
+            //
+            // Ahora: ventana de 24h. Un Refund creado en las últimas 24h sí puede estar en
+            // tránsito (Hangfire en curso, webhook charge.refund.updated pendiente). Más antiguo
+            // ya está conciliado (Stripe responde con webhook en minutos, no días).
+            var refundPendingCutoff = DateTime.UtcNow.AddHours(-24);
             var hasPendingRefund = await _context.FinancialTransactions
                 .AsNoTracking()
                 .AnyAsync(ft => ft.UserId == userId
                                 && ft.TransactionType == "Refund"
-                                && !ft.IsRefunded,
+                                && ft.CreatedAt >= refundPendingCutoff,
                           linkedCts.Token);
             if (hasPendingRefund)
             {
                 await _loggingService.LogWarningAsync(
                     message: "N6: Account deletion blocked - pending refunds",
-                    details: $"User {userId} tiene Refund(s) pendientes (IsRefunded=false). Esperar a que el flow termine antes del delete para preservar el rastro fiscal.",
+                    details: $"User {userId} tiene Refund(s) creados en las últimas 24h. Esperar a que el flow termine antes del delete para preservar el rastro fiscal.",
                     userId: userId,
                     source: "AccountDeletionService.DeleteAccountAsync.N6",
                     relatedEntityType: "User",
@@ -308,17 +322,48 @@ namespace newApi.Services
                 };
             }
 
-            var hasPendingChargeback = await _context.FinancialTransactions
+            // 🛡️ Round 27 — R27-T27-1-8 FIX (CRÍTICO): el guard previo matcheaba sólo por
+            // ft.UserId == userId, pero HandleChargeDisputeCreated SIEMPRE crea las filas
+            // Chargeback/ChargebackReversal con UserId=clientId (SubscriptionController:7278-7289).
+            // Un experto con un chargeback activo contra una de sus ventas pasaba este guard,
+            // borraba su cuenta + Stripe Connect account + DisputeFiles, y la plataforma quedaba
+            // indefensa: BuildDisputeEvidenceAsync subía '[Datos eliminados]' + cero archivos,
+            // Stripe rulea LOST, plataforma absorbe importe + fee + golpe reputacional.
+            //
+            // Ahora cubrimos AMBAS direcciones:
+            //   (a) cliente con chargeback (caso original, ft.UserId == userId)
+            //   (b) experto cuyo SearchHire tiene un chargeback activo
+            //       (vía FT.RelatedEntityType='SearchHire' + SearchHire.ExpertId == userId)
+            var hasPendingChargebackAsClient = await _context.FinancialTransactions
                 .AsNoTracking()
                 .AnyAsync(ft => ft.UserId == userId
                                 && (ft.TransactionType == "Chargeback"
                                     || ft.TransactionType == "ChargebackReversal"),
                           linkedCts.Token);
-            if (hasPendingChargeback)
+
+            var hasPendingChargebackAsExpert = false;
+            if (!hasPendingChargebackAsClient)
+            {
+                // Vía SearchHire.ExpertId: si una FT Chargeback apunta a un SearchHire del experto.
+                hasPendingChargebackAsExpert = await _context.FinancialTransactions
+                    .AsNoTracking()
+                    .Where(ft => (ft.TransactionType == "Chargeback"
+                                  || ft.TransactionType == "ChargebackReversal")
+                                 && ft.RelatedEntityType == "SearchHire"
+                                 && ft.RelatedEntityId != null)
+                    .AnyAsync(ft => _context.SearchHires
+                        .AsNoTracking()
+                        .Any(sh => sh.Id == ft.RelatedEntityId!.Value && sh.ExpertId == userId),
+                              linkedCts.Token);
+            }
+
+            if (hasPendingChargebackAsClient || hasPendingChargebackAsExpert)
             {
                 await _loggingService.LogWarningAsync(
                     message: "N6: Account deletion blocked - chargeback in progress",
-                    details: $"User {userId} tiene FinancialTransactions tipo Chargeback/ChargebackReversal. El proceso de disputa externa con Stripe sigue abierto; el delete se aplazaría hasta su resolución para no perder trazabilidad.",
+                    details: $"User {userId} tiene FinancialTransactions tipo Chargeback/ChargebackReversal " +
+                             $"(asClient={hasPendingChargebackAsClient}, asExpert={hasPendingChargebackAsExpert}). " +
+                             "El proceso de disputa externa con Stripe sigue abierto; el delete se aplazaría hasta su resolución para no perder trazabilidad ni evidencia.",
                     userId: userId,
                     source: "AccountDeletionService.DeleteAccountAsync.N6",
                     relatedEntityType: "User",
@@ -1328,18 +1373,19 @@ namespace newApi.Services
                     // ✅ IDEMPOTENCIA: Solo actualizar si ReviewerId no es NULL (no anonimizado ya)
                     // ✅ MEJORA: Agregar UpdatedAt para trazabilidad (aunque Review no tiene UpdatedAt, se preserva CreatedAt)
                     // ✅ CRÍTICO: Anonimizar Reviews ANTES de anonimizar/eliminar SearchHires para evitar violaciones de FK
-                    // 🛡️ N20 FIX: SUBSTRING para evitar overflow si Description ya estaba cerca del límite
-                    // (la concatenación añade 20 caracteres "[Usuario eliminado] " + el original) +
-                    // ILIKE (no LIKE) en la verificación de idempotencia para que no añada doble prefijo
-                    // si la fila ya está anonimizada con diferente casing.
+                    // 🛡️ Round 27 — R27-A11-2 FIX: el texto original de la reseña puede contener PII
+                    // del autor (nombre, dirección, teléfono). Antes se prefijaba con '[Usuario eliminado] '
+                    // pero el cuerpo quedaba accesible vía GET /api/Review/expert/{expertId} a cualquier
+                    // usuario autenticado → violación GDPR Art 17. Ahora reemplazamos el cuerpo entero
+                    // por un placeholder; el Score numérico se preserva y los promedios siguen siendo correctos.
+                    // Idempotencia por ReviewerId=NULL (la 2ª pasada no matchea).
                     var reviewsCount = await _context.Database.ExecuteSqlRawAsync(
                         @"UPDATE ""Reviews""
                           SET ""ReviewerId"" = NULL,
                               ""Description"" = CASE WHEN ""Description"" IS NOT NULL AND ""Description"" != ''
-                                  THEN SUBSTRING('[Usuario eliminado] ' || ""Description"" FROM 1 FOR 2000)
+                                  THEN '[Reseña eliminada por el autor]'
                                   ELSE ""Description"" END
-                          WHERE ""ReviewerId"" = {0} AND ""ReviewerId"" IS NOT NULL
-                          AND COALESCE(""Description"", '') NOT ILIKE '[Usuario eliminado]%'",
+                          WHERE ""ReviewerId"" = {0} AND ""ReviewerId"" IS NOT NULL",
                         new object[] { userId }, cancellationToken);
 
                     // ✅ CRÍTICO: También anonimizar Reviews que referencian SearchHires del usuario
@@ -1942,19 +1988,57 @@ namespace newApi.Services
                             }
                         }
 
-                        var servicesWithHiresSet = new HashSet<int>(servicesWithHires);
+                        // 🛡️ Round 27 — R27-T27-1-7 FIX: también recoger servicios con Conversations.
+                        // ANTES: la clasificación solo miraba SearchHires. Un servicio con conversaciones
+                        // pre-hire (cliente charteando con el experto antes de contratar) pero sin hire
+                        // caía en servicesToDeleteFinal → DELETE → FK_Conversations_SearchServices CASCADE
+                        // → Conversations + Messages + MessageAttachments desaparecen sin avisar a la otra
+                        // parte (el CLIENTE pierde toda la conversación) y los attachments del cliente
+                        // quedan huérfanos en Supabase Storage. Defeats el promise "preservar para la
+                        // otra parte" del comentario en Phase 2.
+                        // AHORA: queryamos Conversations también y route esos services a anonymize.
+                        var servicesWithConversations = new List<int>();
+                        if (serviceIds.Any())
+                        {
+                            var convPlaceholders = string.Join(",", serviceIds.Select((_, i) => $"@convServiceId{i}"));
+                            using (var command = connection.CreateCommand())
+                            {
+                                command.CommandText = $@"SELECT DISTINCT ""SearchServiceId"" FROM ""Conversations"" WHERE ""SearchServiceId"" IS NOT NULL AND ""SearchServiceId"" = ANY(ARRAY[{convPlaceholders}])";
+                                for (int i = 0; i < serviceIds.Count; i++)
+                                {
+                                    var param = command.CreateParameter();
+                                    param.ParameterName = $"@convServiceId{i}";
+                                    param.Value = serviceIds[i];
+                                    param.DbType = System.Data.DbType.Int32;
+                                    command.Parameters.Add(param);
+                                }
+                                using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                                {
+                                    while (await reader.ReadAsync(cancellationToken))
+                                    {
+                                        servicesWithConversations.Add(reader.GetInt32(0));
+                                    }
+                                }
+                            }
+                        }
 
-                        // ✅ Clasificar servicios: anonimizar si tienen hires, eliminar si no
+                        var servicesWithHiresSet = new HashSet<int>(servicesWithHires);
+                        var servicesWithConversationsSet = new HashSet<int>(servicesWithConversations);
+
+                        // ✅ Clasificar servicios: anonimizar si tienen hires O conversaciones, eliminar si no
                         foreach (var serviceId in serviceIds)
                         {
-                            if (servicesWithHiresSet.Contains(serviceId))
+                            // 🛡️ R27-T27-1-7: extender el bucket de anonimización a servicios con conversaciones
+                            // pre-hire (la otra parte conservará chat + attachments).
+                            if (servicesWithHiresSet.Contains(serviceId) || servicesWithConversationsSet.Contains(serviceId))
                             {
                                 // ✅ Preservar servicio para contrataciones históricas (auditoría, facturación, disputas)
+                                //   o para conversaciones pre-hire del cliente.
                                 servicesToAnonymize.Add(serviceId);
                             }
                             else
                             {
-                                // ✅ Eliminar servicio si no tiene contrataciones asociadas
+                                // ✅ Eliminar servicio si no tiene contrataciones ni conversaciones asociadas
                                 servicesToDelete.Add(serviceId);
                             }
                         }
@@ -2492,6 +2576,12 @@ namespace newApi.Services
                 // ✅ FIX: Usar SQL directo para evitar ExecutionStrategy dentro de transacción manual
                 // ✅ MEJORA: Si el usuario es experto, cambiar el rol a Client antes de eliminarlo
                 // Esto asegura que si el usuario se restaura, no tenga rol de experto sin ExpertProfile
+                // 🛡️ Round 27 — R27-A11-1 FIX: tokenizar también AppleId.
+                // Antes sólo GoogleId se anonimizaba; AppleId (sub claim estable de Apple)
+                // quedaba intacto en la fila soft-deleted, lo que (a) bloqueaba para siempre
+                // el re-registro vía Sign-in-with-Apple del mismo usuario (AuthController:977
+                // hace lookup AppleId == claims.Sub y luego 1016 corta con 'account_deleted'),
+                // y (b) violaba GDPR Art 17 al retener un identificador único persistente.
                 var rowsAffected = await _context.Database.ExecuteSqlRawAsync(
                     @"UPDATE ""Users""
                       SET ""IsDeleted"" = true,
@@ -2503,6 +2593,7 @@ namespace newApi.Services
                           ""Name"" = '[Usuario eliminado]',
                           ""Email"" = 'deleted-' || {0}::text || '@deleted.local',
                           ""GoogleId"" = 'deleted-' || {0}::text,
+                          ""AppleId"" = CASE WHEN ""AppleId"" IS NOT NULL THEN 'deleted-' || {0}::text ELSE NULL END,
                           ""Password"" = NULL,
                           ""PhoneNumber"" = NULL,
                           ""PhoneVerified"" = false,

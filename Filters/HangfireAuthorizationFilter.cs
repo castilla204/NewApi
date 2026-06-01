@@ -242,7 +242,11 @@ namespace newApi.Filters
                     ValidateIssuerSigningKey = true,
                     IssuerSigningKey = new SymmetricSecurityKey(key),
                     ValidateLifetime = true,
-                    ClockSkew = TimeSpan.Zero,
+                    // 🛡️ Round 27 — R27-R27-CLK-1 FIX: alinear con Program.cs (Round 15 R3 FIX).
+                    // Era TimeSpan.Zero → cualquier drift cliente↔servidor (10-30 s típico) rechazaba
+                    // el cookie del dashboard Hangfire pese a estar aceptado por el resto de endpoints.
+                    // 60 s coincide con el pipeline JWT principal y con la recomendación OWASP/Microsoft.
+                    ClockSkew = TimeSpan.FromSeconds(60),
                     RequireExpirationTime = true,
                     RequireSignedTokens = true
                 };

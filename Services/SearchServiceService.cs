@@ -2050,12 +2050,19 @@ namespace newApi.Services
                 // Paso 1: Inactivar el servicio existente
                 existingService.IsActive = false;
                 // Paso 2: Crear el nuevo servicio con los datos actualizados
+                // 🛡️ Round 27 — R27-T27-1-4 FIX: copiar Currency del servicio original. Antes
+                // este soft-replace OMITÍA Currency, así que la nueva fila caía al default del
+                // modelo ("EUR"). Cualquier experto UK/USD/MXN que editase el servicio quedaba
+                // con Currency=EUR; el siguiente hire se cobraba en EUR pero la cuenta Stripe
+                // Connect era GBP/USD/MXN → RefundService.cs:1313-1341 detectaba currency
+                // mismatch en cada transfer y marcaba RequiresManualReview=true para siempre.
                 var newSearchService = new SearchService
                 {
                     ExpertProfileId = existingService.ExpertProfileId, // Mantener el mismo ExpertProfile
                     CategoryId = request.CategoryId,
                     ServiceTypeId = request.ServiceTypeId,
                     Price = request.Price,
+                    Currency = existingService.Currency, // ← R27-T27-1-4 FIX
                     Conditions = request.Conditions,
                     DurationInHours = request.DurationInHours ?? 0,
                     CreatedAt = DateTime.UtcNow,
@@ -2084,18 +2091,20 @@ namespace newApi.Services
                     }
                     
                     // Crear nuevo servicio en nuevo contexto
+                    // 🛡️ Round 27 — R27-T27-1-4 FIX: copiar Currency (rama de recovery DbUpdateException).
                     var recoveryService = new SearchService
                     {
                         ExpertProfileId = existingService.ExpertProfileId,
                         CategoryId = request.CategoryId,
                         ServiceTypeId = request.ServiceTypeId,
                         Price = request.Price,
+                        Currency = existingService.Currency, // ← R27-T27-1-4 FIX
                         Conditions = request.Conditions,
                         DurationInHours = request.DurationInHours ?? 0,
                         CreatedAt = DateTime.UtcNow,
                         IsActive = true
                     };
-                    
+
                     recoveryContext.SearchServices.Add(recoveryService);
                     await recoveryContext.SaveChangesAsync();
                     newServiceId = recoveryService.Id; // ✅ FIX: Guardar ID del servicio recuperado
@@ -2106,7 +2115,7 @@ namespace newApi.Services
                     // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
                     using var recoveryScope = _serviceScopeFactory.CreateScope();
                     var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    
+
                     // Inactivar servicio existente en nuevo contexto
                     var recoveryExistingService = await recoveryContext.SearchServices
                         .FirstOrDefaultAsync(ss => ss.Id == request.ServiceId);
@@ -2114,20 +2123,22 @@ namespace newApi.Services
                     {
                         recoveryExistingService.IsActive = false;
                     }
-                    
+
                     // Crear nuevo servicio en nuevo contexto
+                    // 🛡️ Round 27 — R27-T27-1-4 FIX: copiar Currency (rama de recovery ObjectDisposed).
                     var recoveryService = new SearchService
                     {
                         ExpertProfileId = existingService.ExpertProfileId,
                         CategoryId = request.CategoryId,
                         ServiceTypeId = request.ServiceTypeId,
                         Price = request.Price,
+                        Currency = existingService.Currency, // ← R27-T27-1-4 FIX
                         Conditions = request.Conditions,
                         DurationInHours = request.DurationInHours ?? 0,
                         CreatedAt = DateTime.UtcNow,
                         IsActive = true
                     };
-                    
+
                     recoveryContext.SearchServices.Add(recoveryService);
                     await recoveryContext.SaveChangesAsync();
                     newServiceId = recoveryService.Id; // ✅ FIX: Guardar ID del servicio recuperado

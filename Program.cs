@@ -886,6 +886,39 @@ builder.Services.AddResponseCaching();
 //     options.Level = System.IO.Compression.CompressionLevel.Fastest;
 // });
 
+// 🛡️ SEC-MAJ-7 FIX: registry de emails admin desde configuración (ADMIN_EMAILS o AdminEmails CSV).
+// Antes el literal "dcastillaa@gmail.com" estaba hardcoded en 4 sitios de UserService → cualquier
+// rotación de admin requería redeploy + el email personal del founder vivía en código versionado.
+// La env var ADMIN_EMAILS debe estar definida en Render con al menos el admin actual antes de
+// desplegar este código; si está vacía/ausente nadie será promovido a Admin en logins Google nuevos
+// y los guards de BlockUser/DeleteUser pierden la protección del admin existente.
+var adminEmailsCsv = builder.Configuration["AdminEmails"]
+    ?? Environment.GetEnvironmentVariable("ADMIN_EMAILS")
+    ?? string.Empty;
+builder.Services.AddSingleton<newApi.Services.IAdminEmailRegistry>(
+    new newApi.Services.AdminEmailRegistry(newApi.Services.AdminEmailRegistry.ParseCsv(adminEmailsCsv)));
+
+// 🛡️ SEC-MAJ-8 FIX: ForwardedHeaders middleware — restaura la IP real del cliente y el scheme HTTPS
+// detrás del proxy de Render. Sin esto:
+//   (a) las policies de AddRateLimiter (abajo) usan la IP del proxy (todos los usuarios comparten
+//       partición → rate limit inútil O legítimos bloqueados por vecinos),
+//   (b) Request.IsHttps siempre devuelve false → cookies con Secure=true no se setean correctamente,
+//   (c) los logs/audit (CreatedByIp/RevokedByIp en RefreshTokens) registran IPs internas de Render
+//       en lugar del cliente real.
+// Render es un proxy de un solo salto que setea X-Forwarded-For y X-Forwarded-Proto.
+// El middleware se enchufa MÁS ABAJO en el pipeline (debe ser de los primeros).
+builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders =
+        Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor |
+        Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto |
+        Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedHost;
+    // Render edge → app. Defaults limitan a loopback; vaciamos para aceptar el LB de Render.
+    options.KnownNetworks.Clear();
+    options.KnownProxies.Clear();
+    options.ForwardLimit = 2; // CDN externo opcional + Render edge
+});
+
 // ✅ SEGURIDAD 2025: Configurar Rate Limiting nativo de .NET 8
 // Configuración ajustada para aplicación web: límites más permisivos para uso normal, estrictos para endpoints sensibles
 // En desarrollo: sin límites para localhost y IPs de desarrollo
@@ -1268,12 +1301,25 @@ builder.Services.AddCors(options =>
 {
     if (isDevelopment)
     {
-        // ✅ DESARROLLO: Permitir cualquier origen para no bloquear imágenes externas (Unsplash, etc.)
+        // 🛡️ SEC-MAJ-5 FIX: dev también necesita AllowCredentials() para que la cookie HttpOnly
+        // `refresh_token` viaje a /api/Auth. Como AllowAnyOrigin() es incompatible con
+        // AllowCredentials() (los navegadores lo rechazan), enumeramos explícitamente los orígenes
+        // de dev típicos. Si tu frontend dev corre en otro puerto, añadirlo aquí.
         options.AddPolicy("AllowSpecificOrigin", builder =>
         {
-            builder.AllowAnyOrigin()
+            builder.WithOrigins(
+                       "http://localhost:3000",
+                       "http://localhost:5173",
+                       "http://localhost:5174",
+                       "http://127.0.0.1:3000",
+                       "http://127.0.0.1:5173",
+                       "https://localhost",
+                       "capacitor://localhost",
+                       "http://localhost"
+                   )
                    .AllowAnyMethod()
                    .AllowAnyHeader()
+                   .AllowCredentials()
                    .SetPreflightMaxAge(TimeSpan.FromSeconds(600));
         });
     }
@@ -1821,6 +1867,20 @@ if (app.Environment.IsDevelopment())
 // KeepAliveTimeout y RequestHeadersTimeout están en 5 y 2 minutos respectivamente
 
 // ✅ RENDER.COM BEST PRACTICES: Orden correcto del middleware según ASP.NET Core
+// 🛡️ SEC-MAJ-8 FIX: UseForwardedHeaders DEBE ser el PRIMER middleware que ve el request,
+// antes de cualquier otro que lea Request.Scheme o Request.HttpContext.Connection.RemoteIpAddress
+// (HSTS, security headers, rate limiter, auth). En dev no hay X-Forwarded-* → no-op seguro.
+app.UseForwardedHeaders();
+
+// 🛡️ SEC-MAJ-8 FIX: HTTPS redirect sólo en producción. En dev el app escucha en
+// http://localhost:7124, así que UseHttpsRedirection rompería el flujo local.
+// En prod Render termina TLS en el edge y el UseForwardedHeaders de arriba ya normalizó
+// Request.Scheme — si por error llega un http, lo redirigimos.
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
+
 // 0. Response Caching PRIMERO (antes de routing para cachear respuestas)
 app.UseResponseCaching();
 
@@ -1919,6 +1979,12 @@ app.Use(async (context, next) =>
 */
 
 app.UseAuthorization();
+
+// 🛡️ SEC-MAJ-8 FIX (bonus): el rate limiter estaba REGISTRADO (AddRateLimiter en línea ~892)
+// pero NUNCA enchufado al pipeline → las policies y [EnableRateLimiting(...)] no se aplicaban.
+// Ahora sí. Debe ir DESPUÉS de UseAuthentication/UseAuthorization para que las policies
+// que dependen del usuario autenticado funcionen.
+app.UseRateLimiter();
 
 // ❌ COMENTADO TEMPORALMENTE: Logging después de autorización
 /*
@@ -2085,155 +2151,137 @@ app.Use(async (context, next) =>
 // Add health check endpoint con logging detallado
 app.MapHealthChecks("/health").WithName("HealthCheck").WithTags("System");
 
-// ✅ RENDER.COM: Endpoint de health check mejorado con más información
-app.MapGet("/health-detailed", () =>
+// 🛡️ SEC-MAJ-4 FIX: gate diagnostic endpoints behind X-Diagnostics-Token header en producción.
+// /health (línea 2086) sigue siendo público para Render. /health-detailed antes filtraba env name,
+// PORT, ASPNETCORE_URLS y listeningUrls; ahora sólo devuelve status si el token coincide.
+// Helper local para validación constant-time del token.
+static bool RequireDiagnosticsToken(HttpContext ctx, IConfiguration cfg, IHostEnvironment env)
 {
-    var port = Environment.GetEnvironmentVariable("PORT") ?? "10000";
-    var aspnetcoreUrls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
-    var urls = app.Urls.ToList();
-    
+    if (env.IsDevelopment()) return true;
+    var configured = cfg["Diagnostics:Token"] ?? Environment.GetEnvironmentVariable("DIAGNOSTICS_TOKEN");
+    if (string.IsNullOrEmpty(configured)) return false; // sin token configurado → bloquear en prod
+    var provided = ctx.Request.Headers["X-Diagnostics-Token"].ToString();
+    if (string.IsNullOrEmpty(provided)) return false;
+    var a = System.Text.Encoding.UTF8.GetBytes(configured);
+    var b = System.Text.Encoding.UTF8.GetBytes(provided);
+    if (a.Length != b.Length) return false;
+    return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(a, b);
+}
+
+// ✅ RENDER.COM: Endpoint de health check mejorado con más información
+app.MapGet("/health-detailed", (HttpContext ctx, IConfiguration cfg) =>
+{
+    if (!RequireDiagnosticsToken(ctx, cfg, app.Environment))
+        return Results.NotFound(); // 404 (no 401) para ocultar existencia del endpoint
+
     return Results.Ok(new
     {
         status = "healthy",
         timestamp = DateTime.UtcNow,
-        environment = app.Environment.EnvironmentName,
-        port = port,
-        aspnetcoreUrls = aspnetcoreUrls,
-        listeningUrls = urls,
         message = "Server is running and ready to accept requests"
+        // 🛡️ SEC-MAJ-4: removido env/port/listeningUrls (information disclosure).
     });
 }).WithName("HealthCheckDetailed").WithTags("System");
 
-// ✅ DIAGNÓSTICO COMPLETO: Endpoint para verificar estado de todos los servicios críticos
-app.MapGet("/diagnostics", async (AppDbContext db, ILogger<Program> logger, IConfiguration configuration) =>
+// ✅ DIAGNÓSTICO: estado de servicios críticos.
+// 🛡️ SEC-MAJ-4 FIX: gate detrás de X-Diagnostics-Token en producción. Antes filtraba:
+//   - longitud absoluta de la clave JWT (permite ajustar fuerza bruta a HMAC-256/384/512)
+//   - longitud de Stripe SecretKey
+//   - path del fichero Google credentials (revela layout del filesystem)
+//   - environment name + endpoint count
+//   - mensaje + tipo de excepción de la BD (incluye fragmentos del connstring en algunos casos de Npgsql)
+// Ahora sólo devolvemos status booleano (ok / missing / error) sin números ni paths.
+app.MapGet("/diagnostics", async (HttpContext ctx, AppDbContext db, ILogger<Program> logger, IConfiguration configuration) =>
 {
+    if (!RequireDiagnosticsToken(ctx, configuration, app.Environment))
+        return Results.NotFound(); // 404 para no revelar existencia
+
     var services = new Dictionary<string, object>();
-    
-    // 1. Verificar base de datos
-    logger.LogInformation("[DIAGNOSTICS] Verificando base de datos...");
+
     try
     {
-        var dbStartTime = DateTime.UtcNow;
         var canConnect = await db.Database.CanConnectAsync();
-        var dbDuration = (DateTime.UtcNow - dbStartTime).TotalMilliseconds;
-        
-        services["database"] = new
-        {
-            status = canConnect ? "ok" : "failed",
-            canConnect = canConnect,
-            duration = dbDuration
-        };
+        services["database"] = new { status = canConnect ? "ok" : "failed" };
     }
     catch (Exception ex)
     {
-        services["database"] = new
-        {
-            status = "error",
-            error = ex.Message,
-            errorType = ex.GetType().Name
-        };
+        // 🛡️ SEC-MAJ-4: NO devolver ex.Message (puede contener fragmentos del connstring de Npgsql).
+        services["database"] = new { status = "error", errorType = ex.GetType().Name };
     }
-    
-    // 2. Verificar JWT Key
-    logger.LogInformation("[DIAGNOSTICS] Verificando JWT Key...");
-    var jwtKey = configuration["Jwt:Key"];
-    services["jwt"] = new
-    {
-        status = !string.IsNullOrEmpty(jwtKey) ? "ok" : "missing",
-        keyPresent = !string.IsNullOrEmpty(jwtKey),
-        keyLength = jwtKey?.Length ?? 0
-    };
-    
-    // 3. Verificar Secret Manager
-    logger.LogInformation("[DIAGNOSTICS] Verificando Secret Manager...");
-    var googleCredJson = Environment.GetEnvironmentVariable("GoogleCredentialJson");
-    var googleAppCreds = Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS");
+
+    services["jwt"] = new { status = !string.IsNullOrEmpty(configuration["Jwt:Key"]) ? "ok" : "missing" };
+
     services["secretManager"] = new
     {
-        googleCredentialJsonPresent = !string.IsNullOrEmpty(googleCredJson),
-        googleApplicationCredentialsPresent = !string.IsNullOrEmpty(googleAppCreds),
-        googleApplicationCredentialsPath = googleAppCreds ?? "null",
-        fileExists = !string.IsNullOrEmpty(googleAppCreds) && System.IO.File.Exists(googleAppCreds)
+        // 🛡️ SEC-MAJ-4: removidos path del fichero y flag de existencia (revelaban filesystem).
+        googleCredentialJsonConfigured = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GoogleCredentialJson")),
+        googleApplicationCredentialsConfigured = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS"))
     };
-    
-    // 4. Verificar Stripe
-    logger.LogInformation("[DIAGNOSTICS] Verificando Stripe...");
-    var stripeKey = configuration["Stripe:SecretKey"];
-    services["stripe"] = new
-    {
-        status = !string.IsNullOrEmpty(stripeKey) ? "ok" : "missing",
-        secretKeyPresent = !string.IsNullOrEmpty(stripeKey),
-        secretKeyLength = stripeKey?.Length ?? 0
-    };
-    
-    // 5. Verificar endpoints registrados
-    logger.LogInformation("[DIAGNOSTICS] Verificando endpoints registrados...");
+
+    services["stripe"] = new { status = !string.IsNullOrEmpty(configuration["Stripe:SecretKey"]) ? "ok" : "missing" };
+
     try
     {
         var endpointDataSource = app.Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>();
-        var endpoints = endpointDataSource.Endpoints;
-        var apiEndpointsCount = endpoints.Count(e =>
+        var apiEndpointsCount = endpointDataSource.Endpoints.Count(e =>
         {
             var routeEndpoint = e as Microsoft.AspNetCore.Routing.RouteEndpoint;
             return routeEndpoint?.RoutePattern.RawText?.StartsWith("/api", StringComparison.OrdinalIgnoreCase) == true;
         });
-        
-        services["endpoints"] = new
-        {
-            totalEndpoints = endpoints.Count(),
-            apiEndpoints = apiEndpointsCount,
-            status = apiEndpointsCount > 0 ? "ok" : "warning"
-        };
+        services["endpoints"] = new { status = apiEndpointsCount > 0 ? "ok" : "warning" };
     }
     catch (Exception ex)
     {
-        services["endpoints"] = new
-        {
-            status = "error",
-            error = ex.Message
-        };
+        services["endpoints"] = new { status = "error", errorType = ex.GetType().Name };
     }
-    
-    logger.LogInformation("[DIAGNOSTICS] Diagnóstico completado");
-    
+
     return Results.Ok(new
     {
         timestamp = DateTime.UtcNow,
-        environment = app.Environment.EnvironmentName,
-        services = services
+        services
     });
 }).WithName("Diagnostics").WithTags("System");
 
-// ✅ RENDER.COM: Endpoint de warmup para evitar cold starts
-// Este endpoint hace una query simple a la BD para "calentar" las conexiones
-// Útil para mantener la app activa y evitar el delay de 50+ segundos en el primer request
+// ✅ RENDER.COM: Endpoint de warmup para evitar cold starts.
+// 🛡️ SEC-MAJ-4 FIX: antes ejecutaba `SELECT COUNT(*) FROM Users` y devolvía userCount → filtraba
+// el total de usuarios de la plataforma (competidores podían trackear crecimiento). Ahora hace una
+// query trivial `SELECT 1` que calienta el pool sin revelar datos. NO requiere token: lo usan pings
+// externos de uptime (UptimeRobot etc.) que NO autentican.
 app.MapGet("/warmup", async (AppDbContext db) =>
 {
     try
     {
-        // Query simple para "calentar" la conexión a la base de datos
-        var count = await db.Users.CountAsync();
-        return Results.Ok(new { 
-            status = "warmed up", 
+        _ = await db.Database.ExecuteSqlRawAsync("SELECT 1");
+        return Results.Ok(new
+        {
+            status = "warmed up",
             timestamp = DateTime.UtcNow,
-            userCount = count,
-            message = "Application and database connections are ready" 
+            message = "Application and database connections are ready"
         });
     }
     catch (Exception ex)
     {
+        // 🛡️ SEC-MAJ-4: NO devolver ex.Message en respuesta pública.
         return Results.Problem(
-            detail: ex.Message,
             statusCode: 500,
             title: "Warmup failed"
         );
     }
 }).WithName("Warmup").WithTags("System");
 
-// ✅ ENDPOINT DE PRUEBA: Consulta simple a la DB para verificar conexión
-// ✅ MEJORADO: Diagnóstico completo de conexión a base de datos según análisis
-app.MapGet("/test-db", async (AppDbContext db, ILogger<Program> logger) =>
+// ✅ ENDPOINT DE PRUEBA: Consulta simple a la DB para verificar conexión.
+// 🛡️ SEC-MAJ-4 FIX: gate detrás de X-Diagnostics-Token en producción. Antes era completamente
+// público y devolvía:
+//   - userCount (filtrado de tamaño de plataforma a competidores)
+//   - ex.Message + ex.InnerException + stack trace (fragmentos del connstring de Npgsql, layout del FS)
+//   - hints "Authentication"/"Timeout"/"DNS" basados en pattern-match del mensaje (oráculo de errores
+//     de configuración aprovechable para inferir el tipo de fallo desde fuera).
+// Ahora: en dev abierto (debugging útil), en prod requiere DIAGNOSTICS_TOKEN header → 404 si falta.
+app.MapGet("/test-db", async (HttpContext ctx, AppDbContext db, ILogger<Program> logger, IConfiguration cfg) =>
 {
+    if (!RequireDiagnosticsToken(ctx, cfg, app.Environment))
+        return Results.NotFound();
+
     var startTime = DateTime.UtcNow;
     logger.LogInformation("[TEST-DB] ========================================");
     logger.LogInformation("[TEST-DB] 🔍 Iniciando test completo de base de datos...");

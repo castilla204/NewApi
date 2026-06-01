@@ -51,18 +51,77 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// 🛡️ SEC-MAJ-5 FIX: setea el refresh token como cookie HttpOnly+Secure+SameSite=Strict
+        /// con Path=/api/Auth. Antes el frontend lo guardaba en localStorage (~XSS-readable, 90d
+        /// TTL → secuestro de sesión que sobrevive a reset de password). Con cookie httpOnly, el JS
+        /// no puede leerlo: un XSS reflejado/stored o un script third-party comprometido (Stripe.js,
+        /// Maps...) ya no puede exfiltrar el refresh.
+        ///
+        /// MIGRACIÓN BACK-COMPAT: durante este release, el endpoint AÚN devuelve refreshToken en el
+        /// body para clientes legacy (mobile, builds anteriores). El frontend stops persisting al
+        /// localStorage simultáneamente. Tras un ciclo (~1h, primer refresh) todos los users tendrán
+        /// la cookie y el body se podrá retirar en R29.
+        ///
+        /// PENDIENTE FOLLOW-UP: los endpoints de login regular / Google / Apple (UserController)
+        /// también deben llamar este helper para evitar el window post-login (1ª recarga después
+        /// de signin donde sólo está en memoria). Aplicar el mismo patrón cuando se toquen.
+        /// </summary>
+        private void SetRefreshTokenCookie(string token, DateTime expiresAt)
+        {
+            var isHttps = HttpContext.Request.IsHttps ||
+                HttpContext.Request.Headers["X-Forwarded-Proto"].ToString()
+                    .Equals("https", StringComparison.OrdinalIgnoreCase);
+            HttpContext.Response.Cookies.Append("refresh_token", token, new Microsoft.AspNetCore.Http.CookieOptions
+            {
+                HttpOnly = true,
+                Secure = isHttps,
+                SameSite = isHttps
+                    ? Microsoft.AspNetCore.Http.SameSiteMode.Strict
+                    : Microsoft.AspNetCore.Http.SameSiteMode.Lax,
+                Expires = expiresAt,
+                // 🛡️ SEC-MAJ-5: scope mínimo. Sólo /api/Auth/refresh-token y /api/Auth/logout lo necesitan.
+                Path = "/api/Auth"
+            });
+        }
+
+        private void ClearRefreshTokenCookie()
+        {
+            HttpContext.Response.Cookies.Delete("refresh_token", new Microsoft.AspNetCore.Http.CookieOptions
+            {
+                Path = "/api/Auth",
+                SameSite = Microsoft.AspNetCore.Http.SameSiteMode.Strict
+            });
+        }
+
+        /// <summary>
         /// ✅ SEGURIDAD 2025: Renovar Access Token usando Refresh Token
         /// Best Practice: Rotación de tokens (invalida el refresh token antiguo y genera uno nuevo)
+        ///
+        /// 🛡️ SEC-MAJ-5 FIX: lee el refresh token de la cookie HttpOnly `refresh_token` primero;
+        /// fall back al body para clientes legacy (mobile/builds antiguos). En el response setea
+        /// la cookie con el nuevo refresh — los frontends nuevos no persisten el body.
         /// </summary>
         [HttpPost("refresh-token")]
         public async Task<IActionResult> RefreshToken([FromBody] RefreshTokenRequestDto request)
         {
             try
             {
+                // 🛡️ SEC-MAJ-5: priorizar cookie sobre body. Si vienen ambos y difieren, la cookie gana
+                // (el cliente legacy puede tener un valor obsoleto en body de un refresh anterior).
+                var incomingRefresh = HttpContext.Request.Cookies["refresh_token"];
+                if (string.IsNullOrEmpty(incomingRefresh))
+                {
+                    incomingRefresh = request?.RefreshToken;
+                }
+                if (string.IsNullOrEmpty(incomingRefresh))
+                {
+                    return BadRequest(new { message = "Refresh token requerido (cookie o body)" });
+                }
+
                 // 1. Buscar refresh token en BD
                 var storedToken = await _context.RefreshTokens
                     .Include(rt => rt.User)
-                    .FirstOrDefaultAsync(rt => rt.Token == request.RefreshToken);
+                    .FirstOrDefaultAsync(rt => rt.Token == incomingRefresh);
 
                 // 2. Validaciones de seguridad
                 if (storedToken == null)
@@ -142,6 +201,10 @@ namespace newApi.Controllers
 
                 await _context.SaveChangesAsync();
 
+                // 🛡️ SEC-MAJ-5: setear cookie HttpOnly con el nuevo refresh. Frontends nuevos
+                // ignoran el body.RefreshToken; los legacy lo siguen usando hasta que actualicen.
+                SetRefreshTokenCookie(newRefreshToken.Token, newRefreshToken.ExpiresAt);
+
                 // 5. Devolver nuevos tokens
                 return Ok(new RefreshTokenResponseDto
                 {
@@ -171,11 +234,18 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user" });
                 }
 
-                if (!string.IsNullOrEmpty(request.RefreshToken))
+                // 🛡️ SEC-MAJ-5: leer refresh de cookie primero, body como fallback legacy.
+                var incomingRefresh = HttpContext.Request.Cookies["refresh_token"];
+                if (string.IsNullOrEmpty(incomingRefresh))
+                {
+                    incomingRefresh = request?.RefreshToken;
+                }
+
+                if (!string.IsNullOrEmpty(incomingRefresh))
                 {
                     // Revocar el refresh token específico
                     var refreshToken = await _context.RefreshTokens
-                        .FirstOrDefaultAsync(rt => rt.Token == request.RefreshToken && rt.UserId == userId);
+                        .FirstOrDefaultAsync(rt => rt.Token == incomingRefresh && rt.UserId == userId);
 
                     if (refreshToken != null && refreshToken.IsActive)
                     {
@@ -187,6 +257,10 @@ namespace newApi.Controllers
                         await _context.SaveChangesAsync();
                     }
                 }
+
+                // 🛡️ SEC-MAJ-5: limpiar la cookie SIEMPRE, aunque no haya refresh válido — evita
+                // residuos en el browser tras logout incompleto.
+                ClearRefreshTokenCookie();
 
                 return Ok(new { message = "Logged out successfully" });
             }
@@ -399,6 +473,12 @@ namespace newApi.Controllers
 
                 var accessToken = _userService.GenerateJwtToken(user);
                 var refreshToken = await _userService.GenerateRefreshTokenAsync(userId, GetClientIpAddress());
+
+                // 🛡️ SEC-MAJ-5: setear cookie HttpOnly en respuesta de MFA verify. Es el primer
+                // momento en que tenemos un HttpContext + refresh recién generado para usuarios MFA.
+                // Los usuarios sin MFA pasan por login regular (UserController) que aún devuelve
+                // refresh en body — actualizar ese flujo en follow-up R28-followup.
+                SetRefreshTokenCookie(refreshToken, DateTime.UtcNow.AddDays(90));
 
                 return Ok(new VerifyMfaResponseDto
                 {

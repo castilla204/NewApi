@@ -30,6 +30,8 @@ namespace newApi.Services
         private readonly ITimezoneService _timezoneService;
         private readonly INotificationService _notificationService;
         private readonly IServiceScopeFactory _serviceScopeFactory;
+        // 🛡️ SEC-MAJ-7 FIX: admin email check delegado a registry (env var ADMIN_EMAILS).
+        private readonly IAdminEmailRegistry _adminEmails;
         private readonly string _twilioVerificationServiceSid;
         private readonly string _twilioauthToken;
 
@@ -42,7 +44,8 @@ namespace newApi.Services
      ILoggingService loggingService,
      ITimezoneService timezoneService,
      INotificationService notificationService,
-     IServiceScopeFactory serviceScopeFactory)
+     IServiceScopeFactory serviceScopeFactory,
+     IAdminEmailRegistry adminEmails)
         {
             _context = context;
             _configuration = configuration;
@@ -52,6 +55,7 @@ namespace newApi.Services
             _timezoneService = timezoneService;
             _notificationService = notificationService;
             _serviceScopeFactory = serviceScopeFactory;
+            _adminEmails = adminEmails;
             _twilioVerificationServiceSid = configuration["Twilio:VerificationServiceSid"];
             _twilioauthToken = configuration["Twilio:AuthToken"];
         }
@@ -92,7 +96,8 @@ namespace newApi.Services
         public async Task<bool> BlockUser(int userId)
         {
             var user = await _context.Users.FindAsync(userId);
-            if (user == null || user.Email == "dcastillaa@gmail.com")
+            // 🛡️ SEC-MAJ-7 FIX: admin check vía registry; literal antes era "dcastillaa@gmail.com".
+            if (user == null || _adminEmails.IsAdmin(user.Email))
                 return false;
 
             // 🛡️ Round 15 — R4 FIX: cuando se bloquea (transición false→true), revocar
@@ -136,7 +141,8 @@ namespace newApi.Services
         public async Task<bool> DeleteUser(int userId)
         {
             var user = await _context.Users.FindAsync(userId);
-            if (user == null || user.Email == "dcastillaa@gmail.com")
+            // 🛡️ SEC-MAJ-7 FIX: admin check vía registry; literal antes era "dcastillaa@gmail.com".
+            if (user == null || _adminEmails.IsAdmin(user.Email))
                 return false;
 
             _context.Users.Remove(user);
@@ -358,7 +364,9 @@ namespace newApi.Services
 
                         user.GoogleId = payload.Subject;
                         user.Name = string.IsNullOrWhiteSpace(user.Name) ? payload.Name?.Trim() : user.Name;
-                        if (emailToCheck == "dcastillaa@gmail.com")
+                        // 🛡️ SEC-MAJ-7 FIX: admin promotion vía registry. Google ya validó EmailVerified
+                        // arriba, así que sabemos que `emailToCheck` lo posee realmente el usuario.
+                        if (_adminEmails.IsAdmin(emailToCheck))
                             user.Role = UserRole.Admin;
                     }
                 }
@@ -367,7 +375,8 @@ namespace newApi.Services
             if (user == null)
             {
                 var emailToCheck = payload.Email?.Trim().ToLowerInvariant();
-                var isAdminEmail = emailToCheck == "dcastillaa@gmail.com";
+                // 🛡️ SEC-MAJ-7 FIX: admin promotion vía registry; literal antes era "dcastillaa@gmail.com".
+                var isAdminEmail = _adminEmails.IsAdmin(emailToCheck);
                 
                 user = new User
                 {

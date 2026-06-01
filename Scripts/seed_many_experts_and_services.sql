@@ -175,6 +175,21 @@ JOIN (VALUES
 WHERE ss."IsActive" = true
   AND NOT EXISTS (SELECT 1 FROM "SearchServiceImages" si WHERE si."SearchServiceId" = ss."Id");
 
+-- Tipos de entregable por servicio seed (PDF + Video) si el servicio no tiene ninguno
+INSERT INTO "SearchServiceDeliverableTypes" (
+  "SearchServiceId", "DeliverableTypeId", "IsSelected", "CreatedAt", "UpdatedAt"
+)
+SELECT ss."Id", dt."Id", true, NOW(), NOW()
+FROM "SearchServices" ss
+JOIN "Users" u ON u."Id" = (SELECT ep."UserId" FROM "ExpertProfiles" ep WHERE ep."Id" = ss."ExpertProfileId")
+CROSS JOIN "DeliverableTypes" dt
+WHERE u."Email" LIKE 'expert.seed.%@inspecciono.dev'
+  AND ss."IsActive" = true
+  AND dt."IsActive" = true
+  AND NOT EXISTS (
+    SELECT 1 FROM "SearchServiceDeliverableTypes" x WHERE x."SearchServiceId" = ss."Id"
+  );
+
 COMMIT;
 
 -- Resumen

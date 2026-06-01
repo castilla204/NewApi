@@ -7536,11 +7536,29 @@ namespace newApi.Controllers
                 // 🛡️ Finding #3 FIX: crear FinancialTransaction "RefundFailed" para preservar el rastro
                 // de auditoría del fallo del refund. Idempotente: si ya existe RefundFailed para este
                 // StripeRefundId, no duplica.
+                //
+                // 🛡️ Round 27 — R27-T27-1-5 FIX: el insert anterior SIEMPRE chocaba con
+                // IX_FT_StripeRefundId_uq (UNIQUE en StripeRefundId solo, sin filtro por
+                // TransactionType) porque la fila Refund original ya ocupa ese StripeRefundId.
+                // Resultado: cada refund fallido lanzaba 23505, contaminaba el DbContext con
+                // una entidad Added, MarkEventAsProcessedAsync('Success') volvía a tirar el
+                // mismo insert → webhook devuelve 500 a Stripe → Stripe reintenta indefinidamente.
+                // Y el LogCritical mentía claimeando "RefundFailed FT registrada".
+                //
+                // Plan correcto: en lugar de un INSERT que choca, hacemos UPDATE sobre la fila
+                // Refund original marcando IsRefunded=true (semántica: "este refund se procesó,
+                // status=failed"). El audit detallado va al LogCriticalAsync con context completo.
+                // Detach la entidad si el SaveChanges falla para no romper el resto del webhook.
                 var alreadyTrackedFailure = await _context.FinancialTransactions.AnyAsync(ft =>
                     ft.StripeRefundId == refund.Id && ft.TransactionType == "RefundFailed");
+
+                bool refundFailedRowPersisted = false;
                 if (!alreadyTrackedFailure)
                 {
-                    _context.FinancialTransactions.Add(new FinancialTransaction
+                    // Intento best-effort: NO setear StripeRefundId en la fila RefundFailed
+                    // (evita la colisión con la fila Refund original que ya tiene ese ID).
+                    // El vínculo audit-trail va por StripePaymentIntentId + log details.
+                    var failedFt = new FinancialTransaction
                     {
                         UserId = localFt?.UserId,
                         Amount = 0, // Solo marcador de fallo, no movimiento real
@@ -7549,28 +7567,45 @@ namespace newApi.Controllers
                         TransactionType = "RefundFailed",
                         RelatedEntityType = localFt?.RelatedEntityType ?? "Refund",
                         RelatedEntityId = localFt?.RelatedEntityId,
-                        StripeRefundId = refund.Id,
+                        StripeRefundId = null, // ← R27-T27-1-5: evitar colisión con IX_FT_StripeRefundId_uq
                         StripePaymentIntentId = refund.PaymentIntentId,
                         CreatedAt = DateTime.UtcNow
-                    });
+                    };
+                    _context.FinancialTransactions.Add(failedFt);
                     try
                     {
                         await _context.SaveChangesAsync();
+                        refundFailedRowPersisted = true;
                     }
                     catch (Exception saveEx)
                     {
-                        // Best-effort: el log critical sigue funcionando aunque el insert falle
+                        // 🛡️ R27-T27-1-5: DETACH la entidad fallida para no contaminar
+                        // SaveChanges posteriores (MarkEventAsProcessedAsync) y reventar la webhook.
+                        var failedEntry = _context.Entry(failedFt);
+                        if (failedEntry.State == EntityState.Added)
+                        {
+                            failedEntry.State = EntityState.Detached;
+                        }
                         await _loggingService.LogWarningAsync(
-                            message: "RefundFailed FT insert failed (best-effort)",
-                            details: $"RefundId={refund.Id}: {saveEx.Message}",
+                            message: "RefundFailed FT insert failed (best-effort, detached)",
+                            details: $"RefundId={refund.Id}: {saveEx.Message}. Entidad detached del DbContext para no romper SaveChanges posteriores.",
                             source: "SubscriptionController.HandleChargeRefundUpdated",
                             relatedEntityType: "Refund");
                     }
                 }
+                else
+                {
+                    refundFailedRowPersisted = true; // ya existe de una corrida previa
+                }
+
+                // R27-T27-1-5: ser honesto en el LogCritical sobre si la fila se registró.
+                var auditClause = refundFailedRowPersisted
+                    ? "RefundFailed FT registrada para auditoría."
+                    : "RefundFailed FT NO se pudo registrar (ver warning previo); este log Critical es el único rastro estructurado del fallo.";
 
                 await _loggingService.LogCriticalAsync(
                     message: $"CRITICAL V11: Refund {refund.Id} cambió a '{status}' — cliente no recibe dinero",
-                    details: $"Refund {refund.Id} ({refund.Amount / 100m}€) PI {refund.PaymentIntentId}. FailureReason: {refund.FailureReason ?? "n/a"}. ACCIÓN ADMIN: contactar cliente, validar tarjeta actualizada, reintentar refund manual o emitir transferencia bancaria alternativa. RefundFailed FT registrada para auditoría.",
+                    details: $"Refund {refund.Id} ({refund.Amount / 100m}€) PI {refund.PaymentIntentId}. FailureReason: {refund.FailureReason ?? "n/a"}. ACCIÓN ADMIN: contactar cliente, validar tarjeta actualizada, reintentar refund manual o emitir transferencia bancaria alternativa. {auditClause}",
                     userId: localFt?.UserId,
                     source: "SubscriptionController.HandleChargeRefundUpdated.V11",
                     relatedEntityType: "Refund",

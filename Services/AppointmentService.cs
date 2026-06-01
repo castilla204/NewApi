@@ -1062,16 +1062,28 @@ namespace newApi.Services
                     {
                         var appointmentDateTime = updatedAppointment.ProposedDate.Value.Date + updatedAppointment.ProposedTime.Value;
                         var formattedDate = appointmentDateTime.ToString("dd/MM/yyyy HH:mm");
-                    
-                    await _loggingService.LogInfoAsync(
-                        message: "Nueva propuesta de cita recibida",
-                        details: $"El cliente ha propuesto una cita para el {formattedDate} en {updatedAppointment.Location}. Tienes 24 horas para aceptar o rechazar.",
-                        userId: updatedAppointment.SearchHire.ExpertId.Value,
-                        source: "AppointmentService.ProposeAppointmentAsync",
-                        relatedEntityType: "Appointment",
-                        relatedEntityId: updatedAppointment.Id,
-                        notifyUser: true
-                    );
+
+                        // 🛡️ Round 27 — R27-T27-2-3 FIX: incluir disclosure de TZ. Antes la
+                        // notificación embebía la hora cruda sin contexto → un experto en zona
+                        // distinta de la del cliente leía "16:00" como su hora local. Ahora
+                        // adjuntamos la zona del proponente (cliente) usando el snapshot Round 21
+                        // (ProposerTimezone) con fallback al ExpertTimezone del SearchHire.
+                        var proposerTz = updatedAppointment.ProposerTimezone
+                            ?? updatedAppointment.SearchHire?.ExpertTimezone
+                            ?? "UTC";
+                        var proposerTzCity = proposerTz.Contains('/')
+                            ? proposerTz.Split('/').Last().Replace('_', ' ')
+                            : proposerTz;
+
+                        await _loggingService.LogInfoAsync(
+                            message: "Nueva propuesta de cita recibida",
+                            details: $"El cliente ha propuesto una cita para el {formattedDate} (hora de {proposerTzCity}) en {updatedAppointment.Location}. Tienes 24 horas para aceptar o rechazar.",
+                            userId: updatedAppointment.SearchHire.ExpertId.Value,
+                            source: "AppointmentService.ProposeAppointmentAsync",
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: updatedAppointment.Id,
+                            notifyUser: true
+                        );
                     }
                 }
 
@@ -1526,9 +1538,21 @@ namespace newApi.Services
                             notifyUser: false
                         );
 
+                        // 🛡️ Round 27 — R27-T27-2-3 FIX: incluir disclosure de TZ. Antes la
+                        // notificación embebía la hora cruda sin contexto → un cliente en otra
+                        // zona leía "16:00 Madrid" como "16:00 BA" y llegaba 4-5h tarde.
+                        // Usamos el snapshot Round 21 ProposerTimezone (la hora original viene
+                        // del proponente) con fallback al ExpertTimezone del SearchHire.
+                        var confirmTzId = updatedAppointment.ProposerTimezone
+                            ?? updatedAppointment.SearchHire?.ExpertTimezone
+                            ?? "UTC";
+                        var confirmTzCity = confirmTzId.Contains('/')
+                            ? confirmTzId.Split('/').Last().Replace('_', ' ')
+                            : confirmTzId;
+
                         await _loggingService.LogInfoAsync(
                             message: "Cita confirmada por el experto",
-                            details: $"El experto confirm├│ la cita para el {formattedDateTime} en {updatedAppointment.Location}.",
+                            details: $"El experto confirm├│ la cita para el {formattedDateTime} (hora de {confirmTzCity}) en {updatedAppointment.Location}.",
                             userId: updatedAppointment.SearchHire.ClientId,
                             source: "AppointmentService.ConfirmAppointmentAsync",
                             relatedEntityType: "Appointment",
@@ -3811,11 +3835,39 @@ namespace newApi.Services
                     case "expert_report":
                         // Si el experto no env├¡a reporte en 24h, cancelar
                         var noReportStatus = await _context.SystemStatuses
-                            .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                            .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" &&
                                                     s.StatusValue == AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue());
 
                         if (noReportStatus != null && timer.Appointment != null)
                         {
+                            // 🛡️ Round 27 — R27-T27-1-2 FIX (CRÍTICO): mismo guard que case 'client_decision'
+                            // contra disputas Pending/Resolving. Antes este case carecía del check, lo que
+                            // permitía una race ~100-500ms entre CreateDispute (cliente abre disputa) y
+                            // este timer: el timer leía SearchHire.Status='pending', RefundService Fase 2
+                            // short-circuit-aba en finalization (porque la disputa había commit-eado a
+                            // Disputed mientras tanto), Fase 3 procesaba el refund 95% al cliente bajo
+                            // idempotency-key 'appointment_cancelled_by_no_report'. Después admin pay_expert
+                            // en la disputa producía el 2º transfer 95% al experto bajo OTRA idempotency-key
+                            // 'dispute_resolved_expert' → Stripe NO deduplicaba → outflow 190% vs capture 100%.
+                            // El guard narrows la ventana al máximo defendible sin refactor de FOR UPDATE
+                            // sobre SearchHire (la disputa abierta lo lock-ea antes que llegue el timer).
+                            var hasPendingDisputeForReportTimer = await _context.Disputes
+                                .AnyAsync(d => d.SearchHireId == timer.Appointment.SearchHireId
+                                            && (d.Status == "Pending" || d.Status == "Resolving"));
+                            if (hasPendingDisputeForReportTimer)
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "expert_report timer expired but a pending dispute exists - skipping money distribution",
+                                    details: $"SearchHire {timer.Appointment.SearchHireId}: expert_report timer {timer.Id} expired, but a Dispute with Status='Pending'/'Resolving' is open. " +
+                                            "Auto-refund-by-no-report is SKIPPED; the dispute resolution will handle money distribution. " +
+                                            "R27-T27-1-2 guard prevents the 190% outflow race (timer refund 95% + later admin pay_expert 95%).",
+                                    userId: null,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: timer.Appointment.SearchHireId);
+                                break; // timer ya marcado IsExpired arriba; el SaveChanges final lo persiste
+                            }
+
                             timer.Appointment.StatusId = noReportStatus.Id;
                             timer.Appointment.UpdatedAt = DateTime.UtcNow;
 

@@ -1282,6 +1282,11 @@ namespace newApi.Services
                                     relatedEntityId: (int)searchHire.ExpertId,
                                     additionalData: new { AccountId = expertStripeAccountId, TransfersCapability = expertAccount.Capabilities?.Transfers, PayoutsEnabled = expertAccount.PayoutsEnabled }
                                 );
+                                // 🔧 Round 26 REFUND-DISABLED-4: marcar para revisión manual igual que la rama de currency-mismatch,
+                                // para que el dashboard admin pueda surfacear hires atascados por capability/payouts disabled.
+                                searchHire.RequiresManualReview = true;
+                                searchHire.RefundFailedAt = DateTime.UtcNow;
+                                await _context.SaveChangesAsync();
                                 if (transaction != null)
                                 {
                                 await transaction.RollbackAsync();

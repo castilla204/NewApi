@@ -85,7 +85,11 @@ namespace newApi.Services
             };
 
             var requiresStripeSetup = stripeStatus == StripeStatus.NotRequested;
-            var canRetry = stripeStatus == StripeStatus.NotRequested || stripeStatus == StripeStatus.Rejected;
+            // 🔧 Round 26 DEAUTH-6: Incluir Deauthorized en canRetry — Stripe OAuth permite re-autorizar
+            // tras un POST /deauthorize, y el mensaje al usuario ya invita a reconectar, así que el flag
+            // debe coincidir con la lista del frontend (StripeStatusComponent.tsx trata Deauthorized como
+            // needsOnboarding=true) para no romper clientes estrictos que respeten el contrato del backend.
+            var canRetry = stripeStatus == StripeStatus.NotRequested || stripeStatus == StripeStatus.Rejected || stripeStatus == StripeStatus.Deauthorized;
             return (false, message, stripeStatus.ToString(), requiresStripeSetup, canRetry);
         }
 

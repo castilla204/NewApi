@@ -33,8 +33,11 @@ namespace newApi.Services
                 }
 
                 // Verificar que el servicio existe y está activo
+                // 🔧 Round 26 DEAUTH-7: Bloquear favoritear servicios cuyo experto fue desautorizado en Stripe
                 var serviceExists = await _context.SearchServices
-                    .AnyAsync(ss => ss.Id == searchServiceId && ss.IsActive);
+                    .AnyAsync(ss => ss.Id == searchServiceId && ss.IsActive
+                        && ((ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted)
+                            || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification));
                 if (!serviceExists)
                 {
                     return (false, "Servicio no encontrado o no está activo", null);
@@ -147,9 +150,13 @@ namespace newApi.Services
                 var serviceIds = favorites.Select(f => f.SearchServiceId).ToArray();
                 
                 // Usar el servicio existente para obtener detalles de los servicios
+                // 🔧 Round 26 DEAUTH-7: Filtrar también por StripeStatus del experto para ocultar
+                // servicios cuyo experto fue desautorizado en Stripe (espejo del gate del catálogo en SearchServiceService.cs:89/269)
                 var servicesQuery = _context.SearchServices
                     .AsNoTracking()
-                    .Where(ss => serviceIds.Contains(ss.Id) && ss.IsActive)
+                    .Where(ss => serviceIds.Contains(ss.Id) && ss.IsActive
+                        && ((ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted)
+                            || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification))
                     .Select(ss => new
                     {
                         ServiceId = ss.Id,
@@ -280,9 +287,12 @@ namespace newApi.Services
                 else
                 {
                     // Verificar que el servicio existe y está activo
+                    // 🔧 Round 26 DEAUTH-7: Bloquear (re)favoritear servicios cuyo experto fue desautorizado en Stripe
                     var serviceExists = await _context.SearchServices
-                        .AnyAsync(ss => ss.Id == searchServiceId && ss.IsActive);
-                    
+                        .AnyAsync(ss => ss.Id == searchServiceId && ss.IsActive
+                            && ((ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted)
+                                || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification));
+
                     if (!serviceExists)
                     {
                         return (false, "Servicio no encontrado o no está activo", false);

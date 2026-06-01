@@ -201,6 +201,11 @@ namespace newApi.Controllers
             public bool FutureRequirementsPastDue { get; set; }
             public bool FutureRequirementsCurrentlyDue { get; set; }
             public DateTime? FutureRequirementsDueAt { get; set; }
+            // 🔧 Round 26 ACC-UPD-7: lista de errores de requirements (code+reason+requirement)
+            // ya recolectada en EvaluateStripeAccount. Antes solo se usaba en la rama Rejected.
+            // Ahora la exponemos para que BuildStatusDetails pueda surfacearla en otras ramas
+            // (ActionRequired, RequirementsPastDue, Restricted, Disabled, PendingVerification).
+            public IReadOnlyList<string> RequirementErrors { get; set; } = Array.Empty<string>();
         }
 
         private StripeAccountState EvaluateStripeAccount(Account account)
@@ -236,7 +241,10 @@ namespace newApi.Controllers
                 BlockingRequirements = currentlyDue.Concat(pastDue).Distinct().ToArray(),
                 FutureRequirements = futureCurrentlyDue.Concat(futureEventuallyDue).Concat(futurePastDue).Distinct().ToArray(),
                 FutureRequirementsCurrentlyDue = futureCurrentlyDue.Any(),
-                FutureRequirementsPastDue = futurePastDue.Any()
+                FutureRequirementsPastDue = futurePastDue.Any(),
+                // 🔧 Round 26 ACC-UPD-7: propagar la lista de errores para que BuildStatusDetails
+                // pueda mostrarlos en ramas no-Rejected (antes solo GetRejectionMessage los usaba).
+                RequirementErrors = requirementErrors.ToArray()
             };
 
             // 🛡️ Round 12 — D5 FIX: preferir el deadline REAL de Stripe sobre el heurístico.
@@ -376,10 +384,20 @@ namespace newApi.Controllers
         {
             var details = new List<string> { GetStatusMessage(state.Status) };
 
+            // 🔧 Round 26 REQ-6: incluir Restricted y Disabled en la rama que muestra
+            // BlockingRequirements. Antes solo ActionRequired/RequirementsPastDue exponían la
+            // lista, por lo que en Restricted/Disabled el experto se quedaba sin pista de qué
+            // campos solicita Stripe y debía abrir el Express Dashboard.
+            // 🔧 Round 26 PERSON-2: pasar cada requirement por GetRequirementDescription para
+            // traducir los tokens (incluyendo el formato per-person `person_XXX.verification.*`).
             if (state.BlockingRequirements.Any() &&
-                (state.Status == StripeStatus.ActionRequired || state.Status == StripeStatus.RequirementsPastDue))
+                (state.Status == StripeStatus.ActionRequired ||
+                 state.Status == StripeStatus.RequirementsPastDue ||
+                 state.Status == StripeStatus.Restricted ||
+                 state.Status == StripeStatus.Disabled))
             {
-                details.Add($"Requisitos pendientes: {string.Join(", ", state.BlockingRequirements)}.");
+                var translated = state.BlockingRequirements.Select(GetRequirementDescription);
+                details.Add($"Requisitos pendientes: {string.Join(", ", translated)}.");
             }
 
             if (state.FutureRequirements.Any() &&
@@ -388,7 +406,23 @@ namespace newApi.Controllers
                  state.Status == StripeStatus.RequirementsPastDue))
             {
                 var label = state.FutureRequirementsPastDue ? "requisitos vencidos" : "requisitos futuros";
-                details.Add($"Stripe indicó {label}: {string.Join(", ", state.FutureRequirements)}.");
+                // 🔧 Round 26 PERSON-2: traducir también los requirements futuros.
+                var translatedFuture = state.FutureRequirements.Select(GetRequirementDescription);
+                details.Add($"Stripe indicó {label}: {string.Join(", ", translatedFuture)}.");
+            }
+
+            // 🔧 Round 26 ACC-UPD-7: surfacear los errores Stripe (Code+Reason) en ramas
+            // recuperables. Antes solo la rama Rejected los usaba (vía GetRejectionMessage),
+            // por lo que el experto reuploadeaba el mismo documento defectuoso sin saber qué
+            // pasaba ("verification_document_not_readable", "document_failed_uploaded", etc.).
+            if (state.RequirementErrors.Any() &&
+                (state.Status == StripeStatus.ActionRequired ||
+                 state.Status == StripeStatus.RequirementsPastDue ||
+                 state.Status == StripeStatus.Restricted ||
+                 state.Status == StripeStatus.Disabled ||
+                 state.Status == StripeStatus.PendingVerification))
+            {
+                details.Add($"Detalles de Stripe: {string.Join("; ", state.RequirementErrors)}.");
             }
 
             if (!string.IsNullOrWhiteSpace(state.DisabledReason) &&
@@ -579,6 +613,14 @@ namespace newApi.Controllers
                     });
                 }
 
+                // 🔧 Round 26 ONBOARD-1: token de reintento para invalidar la idempotency key
+                // tras un rechazo temporal. Por defecto vacío → la key sigue siendo determinista
+                // por userId (preserva la protección original contra retries de red). Si el flujo
+                // entra a la rama de cleanup por rechazo temporal, se asigna un Guid fresco que
+                // se sufija a la idempotency key de accounts.create, evitando que Stripe devuelva
+                // el acct rechazado cacheado durante 24h.
+                string onboardingAttemptToken = string.Empty;
+
                 // ⚠️ BLOQUEAR SOLO si es un rechazo permanente; permitir reintentos si es temporal
                 if (expertProfile.StripeStatus == StripeStatus.Rejected)
                 {
@@ -605,7 +647,7 @@ namespace newApi.Controllers
                                 relatedEntityId: expertProfile?.Id);
                         }
                     }
-                    
+
                     // Si no se pudo obtener de Stripe, intentar extraer del StripeStatusDetails
                     if (string.IsNullOrEmpty(disabledReason) && !string.IsNullOrEmpty(expertProfile.StripeStatusDetails))
                     {
@@ -620,7 +662,7 @@ namespace newApi.Controllers
                     else if (string.IsNullOrEmpty(disabledReason))
                     {
                     }
-                    
+
                     // Si es un rechazo permanente, bloquear
                     if (IsPermanentRejection(disabledReason))
                     {
@@ -629,8 +671,8 @@ namespace newApi.Controllers
                         {
                             rejectionInfo = expertProfile.StripeStatusDetails;
                         }
-                        
-                        return BadRequest(new { 
+
+                        return BadRequest(new {
                             message = "No se puede crear una nueva cuenta. " + rejectionInfo + " Por favor, contacta al soporte técnico para revisar tu situación.",
                             blocked = true,
                             reason = "account_permanently_rejected",
@@ -647,6 +689,9 @@ namespace newApi.Controllers
                         expertProfile.StripeStatus = StripeStatus.NotRequested;
                         expertProfile.StripeStatusDetails = null;
                         expertProfile.OnboardingCompleted = false;
+                        // 🔧 Round 26 ONBOARD-1: generar token fresco para evitar reusar el acct
+                        // rechazado vía la caché de idempotency de Stripe (24h por key).
+                        onboardingAttemptToken = Guid.NewGuid().ToString("N");
                         await _context.SaveChangesAsync();
                         // Continuar con el flujo normal de creación de cuenta
                     }
@@ -672,12 +717,15 @@ namespace newApi.Controllers
                     }
                     
                     // If expert already has a completed Stripe account, create a login link instead
+                    // 🔧 Round 26 ONBOARD-3: alinear con los otros 5 AccountLink (eventually_due)
+                    // para que el experto vea también requisitos futuros antes de su deadline.
                     var existingAccountLinkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.StripeAccountId,
                         RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
                         ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
-                        Type = "account_onboarding"
+                        Type = "account_onboarding",
+                        Collect = "eventually_due"
                     };
                     
                     var existingAccountLinkService = new AccountLinkService();
@@ -692,7 +740,10 @@ namespace newApi.Controllers
                             source: "SubscriptionController.CreateExpertOnboarding",
                             relatedEntityType: "ExpertProfile",
                             relatedEntityId: expertProfile.Id);
-                        return Ok(new { url = existingAccountLink.Url, isLoginLink = true });
+                        // 🔧 Round 26 LOGINLINK-2: bandera honesta — la URL devuelta es un
+                        // AccountLink (account_onboarding), NO un LoginLink de Dashboard. El
+                        // legacy true mentía al frontend, que ahora dispone de /create-login-link.
+                        return Ok(new { url = existingAccountLink.Url, isLoginLink = false });
                     }
                     catch (StripeException ex)
                     {
@@ -915,9 +966,17 @@ namespace newApi.Controllers
                     // huérfanas zombies acumuladas. La clave por userId garantiza que el experto
                     // tenga UN único acct para siempre (Stripe rechaza con idempotency_error si
                     // el body difiere, lo cual es exactamente lo que queremos).
+                    // 🔧 Round 26 ONBOARD-1: si venimos de un cleanup por rechazo temporal,
+                    // sufijar la key con un token fresco. La caché de idempotency de Stripe (24h)
+                    // habría devuelto el MISMO acct rechazado bajo la key determinista, dejando
+                    // al experto atrapado en bucle de rechazo durante un día. El token vacío en
+                    // flujo normal preserva la protección original contra retries de red.
+                    var idempotencyKeyValue = string.IsNullOrEmpty(onboardingAttemptToken)
+                        ? $"account-onboarding-{userId}"
+                        : $"account-onboarding-{userId}-{onboardingAttemptToken}";
                     var accountIdempotencyOptions = new Stripe.RequestOptions
                     {
-                        IdempotencyKey = $"account-onboarding-{userId}"
+                        IdempotencyKey = idempotencyKeyValue
                     };
                     account = await accountService.CreateAsync(accountOptions, accountIdempotencyOptions);
                 }
@@ -1140,6 +1199,12 @@ namespace newApi.Controllers
                 
                 // Crear un enlace de cuenta de Stripe Connect para actualizar datos bancarios
                 var accountLinkService = new Stripe.AccountLinkService();
+                // 🔧 Round 26 ONBOARD-3: añadir Collect=eventually_due para account_onboarding
+                // (account_update ignora el campo). Alinea con los otros 5 AccountLink y evita
+                // que el experto solo vea currently_due aquí.
+                // 🔧 Round 26 ACCOUNTLINK-3: ReturnUrl pasa a /complete-onboarding como los otros
+                // 5 AccountLink — StripeOnboardingReturnPage llama a syncStripeStatus antes de
+                // volver al panel, evitando la ventana de hasta 2 min de estado stale tras editar.
                 var accountLinkOptions = new Stripe.AccountLinkCreateOptions
                 {
                     Account = expertProfile.StripeAccountId,
@@ -1149,8 +1214,9 @@ namespace newApi.Controllers
                     // AccountLink expiraba. /refresh-onboarding → StripeOnboardingReturnPage que ya
                     // regenera link y redirige a Stripe transparente.
                     RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
-                    ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert-panel", // URL de retorno después de actualizar datos
-                    Type = linkType // ✅ account_update para cuentas aprobadas, account_onboarding para requirements pendientes
+                    ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding", // URL de retorno después de actualizar datos (sync antes de panel)
+                    Type = linkType, // ✅ account_update para cuentas aprobadas, account_onboarding para requirements pendientes
+                    Collect = linkType == "account_onboarding" ? "eventually_due" : null
                 };
 
                 var accountLink = await accountLinkService.CreateAsync(accountLinkOptions);
@@ -1161,7 +1227,32 @@ namespace newApi.Controllers
             }
             catch (StripeException stripeEx)
             {
-                return StatusCode(500, new { message = "Error de Stripe al crear el enlace de cuenta", error = stripeEx.Message });
+                // 🔧 Round 26 ONBOARD-IDEM-3: log detallado del StripeError. El bloque anterior
+                // (try GetAsync sin log + return 500) ya queda cubierto por el catch interno;
+                // este catch externo cubre CreateAsync del AccountLink y otras llamadas Stripe.
+                try
+                {
+                    var userIdClaimErr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                    int.TryParse(userIdClaimErr, out int userIdErr);
+                    await _loggingService.LogErrorAsync(
+                        message: "Error de Stripe al crear el enlace de cuenta",
+                        details: $"StripeException en CreateAccountLink. Code={stripeEx.StripeError?.Code}, Type={stripeEx.StripeError?.Type}, DeclineCode={stripeEx.StripeError?.DeclineCode}, Message={stripeEx.Message}",
+                        userId: userIdErr > 0 ? userIdErr : null,
+                        source: "SubscriptionController.CreateAccountLink",
+                        relatedEntityType: "ExpertProfile",
+                        additionalData: new {
+                            ExceptionType = stripeEx.GetType().Name,
+                            StripeErrorCode = stripeEx.StripeError?.Code,
+                            StripeErrorType = stripeEx.StripeError?.Type
+                        });
+                }
+                catch { /* no romper el handler de error si el logging falla */ }
+                return StatusCode(500, new {
+                    message = "Error de Stripe al crear el enlace de cuenta",
+                    error = stripeEx.Message,
+                    code = stripeEx.StripeError?.Code,
+                    type = stripeEx.StripeError?.Type
+                });
             }
             catch (Exception ex)
             {
@@ -1494,7 +1585,25 @@ namespace newApi.Controllers
                 }
                 catch (StripeException ex)
                 {
-                    return StatusCode(500, new { message = "Failed to retrieve Stripe account status" });
+                    // 🔧 Round 26 ONBOARD-IDEM-3: registrar el StripeError antes del 500 para
+                    // poder triagear por código (rate limit, auth, account_invalid…).
+                    await _loggingService.LogErrorAsync(
+                        message: "Failed to retrieve Stripe account status",
+                        details: $"AccountService.GetAsync threw for user {userId} (StripeAccountId {expertProfile?.StripeAccountId}). Code={ex.StripeError?.Code}, Type={ex.StripeError?.Type}, DeclineCode={ex.StripeError?.DeclineCode}, Message={ex.Message}",
+                        userId: userId,
+                        source: "SubscriptionController.SyncStripeStatus",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: expertProfile?.Id,
+                        additionalData: new {
+                            ExceptionType = ex.GetType().Name,
+                            StripeErrorCode = ex.StripeError?.Code,
+                            StripeErrorType = ex.StripeError?.Type
+                        });
+                    return StatusCode(500, new {
+                        message = "Failed to retrieve Stripe account status",
+                        code = ex.StripeError?.Code,
+                        type = ex.StripeError?.Type
+                    });
                 }
 
                 var previousStatus = expertProfile.StripeStatus;
@@ -1633,24 +1742,47 @@ namespace newApi.Controllers
                 // Si ya tiene cuenta completada y NO está rechazada, crear login link en lugar de reiniciar
                 if (!string.IsNullOrEmpty(expertProfile.StripeAccountId) && expertProfile.OnboardingCompleted)
                 {
+                    // 🔧 Round 26 ONBOARD-3: añadir Collect=eventually_due para alinear con los otros 5 AccountLink.
+                    // 🔧 Round 26 LOGINLINK-2: isLoginLink=false — esto es un AccountLink (account_onboarding),
+                    // no un LoginLink de Express Dashboard. La bandera honesta evita que el frontend lo
+                    // interprete como dashboard. Para abrir Dashboard real existe /create-login-link.
                     var restartLinkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.StripeAccountId,
                         RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
                         ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
-                        Type = "account_onboarding"
+                        Type = "account_onboarding",
+                        Collect = "eventually_due"
                     };
-                    
+
                     var restartLinkService = new AccountLinkService();
-                    
+
                     try
                     {
                         var restartAccountLink = await restartLinkService.CreateAsync(restartLinkOptions);
-                        return Ok(new { url = restartAccountLink.Url, isLoginLink = true });
+                        return Ok(new { url = restartAccountLink.Url, isLoginLink = false });
                     }
                     catch (StripeException ex)
                     {
-                        return StatusCode(500, new { message = "Failed to create Stripe account link" });
+                        // 🔧 Round 26 ONBOARD-IDEM-3: log detallado del StripeError antes del 500
+                        // para poder triagear por código Stripe sin instrumentar de cero.
+                        await _loggingService.LogErrorAsync(
+                            message: "Failed to create Stripe account link for restart onboarding",
+                            details: $"AccountLinkService.CreateAsync threw for user {userId} (StripeAccountId {expertProfile?.StripeAccountId}). Code={ex.StripeError?.Code}, Type={ex.StripeError?.Type}, DeclineCode={ex.StripeError?.DeclineCode}, Message={ex.Message}",
+                            userId: userId,
+                            source: "SubscriptionController.RestartOnboarding",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: expertProfile?.Id,
+                            additionalData: new {
+                                ExceptionType = ex.GetType().Name,
+                                StripeErrorCode = ex.StripeError?.Code,
+                                StripeErrorType = ex.StripeError?.Type
+                            });
+                        return StatusCode(500, new {
+                            message = "Failed to create Stripe account link",
+                            code = ex.StripeError?.Code,
+                            type = ex.StripeError?.Type
+                        });
                     }
                 }
 
@@ -1678,7 +1810,24 @@ namespace newApi.Controllers
                 }
                 catch (StripeException ex)
                 {
-                    return StatusCode(500, new { message = "Failed to create new onboarding link" });
+                    // 🔧 Round 26 ONBOARD-IDEM-3: log con StripeError para observabilidad.
+                    await _loggingService.LogErrorAsync(
+                        message: "Failed to create new onboarding link (pending account)",
+                        details: $"AccountLinkService.CreateAsync threw for user {userId} (PendingStripeAccountId {expertProfile?.PendingStripeAccountId}). Code={ex.StripeError?.Code}, Type={ex.StripeError?.Type}, DeclineCode={ex.StripeError?.DeclineCode}, Message={ex.Message}",
+                        userId: userId,
+                        source: "SubscriptionController.RestartOnboarding",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: expertProfile?.Id,
+                        additionalData: new {
+                            ExceptionType = ex.GetType().Name,
+                            StripeErrorCode = ex.StripeError?.Code,
+                            StripeErrorType = ex.StripeError?.Type
+                        });
+                    return StatusCode(500, new {
+                        message = "Failed to create new onboarding link",
+                        code = ex.StripeError?.Code,
+                        type = ex.StripeError?.Type
+                    });
                 }
 
                 return Ok(new { url = pendingAccountLink.Url });
@@ -2741,10 +2890,21 @@ namespace newApi.Controllers
                             if (capability != null)
                             {
                                 var capabilityAccountId = capability.AccountId ?? stripeEvent.Account;
+                                // 🔧 Round 26 CAP-2: quitar el gate `status == "inactive"` y procesar
+                                // también eventos active-con-nuevos-requirements. Stripe documenta que
+                                // capability.updated dispara "whenever a capability has new requirements
+                                // or a new status" — ignorar los active perdía requisitos scoped a la
+                                // capability (transfers) que nunca aparecían en el rollup account-level.
+                                bool isCapabilityInactive = string.Equals(capability.Status, "inactive", StringComparison.OrdinalIgnoreCase);
+                                bool hasCapabilityRequirements =
+                                    (capability.Requirements?.CurrentlyDue?.Count ?? 0) > 0 ||
+                                    (capability.Requirements?.PastDue?.Count ?? 0) > 0 ||
+                                    (capability.Requirements?.Errors?.Count ?? 0) > 0;
+
                                 if (!string.IsNullOrEmpty(capabilityAccountId) &&
                                     (string.Equals(capability.Id, "card_payments", StringComparison.OrdinalIgnoreCase) ||
                                      string.Equals(capability.Id, "transfers", StringComparison.OrdinalIgnoreCase)) &&
-                                    string.Equals(capability.Status, "inactive", StringComparison.OrdinalIgnoreCase))
+                                    (isCapabilityInactive || hasCapabilityRequirements))
                                 {
                                     var capabilityProfile = await _context.ExpertProfiles
                                         .FirstOrDefaultAsync(ep => ep.StripeAccountId == capabilityAccountId);
@@ -2770,12 +2930,18 @@ namespace newApi.Controllers
                                         // resultante (Restricted/Disabled). HandleApprovedAccountRejection sigue
                                         // disparándose solo si hay hires activos (la lógica de cancelar+refund no
                                         // tiene sentido sin hires).
+                                        // 🔧 Round 26 CAP-3: capturar previousStatus para notificar al experto
+                                        // si la capability degrada la cuenta (la rama account.updated ya lo hace;
+                                        // capability.updated no garantiza account.updated emparejado).
+                                        var capabilityPreviousStatus = capabilityProfile.StripeStatus;
+                                        StripeAccountState? capabilityRefreshedState = null;
+                                        bool capabilitySaveFailed = false;
                                         try
                                         {
                                             var accountService = new Stripe.AccountService();
                                             var refreshedAccount = await accountService.GetAsync(capabilityAccountId);
-                                            var refreshedState = EvaluateStripeAccount(refreshedAccount);
-                                            ApplyStripeAccountState(capabilityProfile, refreshedState);
+                                            capabilityRefreshedState = EvaluateStripeAccount(refreshedAccount);
+                                            ApplyStripeAccountState(capabilityProfile, capabilityRefreshedState);
                                             await _context.SaveChangesAsync();
                                         }
                                         catch (Exception evalEx)
@@ -2788,10 +2954,57 @@ namespace newApi.Controllers
                                                 relatedEntityType: "ExpertProfile",
                                                 relatedEntityId: capabilityProfile.Id);
                                             capabilityProfile.StripeStatus = StripeStatus.Restricted;
-                                            try { await _context.SaveChangesAsync(); } catch { /* swallow */ }
+                                            // 🔧 Round 26 CAP-5: no tragar el fallo del save de fallback.
+                                            // Antes `try { save } catch { /* swallow */ }` perdía la transición
+                                            // a Restricted en contención DB → el experto quedaba Approved con
+                                            // capability inactive (escenario fail-open invisible). Ahora loguea
+                                            // como CRITICAL y devuelve 500 para que Stripe reintente.
+                                            try
+                                            {
+                                                await _context.SaveChangesAsync();
+                                            }
+                                            catch (Exception saveEx)
+                                            {
+                                                capabilitySaveFailed = true;
+                                                await _loggingService.LogCriticalAsync(
+                                                    message: "CAP-5: SaveChangesAsync de fallback falló en capability.updated",
+                                                    details: $"AccountId {capabilityAccountId}, ExpertProfileId {capabilityProfile.Id}: el save de Restricted falló tras fallar el re-eval. Error: {saveEx.Message}. InnerException: {saveEx.InnerException?.Message}. La cuenta queda potencialmente Approved con capability inactive — Stripe reintentará el webhook.",
+                                                    userId: capabilityProfile.UserId,
+                                                    source: "SubscriptionController.capability.updated.CAP-5",
+                                                    relatedEntityType: "ExpertProfile",
+                                                    relatedEntityId: capabilityProfile.Id,
+                                                    additionalData: new {
+                                                        AccountId = capabilityAccountId,
+                                                        capability.Id,
+                                                        capability.Status,
+                                                        ExceptionType = saveEx.GetType().Name,
+                                                        ExceptionMessage = saveEx.Message
+                                                    });
+                                            }
+                                            // Sintetizar un estado mínimo para que el notifier pueda procesarlo.
+                                            capabilityRefreshedState = new StripeAccountState
+                                            {
+                                                Status = StripeStatus.Restricted,
+                                                OnboardingCompleted = capabilityProfile.OnboardingCompleted,
+                                                StatusDetails = capabilityProfile.StripeStatusDetails,
+                                                DisabledReason = $"capability_{capability.Id}_{capability.Status}"
+                                            };
                                         }
 
-                                        if (activeHiresCount > 0)
+                                        // 🔧 Round 26 CAP-3: notificar al experto si el estado cambió.
+                                        // Espejo de la rama account.updated (líneas ~2624-2631).
+                                        if (!capabilitySaveFailed &&
+                                            capabilityRefreshedState != null &&
+                                            capabilityPreviousStatus != capabilityProfile.StripeStatus)
+                                        {
+                                            await NotifyStripeStatusTransitionAsync(
+                                                capabilityProfile,
+                                                capabilityPreviousStatus,
+                                                capabilityRefreshedState,
+                                                "SubscriptionController.capability.updated");
+                                        }
+
+                                        if (activeHiresCount > 0 && isCapabilityInactive)
                                         {
                                             await _loggingService.LogCriticalAsync(
                                                 message: "CRITICAL: Stripe capability inactive on expert with active hires",
@@ -2802,6 +3015,14 @@ namespace newApi.Controllers
                                                 relatedEntityId: capabilityProfile.Id,
                                                 additionalData: new { capability.Id, capability.Status, AccountId = capabilityAccountId, ActiveHires = activeHiresCount });
                                             await HandleApprovedAccountRejection(capabilityProfile.Id, $"capability_{capability.Id}_inactive");
+                                        }
+
+                                        // 🔧 Round 26 CAP-5: si el save de fallback falló, devolver 500 para
+                                        // que Stripe reintente este capability.updated.
+                                        if (capabilitySaveFailed)
+                                        {
+                                            await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, capabilityAccountId, capabilityProfile.UserId, "Failed", "CAP-5: SaveChangesAsync fallback failed");
+                                            return StatusCode(500, new { message = "capability.updated fallback save failed; Stripe will retry" });
                                         }
                                     }
                                 }
@@ -6153,15 +6374,17 @@ namespace newApi.Controllers
         private bool CalculateCanRetryOnboarding(StripeStatus stripeStatus, string? pendingStripeAccountId, string? rejectionReason)
         {
             // Permitir reintentar si no ha solicitado cuenta o está pendiente sin cuenta pendiente
-            bool canRetry = stripeStatus == StripeStatus.NotRequested || 
-                           (stripeStatus == StripeStatus.Pending && string.IsNullOrEmpty(pendingStripeAccountId));
-            
+            // 🔧 Round 26 DEAUTH-6: Deauthorized también permite reintento (paridad con StripeValidationService.canRetry)
+            bool canRetry = stripeStatus == StripeStatus.NotRequested ||
+                           (stripeStatus == StripeStatus.Pending && string.IsNullOrEmpty(pendingStripeAccountId)) ||
+                           stripeStatus == StripeStatus.Deauthorized;
+
             // Si está Rejected, solo permitir si NO es un rechazo permanente
             if (stripeStatus == StripeStatus.Rejected && !string.IsNullOrEmpty(rejectionReason))
             {
                 canRetry = !IsPermanentRejection(rejectionReason);
             }
-            
+
             return canRetry;
         }
 
@@ -6790,9 +7013,45 @@ namespace newApi.Controllers
         /// </summary>
         private string GetRequirementDescription(string requirement)
         {
+            if (string.IsNullOrEmpty(requirement))
+            {
+                return string.Empty;
+            }
+
+            // 🔧 Round 26 PERSON-2: traducir tokens per-person (`person_XYZ.verification.document`,
+            // `person_XYZ.verification.additional_document`, `person_XYZ.address`…) a texto humano.
+            // Sin esto el experto veía cosas como "person_1Abc234XyZ5.verification.document" en
+            // el panel y tenía que ir al Dashboard de Stripe para entender qué le pedían.
+            if (requirement.StartsWith("person_", StringComparison.Ordinal))
+            {
+                var dotIndex = requirement.IndexOf('.');
+                if (dotIndex > 0 && dotIndex < requirement.Length - 1)
+                {
+                    var subRequirement = requirement.Substring(dotIndex + 1);
+                    var humanSub = subRequirement switch
+                    {
+                        "verification.document" => "documento de identidad",
+                        "verification.additional_document" => "documento adicional de verificación",
+                        "address" => "dirección",
+                        "phone" => "número de teléfono",
+                        "dob" => "fecha de nacimiento",
+                        "email" => "email",
+                        "first_name" => "nombre",
+                        "last_name" => "apellidos",
+                        "ssn_last_4" => "últimos 4 dígitos del NIE/SSN",
+                        "id_number" => "número de identificación",
+                        "relationship.title" => "cargo del representante",
+                        _ => subRequirement.Replace("_", " ").Replace(".", " ")
+                    };
+                    return $"{humanSub} de un representante/socio de la empresa";
+                }
+                return "información de un representante/socio de la empresa";
+            }
+
             return requirement switch
             {
                 "individual.verification.document" => "documento de identidad",
+                "individual.verification.additional_document" => "documento adicional de verificación",
                 "individual.address" => "dirección",
                 "individual.phone" => "número de teléfono",
                 "individual.dob" => "fecha de nacimiento",

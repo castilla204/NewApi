@@ -1684,6 +1684,93 @@ _ = Task.Run(async () =>
     }
 });
 
+// 🛡️ SMOKE TEST MAPBOX (Round 28 — anti-stale-deploy)
+// Verifica que la cadena Mapbox responde correctamente ANTES de aceptar tráfico.
+// Previene dos clases de bug:
+//   1) Deploy stale: el binario en Render aún ejecuta código pre-migración a Mapbox
+//      (lo que causó la oleada de "país no se pudo determinar" entre 2026-05-26 y 2026-06-02).
+//   2) Token mal propagado: mapbox-public-token vacío/inválido en la instancia.
+//
+// Si falla, llamamos a Environment.Exit(1) ANTES de app.Run() → Render marca el
+// deploy como FAILED y mantiene la versión anterior. Nada de tráfico contra una build rota.
+//
+// Mitigaciones del Agente 3-B contra deploy-loop por flap transitorio:
+//   - 3 reintentos con back-off (5s, 10s) ANTES de abortar
+//   - Skip env var SKIP_MAPBOX_SMOKE_TEST=1 (escape hatch para rollback urgente)
+//   - Skip automático en Development si no hay token (no rompe dev local)
+//   - Task.Delay(500) antes de Exit para flush de console logger
+{
+    var skipSmokeTest = Environment.GetEnvironmentVariable("SKIP_MAPBOX_SMOKE_TEST") == "1";
+    var smokeTokenPresent = !string.IsNullOrWhiteSpace(builder.Configuration["Mapbox:PublicToken"]);
+
+    if (skipSmokeTest)
+    {
+        Console.WriteLine("⚠️ Mapbox smoke test SKIPPED via SKIP_MAPBOX_SMOKE_TEST=1");
+    }
+    else if (!smokeTokenPresent && app.Environment.IsDevelopment())
+    {
+        Console.WriteLine("⚠️ Mapbox smoke test SKIPPED: Mapbox:PublicToken vacío en Development");
+    }
+    else
+    {
+        using var smokeScope = app.Services.CreateScope();
+        var smokeLogger = smokeScope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        var smokeTz = smokeScope.ServiceProvider.GetRequiredService<ITimezoneService>();
+        smokeLogger.LogInformation("🧪 Mapbox smoke test: solicitando país para (40.4168, -3.7038) — esperado 'ES'");
+
+        const int smokeMaxAttempts = 3;
+        var smokeBackoff = new[] { 0, 5000, 10000 }; // ms: 0s, 5s, 10s
+        var smokeOk = false;
+        Exception? smokeLastError = null;
+        string? smokeLastCountry = null;
+
+        for (int attempt = 0; attempt < smokeMaxAttempts && !smokeOk; attempt++)
+        {
+            if (smokeBackoff[attempt] > 0) Task.Delay(smokeBackoff[attempt]).GetAwaiter().GetResult();
+            try
+            {
+                var smokeTask = smokeTz.GetCountryFromCoordinatesAsync(40.4168m, -3.7038m);
+                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(10));
+                var completed = Task.WhenAny(smokeTask, timeoutTask).GetAwaiter().GetResult();
+
+                if (completed == timeoutTask)
+                {
+                    smokeLogger.LogWarning("[SMOKE] Mapbox timeout en intento {N}/{Max}", attempt + 1, smokeMaxAttempts);
+                    smokeLastError = new TimeoutException("Mapbox smoke test timeout >10s");
+                    continue;
+                }
+
+                smokeLastCountry = smokeTask.GetAwaiter().GetResult();
+                if (string.Equals(smokeLastCountry, "ES", StringComparison.Ordinal))
+                {
+                    smokeOk = true;
+                    smokeLogger.LogInformation("✅ Mapbox smoke test PASSED (intento {N}, devolvió 'ES' para Madrid).", attempt + 1);
+                }
+                else
+                {
+                    smokeLogger.LogWarning("[SMOKE] Resultado inesperado en intento {N}: '{Country}'", attempt + 1, smokeLastCountry ?? "<null>");
+                }
+            }
+            catch (Exception ex)
+            {
+                smokeLastError = ex;
+                smokeLogger.LogWarning(ex, "[SMOKE] Intento {N}/{Max} lanzó excepción", attempt + 1, smokeMaxAttempts);
+            }
+        }
+
+        if (!smokeOk)
+        {
+            smokeLogger.LogCritical(smokeLastError,
+                "❌ Mapbox smoke test FAILED tras {N} intentos. Última respuesta: '{Country}'. Aborting startup. " +
+                "Posible causa: deploy stale (código pre-Mapbox), token inválido/ausente en Render, " +
+                "rate-limit, o api.mapbox.com caído. Si necesitas rollback urgente, redespliega con SKIP_MAPBOX_SMOKE_TEST=1.",
+                smokeMaxAttempts, smokeLastCountry ?? "<null>");
+            Task.Delay(500).GetAwaiter().GetResult(); // flush console logger async
+            Environment.Exit(1);
+        }
+    }
+}
+
 
 // ✅ HANGFIRE DASHBOARD: Habilitado con autenticación JWT
 app.UseHangfireDashboard("/hangfire", new DashboardOptions

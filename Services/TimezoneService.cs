@@ -65,7 +65,7 @@ namespace newApi.Services
         
         /// <summary>
         /// Detecta el país desde coordenadas geográficas (latitud, longitud)
-        /// Usa Google Geocoding API para obtener el código de país (ISO 3166-1 alpha-2)
+        /// Usa Mapbox Geocoding API para obtener el código de país (ISO 3166-1 alpha-2)
         /// </summary>
         /// <param name="latitude">Latitud en grados decimales</param>
         /// <param name="longitude">Longitud en grados decimales</param>
@@ -74,7 +74,7 @@ namespace newApi.Services
         
         /// <summary>
         /// Detecta la ciudad desde coordenadas geográficas (latitud, longitud)
-        /// Usa Google Geocoding API para obtener el nombre de la ciudad
+        /// Usa Mapbox Geocoding API para obtener el nombre de la ciudad
         /// </summary>
         /// <param name="latitude">Latitud en grados decimales</param>
         /// <param name="longitude">Longitud en grados decimales</param>
@@ -345,6 +345,9 @@ namespace newApi.Services
             }
         }
         
+        // 🛡️ Round 28: orquestador v6→v5. Mapbox v6 (Search Geocode) primario; si falla, v5 (legacy).
+        // V6 sigue formato distinto: types=country puede no filtrar estrictamente y el code SIEMPRE
+        // está en properties.context.country.country_code (verificado empíricamente por Agente 4-B).
         public async Task<string?> GetCountryFromCoordinatesAsync(decimal latitude, decimal longitude)
         {
             if (string.IsNullOrWhiteSpace(_mapboxPublicToken))
@@ -355,80 +358,144 @@ namespace newApi.Services
                     $"Mapbox public token no configurado. No se puede detectar país para coordenadas ({latitude}, {longitude}).");
             }
 
+            var latStr = latitude.ToString(CultureInfo.InvariantCulture);
+            var lonStr = longitude.ToString(CultureInfo.InvariantCulture);
+
+            // 1) Intento primario: Mapbox v6 (Search Geocode reverse).
             try
             {
-                var latStr = latitude.ToString(CultureInfo.InvariantCulture);
-                var lonStr = longitude.ToString(CultureInfo.InvariantCulture);
-                var url = $"https://api.mapbox.com/geocoding/v5/mapbox.places/{lonStr},{latStr}.json?types=country&language=es&access_token={_mapboxPublicToken}";
-                
-                _logger.LogDebug("Llamando a Mapbox Geocoding API para detectar país en coordenadas ({Latitude}, {Longitude})", 
-                    latitude, longitude);
-                
-                var response = await _httpClient.GetAsync(url);
-                var json = await response.Content.ReadAsStringAsync();
-                
-                if (!response.IsSuccessStatusCode)
+                var country = await TryGetCountryV6Async(latStr, lonStr, latitude, longitude);
+                if (!string.IsNullOrEmpty(country))
                 {
-                    _logger.LogError("Mapbox Geocoding API request failed. Status: {StatusCode}, Response: {Response}", 
-                        response.StatusCode, json);
-                    throw new InvalidOperationException(
-                        $"Mapbox Geocoding API request failed. Status: {response.StatusCode}. " +
-                        $"No se puede detectar país para coordenadas ({latitude}, {longitude}).");
+                    _logger.LogInformation("País detectado vía Mapbox v6: '{Country}' para coordenadas ({Latitude}, {Longitude})",
+                        country, latitude, longitude);
+                    return country;
                 }
-                
-                var jsonDoc = JsonDocument.Parse(json);
-
-                if (jsonDoc.RootElement.TryGetProperty("features", out var features) && features.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var feature in features.EnumerateArray())
-                    {
-                        if (feature.TryGetProperty("properties", out var properties) &&
-                            properties.TryGetProperty("short_code", out var shortCode))
-                        {
-                            var code = shortCode.GetString();
-                            if (!string.IsNullOrWhiteSpace(code))
-                            {
-                                // Mapbox suele devolver "es" o variantes.
-                                var normalized = code.Split('-')[0].Trim().ToUpperInvariant();
-                                if (normalized.Length == 2)
-                                {
-                                    _logger.LogInformation("País detectado: '{Country}' desde Mapbox para coordenadas ({Latitude}, {Longitude})",
-                                        normalized, latitude, longitude);
-                                    return normalized;
-                                }
-                            }
-                        }
-                    }
-
-                    _logger.LogWarning("Mapbox devolvió features sin country short_code para coordenadas ({Latitude}, {Longitude}).", latitude, longitude);
-                    return null;
-                }
-
-                _logger.LogWarning("Respuesta de Mapbox sin campo features para coordenadas ({Latitude}, {Longitude}).", latitude, longitude);
-                return null;
             }
             catch (TaskCanceledException ex)
             {
-                _logger.LogError(ex, "Timeout llamando a Mapbox Geocoding API para coordenadas ({Latitude}, {Longitude})", 
+                _logger.LogWarning(ex, "Timeout en Mapbox v6 country lookup para ({Latitude}, {Longitude}). Probando fallback v5.",
+                    latitude, longitude);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Mapbox v6 country lookup falló para ({Latitude}, {Longitude}). Probando fallback v5.",
+                    latitude, longitude);
+            }
+
+            // 2) Fallback: Mapbox v5 (legacy mapbox.places).
+            try
+            {
+                var country = await TryGetCountryV5Async(latStr, lonStr, latitude, longitude);
+                if (!string.IsNullOrEmpty(country))
+                {
+                    _logger.LogInformation("País detectado vía Mapbox v5 (fallback): '{Country}' para coordenadas ({Latitude}, {Longitude})",
+                        country, latitude, longitude);
+                    return country;
+                }
+            }
+            catch (TaskCanceledException ex)
+            {
+                _logger.LogError(ex, "Timeout en Mapbox v5 (fallback) country lookup para ({Latitude}, {Longitude}).",
                     latitude, longitude);
                 throw new InvalidOperationException(
                     $"Timeout llamando a Mapbox Geocoding API para coordenadas ({latitude}, {longitude}). " +
                     "Verifica tu conexión a internet y la configuración del token.");
             }
-            catch (InvalidOperationException)
-            {
-                // Re-lanzar excepciones de InvalidOperationException (ya tienen mensajes claros)
-                throw;
-            }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error inesperado llamando a Mapbox Geocoding API para coordenadas ({Latitude}, {Longitude})", 
+                _logger.LogError(ex, "Mapbox v5 (fallback) country lookup TAMBIÉN falló para ({Latitude}, {Longitude}).",
                     latitude, longitude);
                 throw new InvalidOperationException(
-                    $"Error inesperado llamando a Mapbox Geocoding API para coordenadas ({latitude}, {longitude}): {ex.Message}");
+                    $"Mapbox v6 y v5 fallaron para ({latitude}, {longitude}): {ex.Message}", ex);
             }
+
+            _logger.LogWarning("Mapbox v6 y v5 ambos devolvieron features sin código de país para ({Latitude}, {Longitude}).",
+                latitude, longitude);
+            return null;
         }
-        
+
+        // 🛡️ v6 (Search Geocode) — primario. Devuelve null en error HTTP para que el orquestador caiga a v5.
+        private async Task<string?> TryGetCountryV6Async(string latStr, string lonStr, decimal latitude, decimal longitude)
+        {
+            var url = $"https://api.mapbox.com/search/geocode/v6/reverse?longitude={lonStr}&latitude={latStr}&types=country&language=es&access_token={_mapboxPublicToken}";
+            _logger.LogDebug("Mapbox v6: detectando país en ({Latitude}, {Longitude})", latitude, longitude);
+
+            var response = await _httpClient.GetAsync(url);
+            var json = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Mapbox v6 country devolvió {Status}: {Body}", response.StatusCode, json);
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("features", out var features) || features.ValueKind != JsonValueKind.Array)
+                return null;
+
+            // V6 path canónico (verificado por Agente 4-B con 12 llamadas reales):
+            // features[i].properties.context.country.country_code — uppercase ISO 3166-1 alpha-2.
+            // Iteramos porque types=country puede devolver tipos mixtos (bug intermitente del backend).
+            foreach (var feature in features.EnumerateArray())
+            {
+                if (!feature.TryGetProperty("properties", out var properties)) continue;
+
+                if (properties.TryGetProperty("context", out var ctx)
+                    && ctx.ValueKind == JsonValueKind.Object
+                    && ctx.TryGetProperty("country", out var ctxCountry)
+                    && ctxCountry.ValueKind == JsonValueKind.Object
+                    && ctxCountry.TryGetProperty("country_code", out var ctxCc)
+                    && ctxCc.ValueKind == JsonValueKind.String)
+                {
+                    var code = ctxCc.GetString();
+                    if (!string.IsNullOrWhiteSpace(code))
+                    {
+                        var normalized = code.Trim().ToUpperInvariant();
+                        if (normalized.Length == 2) return normalized;
+                    }
+                }
+            }
+            return null;
+        }
+
+        // 🛡️ v5 (legacy mapbox.places) — fallback. Lowercase short_code.
+        private async Task<string?> TryGetCountryV5Async(string latStr, string lonStr, decimal latitude, decimal longitude)
+        {
+            var url = $"https://api.mapbox.com/geocoding/v5/mapbox.places/{lonStr},{latStr}.json?types=country&language=es&access_token={_mapboxPublicToken}";
+            _logger.LogDebug("Mapbox v5 (fallback): detectando país en ({Latitude}, {Longitude})", latitude, longitude);
+
+            var response = await _httpClient.GetAsync(url);
+            var json = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Mapbox v5 country devolvió {Status}: {Body}", response.StatusCode, json);
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("features", out var features) || features.ValueKind != JsonValueKind.Array)
+                return null;
+
+            foreach (var feature in features.EnumerateArray())
+            {
+                if (feature.TryGetProperty("properties", out var properties)
+                    && properties.TryGetProperty("short_code", out var shortCode)
+                    && shortCode.ValueKind == JsonValueKind.String)
+                {
+                    var code = shortCode.GetString();
+                    if (!string.IsNullOrWhiteSpace(code))
+                    {
+                        var normalized = code.Split('-')[0].Trim().ToUpperInvariant();
+                        if (normalized.Length == 2) return normalized;
+                    }
+                }
+            }
+            return null;
+        }
+
+        // 🛡️ Round 28: orquestador ciudad v6→v5. Mismo patrón que country.
         public async Task<string?> GetCityFromCoordinatesAsync(decimal latitude, decimal longitude)
         {
             if (string.IsNullOrWhiteSpace(_mapboxPublicToken))
@@ -439,72 +506,141 @@ namespace newApi.Services
                     $"Mapbox public token no configurado. No se puede detectar ciudad para coordenadas ({latitude}, {longitude}).");
             }
 
+            var latStr = latitude.ToString(CultureInfo.InvariantCulture);
+            var lonStr = longitude.ToString(CultureInfo.InvariantCulture);
+
             try
             {
-                var latStr = latitude.ToString(CultureInfo.InvariantCulture);
-                var lonStr = longitude.ToString(CultureInfo.InvariantCulture);
-                var url = $"https://api.mapbox.com/geocoding/v5/mapbox.places/{lonStr},{latStr}.json?types=place,locality&language=es&access_token={_mapboxPublicToken}";
-                
-                _logger.LogDebug("Llamando a Mapbox Geocoding API para detectar ciudad en coordenadas ({Latitude}, {Longitude})", 
-                    latitude, longitude);
-                
-                var response = await _httpClient.GetAsync(url);
-                var json = await response.Content.ReadAsStringAsync();
-                
-                if (!response.IsSuccessStatusCode)
+                var city = await TryGetCityV6Async(latStr, lonStr, latitude, longitude);
+                if (!string.IsNullOrEmpty(city))
                 {
-                    _logger.LogError("Mapbox Geocoding API request failed. Status: {StatusCode}, Response: {Response}", 
-                        response.StatusCode, json);
-                    throw new InvalidOperationException(
-                        $"Mapbox Geocoding API request failed. Status: {response.StatusCode}. " +
-                        $"No se puede detectar ciudad para coordenadas ({latitude}, {longitude}).");
+                    _logger.LogInformation("Ciudad detectada vía Mapbox v6: '{City}' para coordenadas ({Latitude}, {Longitude})",
+                        city, latitude, longitude);
+                    return city;
                 }
-                
-                var jsonDoc = JsonDocument.Parse(json);
-
-                if (jsonDoc.RootElement.TryGetProperty("features", out var features) && features.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var feature in features.EnumerateArray())
-                    {
-                        if (feature.TryGetProperty("text", out var text))
-                        {
-                            var cityName = text.GetString();
-                            if (!string.IsNullOrWhiteSpace(cityName))
-                            {
-                                _logger.LogInformation("Ciudad detectada: '{City}' desde Mapbox para coordenadas ({Latitude}, {Longitude})",
-                                    cityName, latitude, longitude);
-                                return cityName;
-                            }
-                        }
-                    }
-
-                    _logger.LogWarning("Mapbox devolvió features sin ciudad interpretable para coordenadas ({Latitude}, {Longitude}).", latitude, longitude);
-                    return null;
-                }
-
-                _logger.LogWarning("Respuesta de Mapbox sin campo features para coordenadas ({Latitude}, {Longitude}).", latitude, longitude);
-                return null;
             }
             catch (TaskCanceledException ex)
             {
-                _logger.LogError(ex, "Timeout llamando a Mapbox Geocoding API para coordenadas ({Latitude}, {Longitude})", 
+                _logger.LogWarning(ex, "Timeout en Mapbox v6 city lookup para ({Latitude}, {Longitude}). Probando fallback v5.",
+                    latitude, longitude);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Mapbox v6 city lookup falló para ({Latitude}, {Longitude}). Probando fallback v5.",
+                    latitude, longitude);
+            }
+
+            try
+            {
+                var city = await TryGetCityV5Async(latStr, lonStr, latitude, longitude);
+                if (!string.IsNullOrEmpty(city))
+                {
+                    _logger.LogInformation("Ciudad detectada vía Mapbox v5 (fallback): '{City}' para coordenadas ({Latitude}, {Longitude})",
+                        city, latitude, longitude);
+                    return city;
+                }
+            }
+            catch (TaskCanceledException ex)
+            {
+                _logger.LogError(ex, "Timeout en Mapbox v5 (fallback) city lookup para ({Latitude}, {Longitude}).",
                     latitude, longitude);
                 throw new InvalidOperationException(
                     $"Timeout llamando a Mapbox Geocoding API para coordenadas ({latitude}, {longitude}). " +
                     "Verifica tu conexión a internet y la configuración del token.");
             }
-            catch (InvalidOperationException)
-            {
-                // Re-lanzar excepciones de InvalidOperationException (ya tienen mensajes claros)
-                throw;
-            }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error inesperado llamando a Mapbox Geocoding API para coordenadas ({Latitude}, {Longitude})", 
+                _logger.LogError(ex, "Mapbox v5 (fallback) city lookup TAMBIÉN falló para ({Latitude}, {Longitude}).",
                     latitude, longitude);
                 throw new InvalidOperationException(
-                    $"Error inesperado llamando a Mapbox Geocoding API para coordenadas ({latitude}, {longitude}): {ex.Message}");
+                    $"Mapbox v6 y v5 fallaron para ({latitude}, {longitude}): {ex.Message}", ex);
             }
+
+            _logger.LogWarning("Mapbox v6 y v5 ambos devolvieron features sin ciudad interpretable para ({Latitude}, {Longitude}).",
+                latitude, longitude);
+            return null;
+        }
+
+        // 🛡️ v6 ciudad — primario. properties.name + fallback a context.place.name / context.locality.name.
+        private async Task<string?> TryGetCityV6Async(string latStr, string lonStr, decimal latitude, decimal longitude)
+        {
+            var url = $"https://api.mapbox.com/search/geocode/v6/reverse?longitude={lonStr}&latitude={latStr}&types=place,locality&language=es&access_token={_mapboxPublicToken}";
+            _logger.LogDebug("Mapbox v6: detectando ciudad en ({Latitude}, {Longitude})", latitude, longitude);
+
+            var response = await _httpClient.GetAsync(url);
+            var json = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Mapbox v6 city devolvió {Status}: {Body}", response.StatusCode, json);
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("features", out var features) || features.ValueKind != JsonValueKind.Array)
+                return null;
+
+            foreach (var feature in features.EnumerateArray())
+            {
+                if (!feature.TryGetProperty("properties", out var properties)) continue;
+
+                if (properties.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+                {
+                    var cityName = name.GetString();
+                    if (!string.IsNullOrWhiteSpace(cityName)) return cityName;
+                }
+
+                if (properties.TryGetProperty("context", out var ctx) && ctx.ValueKind == JsonValueKind.Object)
+                {
+                    if (ctx.TryGetProperty("place", out var place)
+                        && place.ValueKind == JsonValueKind.Object
+                        && place.TryGetProperty("name", out var placeName)
+                        && placeName.ValueKind == JsonValueKind.String)
+                    {
+                        var cityName = placeName.GetString();
+                        if (!string.IsNullOrWhiteSpace(cityName)) return cityName;
+                    }
+                    if (ctx.TryGetProperty("locality", out var locality)
+                        && locality.ValueKind == JsonValueKind.Object
+                        && locality.TryGetProperty("name", out var localityName)
+                        && localityName.ValueKind == JsonValueKind.String)
+                    {
+                        var cityName = localityName.GetString();
+                        if (!string.IsNullOrWhiteSpace(cityName)) return cityName;
+                    }
+                }
+            }
+            return null;
+        }
+
+        // 🛡️ v5 ciudad — fallback. feature.text.
+        private async Task<string?> TryGetCityV5Async(string latStr, string lonStr, decimal latitude, decimal longitude)
+        {
+            var url = $"https://api.mapbox.com/geocoding/v5/mapbox.places/{lonStr},{latStr}.json?types=place,locality&language=es&access_token={_mapboxPublicToken}";
+            _logger.LogDebug("Mapbox v5 (fallback): detectando ciudad en ({Latitude}, {Longitude})", latitude, longitude);
+
+            var response = await _httpClient.GetAsync(url);
+            var json = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Mapbox v5 city devolvió {Status}: {Body}", response.StatusCode, json);
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("features", out var features) || features.ValueKind != JsonValueKind.Array)
+                return null;
+
+            foreach (var feature in features.EnumerateArray())
+            {
+                if (feature.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
+                {
+                    var cityName = text.GetString();
+                    if (!string.IsNullOrWhiteSpace(cityName)) return cityName;
+                }
+            }
+            return null;
         }
 
         private static string GetFallbackTimezoneFromCountry(string? countryCode)

@@ -50,7 +50,7 @@ namespace newApi.DataLayer.Models.PostGresModels
 
         /// <summary>
         /// Nombre de la ciudad del experto (ej: "Madrid", "Barcelona", "México City")
-        /// Se detecta automáticamente desde las coordenadas usando Google Geocoding API
+        /// Se detecta automáticamente desde las coordenadas usando Mapbox Geocoding API
         /// </summary>
         public string? City { get; set; }
 

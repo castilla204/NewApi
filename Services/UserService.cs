@@ -700,27 +700,73 @@ namespace newApi.Services
             string? expertCountry = null;
             string? expertCity = null;
             
-            try
+            // 🛡️ Round 28: reintentos con backoff exponencial (0s, 1s, 2s) ANTES de declarar fallo.
+            // Antes una sola excepción de Mapbox (timeout, 5xx, DNS) bloqueaba el registro completo.
+            // NO añadimos IP-country fallback intencionalmente: Stripe Connect account.country es
+            // INMUTABLE tras activación; usar IP-country (VPN/roaming/datacenter) crearía cuentas
+            // con jurisdicción equivocada → KYC fallaría irreversiblemente. Conservar el comportamiento
+            // de bloquear con error claro + admin notification (vía LogCritical en catch final).
+            const int MAX_GEOCODE_ATTEMPTS = 3;
+            var geocodeDelays = new[] { 0, 1000, 2000 }; // ms
+            Exception? lastGeocodeError = null;
+
+            for (int attempt = 0; attempt < MAX_GEOCODE_ATTEMPTS; attempt++)
             {
-                expertTimezone = await _timezoneService.GetTimezoneFromCoordinatesAsync(latitude, longitude);
-                expertCountry = await _timezoneService.GetCountryFromCoordinatesAsync(latitude, longitude);
-                expertCity = await _timezoneService.GetCityFromCoordinatesAsync(latitude, longitude);
+                if (geocodeDelays[attempt] > 0) await Task.Delay(geocodeDelays[attempt]);
+                try
+                {
+                    expertTimezone = await _timezoneService.GetTimezoneFromCoordinatesAsync(latitude, longitude);
+                    expertCountry = await _timezoneService.GetCountryFromCoordinatesAsync(latitude, longitude);
+                    expertCity = await _timezoneService.GetCityFromCoordinatesAsync(latitude, longitude);
+                    lastGeocodeError = null;
+                    if (attempt > 0)
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "Mapbox geocoding succeeded on retry",
+                            details: $"User {userId}: Mapbox respondió OK en intento {attempt + 1}/{MAX_GEOCODE_ATTEMPTS} para ({latitude}, {longitude}) → {expertCountry}.",
+                            userId: userId,
+                            source: "UserService.BecomeExpert",
+                            relatedEntityType: "User",
+                            relatedEntityId: userId,
+                            additionalData: new { Attempt = attempt + 1, Country = expertCountry });
+                    }
+                    break;
+                }
+                catch (Exception ex) when (attempt < MAX_GEOCODE_ATTEMPTS - 1)
+                {
+                    lastGeocodeError = ex;
+                    // Intermedio: no Critical para no spamear admin con fallos transitorios.
+                    await _loggingService.LogInfoAsync(
+                        message: "Mapbox geocoding failed, retrying",
+                        details: $"User {userId}: intento {attempt + 1}/{MAX_GEOCODE_ATTEMPTS} falló: {ex.Message}. Reintentando en {(geocodeDelays.Length > attempt + 1 ? geocodeDelays[attempt + 1] : 0)}ms.",
+                        userId: userId,
+                        source: "UserService.BecomeExpert",
+                        relatedEntityType: "User",
+                        relatedEntityId: userId,
+                        additionalData: new { Attempt = attempt + 1, Error = ex.Message });
+                }
+                catch (Exception ex)
+                {
+                    lastGeocodeError = ex;
+                }
             }
-            catch (Exception ex)
+
+            if (lastGeocodeError != null)
             {
-                // Si falla la detección, usar UTC como fallback y continuar
-                await _loggingService.LogWarningAsync(
-                    message: "Failed to detect timezone/country/city from coordinates",
-                    details: $"Could not detect timezone/country/city for coordinates ({latitude}, {longitude}): {ex.Message}. Using UTC as fallback.",
+                // 🛡️ Round 28: SUBIDO a Critical (notifica admin) y solo tras agotar reintentos.
+                await _loggingService.LogCriticalAsync(
+                    message: "Failed to detect timezone/country/city from coordinates (exhausted retries)",
+                    details: $"User {userId}: Mapbox falló {MAX_GEOCODE_ATTEMPTS} intentos consecutivos para ({latitude}, {longitude}). Último error: {lastGeocodeError.Message}. ACCION ADMIN: revisar token Mapbox, rate-limit (100k/mes free), o conectividad outbound desde Render.",
                     userId: userId,
                     source: "UserService.BecomeExpert",
                     relatedEntityType: "ExpertProfile",
                     relatedEntityId: null,
-                    additionalData: new { 
+                    additionalData: new {
                         Action = "DetectTimezoneCountryCity",
                         Latitude = latitude,
                         Longitude = longitude,
-                        Exception = ex.Message
+                        Exception = lastGeocodeError.Message,
+                        AttemptsExhausted = MAX_GEOCODE_ATTEMPTS
                     }
                 );
             }
@@ -728,17 +774,43 @@ namespace newApi.Services
             // 🔧 GATE DE PAÍS (P3, paso 1): NO promover a Expert si el país detectado no puede recibir pagos.
             // Sin esto se crea un "experto zombie": perfil publicado y contratable que NUNCA puede cobrar
             // (el paso 2, onboarding Stripe, devolvería BadRequest). Usamos la MISMA whitelist que el paso 2.
-            // Country == null (geocoding falló o no devolvió país) → rechazamos también: promover con país
-            // desconocido reproduce el bug y crear la cuenta Stripe con país equivocado es irreversible.
+            //
+            // 🛡️ Round 28: SEPARADO en 2 ramas para distinguir causa al admin:
+            //   - country=null (Mapbox no devolvió) → Critical (infra down, notify admin via email)
+            //   - country no soportado → Information (negocio normal, no satura admin)
+            // Antes ambas causas mezcladas en un solo Warning silencioso que no avisaba a nadie.
+            if (string.IsNullOrWhiteSpace(expertCountry))
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "BecomeExpert ABORTADO: no se pudo detectar pais (Mapbox)",
+                    details: $"User {userId} ({user.Email}): geocoding devolvió country=null para coords ({latitude}, {longitude}). " +
+                             "Posible causa: Mapbox token mal configurado, timeout, 5xx, coords en zona sin coverage (océano/Antártida), o respuesta sin context.country. " +
+                             "Registro abortado para no crear experto-zombie. ACCION ADMIN: revisar logs de TimezoneService y estado de api.mapbox.com.",
+                    userId: userId,
+                    source: "UserService.BecomeExpert.CountryGate",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new
+                    {
+                        Action = "CountryGate",
+                        UserId = userId,
+                        UserEmail = user.Email,
+                        Latitude = latitude,
+                        Longitude = longitude,
+                        Cause = "GeocodingReturnedNull"
+                    }
+                );
+                return (false, null, null, null);
+            }
+
             if (!SupportedConnectCountries.IsSupported(expertCountry))
             {
-                await _loggingService.LogWarningAsync(
-                    message: "BecomeExpert bloqueado: pais no soportado o no detectado",
-                    details: $"User {userId} no se promueve a Expert. Country detectado='{expertCountry ?? "null"}'. " +
-                             "No soportado para Stripe Connect (separate charges & transfers desde plataforma EEA) " +
-                             "o geocoding no devolvio pais. Se evita crear un experto que no podria cobrar.",
+                await _loggingService.LogInfoAsync(
+                    message: "BecomeExpert rechazado: pais fuera de whitelist Stripe Connect",
+                    details: $"User {userId}: country={expertCountry} no soportado para separate charges & transfers desde plataforma EEA. " +
+                             "Se evita crear un experto que no podria cobrar. Esto es negocio normal (no fallo de sistema).",
                     userId: userId,
-                    source: "UserService.BecomeExpert",
+                    source: "UserService.BecomeExpert.CountryGate",
                     relatedEntityType: "User",
                     relatedEntityId: userId,
                     additionalData: new
@@ -747,7 +819,8 @@ namespace newApi.Services
                         UserId = userId,
                         DetectedCountry = expertCountry,
                         Latitude = latitude,
-                        Longitude = longitude
+                        Longitude = longitude,
+                        Cause = "CountryNotInWhitelist"
                     }
                 );
 
@@ -1298,28 +1371,31 @@ namespace newApi.Services
                         if (!string.IsNullOrEmpty(detectedCountry)
                             && !SupportedConnectCountries.IsSupported(detectedCountry))
                         {
-                            await _loggingService.LogWarningAsync(
-                                message: "E3: Expert update REJECTED — new coordinates resolve to unsupported country",
-                                details: $"UserId {userId}: nuevas coords ({latitude},{longitude}) → {detectedCountry} no está en la whitelist de Stripe Connect. Update abortado.",
+                            // 🛡️ Round 28: BAJADO a Information (negocio normal, no infra).
+                            // País real fuera de whitelist no satura admin via email.
+                            await _loggingService.LogInfoAsync(
+                                message: "E3: Expert update rechazado — coords resuelven a país fuera de whitelist",
+                                details: $"UserId {userId}: nuevas coords ({latitude},{longitude}) → {detectedCountry} no está en la whitelist de Stripe Connect. Update abortado. (Negocio normal, no fallo de sistema.)",
                                 userId: userId,
                                 source: "UserService.UpdateExpertProfile.E3",
                                 relatedEntityType: "ExpertProfile",
                                 relatedEntityId: expertProfile.Id,
-                                additionalData: new { Latitude = latitude, Longitude = longitude, DetectedCountry = detectedCountry, CurrentCountry = expertProfile.Country });
+                                additionalData: new { Latitude = latitude, Longitude = longitude, DetectedCountry = detectedCountry, CurrentCountry = expertProfile.Country, Cause = "CountryNotInWhitelist" });
                             return (false, null);
                         }
                     }
                     catch (Exception detectEx)
                     {
-                        // Si falla la detección de país, ANTES persistía las coords igual; ahora
-                        // continuamos sin actualizar Timezone/Country/City (manejado más abajo).
-                        await _loggingService.LogWarningAsync(
+                        // 🛡️ Round 28: SUBIDO a Critical. Mapbox tiró excepción durante un update de
+                        // coords (infra down). Admin debe enterarse via email — solo Critical notifica.
+                        await _loggingService.LogCriticalAsync(
                             message: "Failed to detect country from new coordinates (E3 gate)",
-                            details: $"Could not detect country for ({latitude},{longitude}): {detectEx.Message}. Coords ACEPTADAS pero Timezone/Country/City NO se actualizan.",
+                            details: $"Could not detect country for ({latitude},{longitude}): {detectEx.Message}. Coords ACEPTADAS pero Timezone/Country/City NO se actualizan. ACCION ADMIN: revisar Mapbox/token/rate-limit.",
                             userId: userId,
                             source: "UserService.UpdateExpertProfile",
                             relatedEntityType: "ExpertProfile",
-                            relatedEntityId: expertProfile.Id);
+                            relatedEntityId: expertProfile.Id,
+                            additionalData: new { Latitude = latitude, Longitude = longitude, Exception = detectEx.Message });
                         detectedCountry = null; // marcar como "no detectado"
                     }
                 }

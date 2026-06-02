@@ -5013,23 +5013,50 @@ namespace newApi.Controllers
 
                 if (!string.IsNullOrEmpty(session?.PaymentIntentId))
                 {
-                    await LogPaymentCaptureFailureAsync(
-                        paymentIntentId: session.PaymentIntentId,
-                        userId: userId,
-                        serviceId: serviceId,
-                        failureReason: ex.Message,
-                        searchHireId: searchHireId > 0 ? searchHireId : (int?)null); // ✅ FIX: Usar searchHireId guardado
+                    var isStripeCaptureFailure =
+                        ex is StripeException ||
+                        (ex is InvalidOperationException &&
+                         ex.Message.Contains("PaymentIntent", StringComparison.OrdinalIgnoreCase));
 
-                    await _loggingService.LogWarningAsync(
-                        message: "Intento de pago no capturado",
-                        details: $"No pudimos completar el cobro del servicio {serviceId}. El cargo no se realizó y el cliente debe reintentar el pago.",
-                        userId: userId,
-                        source: "SubscriptionController.HandlePendingHireCompleted",
-                        relatedEntityType: "Payment",
-                        relatedEntityId: serviceId,
-                        additionalData: new { PaymentIntentId = session.PaymentIntentId, SearchHireId = searchHireId > 0 ? searchHireId : (int?)null }, // ✅ FIX: Usar searchHireId guardado
-                        notifyUser: true
-                    );
+                    if (isStripeCaptureFailure)
+                    {
+                        await LogPaymentCaptureFailureAsync(
+                            paymentIntentId: session.PaymentIntentId,
+                            userId: userId,
+                            serviceId: serviceId,
+                            failureReason: ex.Message,
+                            searchHireId: searchHireId > 0 ? searchHireId : (int?)null);
+
+                        await _loggingService.LogWarningAsync(
+                            message: "Intento de pago no capturado",
+                            details: $"No pudimos completar el cobro del servicio {serviceId}. El cargo no se realizó y el cliente debe reintentar el pago.",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted",
+                            relatedEntityType: "Payment",
+                            relatedEntityId: serviceId,
+                            additionalData: new { PaymentIntentId = session.PaymentIntentId, SearchHireId = searchHireId > 0 ? searchHireId : (int?)null },
+                            notifyUser: true
+                        );
+                    }
+                    else
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: Pending hire processing persistence failure",
+                            details: $"SearchHire {searchHireId} failed after checkout completion. The error is not a Stripe capture API failure. Reason: {ex.Message}",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId > 0 ? searchHireId : serviceId,
+                            additionalData: new
+                            {
+                                PaymentIntentId = session.PaymentIntentId,
+                                SearchHireId = searchHireId > 0 ? searchHireId : (int?)null,
+                                ServiceId = serviceId,
+                                ErrorType = ex.GetType().Name,
+                                Exception = ex.Message,
+                                InnerException = ex.InnerException?.Message
+                            });
+                    }
                 }
 
                 throw;

@@ -95,7 +95,7 @@ namespace newApi.Services
         private readonly ILogger<TimezoneService> _logger;
         private readonly HttpClient _httpClient;
         private readonly IConfiguration _configuration;
-        private readonly string? _googleApiKey;
+        private readonly string? _mapboxPublicToken;
         
         // Zonas horarias más comunes para validación rápida
         private static readonly HashSet<string> CommonTimezones = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -130,8 +130,8 @@ namespace newApi.Services
             _httpClient = httpClientFactory.CreateClient();
             _httpClient.Timeout = TimeSpan.FromSeconds(5); // Timeout corto para evitar bloqueos
             
-            // Obtener Google API Key de la configuración (puede estar en Secret Manager o variables de entorno)
-            _googleApiKey = _configuration["Google:ApiKey"] ?? _configuration["GOOGLE_API_KEY"];
+            // Obtener token público de Mapbox desde configuración/entorno.
+            _mapboxPublicToken = _configuration["Mapbox:PublicToken"] ?? _configuration["MAPBOX_PUBLIC_TOKEN"];
         }
 
         public DateTime ConvertToUtc(DateTime localDateTime, string ianaTimezone)
@@ -315,115 +315,31 @@ namespace newApi.Services
         
         public async Task<string> GetTimezoneFromCoordinatesAsync(decimal latitude, decimal longitude)
         {
-            // 🛡️ R13 FIX: fallback a "UTC" en lugar de throw cuando API key falta.
-            // Los call sites (N7-N8 en UpdateExpertProfile, AppointmentService al detectar TZ del experto)
-            // asumen que este método siempre retorna un IANA TZ válido — si throw, los flows revientan
-            // y bloquean creación de cita / actualización de perfil. UTC es safe fallback (Stripe acepta,
-            // citas se renderizan con offset 0 — el experto puede corregirlo después).
-            if (string.IsNullOrWhiteSpace(_googleApiKey))
+            // Fallback a UTC cuando falta token de Mapbox.
+            if (string.IsNullOrWhiteSpace(_mapboxPublicToken))
             {
-                _logger.LogWarning("R13: Google Maps API Key no configurada. Usando 'UTC' como fallback para ({Latitude}, {Longitude}).", latitude, longitude);
+                _logger.LogWarning("Mapbox public token no configurado. Usando 'UTC' como fallback para ({Latitude}, {Longitude}).", latitude, longitude);
                 return "UTC";
             }
 
             try
             {
-                // Google Timezone API requiere un timestamp (usamos el actual)
-                // ✅ CRÍTICO: Usar formato invariante (punto decimal) para las coordenadas
-                // Google API rechaza comas como separador decimal
-                var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-                var latStr = latitude.ToString(CultureInfo.InvariantCulture);
-                var lonStr = longitude.ToString(CultureInfo.InvariantCulture);
-                var url = $"https://maps.googleapis.com/maps/api/timezone/json?location={latStr},{lonStr}&timestamp={timestamp}&key={_googleApiKey}";
-                
-                _logger.LogDebug("Llamando a Google Timezone API para coordenadas ({Latitude}, {Longitude}) - URL: {Url}", 
-                    latitude, longitude, url.Replace(_googleApiKey, "***"));
-                
-                var response = await _httpClient.GetAsync(url);
-                var json = await response.Content.ReadAsStringAsync();
-                
-                if (!response.IsSuccessStatusCode)
-                {
-                    _logger.LogError("❌ Google Timezone API request failed. Status: {StatusCode}, Response: {Response}", 
-                        response.StatusCode, json);
-                    throw new InvalidOperationException(
-                        $"Google Timezone API request failed. Status: {response.StatusCode}. " +
-                        $"No se puede detectar timezone para coordenadas ({latitude}, {longitude}).");
-                }
-                
-                var jsonDoc = JsonDocument.Parse(json);
-                
-                // Google API devuelve: { "status": "OK", "timeZoneId": "Europe/Madrid" }
-                // O errores: { "status": "REQUEST_DENIED", "errorMessage": "..." }
-                if (jsonDoc.RootElement.TryGetProperty("status", out var status))
-                {
-                    var statusValue = status.GetString();
-                    
-                    if (statusValue == "OK")
-                    {
-                        if (jsonDoc.RootElement.TryGetProperty("timeZoneId", out var timeZoneId))
-                        {
-                            var ianaTimezone = timeZoneId.GetString();
-                            
-                            // Validar que el timezone sea válido
-                            if (!string.IsNullOrWhiteSpace(ianaTimezone) && IsValidTimezone(ianaTimezone))
-                            {
-                                _logger.LogInformation("✅ Timezone detectado: '{Timezone}' desde Google API para coordenadas ({Latitude}, {Longitude})", 
-                                    ianaTimezone, latitude, longitude);
-                                return ianaTimezone;
-                            }
-                            else
-                            {
-                                _logger.LogError("❌ Timezone inválido recibido de Google API: '{Timezone}' para coordenadas ({Latitude}, {Longitude})", 
-                                    ianaTimezone, latitude, longitude);
-                                throw new InvalidOperationException(
-                                    $"Timezone inválido recibido de Google API: '{ianaTimezone}' para coordenadas ({latitude}, {longitude}).");
-                            }
-                        }
-                        else
-                        {
-                            _logger.LogError("❌ Google API devolvió status OK pero sin timeZoneId. Response: {Response}", json);
-                            throw new InvalidOperationException(
-                                $"Google API devolvió status OK pero sin timeZoneId para coordenadas ({latitude}, {longitude}).");
-                        }
-                    }
-                    else
-                    {
-                        // Error de Google API
-                        var errorMessage = jsonDoc.RootElement.TryGetProperty("errorMessage", out var errorMsg) 
-                            ? errorMsg.GetString() 
-                            : "Sin mensaje de error";
-                        
-                        _logger.LogWarning("R13: Google Timezone API error. Status: {Status}, Message: {Message}. Usando UTC fallback.",
-                            statusValue, errorMessage);
-                        // 🛡️ R13 FIX: fallback "UTC" en vez de throw (ver razón en el guard inicial del método).
-                        return "UTC";
-                    }
-                }
-                else
-                {
-                    _logger.LogWarning("R13: Respuesta Google API sin campo 'status'. Usando UTC fallback.");
-                    return "UTC";
-                }
+                // Mapbox no expone Timezone API directa. Derivamos un TZ base por país detectado.
+                var countryCode = await GetCountryFromCoordinatesAsync(latitude, longitude);
+                var fallbackTimezone = GetFallbackTimezoneFromCountry(countryCode);
+                _logger.LogInformation("Timezone derivado por país ({Country}) => {Timezone} para coordenadas ({Latitude}, {Longitude})",
+                    countryCode ?? "unknown", fallbackTimezone, latitude, longitude);
+                return fallbackTimezone;
             }
             catch (TaskCanceledException ex)
             {
-                // 🚨 R13 escalation: timeout en Google Timezone API es un fallo silencioso peligroso.
-                // El experto puede quedar con TZ='UTC' incorrecto y no enterarse hasta que las citas
-                // aparezcan desplazadas 12h+ (si está p.ej. en Asia/Tokyo). Logueamos ERROR para que
-                // el admin lo vea en alertas, pero mantenemos el fallback UTC para no romper los flows
-                // que asumen string válido (ver guard inicial del método).
-                _logger.LogError(ex, "R13: Timeout Google Timezone API ({Timeout}s) para ({Latitude}, {Longitude}). " +
-                    "Timezone del experto MAY ser incorrectamente UTC. El usuario debe corregirlo manualmente en ajustes.",
+                _logger.LogError(ex, "Timeout detectando timezone con Mapbox ({Timeout}s) para ({Latitude}, {Longitude}). Usando UTC fallback.",
                     _httpClient.Timeout.TotalSeconds, latitude, longitude);
                 return "UTC";
             }
             catch (Exception ex)
             {
-                // 🛡️ R13 FIX: fallback unificado UTC. No re-lanzar InvalidOperationException — antes
-                // los callers asumían que el método siempre retornaba string válido y un throw
-                // rompía flows críticos (UpdateExpertProfile, AppointmentService TZ detection).
-                _logger.LogWarning(ex, "R13: Error Google Timezone API para ({Latitude}, {Longitude}). Usando UTC fallback.",
+                _logger.LogWarning(ex, "Error detectando timezone con Mapbox para ({Latitude}, {Longitude}). Usando UTC fallback.",
                     latitude, longitude);
                 return "UTC";
             }
@@ -431,25 +347,21 @@ namespace newApi.Services
         
         public async Task<string?> GetCountryFromCoordinatesAsync(decimal latitude, decimal longitude)
         {
-            // ✅ SOLO Google Geocoding API - Sin fallbacks externos
-            if (string.IsNullOrWhiteSpace(_googleApiKey))
+            if (string.IsNullOrWhiteSpace(_mapboxPublicToken))
             {
-                _logger.LogError("❌ Google Maps API Key no configurada. No se puede detectar país para coordenadas ({Latitude}, {Longitude}). " +
-                    "Configura 'google-maps-api-key' en Google Cloud Secret Manager.", latitude, longitude);
+                _logger.LogError("Mapbox public token no configurado. No se puede detectar país para coordenadas ({Latitude}, {Longitude}). " +
+                    "Configura 'mapbox-public-token' en secrets/env.", latitude, longitude);
                 throw new InvalidOperationException(
-                    $"Google Maps API Key no configurada. No se puede detectar país para coordenadas ({latitude}, {longitude}). " +
-                    "Configura 'google-maps-api-key' en Google Cloud Secret Manager.");
+                    $"Mapbox public token no configurado. No se puede detectar país para coordenadas ({latitude}, {longitude}).");
             }
 
             try
             {
-                // ✅ CRÍTICO: Usar formato invariante (punto decimal) para las coordenadas
-                // Google API rechaza comas como separador decimal
                 var latStr = latitude.ToString(CultureInfo.InvariantCulture);
                 var lonStr = longitude.ToString(CultureInfo.InvariantCulture);
-                var url = $"https://maps.googleapis.com/maps/api/geocode/json?latlng={latStr},{lonStr}&result_type=country&key={_googleApiKey}";
+                var url = $"https://api.mapbox.com/geocoding/v5/mapbox.places/{lonStr},{latStr}.json?types=country&language=es&access_token={_mapboxPublicToken}";
                 
-                _logger.LogDebug("Llamando a Google Geocoding API para detectar país en coordenadas ({Latitude}, {Longitude})", 
+                _logger.LogDebug("Llamando a Mapbox Geocoding API para detectar país en coordenadas ({Latitude}, {Longitude})", 
                     latitude, longitude);
                 
                 var response = await _httpClient.GetAsync(url);
@@ -457,101 +369,51 @@ namespace newApi.Services
                 
                 if (!response.IsSuccessStatusCode)
                 {
-                    _logger.LogError("❌ Google Geocoding API request failed. Status: {StatusCode}, Response: {Response}", 
+                    _logger.LogError("Mapbox Geocoding API request failed. Status: {StatusCode}, Response: {Response}", 
                         response.StatusCode, json);
                     throw new InvalidOperationException(
-                        $"Google Geocoding API request failed. Status: {response.StatusCode}. " +
+                        $"Mapbox Geocoding API request failed. Status: {response.StatusCode}. " +
                         $"No se puede detectar país para coordenadas ({latitude}, {longitude}).");
                 }
                 
                 var jsonDoc = JsonDocument.Parse(json);
-                
-                // Google Geocoding API devuelve: { "status": "OK", "results": [...] }
-                // O errores: { "status": "REQUEST_DENIED", "error_message": "..." }
-                if (jsonDoc.RootElement.TryGetProperty("status", out var status))
+
+                if (jsonDoc.RootElement.TryGetProperty("features", out var features) && features.ValueKind == JsonValueKind.Array)
                 {
-                    var statusValue = status.GetString();
-                    
-                    if (statusValue == "OK")
+                    foreach (var feature in features.EnumerateArray())
                     {
-                        if (jsonDoc.RootElement.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
+                        if (feature.TryGetProperty("properties", out var properties) &&
+                            properties.TryGetProperty("short_code", out var shortCode))
                         {
-                            // Buscar el componente de tipo "country" en los resultados
-                            foreach (var result in results.EnumerateArray())
+                            var code = shortCode.GetString();
+                            if (!string.IsNullOrWhiteSpace(code))
                             {
-                                if (result.TryGetProperty("address_components", out var addressComponents) && 
-                                    addressComponents.ValueKind == JsonValueKind.Array)
+                                // Mapbox suele devolver "es" o variantes.
+                                var normalized = code.Split('-')[0].Trim().ToUpperInvariant();
+                                if (normalized.Length == 2)
                                 {
-                                    foreach (var component in addressComponents.EnumerateArray())
-                                    {
-                                        if (component.TryGetProperty("types", out var types) && types.ValueKind == JsonValueKind.Array)
-                                        {
-                                            // Verificar si este componente es de tipo "country"
-                                            bool isCountry = false;
-                                            foreach (var type in types.EnumerateArray())
-                                            {
-                                                if (type.GetString() == "country")
-                                                {
-                                                    isCountry = true;
-                                                    break;
-                                                }
-                                            }
-                                            
-                                            if (isCountry && component.TryGetProperty("short_name", out var shortName))
-                                            {
-                                                var countryCode = shortName.GetString();
-                                                
-                                                if (!string.IsNullOrWhiteSpace(countryCode) && countryCode.Length == 2)
-                                                {
-                                                    _logger.LogInformation("✅ País detectado: '{Country}' desde Google API para coordenadas ({Latitude}, {Longitude})", 
-                                                        countryCode, latitude, longitude);
-                                                    return countryCode.ToUpperInvariant();
-                                                }
-                                            }
-                                        }
-                                    }
+                                    _logger.LogInformation("País detectado: '{Country}' desde Mapbox para coordenadas ({Latitude}, {Longitude})",
+                                        normalized, latitude, longitude);
+                                    return normalized;
                                 }
                             }
-                            
-                            // Si llegamos aquí, no encontramos un país en los resultados
-                            _logger.LogWarning("⚠️ Google API devolvió status OK pero no se encontró componente de tipo 'country' en los resultados. Response: {Response}", json);
-                            return null;
-                        }
-                        else
-                        {
-                            _logger.LogError("❌ Google API devolvió status OK pero sin campo 'results' o no es un array. Response: {Response}", json);
-                            return null;
                         }
                     }
-                    else
-                    {
-                        // Error de Google API
-                        var errorMessage = jsonDoc.RootElement.TryGetProperty("error_message", out var errorMsg) 
-                            ? errorMsg.GetString() 
-                            : "Sin mensaje de error";
-                        
-                        _logger.LogError("❌ Google Geocoding API error. Status: {Status}, Message: {Message}, Response: {Response}", 
-                            statusValue, errorMessage, json);
-                        
-                        throw new InvalidOperationException(
-                            $"Google Geocoding API error: {statusValue}. {errorMessage}. " +
-                            $"No se puede detectar país para coordenadas ({latitude}, {longitude}).");
-                    }
+
+                    _logger.LogWarning("Mapbox devolvió features sin country short_code para coordenadas ({Latitude}, {Longitude}).", latitude, longitude);
+                    return null;
                 }
-                else
-                {
-                    _logger.LogError("❌ Respuesta de Google API sin campo 'status'. Response: {Response}", json);
-                    throw new InvalidOperationException(
-                        $"Respuesta de Google API sin campo 'status' para coordenadas ({latitude}, {longitude}).");
-                }
+
+                _logger.LogWarning("Respuesta de Mapbox sin campo features para coordenadas ({Latitude}, {Longitude}).", latitude, longitude);
+                return null;
             }
             catch (TaskCanceledException ex)
             {
-                _logger.LogError(ex, "❌ Timeout llamando a Google Geocoding API para coordenadas ({Latitude}, {Longitude})", 
+                _logger.LogError(ex, "Timeout llamando a Mapbox Geocoding API para coordenadas ({Latitude}, {Longitude})", 
                     latitude, longitude);
                 throw new InvalidOperationException(
-                    $"Timeout llamando a Google Geocoding API para coordenadas ({latitude}, {longitude}). " +
-                    "Verifica tu conexión a internet y la configuración de la API key.");
+                    $"Timeout llamando a Mapbox Geocoding API para coordenadas ({latitude}, {longitude}). " +
+                    "Verifica tu conexión a internet y la configuración del token.");
             }
             catch (InvalidOperationException)
             {
@@ -560,34 +422,30 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Error inesperado llamando a Google Geocoding API para coordenadas ({Latitude}, {Longitude})", 
+                _logger.LogError(ex, "Error inesperado llamando a Mapbox Geocoding API para coordenadas ({Latitude}, {Longitude})", 
                     latitude, longitude);
                 throw new InvalidOperationException(
-                    $"Error inesperado llamando a Google Geocoding API para coordenadas ({latitude}, {longitude}): {ex.Message}");
+                    $"Error inesperado llamando a Mapbox Geocoding API para coordenadas ({latitude}, {longitude}): {ex.Message}");
             }
         }
         
         public async Task<string?> GetCityFromCoordinatesAsync(decimal latitude, decimal longitude)
         {
-            // ✅ Usar Google Geocoding API para obtener la ciudad
-            if (string.IsNullOrWhiteSpace(_googleApiKey))
+            if (string.IsNullOrWhiteSpace(_mapboxPublicToken))
             {
-                _logger.LogError("❌ Google Maps API Key no configurada. No se puede detectar ciudad para coordenadas ({Latitude}, {Longitude}). " +
-                    "Configura 'google-maps-api-key' en Google Cloud Secret Manager.", latitude, longitude);
+                _logger.LogError("Mapbox public token no configurado. No se puede detectar ciudad para coordenadas ({Latitude}, {Longitude}). " +
+                    "Configura 'mapbox-public-token' en secrets/env.", latitude, longitude);
                 throw new InvalidOperationException(
-                    $"Google Maps API Key no configurada. No se puede detectar ciudad para coordenadas ({latitude}, {longitude}). " +
-                    "Configura 'google-maps-api-key' en Google Cloud Secret Manager.");
+                    $"Mapbox public token no configurado. No se puede detectar ciudad para coordenadas ({latitude}, {longitude}).");
             }
 
             try
             {
-                // ✅ CRÍTICO: Usar formato invariante (punto decimal) para las coordenadas
                 var latStr = latitude.ToString(CultureInfo.InvariantCulture);
                 var lonStr = longitude.ToString(CultureInfo.InvariantCulture);
-                // No filtrar por result_type para obtener información completa de la ubicación
-                var url = $"https://maps.googleapis.com/maps/api/geocode/json?latlng={latStr},{lonStr}&key={_googleApiKey}";
+                var url = $"https://api.mapbox.com/geocoding/v5/mapbox.places/{lonStr},{latStr}.json?types=place,locality&language=es&access_token={_mapboxPublicToken}";
                 
-                _logger.LogDebug("Llamando a Google Geocoding API para detectar ciudad en coordenadas ({Latitude}, {Longitude})", 
+                _logger.LogDebug("Llamando a Mapbox Geocoding API para detectar ciudad en coordenadas ({Latitude}, {Longitude})", 
                     latitude, longitude);
                 
                 var response = await _httpClient.GetAsync(url);
@@ -595,136 +453,45 @@ namespace newApi.Services
                 
                 if (!response.IsSuccessStatusCode)
                 {
-                    _logger.LogError("❌ Google Geocoding API request failed. Status: {StatusCode}, Response: {Response}", 
+                    _logger.LogError("Mapbox Geocoding API request failed. Status: {StatusCode}, Response: {Response}", 
                         response.StatusCode, json);
                     throw new InvalidOperationException(
-                        $"Google Geocoding API request failed. Status: {response.StatusCode}. " +
+                        $"Mapbox Geocoding API request failed. Status: {response.StatusCode}. " +
                         $"No se puede detectar ciudad para coordenadas ({latitude}, {longitude}).");
                 }
                 
                 var jsonDoc = JsonDocument.Parse(json);
-                
-                if (jsonDoc.RootElement.TryGetProperty("status", out var status))
+
+                if (jsonDoc.RootElement.TryGetProperty("features", out var features) && features.ValueKind == JsonValueKind.Array)
                 {
-                    var statusValue = status.GetString();
-                    
-                    if (statusValue == "OK")
+                    foreach (var feature in features.EnumerateArray())
                     {
-                        if (jsonDoc.RootElement.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
+                        if (feature.TryGetProperty("text", out var text))
                         {
-                            // Buscar el componente de tipo "locality" (ciudad) en los resultados
-                            foreach (var result in results.EnumerateArray())
+                            var cityName = text.GetString();
+                            if (!string.IsNullOrWhiteSpace(cityName))
                             {
-                                if (result.TryGetProperty("address_components", out var addressComponents) && 
-                                    addressComponents.ValueKind == JsonValueKind.Array)
-                                {
-                                    foreach (var component in addressComponents.EnumerateArray())
-                                    {
-                                        if (component.TryGetProperty("types", out var types) && types.ValueKind == JsonValueKind.Array)
-                                        {
-                                            // Verificar si este componente es de tipo "locality" (ciudad)
-                                            bool isLocality = false;
-                                            foreach (var type in types.EnumerateArray())
-                                            {
-                                                if (type.GetString() == "locality")
-                                                {
-                                                    isLocality = true;
-                                                    break;
-                                                }
-                                            }
-                                            
-                                            if (isLocality && component.TryGetProperty("long_name", out var longName))
-                                            {
-                                                var cityName = longName.GetString();
-                                                
-                                                if (!string.IsNullOrWhiteSpace(cityName))
-                                                {
-                                                    _logger.LogInformation("✅ Ciudad detectada: '{City}' desde Google API para coordenadas ({Latitude}, {Longitude})", 
-                                                        cityName, latitude, longitude);
-                                                    return cityName;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                _logger.LogInformation("Ciudad detectada: '{City}' desde Mapbox para coordenadas ({Latitude}, {Longitude})",
+                                    cityName, latitude, longitude);
+                                return cityName;
                             }
-                            
-                            // Si no encontramos "locality", intentar con "administrative_area_level_2" o "administrative_area_level_1"
-                            foreach (var result in results.EnumerateArray())
-                            {
-                                if (result.TryGetProperty("address_components", out var addressComponents) && 
-                                    addressComponents.ValueKind == JsonValueKind.Array)
-                                {
-                                    foreach (var component in addressComponents.EnumerateArray())
-                                    {
-                                        if (component.TryGetProperty("types", out var types) && types.ValueKind == JsonValueKind.Array)
-                                        {
-                                            bool isAdminArea = false;
-                                            foreach (var type in types.EnumerateArray())
-                                            {
-                                                var typeStr = type.GetString();
-                                                if (typeStr == "administrative_area_level_2" || typeStr == "administrative_area_level_1")
-                                                {
-                                                    isAdminArea = true;
-                                                    break;
-                                                }
-                                            }
-                                            
-                                            if (isAdminArea && component.TryGetProperty("long_name", out var longName))
-                                            {
-                                                var areaName = longName.GetString();
-                                                
-                                                if (!string.IsNullOrWhiteSpace(areaName))
-                                                {
-                                                    _logger.LogInformation("✅ Área administrativa detectada como ciudad: '{City}' desde Google API para coordenadas ({Latitude}, {Longitude})", 
-                                                        areaName, latitude, longitude);
-                                                    return areaName;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            // Si llegamos aquí, no encontramos una ciudad en los resultados
-                            _logger.LogWarning("⚠️ Google API devolvió status OK pero no se encontró componente de tipo 'locality' en los resultados. Response: {Response}", json);
-                            return null;
-                        }
-                        else
-                        {
-                            _logger.LogError("❌ Google API devolvió status OK pero sin campo 'results' o no es un array. Response: {Response}", json);
-                            return null;
                         }
                     }
-                    else
-                    {
-                        // Error de Google API
-                        var errorMessage = jsonDoc.RootElement.TryGetProperty("error_message", out var errorMsg) 
-                            ? errorMsg.GetString() 
-                            : "Sin mensaje de error";
-                        
-                        _logger.LogError("❌ Google Geocoding API error. Status: {Status}, Message: {Message}, Response: {Response}", 
-                            statusValue, errorMessage, json);
-                        
-                        throw new InvalidOperationException(
-                            $"Google Geocoding API error: {statusValue}. {errorMessage}. " +
-                            $"No se puede detectar ciudad para coordenadas ({latitude}, {longitude}).");
-                    }
+
+                    _logger.LogWarning("Mapbox devolvió features sin ciudad interpretable para coordenadas ({Latitude}, {Longitude}).", latitude, longitude);
+                    return null;
                 }
-                else
-                {
-                    _logger.LogError("❌ Respuesta de Google API sin campo 'status'. Response: {Response}", json);
-                    throw new InvalidOperationException(
-                        $"Respuesta de Google API sin campo 'status' para coordenadas ({latitude}, {longitude}).");
-                }
+
+                _logger.LogWarning("Respuesta de Mapbox sin campo features para coordenadas ({Latitude}, {Longitude}).", latitude, longitude);
+                return null;
             }
             catch (TaskCanceledException ex)
             {
-                _logger.LogError(ex, "❌ Timeout llamando a Google Geocoding API para coordenadas ({Latitude}, {Longitude})", 
+                _logger.LogError(ex, "Timeout llamando a Mapbox Geocoding API para coordenadas ({Latitude}, {Longitude})", 
                     latitude, longitude);
                 throw new InvalidOperationException(
-                    $"Timeout llamando a Google Geocoding API para coordenadas ({latitude}, {longitude}). " +
-                    "Verifica tu conexión a internet y la configuración de la API key.");
+                    $"Timeout llamando a Mapbox Geocoding API para coordenadas ({latitude}, {longitude}). " +
+                    "Verifica tu conexión a internet y la configuración del token.");
             }
             catch (InvalidOperationException)
             {
@@ -733,11 +500,38 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Error inesperado llamando a Google Geocoding API para coordenadas ({Latitude}, {Longitude})", 
+                _logger.LogError(ex, "Error inesperado llamando a Mapbox Geocoding API para coordenadas ({Latitude}, {Longitude})", 
                     latitude, longitude);
                 throw new InvalidOperationException(
-                    $"Error inesperado llamando a Google Geocoding API para coordenadas ({latitude}, {longitude}): {ex.Message}");
+                    $"Error inesperado llamando a Mapbox Geocoding API para coordenadas ({latitude}, {longitude}): {ex.Message}");
             }
+        }
+
+        private static string GetFallbackTimezoneFromCountry(string? countryCode)
+        {
+            return countryCode?.ToUpperInvariant() switch
+            {
+                "ES" => "Europe/Madrid",
+                "GB" => "Europe/London",
+                "FR" => "Europe/Paris",
+                "DE" => "Europe/Berlin",
+                "IT" => "Europe/Rome",
+                "PT" => "Europe/Lisbon",
+                "US" => "America/New_York",
+                "MX" => "America/Mexico_City",
+                "CO" => "America/Bogota",
+                "AR" => "America/Argentina/Buenos_Aires",
+                "BR" => "America/Sao_Paulo",
+                "CL" => "America/Santiago",
+                "PE" => "America/Lima",
+                "JP" => "Asia/Tokyo",
+                "CN" => "Asia/Shanghai",
+                "SG" => "Asia/Singapore",
+                "AE" => "Asia/Dubai",
+                "AU" => "Australia/Sydney",
+                "NZ" => "Pacific/Auckland",
+                _ => "UTC"
+            };
         }
         
         /// <summary>

@@ -517,8 +517,10 @@ namespace newApi.Services
 
                             StatusId = awaitingStatusId,
 
-                            // 🛡️ Round 20: ProposedDate representa hora LOCAL del experto, no UTC. Marcar Unspecified evita que EF Core haga UTC-conversion implícita y que MapToDto T7 trate este valor como si fuera UTC.
-                            ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Unspecified),
+                            // Guardamos ProposedDate en UTC (solo componente fecha) para compatibilidad con
+                            // la columna timestamptz en PostgreSQL. La hora local de pared sigue en ProposedTime
+                            // y se convierte a UTC real con GetAppointmentUtc cuando hace falta.
+                            ProposedDate = DateTime.SpecifyKind(dto.ProposedDate.Date, DateTimeKind.Utc),
 
                             ProposedTime = dto.ProposedTime,
 
@@ -921,8 +923,9 @@ namespace newApi.Services
 
                 // Actualizar la cita - asegurar que los DateTime tengan Kind=UTC
 
-                // 🌍 Round 25: ProposedDate representa hora LOCAL del experto. Unspecified evita conversion implicita por EF Core.
-                appointment.ProposedDate = DateTime.SpecifyKind(dto.ProposedDate, DateTimeKind.Unspecified);
+                // Persistir ProposedDate en UTC (componente fecha) para evitar errores de Npgsql con timestamptz.
+                // El contrato actual (fecha local + hora local) se mantiene: ProposedTime conserva la hora local.
+                appointment.ProposedDate = DateTime.SpecifyKind(dto.ProposedDate.Date, DateTimeKind.Utc);
 
                 appointment.ProposedTime = dto.ProposedTime;
 

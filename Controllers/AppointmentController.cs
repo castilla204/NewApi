@@ -539,6 +539,27 @@ namespace newApi.Controllers
 
                 return Unauthorized(new { message = "Only the client or expert can cancel appointments" });
             }
+            // 🛡️ FIX UX idempotente (Round 28): si la cita YA está en estado final, no es un error
+            // funcional — la intención del usuario ya se cumplió. Devolvemos 200 con payload mínimo
+            // para que el frontend NO muestre toast de error confuso tras un doble-click o tras un
+            // 500 absorbido. Este catch filtrado va ANTES del catch genérico InvalidOperationException.
+            catch (InvalidOperationException ex) when (
+                ex.Message.Contains("ya está cancelada")
+                || ex.Message.Contains("ya ha sido procesada")
+                || ex.Message.Contains("Appointment is already cancelled"))
+            {
+                var userId = GetCurrentUserId();
+                await _loggingService.LogInfoAsync(
+                    message: "Cancel idempotente: cita ya en estado final",
+                    details: $"Usuario {userId} intentó cancelar cita {dto.AppointmentId} que ya está cancelada/finalizada. Tratado como éxito idempotente. Mensaje original: {ex.Message}",
+                    userId: userId,
+                    source: "AppointmentController.CancelAppointment",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: dto.AppointmentId
+                );
+
+                return Ok(new { appointmentId = dto.AppointmentId, alreadyCancelled = true, message = ex.Message });
+            }
             catch (InvalidOperationException ex)
             {
                 var userId = GetCurrentUserId();

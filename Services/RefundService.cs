@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
+using Npgsql; // 🛡️ Fix 23505: PostgresException tipado para absorber colisión IX_FT_StripeRefundId_uq
 using Stripe;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.enums;
@@ -1641,7 +1642,12 @@ namespace newApi.Services
                                             relatedEntityId: searchHireId);
                                         // Marcar refund como "completado" para el resto del flujo (no hay nada que persistir como FT Refund).
                                         servicePayment.IsRefunded = true;
-                                        servicePayment.StripeRefundId = "n10-canceled-pre-capture";
+                                        // 🛡️ FIX 23505 (Round 28): NO escribir un literal en servicePayment.StripeRefundId.
+                                        // El índice único parcial IX_FT_StripeRefundId_uq no filtra por TransactionType ni por
+                                        // valor, así que el mismo literal "n10-canceled-pre-capture" en 2 cancelaciones
+                                        // pre-capture distintas haría chocar la segunda con 23505. IsRefunded=true ya marca
+                                        // el estado funcional; no se necesita StripeRefundId para una cancelación pre-capture
+                                        // (no hubo refund real en Stripe, solo PI canceled).
                                         needsRefund = false; // skip el CreateAsync de refund
                                     }
                                     catch (StripeException cancelEx) when (cancelEx.StripeError?.Code == "payment_intent_unexpected_state")
@@ -1731,13 +1737,19 @@ namespace newApi.Services
                             {
                                 await _loggingService.LogWarningAsync(
                                     message: "N11: refund idempotency hit (already done)",
-                                    details: $"SearchHire {searchHireId}: Stripe respondió '{idemRefundEx.StripeError?.Code}' al crear refund — ya estaba aplicado. Marcando como completado sin crear FT Refund nueva (el refund original está en Stripe).",
+                                    details: $"SearchHire {searchHireId}: Stripe respondió '{idemRefundEx.StripeError?.Code}' al crear refund — ya estaba aplicado. Marcando como completado sin crear FT Refund nueva (el refund original está en Stripe; StripeReconciliationService rellenará la fila FT en la próxima pasada diaria).",
                                     userId: searchHire.ClientId,
                                     source: "StripeRefundService.ProcessMoneyDistributionAsync.N11Refund",
                                     relatedEntityType: "SearchHire",
                                     relatedEntityId: searchHireId);
-                                // No tenemos el refund.Id real, marcamos placeholder para que el flujo continúe.
-                                createdRefundId = "n11-already-refunded";
+                                // 🛡️ FIX 23505 (Round 28): NO usar literal "n11-already-refunded" como StripeRefundId.
+                                // El índice único IX_FT_StripeRefundId_uq haría chocar dos hits N11 concurrentes con el
+                                // mismo literal. Setear createdRefundId=null + needsRefund=false hace que el bloque
+                                // L1995 se salte y NO se inserte FT Refund con placeholder. La fila FT real la creará
+                                // StripeReconciliationService.RunDailyReconciliationAsync (job Hangfire cron 3:00 UTC)
+                                // detectando la divergencia Stripe-vs-BD para este PaymentIntent.
+                                createdRefundId = null;
+                                needsRefund = false;
                                 servicePayment.IsRefunded = true;
                             }
                             catch (StripeException refundEx)
@@ -2010,7 +2022,16 @@ namespace newApi.Services
                             _context.FinancialTransactions.Add(refundTx);
 
                             servicePayment.IsRefunded = true;
-                            servicePayment.StripeRefundId = createdRefundId;
+                            // 🛡️ FIX 23505 (Round 28): NO escribir servicePayment.StripeRefundId aquí.
+                            // El índice único parcial IX_FT_StripeRefundId_uq filtra solo por
+                            // StripeRefundId IS NOT NULL (sin discriminar TransactionType), por lo que
+                            // emitir el mismo `re_xxx` en la fila Refund (INSERT) y en la fila
+                            // ServicePayment (UPDATE) dentro del MISMO SaveChanges viola el unique.
+                            // El cross-link funcional se preserva vía StripePaymentIntentId (ambas filas
+                            // lo comparten) + IsRefunded=true como marcador de estado. La fila Refund
+                            // ya guarda StripeRefundId como fuente canónica. Verificado: ninguna lectura
+                            // en código vivo depende de servicePayment.StripeRefundId.
+                            // Mismo patrón ya aplicado en SubscriptionController.cs:7597 (R27-T27-1-5).
 
                             // 🛡️ N3 FIX (refund principal): SaveChanges INMEDIATO tras el Add. Antes había
                             // ~252 líneas entre refundSvc.CreateAsync (línea ~1254) y el SaveChanges de la
@@ -2019,6 +2040,50 @@ namespace newApi.Services
                             try
                             {
                                 await _context.SaveChangesAsync();
+                            }
+                            // 🛡️ FIX 23505 (Round 28): absorber colisión del índice único IX_FT_StripeRefundId_uq
+                            // de forma idempotente. Se dispara si la fila FT Refund con este StripeRefundId
+                            // YA existe (replay de NpgsqlRetryingExecutionStrategy, webhook concurrente, o
+                            // residuo de la mutación legacy en servicePayment.StripeRefundId pre-fix). El
+                            // refund REAL ya está en Stripe + alguna fila local lo registra → idempotencia OK.
+                            catch (DbUpdateException dbEx) when (
+                                dbEx.InnerException is PostgresException pgEx
+                                && pgEx.SqlState == "23505"
+                                && (pgEx.ConstraintName?.Contains("StripeRefundId") ?? false))
+                            {
+                                // Detach la entidad pendiente: sin esto, el SaveChanges global posterior
+                                // reintentaría el mismo INSERT y volveríamos a chocar.
+                                _context.Entry(refundTx).State = EntityState.Detached;
+
+                                // Re-aplicar IsRefunded por si el rollback interno de EF descartó la mutación.
+                                servicePayment.IsRefunded = true;
+
+                                // Sanity check: la fila Refund con este StripeRefundId DEBE existir.
+                                // Si NO existe, la colisión vino por otra ruta sutil → re-lanzar al catch genérico.
+                                var existing = await _context.FinancialTransactions
+                                    .AsNoTracking()
+                                    .FirstOrDefaultAsync(ft => ft.StripeRefundId == createdRefundId);
+                                if (existing == null)
+                                {
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "23505 IX_FT_StripeRefundId_uq absorbed but no existing row found — abort",
+                                        details: $"SearchHire {searchHireId}: PostgresException 23505 en {pgEx.ConstraintName} para refund {createdRefundId}, pero AsNoTracking lookup NO encuentra fila preexistente. Posible inconsistencia: re-lanzando. Stripe: refund SÍ ejecutado, BD: vacía → RECONCILIACIÓN MANUAL.",
+                                        userId: searchHire.ClientId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync.23505NoRow",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId,
+                                        additionalData: new { RefundId = createdRefundId, ConstraintName = pgEx.ConstraintName, SqlState = pgEx.SqlState });
+                                    throw;
+                                }
+
+                                await _loggingService.LogInfoAsync(
+                                    message: "23505 IX_FT_StripeRefundId_uq absorbed (idempotent)",
+                                    details: $"SearchHire {searchHireId}: refund {createdRefundId} ya existe en FT (id={existing.Id}, type={existing.TransactionType}). Colisión esperada en retries/replays — continuando sin re-throw.",
+                                    userId: searchHire.ClientId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync.23505Idem",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId,
+                                    additionalData: new { RefundId = createdRefundId, ExistingFtId = existing.Id, ExistingType = existing.TransactionType });
                             }
                             catch (Exception persistEx)
                             {

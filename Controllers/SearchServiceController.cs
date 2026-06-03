@@ -331,19 +331,29 @@ namespace newApi.Controllers
             }
             catch (OperationCanceledException)
             {
-                await _loggingService.LogErrorAsync(
-                    message: "Timeout al obtener expertos del mapa",
-                    details: "La operación excedió el tiempo máximo de espera (90 segundos)",
-                    source: "SearchServiceController.GetMapExperts",
-                    relatedEntityType: "MapExperts",
-                    additionalData: new { categoryId, serviceTypeId },
-                    notifyUser: false
-                );
+                // ✅ FIX: Fire-and-forget — el logging abre scope EF + 2 SaveChangesAsync
+                //    y en path de timeout (BD ya saturada) AMPLIFICA el problema, retrasando
+                //    aún más el 408 que devuelve al cliente.
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _loggingService.LogErrorAsync(
+                            message: "Timeout al obtener expertos del mapa",
+                            details: "La operación excedió el tiempo máximo de espera (90 segundos)",
+                            source: "SearchServiceController.GetMapExperts",
+                            relatedEntityType: "MapExperts",
+                            additionalData: new { categoryId, serviceTypeId },
+                            notifyUser: false
+                        );
+                    }
+                    catch { /* swallow — log no debe romper response */ }
+                });
                 // ✅ CRÍTICO: Asegurar headers CORS y Content-Type ANTES de devolver StatusCode
                 Response.Headers["Access-Control-Allow-Origin"] = Request.Headers["Origin"].ToString();
                 Response.Headers["Access-Control-Allow-Credentials"] = "true";
                 Response.ContentType = "application/json";
-                
+
                 return StatusCode(408, new { message = "Request timeout. Please try again.", detail = "The request took too long to complete" });
             }
             catch (ArgumentException ex)
@@ -352,23 +362,31 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                await _loggingService.LogErrorAsync(
-                    message: "Error al obtener expertos del mapa",
-                    details: $"Exception: {ex.Message}\nStackTrace: {ex.StackTrace}",
-                    source: "SearchServiceController.GetMapExperts",
-                    relatedEntityType: "MapExperts",
-                    additionalData: new
+                // ✅ FIX: Fire-and-forget para no bloquear el response 500 esperando al log.
+                _ = Task.Run(async () =>
+                {
+                    try
                     {
-                        categoryId,
-                        serviceTypeId,
-                        latitude,
-                        longitude,
-                        locationRange,
-                        innerException = ex.InnerException?.Message,
-                        exceptionType = ex.GetType().Name
-                    },
-                    notifyUser: false
-                );
+                        await _loggingService.LogErrorAsync(
+                            message: "Error al obtener expertos del mapa",
+                            details: $"Exception: {ex.Message}\nStackTrace: {ex.StackTrace}",
+                            source: "SearchServiceController.GetMapExperts",
+                            relatedEntityType: "MapExperts",
+                            additionalData: new
+                            {
+                                categoryId,
+                                serviceTypeId,
+                                latitude,
+                                longitude,
+                                locationRange,
+                                innerException = ex.InnerException?.Message,
+                                exceptionType = ex.GetType().Name
+                            },
+                            notifyUser: false
+                        );
+                    }
+                    catch { /* swallow */ }
+                });
                 return StatusCode(500, new { message = "Failed to retrieve map experts", detail = ex.Message });
             }
         }
@@ -661,18 +679,23 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "La duración debe ser mayor que 0" });
                 }
 
-                // 🌍 Currency: normalizar y validar contra SupportedCurrenciesList.
-                // Si el front no envía nada, deja vacío → fallback EUR en el service.
-                // Si envía una divisa no soportada, también fallback EUR (no romper la creación
-                // por algo recuperable; el service loguea Warning si mismatch con Stripe Connect).
+                // 🛡️ Round 28: si el front no envía Currency, DERIVAR del país del experto
+                // en lugar de hardcodear EUR. expertProfile.Country es ISO 3166-1 alpha-2
+                // (validado por SupportedConnectCountries al hacer BecomeExpert).
+                // Antes: experto GB creaba servicio en EUR → mismatch con cuenta Stripe Connect en GBP
+                // → currency_mismatch en RefundService.cs:1316 → dinero atascado.
+                var derivedCurrency = global::newApi.Common.StripeCurrencyMapping
+                    .GetCurrencyForCountry(expertProfile.Country)
+                    .ToUpperInvariant();
+
                 if (!string.IsNullOrWhiteSpace(request.Currency))
                 {
                     var normalized = global::newApi.Common.SupportedCurrenciesList.Normalize(request.Currency);
-                    request.Currency = normalized ?? "EUR";
+                    request.Currency = normalized ?? derivedCurrency;
                 }
                 else
                 {
-                    request.Currency = "EUR";
+                    request.Currency = derivedCurrency;
                 }
 
                 // ✅ VALIDACIÓN: Verificar que al menos un tipo de entregable esté seleccionado

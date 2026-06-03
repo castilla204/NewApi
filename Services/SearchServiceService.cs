@@ -1738,6 +1738,8 @@ namespace newApi.Services
                 ServiceTypeCategoryId = ss.ServiceType?.ServiceTypeCategoryId,
                 RequiresAppointment = ss.ServiceType?.RequiresAppointment ?? false,
                 Price = ss.Price,
+                // 🛡️ Round 28: emitir Currency real del servicio (no asumir EUR en cards/panel).
+                Currency = string.IsNullOrWhiteSpace(ss.Currency) ? "EUR" : ss.Currency.Trim().ToUpperInvariant(),
                 Conditions = ss.Conditions,
                 DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,
@@ -1851,6 +1853,7 @@ namespace newApi.Services
                 ServiceTypeCategoryId = baseDto.ServiceTypeCategoryId, // ✅ CORRECCIÓN: Incluir ServiceTypeCategoryId
                 RequiresAppointment = baseDto.RequiresAppointment, // ✅ CORRECCIÓN: Incluir RequiresAppointment
                 Price = baseDto.Price,
+                Currency = baseDto.Currency, // 🛡️ Round 28: copiar Currency al DTO de detalle
                 Conditions = baseDto.Conditions,
                 DurationInHours = baseDto.DurationInHours,
                 CreatedAt = baseDto.CreatedAt,
@@ -1871,7 +1874,7 @@ namespace newApi.Services
 
         private SearchServiceResponseDto MapToResponseDto(SearchService ss)
         {
-            
+
             var searchService = new SearchServiceResponseDto
             {
                 Id = ss.Id,
@@ -1882,6 +1885,8 @@ namespace newApi.Services
                 ServiceTypeCategoryId = ss.ServiceType?.ServiceTypeCategoryId,
                 RequiresAppointment = ss.ServiceType?.RequiresAppointment ?? false,
                 Price = ss.Price,
+                // 🛡️ Round 28: emitir Currency real del servicio.
+                Currency = string.IsNullOrWhiteSpace(ss.Currency) ? "EUR" : ss.Currency.Trim().ToUpperInvariant(),
                 Conditions = ss.Conditions,
                 DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,

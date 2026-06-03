@@ -163,6 +163,15 @@ namespace newApi.DataLayer.Models.DTOs
         public int? ServiceTypeCategoryId { get; set; }
         public bool RequiresAppointment { get; set; }
         public decimal Price { get; set; }
+
+        /// <summary>
+        /// 🛡️ Round 28: currency original del precio del servicio (ISO 4217 en MAYÚSCULAS,
+        /// ej. "EUR", "GBP", "USD"). Default "EUR" para backward-compat. El frontend lo usa
+        /// para mostrar el símbolo correcto en panel de experto y en cards de búsqueda —
+        /// antes se hardcodeaba EUR en ServicesTab y aparecía € a expertos UK/CH/SE/etc.
+        /// </summary>
+        public string Currency { get; set; } = "EUR";
+
         public string Conditions { get; set; }
         public int DurationInHours { get; set; }
         public DateTime CreatedAt { get; set; }
@@ -328,7 +337,7 @@ namespace newApi.DataLayer.Models.DTOs
         public int ServiceId { get; set; }
         public int CategoryId { get; set; }
         public int ServiceTypeId { get; set; }
-        
+
         /// <summary>
         /// Precio del servicio CON IVA incluido.
         /// Este es el precio final que pagará el cliente.
@@ -336,7 +345,14 @@ namespace newApi.DataLayer.Models.DTOs
         /// Ejemplo: Si quieres que el cliente pague €110, establece Price = 110.
         /// </summary>
         public decimal Price { get; set; }
-        
+
+        /// <summary>
+        /// 🛡️ Round 28: ISO 4217 currency code. Opcional — si null o vacío, el backend
+        /// preserva la moneda actual del servicio. Si se envía, debe ser válido en
+        /// SupportedCurrenciesList y coincidir con la divisa Stripe del experto.
+        /// </summary>
+        public string? Currency { get; set; }
+
         public string Conditions { get; set; }
         public int? DurationInHours { get; set; }
         

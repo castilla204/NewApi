@@ -1492,7 +1492,7 @@ namespace newApi.Services
                                         additionalData: new { Latitude = latitude, Longitude = longitude, DetectedCountry = detectedCountry, StripeAccountCountry = stripeAccount.Country, StripeAccountId = expertProfile.StripeAccountId });
                                     return (false, null,
                                             BecomeExpertErrorCodes.StripeCountryLocked,
-                                            $"Tu cuenta Stripe está vinculada a {stripeAccount.Country.ToUpperInvariant()} y no se puede cambiar a {detectedCountry}. Stripe no permite mover una cuenta entre países. Si necesitas mudarte, primero elimina tu cuenta de experto desde Ajustes y vuelve a registrarte en tu nuevo país.",
+                                            $"Tu cuenta Stripe está vinculada a {stripeAccount.Country.ToUpperInvariant()} y no se puede cambiar a {detectedCountry}. Stripe no permite mover una cuenta entre países. Para hacerlo, ve al panel de experto → 'Mudarme a otro país' y completa el asistente; cerraremos tu cuenta Stripe actual y podrás iniciar onboarding fresco en el nuevo país (tu User, historial de cliente y reseñas se preservan).",
                                             detectedCountry);
                                 }
                             }

@@ -286,6 +286,17 @@ namespace newApi.DataLayer.Models.DTOs
         /// Ciudad del experto (ej: "Madrid", "Barcelona")
         /// </summary>
         public string? City { get; set; }
+
+        /// <summary>
+        /// 🛡️ Round 28 MUD-W: si el experto vino de una mudanza, contiene el ISO
+        /// del país previo (ej "ES") para que el frontend (BecomeExpertPage,
+        /// ExpertPanelPage) sepa que necesita re-selección de país nuevo. null si
+        /// nunca se mudó.
+        /// </summary>
+        public string? RelocatedFromCountry { get; set; }
+
+        /// <summary>Timestamp UTC del momento de la mudanza.</summary>
+        public DateTime? RelocatedAt { get; set; }
     }
 
     public class UserDto

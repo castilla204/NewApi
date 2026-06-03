@@ -1387,7 +1387,10 @@ namespace newApi.Services
                 // ✅ INTERNACIONALIZACIÓN
                 Timezone = expertProfile.Timezone,
                 Country = expertProfile.Country,
-                City = expertProfile.City
+                City = expertProfile.City,
+                // 🛡️ Round 28 MUD-W: señaliza relocation al frontend.
+                RelocatedFromCountry = expertProfile.RelocatedFromCountry,
+                RelocatedAt = expertProfile.RelocatedAt,
             };
         }
 
@@ -1799,7 +1802,10 @@ namespace newApi.Services
                     // ✅ INTERNACIONALIZACIÓN
                     Timezone = expertProfile.Timezone,
                     Country = expertProfile.Country,
-                    City = expertProfile.City
+                    City = expertProfile.City,
+                    // 🛡️ MUD-W
+                    RelocatedFromCountry = expertProfile.RelocatedFromCountry,
+                    RelocatedAt = expertProfile.RelocatedAt,
                 };
                 return (true, updatedProfileDto, null, null, expertProfile.Country);
             }

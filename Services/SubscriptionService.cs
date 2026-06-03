@@ -157,13 +157,19 @@ namespace newApi.Services
                     return; // Aún no han pasado 24 horas
                 }
 
-                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
-                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
-                // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
-                _context.Database.AutoSavepointsEnabled = false;
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                try
+                // 🛡️ Round 28 TX-5: envuelto en CreateExecutionStrategy().ExecuteAsync.
+                // CRÍTICO: si el SaveChanges fallaba con retry transient (NpgsqlRetryingExecutionStrategy)
+                // pero ProcessMoneyDistributionAsync ya había transferido el dinero al experto, el hire
+                // quedaba SIN marcar como Completed → el job timer lo reintentaba → DOBLE PAGO al experto.
+                // ProcessMoneyDistributionAsync usa idempotency keys Stripe internamente, así que un
+                // retry del lambda completo es seguro (Stripe dedupe el transfer).
+                var autoCompletionStrategy = _context.Database.CreateExecutionStrategy();
+                await autoCompletionStrategy.ExecuteAsync(async () =>
                 {
+                    _context.Database.AutoSavepointsEnabled = false;
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
+                    {
                         // Verificar nuevamente dentro de la transacción
                         var currentSearchHire = await _context.SearchHires
                             .Include(sh => sh.Status)
@@ -175,40 +181,12 @@ namespace newApi.Services
                             return;
                         }
 
-                        // Call central orchestrator directly
-                        try
-                        {
-                            await _refundService.ProcessMoneyDistributionAsync(
-                                searchHireId,
-                                // 🔁 FIX: faltaba el prefijo "appointment_" → sin él NO había config ni mapeo
-                                // (money no-op silencioso) y el hire se marcaba completado sin pagar al experto.
-                                // Con el prefijo resuelve por GetDefaultMapping → completed (0/95/5). (Ruta hoy
-                                // latente: la auto-finalización viva la hace el timer client_decision de AppointmentService.)
-                                "appointment_completed_without_client_approval",
-                                "Auto transfer after client timeout (24h)",
-                                null);
-                        }
-                        catch (Exception ex)
-                        {
-                            await transaction.RollbackAsync();
-                            // Log critical error for money transaction failure
-                            await _loggingService.LogCriticalAsync(
-                                message: "CRITICAL: Failed to process transfer to expert",
-                                details: ex.ToString(),
-                                userId: currentSearchHire.ExpertId,
-                                source: "SubscriptionService.ProcessAwaitingClientDecisionAsync",
-                                relatedEntityType: "Transfer",
-                                relatedEntityId: searchHireId,
-                                additionalData: new { 
-                                    SearchHireId = searchHireId,
-                                    Amount = currentSearchHire.Amount,
-                                    ClientId = currentSearchHire.ClientId,
-                                    ExpertId = currentSearchHire.ExpertId,
-                                    ErrorMessage = ex.Message
-                                }
-                            );
-                            throw;
-                        }
+                        // Call central orchestrator directly (idempotente por Stripe keys)
+                        await _refundService.ProcessMoneyDistributionAsync(
+                            searchHireId,
+                            "appointment_completed_without_client_approval",
+                            "Auto transfer after client timeout (24h)",
+                            null);
 
                         // Only update status and create notifications if transfer succeeds
                         currentSearchHire.ClientApproved = true;
@@ -243,49 +221,12 @@ namespace newApi.Services
                         await _context.SaveChangesAsync();
                         await transaction.CommitAsync();
                     }
-                    catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
+                    catch
                     {
-                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
-                        try
-                        {
-                            await transaction.RollbackAsync();
-                        }
-                        catch
-                        {
-                            // Ignorar errores de rollback si la conexión ya está disposed
-                        }
+                        try { await transaction.RollbackAsync(); } catch { }
                         throw;
                     }
-                    catch (ObjectDisposedException disposedEx)
-                    {
-                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
-                        try
-                        {
-                            await transaction.RollbackAsync();
-                        }
-                        catch
-                        {
-                            // Ignorar errores de rollback si la conexión ya está disposed
-                        }
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        await transaction.RollbackAsync();
-                        // Log critical error for money transaction failure
-                        await _loggingService.LogCriticalAsync(
-                            message: "CRITICAL: Error processing SearchHire awaiting client decision",
-                            details: ex.ToString(),
-                            source: "SubscriptionService.ProcessAwaitingClientDecisionAsync",
-                            relatedEntityType: "Transfer",
-                            relatedEntityId: searchHireId,
-                            additionalData: new { 
-                                SearchHireId = searchHireId,
-                                ErrorMessage = ex.Message
-                            }
-                        );
-                        throw;
-                    }
+                });
             }
             catch (Exception ex)
             {

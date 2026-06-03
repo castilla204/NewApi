@@ -2603,49 +2603,33 @@ namespace newApi.Controllers
                         };
 
                         {
-                            // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
-                            // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
-                            await using var deauthTransaction = await _context.Database.BeginTransactionAsync();
-                            try
+                            // 🛡️ Round 28 TX-1: envuelto en CreateExecutionStrategy().ExecuteAsync.
+                            // Antes: BeginTransactionAsync sin strategy chocaba con EnableRetryOnFailure
+                            // (NpgsqlRetryingExecutionStrategy) → InvalidOperationException en SaveChangesAsync
+                            // al disparar Stripe account.application.deauthorized tras AccountDeletion.
+                            // El comentario antiguo sobre "PgBouncer no admite savepoints" YA NO APLICA —
+                            // ahora usamos Render PostgreSQL nativo (ver Program.cs:746).
+                            var deauthStrategy = _context.Database.CreateExecutionStrategy();
+                            await deauthStrategy.ExecuteAsync(async () =>
                             {
-                                ApplyStripeAccountState(deauthorizedExpertProfile, deauthorizedState);
+                                await using var deauthTransaction = await _context.Database.BeginTransactionAsync();
+                                try
+                                {
+                                    ApplyStripeAccountState(deauthorizedExpertProfile, deauthorizedState);
 
-                                // Stripe recomienda desvincular por completo la cuenta
-                                deauthorizedExpertProfile.StripeAccountId = null;
-                                deauthorizedExpertProfile.PendingStripeAccountId = null;
+                                    // Stripe recomienda desvincular por completo la cuenta
+                                    deauthorizedExpertProfile.StripeAccountId = null;
+                                    deauthorizedExpertProfile.PendingStripeAccountId = null;
 
-                                await _context.SaveChangesAsync();
-                                await deauthTransaction.CommitAsync();
-                            }
-                            catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
-                            {
-                                // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
-                                try
-                                {
-                                    await deauthTransaction.RollbackAsync();
+                                    await _context.SaveChangesAsync();
+                                    await deauthTransaction.CommitAsync();
                                 }
-                                catch { }
-                                throw; // Re-lanzar para que el usuario pueda reintentar
-                            }
-                            catch (ObjectDisposedException)
-                            {
-                                // ✅ FIX CRÍTICO: Si la conexión está disposed, hacer rollback seguro
-                                try
+                                catch
                                 {
-                                    await deauthTransaction.RollbackAsync();
+                                    try { await deauthTransaction.RollbackAsync(); } catch { }
+                                    throw;
                                 }
-                                catch { }
-                                throw; // Re-lanzar para que el usuario pueda reintentar
-                            }
-                            catch
-                            {
-                                try
-                                {
-                                    await deauthTransaction.RollbackAsync();
-                                }
-                                catch { }
-                                throw;
-                            }
+                            });
                         }
 
                         var deauthReason = $"Stripe desconectó la cuenta (application={deauthorizedApp?.Id ?? "n/a"})";
@@ -8210,14 +8194,21 @@ namespace newApi.Controllers
                 return;
             }
 
-            await using var transferFailedTransaction = await _context.Database.BeginTransactionAsync();
-            try
+            // 🛡️ Round 28 TX-2: envuelto en CreateExecutionStrategy().ExecuteAsync.
+            // Antes: BeginTransactionAsync sin strategy era incompatible con EnableRetryOnFailure.
+            // Si Stripe enviaba transfer.failed y ocurría un retry, lanzaba InvalidOperationException
+            // y el FT "TransferFailed" no se registraba → contabilidad rota + sin alerta admin.
+            var transferFailedStrategy = _context.Database.CreateExecutionStrategy();
+            await transferFailedStrategy.ExecuteAsync(async () =>
             {
-                // Solo REGISTRAR el fallo + marcar el hire para revisión. NO devolver al cliente (el experto hizo
-                // el trabajo); el pago al experto se reintenta/gestiona manualmente.
-                var failedTransaction = await _context.FinancialTransactions
-                    .FirstOrDefaultAsync(ft => ft.RelatedEntityId == searchHire.Id &&
-                                               ft.TransactionType == "Payout");
+                await using var transferFailedTransaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    // Solo REGISTRAR el fallo + marcar el hire para revisión. NO devolver al cliente (el experto hizo
+                    // el trabajo); el pago al experto se reintenta/gestiona manualmente.
+                    var failedTransaction = await _context.FinancialTransactions
+                        .FirstOrDefaultAsync(ft => ft.RelatedEntityId == searchHire.Id &&
+                                                   ft.TransactionType == "Payout");
                 if (failedTransaction != null)
                 {
                     _context.FinancialTransactions.Add(new FinancialTransaction
@@ -8248,36 +8239,38 @@ namespace newApi.Controllers
                         additionalData: new { TransferId = transfer.Id, ExpertId = failedTransaction.UserId, Amount = failedTransaction.Amount });
                 }
 
-                searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.TransferFailed.ToStringValue());
-                searchHire.UpdatedAt = DateTime.UtcNow;
-                await _context.SaveChangesAsync();
-                await transferFailedTransaction.CommitAsync();
-
-                if (searchHire.ExpertId.HasValue)
-                {
-                    await _loggingService.LogWarningAsync(
-                        message: "Transferencia pendiente con error",
-                        details: $"La transferencia de tu servicio #{searchHire.Id} falló. El equipo de pagos la reintentará y te avisaremos.",
-                        userId: searchHire.ExpertId.Value,
-                        source: "SubscriptionController.transfer.failed",
-                        relatedEntityType: "SearchHire",
-                        relatedEntityId: searchHire.Id,
-                        notifyUser: true);
+                    searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.TransferFailed.ToStringValue());
+                    searchHire.UpdatedAt = DateTime.UtcNow;
+                    await _context.SaveChangesAsync();
+                    await transferFailedTransaction.CommitAsync();
                 }
+                catch
+                {
+                    try { await transferFailedTransaction.RollbackAsync(); } catch { }
+                    throw; // re-lanzar → el endpoint devuelve 500 y Stripe reintenta
+                }
+            });
+
+            // 🛡️ Notificaciones FUERA del lambda: side-effects no-idempotentes (no deben re-ejecutarse en retries).
+            if (searchHire.ExpertId.HasValue)
+            {
                 await _loggingService.LogWarningAsync(
-                    message: "Pago al experto en revisión",
-                    details: $"La transferencia al experto del servicio #{searchHire.Id} falló. Un administrador está revisando el caso.",
-                    userId: searchHire.ClientId,
+                    message: "Transferencia pendiente con error",
+                    details: $"La transferencia de tu servicio #{searchHire.Id} falló. El equipo de pagos la reintentará y te avisaremos.",
+                    userId: searchHire.ExpertId.Value,
                     source: "SubscriptionController.transfer.failed",
                     relatedEntityType: "SearchHire",
                     relatedEntityId: searchHire.Id,
                     notifyUser: true);
             }
-            catch
-            {
-                try { await transferFailedTransaction.RollbackAsync(); } catch { }
-                throw; // re-lanzar → el endpoint devuelve 500 y Stripe reintenta
-            }
+            await _loggingService.LogWarningAsync(
+                message: "Pago al experto en revisión",
+                details: $"La transferencia al experto del servicio #{searchHire.Id} falló. Un administrador está revisando el caso.",
+                userId: searchHire.ClientId,
+                source: "SubscriptionController.transfer.failed",
+                relatedEntityType: "SearchHire",
+                relatedEntityId: searchHire.Id,
+                notifyUser: true);
         }
 
         /// <summary>

@@ -24,19 +24,67 @@ namespace newApi.Controllers
         private readonly ILogger<AdminController> _logger;
         private readonly IStripeConfigService _stripeConfigService;
         private readonly IConfiguration _configuration;
+        // 🛡️ Round 28 S2-P0-11: monitor del umbral OSS UE.
+        private readonly OssThresholdService _ossThresholdService;
 
         public AdminController(
-            AppDbContext context, 
+            AppDbContext context,
             StripeRefundService refundService,
             ILogger<AdminController> logger,
             IStripeConfigService stripeConfigService,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            OssThresholdService ossThresholdService)
         {
             _context = context;
             _refundService = refundService;
             _logger = logger;
             _stripeConfigService = stripeConfigService;
             _configuration = configuration;
+            _ossThresholdService = ossThresholdService;
+        }
+
+        /// <summary>
+        /// 🛡️ Round 28 S2-P0-11: snapshot del umbral OSS UE €10.000/año del año actual.
+        /// Devuelve YTD por país + porcentaje del umbral + estado de compliance.
+        /// El admin debe revisar este endpoint regularmente — sin OSS registrado y cruzando
+        /// el umbral, la plataforma incurre en infracción fiscal en cada país UE.
+        /// </summary>
+        [HttpGet("oss-stats")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> GetOssStats(CancellationToken ct = default)
+        {
+            try
+            {
+                var report = await _ossThresholdService.GetCurrentYearReportAsync(ct);
+                return Ok(report);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetOssStats failed");
+                return StatusCode(500, new { error = "Error generando snapshot OSS", message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// 🛡️ Round 28 S2-P0-11: dispara la evaluación + alertas críticas si procede.
+        /// Llamar manualmente para forzar el envío del aviso al admin (idempotente — el log
+        /// Critical solo se emite si compliance status es WARNING o VIOLATION).
+        /// </summary>
+        [HttpPost("oss-stats/check")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> RunOssThresholdCheck(CancellationToken ct = default)
+        {
+            try
+            {
+                await _ossThresholdService.EmitAlertIfNeededAsync(ct);
+                var report = await _ossThresholdService.GetCurrentYearReportAsync(ct);
+                return Ok(new { triggered = true, report });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "RunOssThresholdCheck failed");
+                return StatusCode(500, new { error = "Error ejecutando OSS threshold check", message = ex.Message });
+            }
         }
 
         /// <summary>

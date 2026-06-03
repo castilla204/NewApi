@@ -1497,6 +1497,10 @@ builder.Services.AddScoped<IAccountDeletionService, AccountDeletionService>();
 builder.Services.AddScoped<IAccountDeletionNotificationService, AccountDeletionNotificationService>();
 builder.Services.AddScoped<StripeRefundService>();
 builder.Services.AddScoped<IStripeReconciliationService, StripeReconciliationService>(); // P2-5: conciliación diaria BD↔Stripe
+// 🛡️ Round 28 S2-P0-11: monitor del umbral OSS UE €10.000/año.
+builder.Services.AddScoped<newApi.Services.OssThresholdService>();
+// 🛡️ Round 28 S2-P0-13: GDPR Art. 20 — exportación portable de datos del usuario.
+builder.Services.AddScoped<newApi.Services.DataPortabilityService>();
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<ILoggingService, LoggingService>();

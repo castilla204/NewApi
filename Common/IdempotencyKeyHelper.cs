@@ -18,12 +18,20 @@ namespace newApi.Common
     /// </summary>
     public static class IdempotencyKeyHelper
     {
+        // 🛡️ Round 28 MUD-8: prefijo bumped a "v2" para INVALIDAR sesiones Stripe cacheadas
+        // con la lógica anterior. Stripe deduplica idempotency keys 24h — si pre-fix se creó
+        // una session con Currency="eur" hardcoded usando esta key, Stripe devolvería la
+        // session vieja aunque el código nuevo (MUD-7) pase Currency="usd" → el override no
+        // se aplica. Con el bump v2, las keys cacheadas pre-MUD-7 quedan invalidadas y se
+        // crean Sessions frescas con el currency correcto.
+        private const string CHECKOUT_KEY_VERSION = "v2";
+
         public static string ForCheckout(int userId, int serviceId, params string?[] discriminators)
         {
             var raw = string.Join("|", discriminators.Select(d => d ?? string.Empty));
             var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
             var hash = Convert.ToHexString(bytes, 0, 8).ToLowerInvariant(); // 16 hex chars
-            return $"checkout-{userId}-{serviceId}-{hash}";
+            return $"checkout-{CHECKOUT_KEY_VERSION}-{userId}-{serviceId}-{hash}";
         }
     }
 }

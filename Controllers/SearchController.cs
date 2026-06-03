@@ -612,6 +612,54 @@ namespace newApi.Controllers
                     var amountToCharge = service.Price;
 
                     var domain = _configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com";
+
+                    // 🛡️ Round 28 MUD-7: portado el bloque MUD-6 desde SubscriptionController.HireService.
+                    // Antes: Currency hardcoded "eur" en línea 624 → experto US (acct USD) cobraba EUR
+                    // → Stripe rechazaba con currency_mismatch o ejecutaba mal el transfer.
+                    // CheckoutPage REALMENTE llama a este endpoint (POST /api/Search/create-with-hire),
+                    // no a /api/Subscription/hire-service. Por eso MUD-6 antiguo nunca se ejecutaba.
+                    // Lógica idéntica: leer service.Currency (snapshot BD) y overriding contra
+                    // stripeAccount.DefaultCurrency (verdad autoritativa e inmutable).
+                    var checkoutCurrency = (service.Currency ?? "EUR").ToLowerInvariant();
+                    if (!string.IsNullOrEmpty(service.ExpertProfile?.StripeAccountId))
+                    {
+                        try
+                        {
+                            var stripeAcctService = new Stripe.AccountService();
+                            var stripeAcct = await stripeAcctService.GetAsync(service.ExpertProfile.StripeAccountId);
+                            var acctDefault = stripeAcct?.DefaultCurrency;
+                            if (!string.IsNullOrEmpty(acctDefault) && !string.Equals(acctDefault, checkoutCurrency, StringComparison.OrdinalIgnoreCase))
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "CreateSearchWithHire MUD-7: currency mismatch overriden to Stripe acct currency",
+                                    details: $"Service {service.Id}: BD says {checkoutCurrency.ToUpperInvariant()}, Stripe acct {service.ExpertProfile.StripeAccountId} default_currency is {acctDefault.ToUpperInvariant()}. Overriding to {acctDefault.ToUpperInvariant()}.",
+                                    userId: userId,
+                                    source: "SearchController.CreateSearchWithHire.MUD7",
+                                    relatedEntityType: "SearchService",
+                                    relatedEntityId: service.Id);
+                                checkoutCurrency = acctDefault.Trim().ToLowerInvariant();
+                            }
+                        }
+                        catch (Stripe.StripeException stripeReadEx) when (stripeReadEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                        {
+                            return BadRequest(new
+                            {
+                                message = "Este experto no puede recibir cobros en este momento (cuenta de pagos no disponible). Por favor, contacta al soporte o vuelve a intentar más tarde.",
+                                errorCode = "EXPERT_STRIPE_ACCOUNT_NOT_FOUND"
+                            });
+                        }
+                        catch (Exception stripeReadEx)
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "CreateSearchWithHire MUD-7: could not verify Stripe acct currency, using BD value",
+                                details: $"Service {service.Id}: {stripeReadEx.Message}. Using {checkoutCurrency.ToUpperInvariant()} from BD.",
+                                userId: userId,
+                                source: "SearchController.CreateSearchWithHire.MUD7",
+                                relatedEntityType: "SearchService",
+                                relatedEntityId: service.Id);
+                        }
+                    }
+
                     var options = new SessionCreateOptions
                     {
                         PaymentMethodTypes = new List<string> { "card" },
@@ -621,7 +669,8 @@ namespace newApi.Controllers
                             {
                                 PriceData = new SessionLineItemPriceDataOptions
                                 {
-                                    Currency = "eur",
+                                    // 🛡️ Round 28 MUD-7: usar checkoutCurrency validado contra Stripe acct.
+                                    Currency = checkoutCurrency,
                                     UnitAmount = checked((long)Math.Round(amountToCharge * 100)),
                                     ProductData = new SessionLineItemPriceDataProductDataOptions
                                     {

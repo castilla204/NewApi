@@ -38,21 +38,29 @@ namespace newApi.Controllers
             // RECHAZARÍA con 400 si el usuario los seleccionara — además, no aparecían CAD/CHF/SEK/DKK/
             // NOK/PLN/HUF/CZK/BGN/RON que SÍ están permitidas. Ahora la lista coincide 1:1 con la
             // whitelist (EEA + EFTA + Anglo) — el dropdown muestra exactamente lo que el backend valida.
+            // 🛡️ Round 28 CUR-SEL-1: keys en lowercase explícito.
+            // Program.cs:826 fuerza JsonSerializerOptions.PropertyNamingPolicy = null para todos
+            // los endpoints, así que las propiedades de tipos anónimos PascalCase se serializan
+            // como PascalCase. El frontend Currency interface usa lowercase (`code`, `name`, etc.),
+            // así que el CurrencySelector descartaba TODOS los items tras el fetch
+            // (c.code === undefined → filtrado out → dropdown vacío "que parece desaparecer").
+            // Emitiendo keys en lowercase aquí matchea el contrato del frontend sin tocar política
+            // JSON global.
             var supported = new[]
             {
-                new { Code = "EUR", Name = "Euro",             Symbol = "€",   Locale = "es-ES" },
-                new { Code = "USD", Name = "US Dollar",        Symbol = "$",   Locale = "en-US" },
-                new { Code = "GBP", Name = "British Pound",    Symbol = "£",   Locale = "en-GB" },
-                new { Code = "CAD", Name = "Canadian Dollar",  Symbol = "CA$", Locale = "en-CA" },
-                new { Code = "CHF", Name = "Swiss Franc",      Symbol = "CHF", Locale = "de-CH" },
-                new { Code = "SEK", Name = "Swedish Krona",    Symbol = "kr",  Locale = "sv-SE" },
-                new { Code = "DKK", Name = "Danish Krone",     Symbol = "kr",  Locale = "da-DK" },
-                new { Code = "NOK", Name = "Norwegian Krone",  Symbol = "kr",  Locale = "nb-NO" },
-                new { Code = "PLN", Name = "Polish Złoty",     Symbol = "zł",  Locale = "pl-PL" },
-                new { Code = "HUF", Name = "Hungarian Forint", Symbol = "Ft",  Locale = "hu-HU" },
-                new { Code = "CZK", Name = "Czech Koruna",     Symbol = "Kč",  Locale = "cs-CZ" },
-                new { Code = "BGN", Name = "Bulgarian Lev",    Symbol = "лв",  Locale = "bg-BG" },
-                new { Code = "RON", Name = "Romanian Leu",     Symbol = "lei", Locale = "ro-RO" },
+                new { code = "EUR", name = "Euro",             symbol = "€",   locale = "es-ES" },
+                new { code = "USD", name = "US Dollar",        symbol = "$",   locale = "en-US" },
+                new { code = "GBP", name = "British Pound",    symbol = "£",   locale = "en-GB" },
+                new { code = "CAD", name = "Canadian Dollar",  symbol = "CA$", locale = "en-CA" },
+                new { code = "CHF", name = "Swiss Franc",      symbol = "CHF", locale = "de-CH" },
+                new { code = "SEK", name = "Swedish Krona",    symbol = "kr",  locale = "sv-SE" },
+                new { code = "DKK", name = "Danish Krone",     symbol = "kr",  locale = "da-DK" },
+                new { code = "NOK", name = "Norwegian Krone",  symbol = "kr",  locale = "nb-NO" },
+                new { code = "PLN", name = "Polish Złoty",     symbol = "zł",  locale = "pl-PL" },
+                new { code = "HUF", name = "Hungarian Forint", symbol = "Ft",  locale = "hu-HU" },
+                new { code = "CZK", name = "Czech Koruna",     symbol = "Kč",  locale = "cs-CZ" },
+                new { code = "BGN", name = "Bulgarian Lev",    symbol = "лв",  locale = "bg-BG" },
+                new { code = "RON", name = "Romanian Leu",     symbol = "lei", locale = "ro-RO" },
             };
 
             return Ok(new

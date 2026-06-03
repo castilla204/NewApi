@@ -459,12 +459,23 @@ namespace newApi.Services
                 return (false, null, null, null, null, null, null);
             }
 
-            if (user.Role == UserRole.Expert)
+            // 🛡️ Round 28 MUD-K (GAP-1 fix): permitir re-onboarding tras mudanza.
+            // Si el experto pasó por ExpertRelocationService.ExecuteAsync, su perfil queda con
+            //   RelocatedFromCountry != null && OnboardingCompleted == false && StripeAccountId == null
+            // y NO debemos rechazar — al contrario, el BecomeExpert UPDATEA el ExpertProfile
+            // existente con el nuevo país (no inserta otra fila). Sin este check, el experto
+            // queda bloqueado para siempre.
+            var isRelocating = user.ExpertProfile != null
+                            && user.ExpertProfile.RelocatedFromCountry != null
+                            && !user.ExpertProfile.OnboardingCompleted
+                            && string.IsNullOrEmpty(user.ExpertProfile.StripeAccountId);
+
+            if (user.Role == UserRole.Expert && !isRelocating)
             {
                 return (false, null, null, null, null, null, null);
             }
 
-            if (user.ExpertProfile != null)
+            if (user.ExpertProfile != null && !isRelocating)
             {
                 return (false, null, null, null, null, null, null);
             }
@@ -864,27 +875,53 @@ namespace newApi.Services
                         expertCountry);
             }
 
-            var expertProfile = new ExpertProfile
+            // 🛡️ Round 28 MUD-K (GAP-1 fix): si el experto se está re-onboardeando tras una
+            // mudanza (ExpertProfile ya existe con RelocatedFromCountry != null), actualizamos
+            // la fila existente en lugar de crear una nueva — preservando Id (FKs) y reviews.
+            ExpertProfile expertProfile;
+            if (user.ExpertProfile != null && user.ExpertProfile.RelocatedFromCountry != null)
             {
-                UserId = user.Id,
-                ProfilePictureUrl = imageUrl,
-                ProfilePictureObjectName = objectName,
-                Description = request.Description,
-                Latitude = request.Latitude,
-                Longitude = request.Longitude,
-                Timezone = expertTimezone,
-                Country = expertCountry,
-                City = expertCity,
-                StripeAccountId = null, // No guardar StripeAccountId, se genera en el onboarding
-                CreatedAt = DateTime.UtcNow
-            };
+                expertProfile = user.ExpertProfile;
+                expertProfile.ProfilePictureUrl = imageUrl;
+                expertProfile.ProfilePictureObjectName = objectName;
+                expertProfile.Description = request.Description;
+                expertProfile.Latitude = request.Latitude;
+                expertProfile.Longitude = request.Longitude;
+                expertProfile.Timezone = expertTimezone;
+                expertProfile.Country = expertCountry;
+                expertProfile.City = expertCity;
+                expertProfile.StripeAccountId = null;
+                expertProfile.PendingStripeAccountId = null;
+                expertProfile.StripeStatus = StripeStatus.NotRequested;
+                expertProfile.StripeStatusDetails = null;
+                expertProfile.OnboardingCompleted = false;
+                expertProfile.IsOnVacation = false; // ya hay nuevo país; activable de nuevo
+                // RelocatedFromCountry/RelocatedAt SE PRESERVAN — son histórico de auditoría.
+            }
+            else
+            {
+                expertProfile = new ExpertProfile
+                {
+                    UserId = user.Id,
+                    ProfilePictureUrl = imageUrl,
+                    ProfilePictureObjectName = objectName,
+                    Description = request.Description,
+                    Latitude = request.Latitude,
+                    Longitude = request.Longitude,
+                    Timezone = expertTimezone,
+                    Country = expertCountry,
+                    City = expertCity,
+                    StripeAccountId = null,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _context.ExpertProfiles.Add(expertProfile);
+            }
 
             // 🛡️ V7 FIX: atomicidad ExpertProfile + Role en un solo SaveChanges. Antes
             // eran 2 SaveChanges separados — si el segundo fallaba, ExpertProfile quedaba en BD
             // pero User con Role=Client (inconsistente). Combinar cambios y persistir UNA vez:
             // si falla, ChangeTracker descarta AMBOS.
             user.Role = UserRole.Expert;
-            _context.ExpertProfiles.Add(expertProfile);
 
             // ✅ FIX: Manejar ObjectDisposedException y DbUpdateException específicamente
             try

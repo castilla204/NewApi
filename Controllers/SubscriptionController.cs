@@ -2232,6 +2232,44 @@ namespace newApi.Controllers
                 var amountToCharge = service.Price;
 
                 var domain = _configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com";
+
+                // 🛡️ Round 28 MUD-9: replicar bloque MUD-6 también aquí (LoadMoneyService).
+                // Antes el endpoint leía service.Currency sin verificar contra Stripe acct
+                // → si BD divergía (legacy/mudanza), currency_mismatch al captura.
+                var lmsCheckoutCurrency = (service.Currency ?? "EUR").ToLowerInvariant();
+                if (!string.IsNullOrEmpty(service.ExpertProfile?.StripeAccountId))
+                {
+                    try
+                    {
+                        var lmsStripeAcctService = new Stripe.AccountService();
+                        var lmsStripeAcct = await lmsStripeAcctService.GetAsync(service.ExpertProfile.StripeAccountId);
+                        var lmsAcctDefault = lmsStripeAcct?.DefaultCurrency;
+                        if (!string.IsNullOrEmpty(lmsAcctDefault) && !string.Equals(lmsAcctDefault, lmsCheckoutCurrency, StringComparison.OrdinalIgnoreCase))
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "LoadMoneyService MUD-9: currency mismatch overriden to Stripe acct currency",
+                                details: $"Service {service.Id}: BD says {lmsCheckoutCurrency.ToUpperInvariant()}, Stripe acct {service.ExpertProfile.StripeAccountId} default_currency is {lmsAcctDefault.ToUpperInvariant()}. Overriding to {lmsAcctDefault.ToUpperInvariant()}.",
+                                userId: userId,
+                                source: "SubscriptionController.LoadMoneyService.MUD9",
+                                relatedEntityType: "SearchService",
+                                relatedEntityId: service.Id);
+                            lmsCheckoutCurrency = lmsAcctDefault.Trim().ToLowerInvariant();
+                        }
+                    }
+                    catch (Stripe.StripeException stripeReadEx) when (stripeReadEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        return BadRequest(new
+                        {
+                            message = "Este experto no puede recibir cobros en este momento (cuenta de pagos no disponible).",
+                            errorCode = "EXPERT_STRIPE_ACCOUNT_NOT_FOUND"
+                        });
+                    }
+                    catch (Exception)
+                    {
+                        // Best-effort: si Stripe no responde, usar BD.
+                    }
+                }
+
                 var options = new SessionCreateOptions
                 {
                     PaymentMethodTypes = new List<string> { "card" },
@@ -2247,7 +2285,8 @@ namespace newApi.Controllers
                                 // y lo pasamos a Stripe en minúsculas como exige la API.
                                 // 🛡️ Round 28 Sprint 3: defensa NPE — si Currency es null en una fila legacy,
                                 // caer a "eur" en vez de NullReferenceException.
-                                Currency = (service.Currency ?? "EUR").ToLowerInvariant(),
+                                // 🛡️ Round 28 MUD-9: usar checkoutCurrency validado contra Stripe acct.
+                                Currency = lmsCheckoutCurrency,
                                 UnitAmount = checked((long)Math.Round(amountToCharge * 100)),
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {

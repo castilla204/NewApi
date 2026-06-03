@@ -65,6 +65,22 @@ namespace newApi.Common
                 capabilities.CardPayments = new AccountCapabilitiesCardPaymentsOptions { Requested = true };
             }
 
+            // 🛡️ Round 28 — Sprint US-2 (SUS2-1): tax_reporting_us_1099_misc para sellers US.
+            // SIN esta capability:
+            //   - Stripe NO captura el W-9 (TIN, legal name) durante el hosted onboarding.
+            //   - Stripe NO genera ni filia el 1099-MISC al IRS por la plataforma.
+            //   - La plataforma (que usa Stripe como PSE US) queda como responsable última
+            //     vía Connect Platform Agreement → multa IRS $290-$630/seller no reportado.
+            // CON esta capability Stripe automatiza el ciclo anual sin intervención.
+            // NO añadimos 1099_k: Stripe ya lo emite por defecto como PSE — solo habilitarlo
+            // transferiría la obligación de filer a la plataforma sin necesidad operativa.
+            // CA/GB tienen sus propios regímenes nacionales y NO usan 1099 (Stripe maneja T4A/CT61).
+            if (!string.IsNullOrWhiteSpace(countryCode)
+                && string.Equals(countryCode.Trim(), "US", System.StringComparison.OrdinalIgnoreCase))
+            {
+                capabilities.TaxReportingUs1099Misc = new AccountCapabilitiesTaxReportingUs1099MiscOptions { Requested = true };
+            }
+
             return capabilities;
         }
 

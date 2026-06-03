@@ -55,6 +55,15 @@ namespace newApi.DataLayer.Models.PostGresModels
         public string? City { get; set; }
 
         /// <summary>
+        /// 🛡️ Round 28 MUD-D: si el experto se mudó (vía wizard de mudanza), guardamos el
+        /// país anterior para auditoría + UI ("Antiguo experto en US"). Permite distinguir
+        /// reviews recibidas en el contexto anterior de las nuevas.
+        /// </summary>
+        [System.ComponentModel.DataAnnotations.MaxLength(2)]
+        public string? RelocatedFromCountry { get; set; }
+        public DateTime? RelocatedAt { get; set; }
+
+        /// <summary>
         /// 🌍 Round 21: timestamp del último payout exitoso (payout.paid webhook).
         /// Permite al experto ver en dashboard cuándo recibió pago la última vez.
         /// Nullable porque expertos nuevos no lo tienen aún.

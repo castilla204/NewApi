@@ -33,18 +33,26 @@ namespace newApi.Controllers
         {
             var rates = await _rates.GetAllRatesAsync("EUR", ct).ConfigureAwait(false);
 
+            // 🛡️ Round 28 CUR-3: alineado con SupportedCurrenciesList.cs (whitelist real de validación
+            // backend). Antes esta lista expone LATAM/Asia (MXN/BRL/ARS/CLP/COP/JPY/CNY) que el backend
+            // RECHAZARÍA con 400 si el usuario los seleccionara — además, no aparecían CAD/CHF/SEK/DKK/
+            // NOK/PLN/HUF/CZK/BGN/RON que SÍ están permitidas. Ahora la lista coincide 1:1 con la
+            // whitelist (EEA + EFTA + Anglo) — el dropdown muestra exactamente lo que el backend valida.
             var supported = new[]
             {
-                new { Code = "EUR", Name = "Euro",             Symbol = "€",  Locale = "es-ES" },
-                new { Code = "USD", Name = "US Dollar",        Symbol = "$",  Locale = "en-US" },
-                new { Code = "GBP", Name = "British Pound",    Symbol = "£",  Locale = "en-GB" },
-                new { Code = "MXN", Name = "Peso Mexicano",    Symbol = "$",  Locale = "es-MX" },
-                new { Code = "BRL", Name = "Real",             Symbol = "R$", Locale = "pt-BR" },
-                new { Code = "ARS", Name = "Peso Argentino",   Symbol = "$",  Locale = "es-AR" },
-                new { Code = "CLP", Name = "Peso Chileno",     Symbol = "$",  Locale = "es-CL" },
-                new { Code = "COP", Name = "Peso Colombiano",  Symbol = "$",  Locale = "es-CO" },
-                new { Code = "JPY", Name = "Yen",              Symbol = "¥",  Locale = "ja-JP" },
-                new { Code = "CNY", Name = "Yuan",             Symbol = "¥",  Locale = "zh-CN" },
+                new { Code = "EUR", Name = "Euro",             Symbol = "€",   Locale = "es-ES" },
+                new { Code = "USD", Name = "US Dollar",        Symbol = "$",   Locale = "en-US" },
+                new { Code = "GBP", Name = "British Pound",    Symbol = "£",   Locale = "en-GB" },
+                new { Code = "CAD", Name = "Canadian Dollar",  Symbol = "CA$", Locale = "en-CA" },
+                new { Code = "CHF", Name = "Swiss Franc",      Symbol = "CHF", Locale = "de-CH" },
+                new { Code = "SEK", Name = "Swedish Krona",    Symbol = "kr",  Locale = "sv-SE" },
+                new { Code = "DKK", Name = "Danish Krone",     Symbol = "kr",  Locale = "da-DK" },
+                new { Code = "NOK", Name = "Norwegian Krone",  Symbol = "kr",  Locale = "nb-NO" },
+                new { Code = "PLN", Name = "Polish Złoty",     Symbol = "zł",  Locale = "pl-PL" },
+                new { Code = "HUF", Name = "Hungarian Forint", Symbol = "Ft",  Locale = "hu-HU" },
+                new { Code = "CZK", Name = "Czech Koruna",     Symbol = "Kč",  Locale = "cs-CZ" },
+                new { Code = "BGN", Name = "Bulgarian Lev",    Symbol = "лв",  Locale = "bg-BG" },
+                new { Code = "RON", Name = "Romanian Leu",     Symbol = "lei", Locale = "ro-RO" },
             };
 
             return Ok(new

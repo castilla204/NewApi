@@ -949,6 +949,35 @@ namespace newApi.Controllers
                     expertProfile.PendingStripeAccountId = null;
                 }
 
+                // 🛡️ Round 28 MUD-V (GAP): validar Country ANTES de marcar Pending +
+                // SaveChanges. Antes, si Country=null (experto recién mudado) llegaba aquí,
+                // primero se persistía StripeStatus=Pending y LUEGO fallaba — dejando el
+                // perfil en Pending sin cuenta Stripe → loop infinito de "Continuar
+                // Verificación" que siempre da 400. Mover el guard arriba evita el side-effect.
+                var preFlightCountry = expertProfile.Country?.Trim().ToUpperInvariant();
+                if (!SupportedConnectCountries.IsSupported(preFlightCountry))
+                {
+                    var isRelocating = expertProfile.RelocatedFromCountry != null
+                                    && string.IsNullOrEmpty(expertProfile.StripeAccountId);
+                    await _loggingService.LogWarningAsync(
+                        message: "Onboarding de experto bloqueado: pais no soportado o ausente (pre-Pending guard)",
+                        details: $"UserId {userId}, ExpertProfileId {expertProfile.Id}, Country='{expertProfile.Country ?? "null"}', Relocating={isRelocating}. Bloqueado ANTES de set StripeStatus=Pending para evitar estado persistido inconsistente.",
+                        userId: userId,
+                        source: "SubscriptionController.CreateExpertOnboarding.CountryPreFlight",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: expertProfile.Id);
+                    return BadRequest(new
+                    {
+                        message = isRelocating
+                            ? "Para completar tu mudanza, primero selecciona tu nuevo país en 'Convertirse en experto'."
+                            : "Tu pais todavia no esta disponible para recibir pagos en la plataforma. Si crees que es un error, contacta con soporte.",
+                        blocked = true,
+                        reason = isRelocating ? "relocation_pending_country_required" : "unsupported_country",
+                        country = expertProfile.Country,
+                        redirectTo = isRelocating ? "/become-expert" : null,
+                    });
+                }
+
                 // Marcar como pendiente antes de crear la cuenta
                 expertProfile.StripeStatus = StripeStatus.Pending;
                 try

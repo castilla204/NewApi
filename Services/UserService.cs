@@ -1426,13 +1426,16 @@ namespace newApi.Services
                                     detectedCountry);
                         }
 
-                        // 🛡️ Round 28 — STRIPE_COUNTRY_LOCKED gate: si el experto ya completó onboarding y
-                        // tiene una cuenta Stripe Connect viva, su Account.country es INMUTABLE en Stripe.
-                        // Permitir que expertProfile.Country diverja del Stripe Account.country crea
-                        // currency_mismatch en transfers. Comparar contra Stripe (verdad real) y bloquear.
-                        // Se omite si la cuenta no existe (acct nunca creado o ya eliminada → 404).
+                        // 🛡️ Round 28 — STRIPE_COUNTRY_LOCKED gate: si el experto tiene cuenta
+                        // Stripe Connect creada (incluso si no completó onboarding), su Account.country
+                        // YA está fijado en Stripe e es INMUTABLE. Permitir que expertProfile.Country
+                        // diverja del Stripe Account.country crea currency_mismatch en transfers.
+                        // 🛡️ MUD-3: condición original requería OnboardingCompleted=true, pero el acct
+                        // ya tiene country fijado desde el momento de su creación (AccountCreateOptions).
+                        // Un experto que creó acct US y abandonó el onboarding podía mover su pin a ES
+                        // sin restricción → divergencia silenciosa. Ahora basta con que exista
+                        // StripeAccountId para activar el gate.
                         if (!string.IsNullOrEmpty(detectedCountry)
-                            && expertProfile.OnboardingCompleted
                             && !string.IsNullOrEmpty(expertProfile.StripeAccountId))
                         {
                             try

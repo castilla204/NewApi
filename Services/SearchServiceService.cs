@@ -1338,10 +1338,15 @@ namespace newApi.Services
                     return (false, null, null);
                 }
 
-                // 🌍 Currency: normalizar el valor recibido y advertir si no coincide con
-                // la default_currency del Stripe Connect account del experto. Solo Warning;
-                // la validación dura se hace en checkout (RefundService/SearchHire), aquí el
-                // experto puede tener pendiente el onboarding o estar cambiando de divisa.
+                // 🌍 Currency: normalizar el valor recibido. Si el experto tiene Stripe Account
+                // activo, FORZAR la divisa al default del Stripe Account (verdad autoritativa e
+                // inmutable). Esto cubre el caso de mudanza: experto se registró en US (Stripe
+                // acct USD), cambia ExpertProfile.Country a ES → CreateService deriva EUR del país,
+                // pero el Stripe acct sigue siendo USD. Sin esta corrección, el servicio se
+                // crearía en EUR y cualquier transfer al experto fallaría con currency_mismatch
+                // (RefundService.cs:1316-1342 → RequiresManualReview + dinero atascado).
+                // 🛡️ Round 28 MUD-1: el Warning se convierte en CORRECCIÓN ACTIVA — preferimos
+                // SIEMPRE la divisa del Stripe acct sobre la derivada del país del perfil.
                 var resolvedCurrency = Common.SupportedCurrenciesList.Normalize(request.Currency) ?? "EUR";
 
                 if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
@@ -1350,13 +1355,25 @@ namespace newApi.Services
                     {
                         var stripeAccount = await new Stripe.AccountService().GetAsync(expertProfile.StripeAccountId);
                         var accountDefault = stripeAccount?.DefaultCurrency;
-                        if (!string.IsNullOrEmpty(accountDefault) &&
-                            !string.Equals(accountDefault, resolvedCurrency, StringComparison.OrdinalIgnoreCase))
+                        if (!string.IsNullOrEmpty(accountDefault))
                         {
-                            _logger.LogWarning(
-                                "Currency mismatch on CreateSearchService: requested {RequestedCurrency} but Stripe Connect account {StripeAccountId} (expert {ExpertProfileId}) default_currency is {AccountDefaultCurrency}. Service will be created; final validation runs at checkout.",
-                                resolvedCurrency, expertProfile.StripeAccountId, expertProfile.Id, accountDefault.ToUpperInvariant());
+                            var normalizedAccountDefault = accountDefault.Trim().ToUpperInvariant();
+                            if (!string.Equals(normalizedAccountDefault, resolvedCurrency, StringComparison.OrdinalIgnoreCase))
+                            {
+                                _logger.LogWarning(
+                                    "Currency mismatch on CreateSearchService — OVERRIDING: requested {RequestedCurrency} but Stripe Connect account {StripeAccountId} (expert {ExpertProfileId}) default_currency is {AccountDefaultCurrency}. Service will be created with {AccountDefaultCurrency} to avoid currency_mismatch in future transfers. This typically indicates a country relocation (e.g. expert moved from US→ES but Stripe account is still USD).",
+                                    resolvedCurrency, expertProfile.StripeAccountId, expertProfile.Id, normalizedAccountDefault, normalizedAccountDefault);
+                                resolvedCurrency = normalizedAccountDefault;
+                            }
                         }
+                    }
+                    catch (Stripe.StripeException stripeEx) when (stripeEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        // Stripe acct ya no existe — el experto debería re-onboardar. Permitir creación con la divisa
+                        // derivada del país; el guard de RefundService capturará el problema en el primer transfer.
+                        _logger.LogWarning(
+                            "Stripe Account {StripeAccountId} for expert {ExpertProfileId} not found (404). Allowing CreateSearchService with currency {RequestedCurrency} — expert should re-onboard.",
+                            expertProfile.StripeAccountId, expertProfile.Id, resolvedCurrency);
                     }
                     catch (Exception stripeEx)
                     {

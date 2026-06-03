@@ -115,6 +115,65 @@ namespace newApi.Controllers
                     return NotFound(new { message = $"ExpertProfile not found for user {expertUserId}" });
                 }
 
+                // 🛡️ Round 28 MUD-4: guards previos al reset para no dejar disputas/hires en limbo.
+                // Antes el endpoint borraba acct sin verificar estado del experto → si tenía dispute
+                // Pending o hire en AwaitingClientDecision, el reset rompía el flujo:
+                //  - Dispute: StripeDisputeId huérfano en una cuenta rejected.
+                //  - Hire: ProcessMoneyDistributionAsync intentaba transfer a acct inexistente → 404.
+                // Admite ?force=true para casos de emergencia (acct corrupto irrecuperable).
+                var force = Request.Query.ContainsKey("force") && Request.Query["force"] == "true";
+                if (!force)
+                {
+                    var pendingDisputes = await _context.Disputes
+                        .AsNoTracking()
+                        .Where(d => (d.Status == "Pending" || d.Status == "Resolving")
+                                 && d.SearchHire != null
+                                 && (d.SearchHire.ExpertId == expertUserId || d.ReporterId == expertUserId))
+                        .CountAsync(ct);
+                    if (pendingDisputes > 0)
+                    {
+                        return BadRequest(new
+                        {
+                            error = "blocked_by_pending_disputes",
+                            message = $"No se puede resetear el Stripe del experto: tiene {pendingDisputes} disputa(s) activa(s) (Pending/Resolving). Resolver primero las disputas y reintentar. Para forzar (NO recomendado, deja StripeDisputeId huérfano): añadir ?force=true.",
+                            pendingDisputes,
+                        });
+                    }
+
+                    var activeHires = await _context.SearchHires
+                        .AsNoTracking()
+                        .Include(h => h.Status)
+                        .Where(h => h.ExpertId == expertUserId
+                                 && h.Status != null
+                                 && !h.Status.IsFinalizationStatus)
+                        .CountAsync(ct);
+                    if (activeHires > 0)
+                    {
+                        return BadRequest(new
+                        {
+                            error = "blocked_by_active_hires",
+                            message = $"No se puede resetear el Stripe del experto: tiene {activeHires} contratación(es) activa(s) en estado no-final. Esperar a su finalización (o cancelarlas vía /api/admin/searchhire) y reintentar. Para forzar (deja hires sin destinatario en transfers): añadir ?force=true.",
+                            activeHires,
+                        });
+                    }
+
+                    var pendingRefunds = await _context.FinancialTransactions
+                        .AsNoTracking()
+                        .Where(ft => ft.UserId == expertUserId
+                                  && ft.TransactionType == "Refund"
+                                  && ft.CreatedAt > System.DateTime.UtcNow.AddHours(-24))
+                        .CountAsync(ct);
+                    if (pendingRefunds > 0)
+                    {
+                        return BadRequest(new
+                        {
+                            error = "blocked_by_recent_refunds",
+                            message = $"No se puede resetear: hay {pendingRefunds} refund(s) en las últimas 24h. Esperar a su settlement Stripe.",
+                            pendingRefunds,
+                        });
+                    }
+                }
+
                 var beforeStripeAccountId = profile.StripeAccountId;
                 var beforePendingStripeAccountId = profile.PendingStripeAccountId;
                 var beforeStatus = profile.StripeStatus;

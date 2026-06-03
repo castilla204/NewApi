@@ -5694,6 +5694,56 @@ namespace newApi.Controllers
 
                 // 💳 SIEMPRE PAGAR CON STRIPE - NO USAR SALDO INTERNO
                 var domain = _configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com";
+
+                // 🛡️ Round 28 MUD-6: defensa en profundidad — override del Currency contra Stripe Account
+                // ANTES de crear la Session. Si el SearchService.Currency en BD no coincide con el
+                // default_currency del Stripe acct del experto (caso de mudanza incompleta o servicio
+                // legacy creado pre-fix), Stripe rechazaría con currency_mismatch (separate charges
+                // and transfers exige coherencia entre PI.currency y destination.default_currency).
+                // MUD-1 hace este override en CreateService, pero servicios legacy ya tienen Currency
+                // potencialmente mal. Re-validamos aquí justo antes del cobro.
+                var checkoutCurrency = (service.Currency ?? "EUR").ToLowerInvariant();
+                if (!string.IsNullOrEmpty(service.ExpertProfile?.StripeAccountId))
+                {
+                    try
+                    {
+                        var stripeAcctService = new Stripe.AccountService();
+                        var stripeAcct = await stripeAcctService.GetAsync(service.ExpertProfile.StripeAccountId);
+                        var acctDefault = stripeAcct?.DefaultCurrency;
+                        if (!string.IsNullOrEmpty(acctDefault) && !string.Equals(acctDefault, checkoutCurrency, StringComparison.OrdinalIgnoreCase))
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "HireService MUD-6: currency mismatch overriden to Stripe acct currency",
+                                details: $"Service {service.Id}: BD says {checkoutCurrency.ToUpperInvariant()}, Stripe acct {service.ExpertProfile.StripeAccountId} default_currency is {acctDefault.ToUpperInvariant()}. Overriding to {acctDefault.ToUpperInvariant()} para evitar currency_mismatch.",
+                                userId: userId,
+                                source: "SubscriptionController.HireService.MUD6",
+                                relatedEntityType: "SearchService",
+                                relatedEntityId: service.Id);
+                            checkoutCurrency = acctDefault.Trim().ToLowerInvariant();
+                        }
+                    }
+                    catch (Stripe.StripeException stripeReadEx) when (stripeReadEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        // Stripe acct ya no existe — bloquear el checkout para evitar dejar al cliente con un PI huérfano.
+                        return BadRequest(new
+                        {
+                            message = "Este experto no puede recibir cobros en este momento (cuenta de pagos no disponible). Por favor, contacta al soporte o vuelve a intentar más tarde.",
+                            errorCode = "EXPERT_STRIPE_ACCOUNT_NOT_FOUND"
+                        });
+                    }
+                    catch (Exception stripeReadEx)
+                    {
+                        // Best-effort: si Stripe no responde, usar BD pero loguear para auditoría.
+                        await _loggingService.LogWarningAsync(
+                            message: "HireService MUD-6: could not verify Stripe acct currency, using BD value",
+                            details: $"Service {service.Id}: {stripeReadEx.Message}. Using {checkoutCurrency.ToUpperInvariant()} from BD.",
+                            userId: userId,
+                            source: "SubscriptionController.HireService.MUD6",
+                            relatedEntityType: "SearchService",
+                            relatedEntityId: service.Id);
+                    }
+                }
+
                 var options = new SessionCreateOptions
                 {
                     PaymentMethodTypes = new List<string> { "card" },
@@ -5709,7 +5759,8 @@ namespace newApi.Controllers
                                 // y lo pasamos a Stripe en minúsculas como exige la API.
                                 // 🛡️ Round 28 Sprint 3: defensa NPE — si Currency es null en una fila legacy,
                                 // caer a "eur" en vez de NullReferenceException.
-                                Currency = (service.Currency ?? "EUR").ToLowerInvariant(),
+                                // 🛡️ Round 28 MUD-6: usar `checkoutCurrency` que YA está validado contra Stripe acct.
+                                Currency = checkoutCurrency,
                                 UnitAmount = checked((long)Math.Round(service.Price * 100)),
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {

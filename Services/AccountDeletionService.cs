@@ -2335,13 +2335,96 @@ namespace newApi.Services
                                     relatedEntityId: expertProfileId);
                             }
 
+                            // 🛡️ Round 28 — N4-balance: ANTES de Delete, leer balance per-currency y drenar.
+                            // Stripe.Account.Delete rechaza si hay balance ≠ 0 → la BD ya nuleó StripeAccountId
+                            // y la cuenta Stripe queda viva con dinero atascado sin trazabilidad. Tres pasos:
+                            // (1) Balance.Retrieve con StripeAccount header → lista de saldos por divisa.
+                            // (2) Si available > 0 en alguna divisa: intentar PayoutCreate hacia bank_account
+                            //     del experto. Si falla por "no bank_account" o "balance_insufficient" tras
+                            //     pendings, dejar el balance para reverso automático de Stripe a la plataforma.
+                            // (3) Tras drenaje (o sin balance): probar Delete; si Stripe sigue rechazando,
+                            //     usar Account.Reject(reason:"other") como fallback (cierra la cuenta y deja
+                            //     que Stripe haga reverso del balance pendiente al platform automáticamente).
+                            var balancesSnapshot = new System.Text.StringBuilder();
+                            var hadBalance = false;
+                            try
+                            {
+                                var balanceService = new Stripe.BalanceService();
+                                var stripeRequestOpts = new Stripe.RequestOptions { StripeAccount = stripeAccountIdToDelete };
+                                var acctBalance = await balanceService.GetAsync(stripeRequestOpts);
+                                if (acctBalance.Available != null)
+                                {
+                                    foreach (var avail in acctBalance.Available)
+                                    {
+                                        if (avail.Amount > 0)
+                                        {
+                                            hadBalance = true;
+                                            balancesSnapshot.Append($"available={avail.Amount / 100m:F2} {avail.Currency.ToUpperInvariant()}; ");
+                                            try
+                                            {
+                                                var payoutSvc = new Stripe.PayoutService();
+                                                var payoutOpts = new Stripe.PayoutCreateOptions
+                                                {
+                                                    Amount = avail.Amount,
+                                                    Currency = avail.Currency,
+                                                    Metadata = new Dictionary<string, string>
+                                                    {
+                                                        { "reason", "account_deletion_final_payout" },
+                                                        { "userId", userId.ToString() },
+                                                        { "expertProfileId", expertProfileId.ToString() }
+                                                    }
+                                                };
+                                                var payoutReqOpts = new Stripe.RequestOptions
+                                                {
+                                                    StripeAccount = stripeAccountIdToDelete,
+                                                    IdempotencyKey = $"acct-deletion-payout-{expertProfileId}-{avail.Currency}"
+                                                };
+                                                var payout = await payoutSvc.CreateAsync(payoutOpts, payoutReqOpts);
+                                                await _loggingService.LogInfoAsync(
+                                                    message: "N4-balance: final payout created before account deletion",
+                                                    details: $"ExpertProfile {expertProfileId} acct {stripeAccountIdToDelete}: payout {payout.Id} de {avail.Amount / 100m:F2} {avail.Currency.ToUpperInvariant()} a bank_account del experto.",
+                                                    userId: userId,
+                                                    source: "AccountDeletionService.N4Balance.Payout",
+                                                    relatedEntityType: "ExpertProfile",
+                                                    relatedEntityId: expertProfileId,
+                                                    additionalData: new { PayoutId = payout.Id, Amount = avail.Amount / 100m, Currency = avail.Currency.ToUpperInvariant() });
+                                            }
+                                            catch (Stripe.StripeException payoutEx)
+                                            {
+                                                // Payout falló (sin bank_account / capability disabled / etc.) — log critical pero
+                                                // continuamos. El balance quedará para reverso automático al platform vía Reject.
+                                                await _loggingService.LogCriticalAsync(
+                                                    message: "CRITICAL N4-balance: payout failed before account deletion — balance will be reversed to platform",
+                                                    details: $"ExpertProfile {expertProfileId} acct {stripeAccountIdToDelete}: payout de {avail.Amount / 100m:F2} {avail.Currency.ToUpperInvariant()} FALLÓ: {payoutEx.StripeError?.Code} - {payoutEx.Message}. El balance quedará en Stripe — al hacer Reject, Stripe lo reverte al balance de la plataforma. ACCIÓN ADMIN: identificar destinatario humano y devolver manualmente.",
+                                                    userId: userId,
+                                                    source: "AccountDeletionService.N4Balance.PayoutFailed",
+                                                    relatedEntityType: "ExpertProfile",
+                                                    relatedEntityId: expertProfileId,
+                                                    additionalData: new { Amount = avail.Amount / 100m, Currency = avail.Currency.ToUpperInvariant(), PayoutError = payoutEx.StripeError?.Code, payoutEx.Message });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            catch (Exception balEx)
+                            {
+                                // Best-effort: no abortar GDPR delete por fallo en balance read.
+                                await _loggingService.LogWarningAsync(
+                                    message: "N4-balance: failed to read balance before Stripe.Account.Delete (continuing)",
+                                    details: $"ExpertProfile {expertProfileId} acct {stripeAccountIdToDelete}: no se pudo leer balance per-currency: {balEx.Message}. Procedemos con Delete; si hay balance Stripe lo rechazará y caeremos a Reject fallback.",
+                                    userId: userId,
+                                    source: "AccountDeletionService.N4Balance.ReadFailed",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfileId);
+                            }
+
                             try
                             {
                                 var stripeAccountService = new Stripe.AccountService();
                                 await stripeAccountService.DeleteAsync(stripeAccountIdToDelete);
                                 await _loggingService.LogInfoAsync(
                                     message: "N4: Stripe Connect account deleted",
-                                    details: $"Cuenta Stripe Connect {stripeAccountIdToDelete} eliminada para User {userId} antes del delete del ExpertProfile {expertProfileId}.",
+                                    details: $"Cuenta Stripe Connect {stripeAccountIdToDelete} eliminada para User {userId} antes del delete del ExpertProfile {expertProfileId}. {(hadBalance ? $"Balance pre-Delete: {balancesSnapshot}" : "Sin balance pendiente.")}",
                                     userId: userId,
                                     source: "AccountDeletionService.DeleteUserDataAsync.N4Delete",
                                     relatedEntityType: "ExpertProfile",
@@ -2360,17 +2443,51 @@ namespace newApi.Services
                             }
                             catch (Stripe.StripeException stripeEx)
                             {
-                                // Otros errores Stripe: balance >0, capability activa, etc. NO abortamos
-                                // el delete local (el usuario tiene derecho al olvido), pero alertamos al
-                                // admin para que limpie manualmente en Stripe Dashboard.
-                                await _loggingService.LogCriticalAsync(
-                                    message: "CRITICAL N4: Failed to delete Stripe Connect account (delete local continúa)",
-                                    details: $"User {userId} ExpertProfile {expertProfileId}: Stripe account {stripeAccountIdToDelete} NO se pudo borrar ({(int?)stripeEx.HttpStatusCode}: {stripeEx.StripeError?.Code}: {stripeEx.Message}). ACCIÓN ADMIN: revisar saldo + capability + borrar manualmente en Stripe Dashboard. El delete local del User SÍ continúa para no bloquear GDPR Art 17.",
-                                    userId: userId,
-                                    source: "AccountDeletionService.DeleteUserDataAsync.N4Delete",
-                                    relatedEntityType: "ExpertProfile",
-                                    relatedEntityId: expertProfileId,
-                                    additionalData: new { StripeAccountId = stripeAccountIdToDelete, stripeEx.StripeError?.Code, stripeEx.HttpStatusCode, stripeEx.Message });
+                                // 🛡️ Round 28 — N4-fallback: Delete rechazado (probablemente balance>0 o capability
+                                // activa). Intentamos Account.Reject(reason:"other") — Stripe acepta Reject incluso
+                                // con balance pendiente y se encarga de reversar automáticamente al platform.
+                                var rejectSucceeded = false;
+                                try
+                                {
+                                    var stripeAccountServiceReject = new Stripe.AccountService();
+                                    var rejectOpts = new Stripe.AccountRejectOptions { Reason = "other" };
+                                    await stripeAccountServiceReject.RejectAsync(stripeAccountIdToDelete, rejectOpts);
+                                    rejectSucceeded = true;
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "N4-fallback: Stripe account REJECTED (Delete failed — balance will be reversed to platform)",
+                                        details: $"User {userId} ExpertProfile {expertProfileId}: Stripe Delete falló ({stripeEx.StripeError?.Code}: {stripeEx.Message}). Account.Reject(other) ejecutado OK — Stripe reverte balance pendiente al platform automáticamente. Snapshot balance pre-cierre: {(balancesSnapshot.Length > 0 ? balancesSnapshot.ToString() : "(no leído)")}. ACCIÓN ADMIN: identificar dueño del balance y reconciliar.",
+                                        userId: userId,
+                                        source: "AccountDeletionService.DeleteUserDataAsync.N4Reject",
+                                        relatedEntityType: "ExpertProfile",
+                                        relatedEntityId: expertProfileId,
+                                        additionalData: new { StripeAccountId = stripeAccountIdToDelete, DeleteError = stripeEx.StripeError?.Code, BalanceSnapshot = balancesSnapshot.ToString() });
+                                }
+                                catch (Exception rejectEx)
+                                {
+                                    // Reject también falló — la cuenta queda viva en Stripe Dashboard y el dinero atascado.
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL N4: BOTH Delete AND Reject failed — zombie Stripe account",
+                                        details: $"User {userId} ExpertProfile {expertProfileId}: Stripe Delete falló y Reject también ({rejectEx.Message}). La cuenta {stripeAccountIdToDelete} queda activa en Stripe; el balance se mantiene. URGENTE: limpieza manual en Stripe Dashboard. Balance pre-cierre: {balancesSnapshot}",
+                                        userId: userId,
+                                        source: "AccountDeletionService.DeleteUserDataAsync.N4DeleteRejectFailed",
+                                        relatedEntityType: "ExpertProfile",
+                                        relatedEntityId: expertProfileId,
+                                        additionalData: new { StripeAccountId = stripeAccountIdToDelete, DeleteError = stripeEx.Message, RejectError = rejectEx.Message, BalanceSnapshot = balancesSnapshot.ToString() });
+                                }
+
+                                if (!rejectSucceeded)
+                                {
+                                    // Si Reject también falló, mantenemos el log critical anterior. El delete local del
+                                    // User sigue (GDPR Art 17 prevalece sobre el zombi de Stripe).
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL N4: Failed to delete Stripe Connect account (delete local continúa)",
+                                        details: $"User {userId} ExpertProfile {expertProfileId}: Stripe account {stripeAccountIdToDelete} NO se pudo borrar ({(int?)stripeEx.HttpStatusCode}: {stripeEx.StripeError?.Code}: {stripeEx.Message}). ACCIÓN ADMIN: revisar saldo + capability + borrar manualmente en Stripe Dashboard. El delete local del User SÍ continúa para no bloquear GDPR Art 17.",
+                                        userId: userId,
+                                        source: "AccountDeletionService.DeleteUserDataAsync.N4Delete",
+                                        relatedEntityType: "ExpertProfile",
+                                        relatedEntityId: expertProfileId,
+                                        additionalData: new { StripeAccountId = stripeAccountIdToDelete, stripeEx.StripeError?.Code, stripeEx.HttpStatusCode, stripeEx.Message });
+                                }
                             }
                             catch (Exception ex)
                             {

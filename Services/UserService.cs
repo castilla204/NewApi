@@ -429,7 +429,10 @@ namespace newApi.Services
             return (true, combinedToken, user, null);
         }
 
-        public async Task<(bool success, string token, User user, ExpertProfile expertProfile)> BecomeExpert(
+        // 🛡️ Round 28: extendido con errorCode/errorMessage/detectedCountry para que el controller
+        // mapee a HTTP status + mensaje específico al cliente. Patrón consistente con GoogleAuth.
+        public async Task<(bool success, string? token, User? user, ExpertProfile? expertProfile,
+                          string? errorCode, string? errorMessage, string? detectedCountry)> BecomeExpert(
             int userId,
             BecomeExpertRequestDto request)
         {
@@ -439,7 +442,7 @@ namespace newApi.Services
 
             if (user == null)
             {
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // ✅ VALIDACIÓN: Usuario bloqueado no puede convertirse en experto
@@ -453,17 +456,17 @@ namespace newApi.Services
                     relatedEntityType: "User",
                     relatedEntityId: user.Id
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             if (user.Role == UserRole.Expert)
             {
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             if (user.ExpertProfile != null)
             {
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // 🚨 VALIDACIÓN CRÍTICA: Verificar que todas las contrataciones como cliente estén finalizadas
@@ -493,7 +496,7 @@ namespace newApi.Services
                     }
                 );
                 
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // Validar Latitude y Longitude
@@ -508,7 +511,7 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "MissingLatitudeOrLongitude" }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             if (!decimal.TryParse(request.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var latitude))
@@ -522,7 +525,7 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "InvalidLatitudeFormat", Latitude = request.Latitude }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             if (!decimal.TryParse(request.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var longitude))
@@ -536,7 +539,7 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "InvalidLongitudeFormat", Longitude = request.Longitude }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             if (latitude < -90m || latitude > 90m)
@@ -550,7 +553,7 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "LatitudeOutOfRange", Latitude = latitude }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             if (longitude < -180m || longitude > 180m)
@@ -564,7 +567,7 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "LongitudeOutOfRange", Longitude = longitude }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // Validar tamaño del archivo (5MB límite para imágenes de perfil)
@@ -579,7 +582,7 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "ProfilePictureTooLarge", Size = request.ProfilePicture.Length }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // Validar tipo de archivo
@@ -595,7 +598,7 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "InvalidFileExtension", Extension = extension, FileName = request.ProfilePicture.FileName }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
             var bucketName = _configuration["GoogleCloud:BucketName"];
             var uniqueFileName = $"{Guid.NewGuid()}{extension}";
@@ -686,7 +689,7 @@ namespace newApi.Services
                     }
                 );
                 
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             var imageUrl = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
@@ -800,7 +803,24 @@ namespace newApi.Services
                         Cause = "GeocodingReturnedNull"
                     }
                 );
-                return (false, null, null, null);
+                // 🛡️ Round 28: limpiar foto huérfana en Supabase (se subió antes del gate de país).
+                // Sin esto, cada rechazo deja una imagen pagando storage hasta intervención manual.
+                try
+                {
+                    await _supabaseStorage.DeleteAsync(_supabaseStorage.ImagesBucket, objectName);
+                }
+                catch (Exception cleanupEx)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Could not cleanup profile picture after CountryGate (null) rejection",
+                        details: $"User {userId}: foto {objectName} quedó huérfana en Supabase. Error: {cleanupEx.Message}. Limpiar manualmente.",
+                        userId: userId,
+                        source: "UserService.BecomeExpert.OrphanPhotoCleanup");
+                }
+                return (false, null, null, null,
+                        BecomeExpertErrorCodes.CountryDetectionFailed,
+                        "No pudimos verificar tu ubicación. Inténtalo en unos minutos o contacta con soporte.",
+                        null);
             }
 
             if (!SupportedConnectCountries.IsSupported(expertCountry))
@@ -824,7 +844,24 @@ namespace newApi.Services
                     }
                 );
 
-                return (false, null, null, null);
+                // 🛡️ Round 28: limpiar foto huérfana en Supabase (rechazo por país no soportado).
+                try
+                {
+                    await _supabaseStorage.DeleteAsync(_supabaseStorage.ImagesBucket, objectName);
+                }
+                catch (Exception cleanupEx)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Could not cleanup profile picture after CountryGate (not-supported) rejection",
+                        details: $"User {userId}: foto {objectName} quedó huérfana en Supabase tras rechazo por país {expertCountry}. Error: {cleanupEx.Message}. Limpiar manualmente.",
+                        userId: userId,
+                        source: "UserService.BecomeExpert.OrphanPhotoCleanup");
+                }
+
+                return (false, null, null, null,
+                        BecomeExpertErrorCodes.CountryNotSupported,
+                        $"Tu país ({expertCountry}) aún no está disponible para recibir pagos en la plataforma. Elige una ubicación en un país soportado o contacta con soporte.",
+                        expertCountry);
             }
 
             var expertProfile = new ExpertProfile
@@ -884,7 +921,7 @@ namespace newApi.Services
                 var scopedUser = await scopedContext.Users.FindAsync(userId);
                 if (scopedUser == null)
                 {
-                    return (false, null, null, null);
+                    return (false, null, null, null, null, null, null);
                 }
                 
                 // Re-attach el expertProfile al nuevo contexto
@@ -921,7 +958,7 @@ namespace newApi.Services
                 else
                 {
                     // Si aún falla, retornar error
-                    return (false, null, null, null);
+                    return (false, null, null, null, null, null, null);
                 }
             }
             catch (ObjectDisposedException ex)
@@ -976,7 +1013,7 @@ namespace newApi.Services
                 else
                 {
                     // Si aún falla, retornar error
-                    return (false, null, null, null);
+                    return (false, null, null, null, null, null, null);
                 }
             }
             catch (DbUpdateException dbEx)
@@ -1003,7 +1040,7 @@ namespace newApi.Services
                             StackTrace = dbEx.StackTrace
                         }
                     );
-                    return (false, null, null, null);
+                    return (false, null, null, null, null, null, null);
                 }
                 else
                 {
@@ -1024,7 +1061,7 @@ namespace newApi.Services
                             StackTrace = dbEx.StackTrace
                         }
                     );
-                    return (false, null, null, null);
+                    return (false, null, null, null, null, null, null);
                 }
             }
             catch (Exception ex)
@@ -1045,7 +1082,7 @@ namespace newApi.Services
                         StackTrace = ex.StackTrace
                     }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // ✅ VALIDACIÓN: La disponibilidad horaria es OBLIGATORIA al crear un perfil de experto
@@ -1076,7 +1113,7 @@ namespace newApi.Services
                         AvailabilityEndTime = request.AvailabilityEndTime
                     }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // Parsear y validar tiempos
@@ -1105,7 +1142,7 @@ namespace newApi.Services
                         AvailabilityEndTime = request.AvailabilityEndTime
                     }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // Validar días válidos
@@ -1135,7 +1172,7 @@ namespace newApi.Services
                         AllDays = request.AvailabilityDaysOfWeek
                     }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             if (startTime >= endTime)
@@ -1161,7 +1198,7 @@ namespace newApi.Services
                         EndTime = endTime.ToString()
                     }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // Crear disponibilidad horaria inicial (obligatoria)
@@ -1228,7 +1265,7 @@ namespace newApi.Services
                     }
                 );
                 
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             var token = GenerateJwtToken(user);
@@ -1252,8 +1289,8 @@ namespace newApi.Services
             var accessToken = GenerateJwtToken(user);
             var refreshToken = await GenerateRefreshTokenAsync(user.Id, "BecomeExpert");
             var combinedToken = $"{accessToken}|{refreshToken}";
-            
-            return (true, combinedToken, user, expertProfile);
+
+            return (true, combinedToken, user, expertProfile, null, null, expertCountry);
         }
 
         public async Task<ExpertProfileDto?> GetExpertProfile(int userId)
@@ -1318,7 +1355,9 @@ namespace newApi.Services
         }
 
 
-        public async Task<(bool Success, ExpertProfileDto? UpdatedProfile)> UpdateExpertProfile(int userId, UpdateExpertProfileRequestDto request)
+        // 🛡️ Round 28: extendido con errorCode/errorMessage/detectedCountry como BecomeExpert.
+        public async Task<(bool Success, ExpertProfileDto? UpdatedProfile,
+                          string? errorCode, string? errorMessage, string? detectedCountry)> UpdateExpertProfile(int userId, UpdateExpertProfileRequestDto request)
         {
             try
             {
@@ -1329,20 +1368,20 @@ namespace newApi.Services
 
                 if (expertProfile == null)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 // Validar coordenadas
                 if (!decimal.TryParse(request.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var latitude) ||
                     latitude < -90m || latitude > 90m)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 if (!decimal.TryParse(request.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var longitude) ||
                     longitude < -180m || longitude > 180m)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 // Actualizar los campos básicos
@@ -1381,7 +1420,66 @@ namespace newApi.Services
                                 relatedEntityType: "ExpertProfile",
                                 relatedEntityId: expertProfile.Id,
                                 additionalData: new { Latitude = latitude, Longitude = longitude, DetectedCountry = detectedCountry, CurrentCountry = expertProfile.Country, Cause = "CountryNotInWhitelist" });
-                            return (false, null);
+                            return (false, null,
+                                    BecomeExpertErrorCodes.CountryNotSupported,
+                                    $"Tu nueva ubicación ({detectedCountry}) no está disponible para recibir pagos. Elige otra dentro de los países soportados.",
+                                    detectedCountry);
+                        }
+
+                        // 🛡️ Round 28 — STRIPE_COUNTRY_LOCKED gate: si el experto ya completó onboarding y
+                        // tiene una cuenta Stripe Connect viva, su Account.country es INMUTABLE en Stripe.
+                        // Permitir que expertProfile.Country diverja del Stripe Account.country crea
+                        // currency_mismatch en transfers. Comparar contra Stripe (verdad real) y bloquear.
+                        // Se omite si la cuenta no existe (acct nunca creado o ya eliminada → 404).
+                        if (!string.IsNullOrEmpty(detectedCountry)
+                            && expertProfile.OnboardingCompleted
+                            && !string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                        {
+                            try
+                            {
+                                var stripeAccountService = new Stripe.AccountService();
+                                var stripeAccount = await stripeAccountService.GetAsync(expertProfile.StripeAccountId);
+                                if (!string.IsNullOrEmpty(stripeAccount?.Country)
+                                    && !string.Equals(stripeAccount.Country, detectedCountry, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    await _loggingService.LogInfoAsync(
+                                        message: "STRIPE_COUNTRY_LOCKED: rechazado cambio de país por inmutabilidad de Stripe Connect",
+                                        details: $"UserId {userId}: nuevas coords ({latitude},{longitude}) detectan país {detectedCountry}, pero Stripe Account {expertProfile.StripeAccountId} tiene country={stripeAccount.Country} (inmutable). Update abortado. Para mudarse, el experto debe cerrar su cuenta y volver a registrarse en el nuevo país.",
+                                        userId: userId,
+                                        source: "UserService.UpdateExpertProfile.StripeCountryLocked",
+                                        relatedEntityType: "ExpertProfile",
+                                        relatedEntityId: expertProfile.Id,
+                                        additionalData: new { Latitude = latitude, Longitude = longitude, DetectedCountry = detectedCountry, StripeAccountCountry = stripeAccount.Country, StripeAccountId = expertProfile.StripeAccountId });
+                                    return (false, null,
+                                            BecomeExpertErrorCodes.StripeCountryLocked,
+                                            $"Tu cuenta Stripe está vinculada a {stripeAccount.Country.ToUpperInvariant()} y no se puede cambiar a {detectedCountry}. Stripe no permite mover una cuenta entre países. Si necesitas mudarte, primero elimina tu cuenta de experto desde Ajustes y vuelve a registrarte en tu nuevo país.",
+                                            detectedCountry);
+                                }
+                            }
+                            catch (Stripe.StripeException stripeReadEx) when (stripeReadEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                            {
+                                // Stripe Account ya no existe (404) — sin gate posible, permitir el update.
+                                // El UserController/AccountDeletion debería haber limpiado StripeAccountId, pero
+                                // si no, log defensivo y continuar.
+                                await _loggingService.LogWarningAsync(
+                                    message: "STRIPE_COUNTRY_LOCKED gate skipped: Stripe Account 404",
+                                    details: $"UserId {userId} ExpertProfile {expertProfile.Id}: StripeAccountId={expertProfile.StripeAccountId} no existe en Stripe (404). Gate de country-locked omitido — update procederá.",
+                                    userId: userId,
+                                    source: "UserService.UpdateExpertProfile.StripeCountryLockedSkipped",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfile.Id);
+                            }
+                            catch (Exception stripeReadEx)
+                            {
+                                // Falla de red/Stripe — no bloquear update por esto, pero loguear para auditoría.
+                                await _loggingService.LogWarningAsync(
+                                    message: "STRIPE_COUNTRY_LOCKED gate skipped: Stripe Account read failed",
+                                    details: $"UserId {userId} ExpertProfile {expertProfile.Id}: no se pudo leer Stripe Account {expertProfile.StripeAccountId} para validar país: {stripeReadEx.Message}. Gate omitido — update procederá; riesgo: si el país en Stripe difiere, transfers fallarán con currency_mismatch.",
+                                    userId: userId,
+                                    source: "UserService.UpdateExpertProfile.StripeCountryLockedSkipped",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfile.Id);
+                            }
                         }
                     }
                     catch (Exception detectEx)
@@ -1455,14 +1553,14 @@ namespace newApi.Services
                     // Validar tamaño del archivo (5MB límite para imágenes de perfil)
                     if (request.ProfilePicture.Length > 5 * 1024 * 1024)
                     {
-                        return (false, null);
+                        return (false, null, null, null, null);
                     }
 
                     // Validar tipo de archivo
                     var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
                     if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
                     {
-                        return (false, null);
+                        return (false, null, null, null, null);
                     }
 
                     var bucketName = _configuration["GoogleCloud:BucketName"];
@@ -1514,7 +1612,7 @@ namespace newApi.Services
                     }
                     catch (Exception ex)
                     {
-                        return (false, null);
+                        return (false, null, null, null, null);
                     }
                 }
 
@@ -1533,19 +1631,19 @@ namespace newApi.Services
 
                 if (currentAvailability != null && !hasAvailabilityProvided)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 if (!hasAvailabilityProvided)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 // Parsear y validar tiempos
                 if (!TimeSpan.TryParse(request.AvailabilityStartTime, out var startTime) ||
                     !TimeSpan.TryParse(request.AvailabilityEndTime, out var endTime))
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 // Validar días válidos
@@ -1554,12 +1652,12 @@ namespace newApi.Services
                 
                 if (invalidDays.Any())
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 if (startTime >= endTime)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 // Actualizar disponibilidad horaria
@@ -1593,7 +1691,7 @@ namespace newApi.Services
                 }
                 catch (Exception ex)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 await _context.SaveChangesAsync();
@@ -1649,11 +1747,11 @@ namespace newApi.Services
                     Country = expertProfile.Country,
                     City = expertProfile.City
                 };
-                return (true, updatedProfileDto);
+                return (true, updatedProfileDto, null, null, expertProfile.Country);
             }
             catch (Exception ex)
             {
-                return (false, null);
+                return (false, null, null, null, null);
             }
         }
 

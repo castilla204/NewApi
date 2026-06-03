@@ -88,6 +88,108 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// 🛡️ Round 28 — Sprint US-2 (SUS2-8): reset completo del estado Stripe Connect de un experto.
+        /// Útil cuando un experto queda atascado en un acct corrupto (capabilities erróneas, idempotency
+        /// cacheada, requirements imposibles, etc.). Ejecuta:
+        ///  1. Lee StripeAccountId/PendingStripeAccountId del ExpertProfile.
+        ///  2. Intenta DeleteAsync sobre cada acct (404 → OK). Si falla, fallback a RejectAsync(other).
+        ///  3. Resetea estado en BD: StripeAccountId=null, PendingStripeAccountId=null,
+        ///     StripeStatus=NotRequested, StripeStatusDetails=null, OnboardingCompleted=false.
+        ///  4. Loguea crítico con el adminUserId actor para auditoría.
+        /// El experto puede volver a iniciar onboarding limpio.
+        /// </summary>
+        [HttpPost("expert/{expertUserId:int}/reset-stripe")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> ResetStripeForExpert(int expertUserId, CancellationToken ct = default)
+        {
+            try
+            {
+                var adminUserIdStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                _ = int.TryParse(adminUserIdStr, out int adminUserId);
+
+                var profile = await _context.ExpertProfiles
+                    .IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(p => p.UserId == expertUserId, ct);
+                if (profile == null)
+                {
+                    return NotFound(new { message = $"ExpertProfile not found for user {expertUserId}" });
+                }
+
+                var beforeStripeAccountId = profile.StripeAccountId;
+                var beforePendingStripeAccountId = profile.PendingStripeAccountId;
+                var beforeStatus = profile.StripeStatus;
+                var stripeOpsResults = new List<object>();
+
+                async Task TryCleanupStripeAccount(string? acctId, string label)
+                {
+                    if (string.IsNullOrEmpty(acctId)) return;
+                    try
+                    {
+                        var svc = new AccountService();
+                        await svc.DeleteAsync(acctId);
+                        stripeOpsResults.Add(new { acctId, label, op = "deleted" });
+                    }
+                    catch (StripeException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        stripeOpsResults.Add(new { acctId, label, op = "already_gone_404" });
+                    }
+                    catch (StripeException delEx)
+                    {
+                        // Fallback a Reject.
+                        try
+                        {
+                            var svc = new AccountService();
+                            await svc.RejectAsync(acctId, new AccountRejectOptions { Reason = "other" });
+                            stripeOpsResults.Add(new { acctId, label, op = "rejected_after_delete_failed", deleteError = delEx.StripeError?.Code });
+                        }
+                        catch (Exception rejEx)
+                        {
+                            stripeOpsResults.Add(new { acctId, label, op = "delete_and_reject_failed", deleteError = delEx.Message, rejectError = rejEx.Message });
+                        }
+                    }
+                    catch (Exception unexpectedEx)
+                    {
+                        stripeOpsResults.Add(new { acctId, label, op = "unexpected_error", error = unexpectedEx.Message });
+                    }
+                }
+
+                await TryCleanupStripeAccount(beforeStripeAccountId, "StripeAccountId");
+                if (!string.Equals(beforePendingStripeAccountId, beforeStripeAccountId, StringComparison.Ordinal))
+                {
+                    await TryCleanupStripeAccount(beforePendingStripeAccountId, "PendingStripeAccountId");
+                }
+
+                profile.StripeAccountId = null;
+                profile.PendingStripeAccountId = null;
+                profile.StripeStatus = global::newApi.DataLayer.Models.PostGresModels.StripeStatus.NotRequested;
+                profile.StripeStatusDetails = null;
+                profile.OnboardingCompleted = false;
+                profile.StripeFutureRequirements = null;
+                profile.StripeFutureDueAt = null;
+                await _context.SaveChangesAsync(ct);
+
+                _logger.LogWarning("Admin {AdminUserId} reset Stripe for expert {ExpertUserId}: was acct={Acct}, pending={Pending}, status={Status}",
+                    adminUserId, expertUserId, beforeStripeAccountId, beforePendingStripeAccountId, beforeStatus);
+
+                return Ok(new
+                {
+                    success = true,
+                    expertUserId,
+                    adminUserId,
+                    before = new { StripeAccountId = beforeStripeAccountId, PendingStripeAccountId = beforePendingStripeAccountId, Status = beforeStatus.ToString() },
+                    after = new { StripeAccountId = (string?)null, PendingStripeAccountId = (string?)null, Status = "NotRequested" },
+                    stripeOperations = stripeOpsResults,
+                    nextStep = "El experto puede iniciar onboarding limpio. Idempotency key se regenerará en la próxima llamada."
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ResetStripeForExpert failed for user {ExpertUserId}", expertUserId);
+                return StatusCode(500, new { error = "Error reseteando Stripe del experto", message = ex.Message });
+            }
+        }
+
+        /// <summary>
         /// ✅ MEJOR PRÁCTICA: Endpoint para detectar usuarios sospechosos
         /// Detecta usuarios con actividad anómala basándose en múltiples criterios
         /// </summary>

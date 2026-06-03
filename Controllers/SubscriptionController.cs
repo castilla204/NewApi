@@ -450,8 +450,13 @@ namespace newApi.Controllers
             expertProfile.StripeStatus = state.Status;
             expertProfile.OnboardingCompleted = state.OnboardingCompleted;
             expertProfile.StripeStatusDetails = state.StatusDetails ?? GetStatusMessage(state.Status);
+            // 🛡️ Round 28 — Sprint US-2 (SUS2-4): traducir los keys raw de Stripe a texto humano.
+            // Antes: string.Join con "individual.ssn_last_4, external_account" → el experto veía
+            // literales sin traducir en StripeStatusCard "Próximos requisitos". Ahora pasamos cada
+            // key por GetRequirementDescription para que aparezca "Últimos 4 dígitos del NIE/SSN,
+            // información bancaria". Bug aplicable a TODOS los países, no solo US.
             expertProfile.StripeFutureRequirements = state.FutureRequirements.Any()
-                ? string.Join(", ", state.FutureRequirements)
+                ? string.Join(", ", state.FutureRequirements.Select(r => GetRequirementDescription(r)))
                 : null;
             expertProfile.StripeFutureDueAt = state.FutureRequirementsDueAt;
         }
@@ -688,6 +693,80 @@ namespace newApi.Controllers
                     else
                     {
                         // Es un rechazo temporal (requirements.past_due, etc.), permitir reintentar
+                        // 🛡️ Round 28 — Sprint US-2 (SUS2-7): borrar el acct rechazado de Stripe
+                        // best-effort antes de limpiar la BD. Antes el acct quedaba huérfano en
+                        // Stripe consumiendo el contador de cuentas Connect y disparando webhooks
+                        // account.updated sin owner local. Si Delete falla (balance>0, etc.),
+                        // intentamos Reject(other) — Stripe lo permite con balance pendiente y se
+                        // encarga de reversar al platform automáticamente. El delete local del
+                        // ExpertProfile.StripeAccountId continúa SIEMPRE para no bloquear la UX.
+                        var stripeAcctToCleanup = expertProfile.StripeAccountId;
+                        if (!string.IsNullOrEmpty(stripeAcctToCleanup))
+                        {
+                            try
+                            {
+                                var cleanupSvc = new AccountService();
+                                await cleanupSvc.DeleteAsync(stripeAcctToCleanup);
+                                await _loggingService.LogInfoAsync(
+                                    message: "Rejected Stripe account deleted from Stripe",
+                                    details: $"Stripe account {stripeAcctToCleanup} (rechazo temporal) eliminado en Stripe antes de permitir restart del experto {userId}.",
+                                    userId: userId,
+                                    source: "SubscriptionController.CreateExpertOnboarding.RejectedTempCleanup",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfile.Id);
+                            }
+                            catch (StripeException stripeDelEx) when (stripeDelEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                            {
+                                // Ya no existe — perfecto, continuar.
+                                await _loggingService.LogInfoAsync(
+                                    message: "Rejected Stripe account already gone (404)",
+                                    details: $"Stripe account {stripeAcctToCleanup} no existe en Stripe — continuamos con restart.",
+                                    userId: userId,
+                                    source: "SubscriptionController.CreateExpertOnboarding.RejectedTempCleanup",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfile.Id);
+                            }
+                            catch (StripeException stripeDelEx)
+                            {
+                                // Delete falló (balance, capability activa, etc.) — intentar Reject como fallback.
+                                try
+                                {
+                                    var rejectSvc = new AccountService();
+                                    await rejectSvc.RejectAsync(stripeAcctToCleanup, new AccountRejectOptions { Reason = "other" });
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "Rejected Stripe account REJECTED (Delete failed — Stripe reverses balance to platform)",
+                                        details: $"Stripe account {stripeAcctToCleanup}: Delete falló ({stripeDelEx.StripeError?.Code}: {stripeDelEx.Message}). Reject(other) ejecutado OK — balance pendiente revertido al platform. ACCIÓN ADMIN: identificar dueño y reconciliar.",
+                                        userId: userId,
+                                        source: "SubscriptionController.CreateExpertOnboarding.RejectedTempCleanup",
+                                        relatedEntityType: "ExpertProfile",
+                                        relatedEntityId: expertProfile.Id,
+                                        additionalData: new { StripeAccountId = stripeAcctToCleanup, stripeDelEx.StripeError?.Code, stripeDelEx.Message });
+                                }
+                                catch (Exception rejEx)
+                                {
+                                    // Ambos fallaron — cuenta queda huérfana en Stripe; admin debe limpiar manualmente.
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL: BOTH Delete AND Reject failed on rejected Stripe account",
+                                        details: $"Stripe account {stripeAcctToCleanup}: Delete y Reject fallaron. Delete: {stripeDelEx.Message}. Reject: {rejEx.Message}. URGENTE: limpiar manualmente en Stripe Dashboard. El delete local del experto SÍ continúa.",
+                                        userId: userId,
+                                        source: "SubscriptionController.CreateExpertOnboarding.RejectedTempCleanup",
+                                        relatedEntityType: "ExpertProfile",
+                                        relatedEntityId: expertProfile.Id,
+                                        additionalData: new { StripeAccountId = stripeAcctToCleanup, DeleteError = stripeDelEx.Message, RejectError = rejEx.Message });
+                                }
+                            }
+                            catch (Exception unexpectedEx)
+                            {
+                                // Best-effort: no abortar el restart.
+                                await _loggingService.LogWarningAsync(
+                                    message: "Unexpected error deleting rejected Stripe account (continuing restart)",
+                                    details: $"Stripe account {stripeAcctToCleanup}: error inesperado: {unexpectedEx.Message}. Cleanup local continúa.",
+                                    userId: userId,
+                                    source: "SubscriptionController.CreateExpertOnboarding.RejectedTempCleanup",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfile.Id);
+                            }
+                        }
                         // Limpiar la cuenta rechazada y permitir crear una nueva
                         expertProfile.StripeAccountId = null;
                         expertProfile.PendingStripeAccountId = null;
@@ -957,6 +1036,18 @@ namespace newApi.Controllers
                     Country = expertConnectCountry,
                     Email = User.FindFirst(ClaimTypes.Email)?.Value,
                     Capabilities = global::newApi.Common.StripeConnectCapabilities.BuildCapabilitiesFor(expertConnectCountry),
+                    // 🛡️ Round 28 — Sprint US-2 (SUS2-2): service_agreement="full" explícito.
+                    // Stripe usa "full" por default, pero el Platform Profile del Dashboard puede
+                    // sobrescribirlo a "recipient" (Global Payouts contract). Si alguien lo cambia
+                    // accidentalmente, las nuevas cuentas US/CA/GB se crearían como recipient y la
+                    // combinación con card_payments + transfers fallaría con invalid_request_error.
+                    // Setearlo aquí blinda contra ese cambio. Stripe-hosted onboarding sigue
+                    // recogiendo la aceptación TOS — NO setear Date/Ip/UserAgent aquí (rompería el
+                    // flujo hosted; Stripe lo recoge en la pantalla del experto).
+                    TosAcceptance = new AccountTosAcceptanceOptions
+                    {
+                        ServiceAgreement = "full"
+                    },
                     Metadata = new Dictionary<string, string>
                     {
                         { "userId", userId.ToString() }
@@ -982,9 +1073,13 @@ namespace newApi.Controllers
                     // cacheadas que se generaron con el bug de capabilities (cuentas US que
                     // fallaron con la key antigua antes de este fix). Sin este bump, los
                     // expertos US/CA/GB que probaron pre-fix recibirían el mismo error 24h.
+                    // 🛡️ Round 28 Sprint US-2: bumped a "v3" tras añadir tax_reporting_us_1099_misc
+                    // + service_agreement="full" explícito. Sin este bump, los expertos US que
+                    // probaron en v2 (sin tax_reporting) reusarían la respuesta cacheada y se
+                    // perderían la capability nueva.
                     var idempotencyKeyValue = string.IsNullOrEmpty(onboardingAttemptToken)
-                        ? $"account-onboarding-v2-{userId}"
-                        : $"account-onboarding-v2-{userId}-{onboardingAttemptToken}";
+                        ? $"account-onboarding-v3-{userId}"
+                        : $"account-onboarding-v3-{userId}-{onboardingAttemptToken}";
                     var accountIdempotencyOptions = new Stripe.RequestOptions
                     {
                         IdempotencyKey = idempotencyKeyValue

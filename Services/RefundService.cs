@@ -2162,13 +2162,17 @@ namespace newApi.Services
                         await transaction.CommitAsync();
                         }
 
-                        // Ô£à Notificar a usuarios sobre movimientos de dinero exitosos
+                        // ✅ Notificar a usuarios sobre movimientos de dinero exitosos
+                        // 🛡️ Round 28 Sprint US-2 (SUS2-3): texto reescrito en UTF-8 limpio (antes
+                        // tenía mojibake "proces├│", "llegar├í", "d├¡as" por edición Windows-1252).
+                        // 🛡️ Sprint 3: usar divisa real del hire en lugar de € hardcoded.
+                        var notifCurrencyLabel = (searchHire.Currency ?? "EUR").Trim().ToUpperInvariant();
                         if (needsRefund && !string.IsNullOrEmpty(createdRefundId))
                         {
                             // Refund exitoso - notificar al cliente
                             await _loggingService.LogInfoAsync(
                                 message: "Reembolso procesado",
-                                details: $"Se proces├│ tu reembolso de {clientRefundAmountForStripe:F2}€ por el servicio #{searchHireId}. El dinero llegar├í a tu cuenta en 5-10 d├¡as h├íbiles.",
+                                details: $"Se procesó tu reembolso de {clientRefundAmountForStripe:F2} {notifCurrencyLabel} por el servicio #{searchHireId}. El dinero llegará a tu cuenta en 5-10 días hábiles.",
                                 userId: searchHire.ClientId,
                                 source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                 relatedEntityType: "SearchHire",
@@ -2182,7 +2186,7 @@ namespace newApi.Services
                             // Transfer exitoso - notificar al experto
                             await _loggingService.LogInfoAsync(
                                 message: "Pago recibido",
-                                details: $"Has recibido {expertAmountForStripe:F2}€ por el servicio #{searchHireId}. El dinero est├í disponible en tu cuenta de Stripe.",
+                                details: $"Has recibido {expertAmountForStripe:F2} {notifCurrencyLabel} por el servicio #{searchHireId}. El dinero está disponible en tu cuenta de Stripe.",
                                 userId: searchHire.ExpertId.Value,
                                 source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                 relatedEntityType: "SearchHire",

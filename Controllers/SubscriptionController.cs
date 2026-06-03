@@ -2144,7 +2144,9 @@ namespace newApi.Controllers
                                 // si el currency del PriceData no coincide con el del Stripe Account del experto
                                 // (Connect Express). Usamos el SearchService.Currency (ISO 4217 en mayúsculas)
                                 // y lo pasamos a Stripe en minúsculas como exige la API.
-                                Currency = service.Currency.ToLowerInvariant(),
+                                // 🛡️ Round 28 Sprint 3: defensa NPE — si Currency es null en una fila legacy,
+                                // caer a "eur" en vez de NullReferenceException.
+                                Currency = (service.Currency ?? "EUR").ToLowerInvariant(),
                                 UnitAmount = checked((long)Math.Round(amountToCharge * 100)),
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {
@@ -5620,7 +5622,9 @@ namespace newApi.Controllers
                                 // si el currency del PriceData no coincide con el del Stripe Account del experto
                                 // (Connect Express). Usamos el SearchService.Currency (ISO 4217 en mayúsculas)
                                 // y lo pasamos a Stripe en minúsculas como exige la API.
-                                Currency = service.Currency.ToLowerInvariant(),
+                                // 🛡️ Round 28 Sprint 3: defensa NPE — si Currency es null en una fila legacy,
+                                // caer a "eur" en vez de NullReferenceException.
+                                Currency = (service.Currency ?? "EUR").ToLowerInvariant(),
                                 UnitAmount = checked((long)Math.Round(service.Price * 100)),
                                 ProductData = new SessionLineItemPriceDataProductDataOptions
                                 {

@@ -1498,8 +1498,22 @@ namespace newApi.Services
                     }
                 }
 
-                expertProfile.Latitude = request.Latitude;
-                expertProfile.Longitude = request.Longitude;
+                // 🛡️ Round 28 — Sprint 3: solo persistir coords si el geocoding tuvo éxito o las
+                // coords no cambiaron. Antes persistíamos lat/lng aunque Mapbox fallase, dejando
+                // el perfil con coords en otro país pero Country/Timezone obsoletos.
+                if (!coordinatesChanged)
+                {
+                    expertProfile.Latitude = request.Latitude;
+                    expertProfile.Longitude = request.Longitude;
+                }
+                else if (detectedCountry != null)
+                {
+                    // Geocoding OK y país aceptado → persistir TODO el set (coords + tz + country + city) atómico.
+                    expertProfile.Latitude = request.Latitude;
+                    expertProfile.Longitude = request.Longitude;
+                }
+                // Si coordinatesChanged && detectedCountry == null → NO persistir nada (las coords
+                // quedan con sus valores anteriores). El bloque siguiente solo se ejecuta si hubo éxito.
 
                 // Si cambian las coordenadas, aplicar timezone/country/city (ya validados arriba)
                 if (coordinatesChanged && detectedCountry != null)

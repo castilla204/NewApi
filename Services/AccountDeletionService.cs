@@ -817,6 +817,8 @@ namespace newApi.Services
                     Status = contract.Status.StatusValue,
                     ServiceName = contract.SearchService.ServiceType?.Name ?? "Servicio",
                     Amount = contract.Amount,
+                    // 🛡️ Round 28 — Sprint 3: divisa snapshot del hire para que el frontend formatee correctamente.
+                    Currency = string.IsNullOrWhiteSpace(contract.Currency) ? "EUR" : contract.Currency.Trim().ToUpperInvariant(),
                     CreatedAt = contract.CreatedAt,
                     OtherPartyName = contract.Expert?.Name ?? "Experto",
                     OtherPartyEmail = contract.Expert?.Email ?? "",
@@ -845,6 +847,8 @@ namespace newApi.Services
                     Status = contract.Status.StatusValue,
                     ServiceName = contract.SearchService.ServiceType?.Name ?? "Servicio",
                     Amount = contract.Amount,
+                    // 🛡️ Round 28 — Sprint 3: divisa snapshot del hire.
+                    Currency = string.IsNullOrWhiteSpace(contract.Currency) ? "EUR" : contract.Currency.Trim().ToUpperInvariant(),
                     CreatedAt = contract.CreatedAt,
                     OtherPartyName = contract.Client?.Name ?? "Cliente",
                     OtherPartyEmail = contract.Client?.Email ?? "",
@@ -978,7 +982,8 @@ namespace newApi.Services
                         {
                             await _loggingService.LogInfoAsync(
                                 message: "Pago procesado por eliminación de cuenta del cliente",
-                                details: $"El cliente del servicio #{searchHire.Id} eliminó su cuenta. Se procesó automáticamente el pago de {searchHire.Amount:F2}€ a tu favor. El dinero está disponible en tu cuenta de Stripe.",
+                                // 🛡️ Round 28 — Sprint 3: usar divisa real del hire en notificaciones, no € hardcoded.
+                                details: $"El cliente del servicio #{searchHire.Id} eliminó su cuenta. Se procesó automáticamente el pago de {searchHire.Amount:F2} {(searchHire.Currency ?? "EUR")} a tu favor. El dinero está disponible en tu cuenta de Stripe.",
                                 userId: searchHire.ExpertId.Value,
                                 source: "AccountDeletionService.ProcessActiveContractsAsync",
                                 relatedEntityType: "SearchHire",
@@ -997,7 +1002,7 @@ namespace newApi.Services
                         // ✅ Notificar al cliente (antes de que se elimine su cuenta) sobre el procesamiento
                         await _loggingService.LogInfoAsync(
                             message: "Servicio cancelado por eliminación de cuenta",
-                            details: $"Al eliminar tu cuenta, el servicio #{searchHire.Id} fue cancelado y el pago de {searchHire.Amount:F2}€ fue transferido automáticamente al experto.",
+                            details: $"Al eliminar tu cuenta, el servicio #{searchHire.Id} fue cancelado y el pago de {searchHire.Amount:F2} {(searchHire.Currency ?? "EUR")} fue transferido automáticamente al experto.",
                             userId: userId,
                             source: "AccountDeletionService.ProcessActiveContractsAsync",
                             relatedEntityType: "SearchHire",
@@ -1068,7 +1073,7 @@ namespace newApi.Services
                         // ✅ Notificar al cliente que recibió el reembolso
                         await _loggingService.LogInfoAsync(
                             message: "Reembolso procesado por eliminación de cuenta del experto",
-                            details: $"El experto del servicio #{searchHire.Id} eliminó su cuenta. Se procesó automáticamente tu reembolso de {searchHire.Amount:F2}€. El dinero llegará a tu cuenta en 5-10 días hábiles.",
+                            details: $"El experto del servicio #{searchHire.Id} eliminó su cuenta. Se procesó automáticamente tu reembolso de {searchHire.Amount:F2} {(searchHire.Currency ?? "EUR")}. El dinero llegará a tu cuenta en 5-10 días hábiles.",
                             userId: searchHire.ClientId,
                             source: "AccountDeletionService.ProcessActiveContractsAsync",
                             relatedEntityType: "SearchHire",
@@ -1088,7 +1093,7 @@ namespace newApi.Services
                         {
                             await _loggingService.LogInfoAsync(
                                 message: "Servicio cancelado por eliminación de cuenta",
-                                details: $"Al eliminar tu cuenta, el servicio #{searchHire.Id} fue cancelado y se procesó automáticamente el reembolso de {searchHire.Amount:F2}€ al cliente.",
+                                details: $"Al eliminar tu cuenta, el servicio #{searchHire.Id} fue cancelado y se procesó automáticamente el reembolso de {searchHire.Amount:F2} {(searchHire.Currency ?? "EUR")} al cliente.",
                                 userId: userId,
                                 source: "AccountDeletionService.ProcessActiveContractsAsync",
                                 relatedEntityType: "SearchHire",
@@ -1163,7 +1168,8 @@ namespace newApi.Services
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Account deletion completed with processing failures",
                     details: $"Account deletion for user {userId} completed, but {processingErrors.Count} contract(s) failed to process money. " +
-                            $"Total failed amount: {totalFailedAmount:F2}€. " +
+                            // 🛡️ Round 28 — Sprint 3: total agregado (varias divisas posibles), etiqueta "mixed".
+                            $"Total failed amount: {totalFailedAmount:F2} (importes agregados, posibles multi-divisa — ver hires individualmente). " +
                             $"Error summary: {errorSummary}. " +
                             $"Error types: {string.Join(", ", errorTypes)}. " +
                             $"ACTION REQUIRED: Manual review and processing required for failed contracts. " +

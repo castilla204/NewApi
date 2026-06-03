@@ -532,12 +532,32 @@ namespace newApi.Controllers
 
             if (profile != null)
             {
+                // 🛡️ Round 28 MUD-M (GAP-3 fix): si la cuenta fue cerrada en una mudanza
+                // muy reciente (< 15 min) e ignoramos el webhook tardío de Stripe (account.updated
+                // y capability.updated con disabled_reason='rejected.other' que llegan después de
+                // DeleteAsync/RejectAsync), evitamos que ApplyStripeAccountState sobrescriba
+                // StripeStatus + StripeStatusDetails recién reseteados — el experto vería
+                // "cuenta rechazada" en lugar de la guía hacia /become-expert.
+                if (profile.RelocatedAt != null
+                    && profile.RelocatedAt.Value > System.DateTime.UtcNow.AddMinutes(-15))
+                {
+                    return null;
+                }
                 return profile;
             }
 
             if (account.Metadata != null && account.Metadata.TryGetValue("userId", out var userIdValue) && int.TryParse(userIdValue, out var userId))
             {
-                return await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
+                var byMeta = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
+                // MUD-M (GAP-3): mismo guard para el fallback por userId metadata.
+                if (byMeta != null
+                    && byMeta.RelocatedAt != null
+                    && byMeta.RelocatedAt.Value > System.DateTime.UtcNow.AddMinutes(-15)
+                    && string.IsNullOrEmpty(byMeta.StripeAccountId))
+                {
+                    return null;
+                }
+                return byMeta;
             }
 
             return null;

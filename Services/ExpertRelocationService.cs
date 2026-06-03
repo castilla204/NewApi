@@ -156,11 +156,105 @@ namespace newApi.Services
             var beforeCountry = profile.Country;
             var beforeStripeAccountId = profile.StripeAccountId;
             var beforePendingStripeAccountId = profile.PendingStripeAccountId;
+            var expertProfileId = profile.Id;
+
+            // 🛡️ Round 28 MUD-L (GAP-5 fix): para expertos US, verificar capability 1099 ANTES
+            // de cerrar la cuenta. Sin ella Stripe NO genera el 1099-MISC final → exposición IRS
+            // ($290-$630 por seller no reportado).
+            if (string.Equals(beforeCountry, "US", System.StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrEmpty(beforeStripeAccountId))
+            {
+                try
+                {
+                    var acctCheck = await new AccountService().GetAsync(beforeStripeAccountId);
+                    var cap1099 = acctCheck?.Capabilities?.TaxReportingUs1099Misc;
+                    var has1099 = string.Equals(cap1099, "active", System.StringComparison.OrdinalIgnoreCase)
+                               || string.Equals(cap1099, "pending", System.StringComparison.OrdinalIgnoreCase);
+                    if (!has1099)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "MUD-L: US expert relocating without tax_reporting_us_1099_misc capability — IRS exposure",
+                            details: $"UserId {userId} (acct {beforeStripeAccountId}): la cuenta NO tiene capability `tax_reporting_us_1099_misc` activa (estado: {cap1099 ?? "none"}). Stripe NO emitirá 1099-MISC al cierre. ACCIÓN ADMIN: o (a) bloquear la mudanza y pedir al experto que active la capability primero (24h), o (b) generar 1099 manualmente al cierre de año.",
+                            userId: userId,
+                            source: "ExpertRelocationService.MUD-L.Tax1099Missing",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: expertProfileId,
+                            additionalData: new { Capability1099 = cap1099, StripeAccountId = beforeStripeAccountId });
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "MUD-L: failed to read capability tax_reporting_us_1099_misc before relocation",
+                        details: $"UserId {userId}: {ex.Message}. Procedemos con la mudanza pero el admin debe verificar manualmente.",
+                        userId: userId,
+                        source: "ExpertRelocationService.MUD-L.Tax1099CheckFailed",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: expertProfileId);
+                }
+            }
+
+            // 🛡️ Round 28 MUD-L (GAP-2 fix): drenar balance ANTES de Delete. Sin esto, si el
+            // experto tiene saldo, Delete falla → caemos a Reject → Stripe reverte el balance al
+            // platform → experto pierde su dinero. Patrón de AccountDeletionService.cs:2354-2425.
+            async Task DrainBalanceIfAnyAsync(string acctId)
+            {
+                try
+                {
+                    var balanceService = new BalanceService();
+                    var reqOpts = new RequestOptions { StripeAccount = acctId };
+                    var acctBalance = await balanceService.GetAsync(reqOpts);
+                    if (acctBalance?.Available == null) return;
+                    foreach (var avail in acctBalance.Available)
+                    {
+                        if (avail.Amount <= 0) continue;
+                        try
+                        {
+                            var payoutSvc = new PayoutService();
+                            var payoutOpts = new PayoutCreateOptions
+                            {
+                                Amount = avail.Amount,
+                                Currency = avail.Currency,
+                                Metadata = new Dictionary<string, string>
+                                {
+                                    { "reason", "expert_relocation_final_payout" },
+                                    { "userId", userId.ToString() },
+                                    { "expertProfileId", expertProfileId.ToString() }
+                                }
+                            };
+                            var payoutReqOpts = new RequestOptions
+                            {
+                                StripeAccount = acctId,
+                                IdempotencyKey = $"relocation-payout-{expertProfileId}-{avail.Currency}"
+                            };
+                            var payout = await payoutSvc.CreateAsync(payoutOpts, payoutReqOpts);
+                            stripeOps.Add(new { acctId, op = "final_payout", amount = avail.Amount / 100m, currency = avail.Currency.ToUpperInvariant(), payoutId = payout.Id });
+                        }
+                        catch (StripeException payoutEx)
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "MUD-L: final payout failed before relocation Stripe close — balance will revert to platform",
+                                details: $"UserId {userId} acct {acctId}: payout de {avail.Amount / 100m:F2} {avail.Currency.ToUpperInvariant()} FALLÓ: {payoutEx.StripeError?.Code} - {payoutEx.Message}. Si caemos a Reject, Stripe reverte el balance al platform. ACCIÓN ADMIN: identificar al experto y enviar el dinero manualmente.",
+                                userId: userId,
+                                source: "ExpertRelocationService.MUD-L.PayoutFailed",
+                                relatedEntityType: "ExpertProfile",
+                                relatedEntityId: expertProfileId,
+                                additionalData: new { Amount = avail.Amount / 100m, Currency = avail.Currency.ToUpperInvariant(), PayoutError = payoutEx.StripeError?.Code, payoutEx.Message });
+                            stripeOps.Add(new { acctId, op = "final_payout_failed", amount = avail.Amount / 100m, currency = avail.Currency.ToUpperInvariant(), error = payoutEx.StripeError?.Code });
+                        }
+                    }
+                }
+                catch (System.Exception readEx)
+                {
+                    stripeOps.Add(new { acctId, op = "balance_read_failed", error = readEx.Message });
+                }
+            }
 
             // Cerrar Stripe acct si existe.
             async Task TryCleanupStripeAccount(string? acctId, string label)
             {
                 if (string.IsNullOrEmpty(acctId)) return;
+                await DrainBalanceIfAnyAsync(acctId);
                 try
                 {
                     var svc = new AccountService();
@@ -181,6 +275,17 @@ namespace newApi.Services
                     }
                     catch (System.Exception rejEx)
                     {
+                        // 🛡️ Round 28 MUD-N (GAP-4 fix): si AMBAS ops fallan, la cuenta queda
+                        // huérfana en Stripe y el admin debe limpiarla a mano. Log Critical
+                        // (admin alert) — antes solo iba a stripeOps en memoria.
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL MUD-N: Stripe account delete AND reject both failed during relocation — orphan account in Stripe",
+                            details: $"UserId {userId} acct {acctId} (label={label}): Delete falló ({delEx.StripeError?.Code} - {delEx.Message}); Reject también falló ({rejEx.Message}). La cuenta sigue VIVA en Stripe. ACCIÓN ADMIN: limpiar manualmente desde Stripe Dashboard → Connect → Accounts.",
+                            userId: userId,
+                            source: "ExpertRelocationService.MUD-N.OrphanAccount",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: expertProfileId,
+                            additionalData: new { StripeAccountId = acctId, Label = label, DeleteError = delEx.StripeError?.Code, RejectError = rejEx.Message });
                         stripeOps.Add(new { acctId, label, op = "delete_and_reject_failed", deleteError = delEx.Message, rejectError = rejEx.Message });
                     }
                 }
@@ -220,9 +325,23 @@ namespace newApi.Services
             profile.Timezone = "UTC";
             profile.Latitude = string.Empty;
             profile.Longitude = string.Empty;
-            profile.IsOnVacation = true; // ocultar de búsquedas hasta nuevo onboarding
+            // 🛡️ Round 28 MUD-O (GAP-6 fix): NO usar IsOnVacation como hack — confunde la UX
+            // ("estás de vacaciones" cuando en realidad se mudó). Los filtros de búsqueda ya
+            // descartan perfiles con Country == null, así que basta con eso.
 
             await _context.SaveChangesAsync(ct);
+
+            // 🛡️ Round 28 MUD-P (GAP-8 fix): notificación visible al usuario (campana + email).
+            // Antes solo se loggeaba internamente — si el usuario cerraba el tab tras success
+            // no tenía recordatorio del siguiente paso.
+            await _loggingService.LogInfoAsync(
+                message: "Mudanza ejecutada: completa tu registro en el nuevo país",
+                details: $"Tu cuenta Stripe Connect (país {beforeCountry}) se ha cerrado correctamente. Tu perfil de usuario, tu historial como cliente y tus reseñas recibidas siguen intactos. Para volver a operar como experto, ve a 'Convertirse en experto' y completa el onboarding en tu nuevo país.",
+                userId: userId,
+                source: "ExpertRelocationService.UserNotification",
+                relatedEntityType: "ExpertProfile",
+                relatedEntityId: profile.Id,
+                notifyUser: true);
 
             await _loggingService.LogCriticalAsync(
                 message: "Expert relocation executed",

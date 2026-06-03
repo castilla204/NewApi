@@ -679,23 +679,37 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "La duración debe ser mayor que 0" });
                 }
 
-                // 🛡️ Round 28: si el front no envía Currency, DERIVAR del país del experto
-                // en lugar de hardcodear EUR. expertProfile.Country es ISO 3166-1 alpha-2
-                // (validado por SupportedConnectCountries al hacer BecomeExpert).
-                // Antes: experto GB creaba servicio en EUR → mismatch con cuenta Stripe Connect en GBP
-                // → currency_mismatch en RefundService.cs:1316 → dinero atascado.
+                // 🛡️ Round 28 — CUR-1 FIX CRÍTICO: derivar la divisa del país del experto.
+                // Antes (R28 original): solo derivaba si `request.Currency` venía vacío. PERO el DTO
+                // `CreateSearchServiceRequestDto.Currency` tiene default "EUR" → el frontend que NO
+                // envía el campo (caso real, lo confirmó el Agente 1 con query a BD: 188/188 servicios
+                // en EUR incluso para expertos US) hace que `request.Currency == "EUR"` SIEMPRE y la
+                // rama de derivación NUNCA se ejecuta → experto US creaba servicios en EUR → mismatch
+                // con su Stripe Account USD → currency_mismatch en payouts.
+                //
+                // Nueva regla:
+                //  1. Si el frontend mandó algo distinto de EUR (USD/GBP/CHF/etc.) → respetar y validar.
+                //  2. Si el frontend mandó EUR (default) Y el país del experto NO deriva en EUR
+                //     (US→USD, GB→GBP, CH→CHF, SE→SEK, etc.) → preferir SIEMPRE la divisa del país.
+                //     (Esto es lo que estaba roto: trataba EUR-default como decisión explícita.)
+                //  3. Si el frontend mandó EUR y el país deriva en EUR (ES/DE/FR/IT/PT/...) → EUR.
                 var derivedCurrency = global::newApi.Common.StripeCurrencyMapping
                     .GetCurrencyForCountry(expertProfile.Country)
                     .ToUpperInvariant();
+                var normalizedRequest = global::newApi.Common.SupportedCurrenciesList.Normalize(request.Currency);
 
-                if (!string.IsNullOrWhiteSpace(request.Currency))
+                if (string.IsNullOrEmpty(normalizedRequest)
+                    || (string.Equals(normalizedRequest, "EUR", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(derivedCurrency, "EUR", StringComparison.OrdinalIgnoreCase)))
                 {
-                    var normalized = global::newApi.Common.SupportedCurrenciesList.Normalize(request.Currency);
-                    request.Currency = normalized ?? derivedCurrency;
+                    // Caso 1: vacío/inválido. Caso 2: default EUR del DTO con experto no-eurozona.
+                    // En ambos casos preferimos la divisa derivada del país del experto.
+                    request.Currency = derivedCurrency;
                 }
                 else
                 {
-                    request.Currency = derivedCurrency;
+                    // El frontend mandó una divisa explícita distinta del default — respetar.
+                    request.Currency = normalizedRequest;
                 }
 
                 // ✅ VALIDACIÓN: Verificar que al menos un tipo de entregable esté seleccionado

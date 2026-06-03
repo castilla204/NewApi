@@ -943,18 +943,20 @@ namespace newApi.Controllers
                 //    field, el hosted onboarding pide al experto que elija "Persona física / Empresa"
                 //    como primer paso (selector en español traducido por Stripe).
                 //
-                // 3) Solo capability `transfers` — correcto para "separate charges and transfers".
-                //    `card_payments` no se solicita porque el cliente cobra a la plataforma (no al
-                //    experto). PayoutsEnabled puede ser true con ChargesEnabled false legítimamente.
+                // 3) Capabilities por país — 🛡️ Round 28 Sprint US:
+                //    - EEA + CH + LI: solo `transfers` (separate charges and transfers, cliente
+                //      cobra a la plataforma, experto solo recibe payouts).
+                //    - US, CA, GB: Stripe EXIGE también `card_payments` aunque la capability quede
+                //      latente y el experto NO cobre directamente. El error sin esto:
+                //      "You cannot request the `transfers` capability without the `card_payments`
+                //       capability for accounts in US."
+                //    Centralizado en StripeConnectCapabilities.BuildCapabilitiesFor(country).
                 var accountOptions = new AccountCreateOptions
                 {
                     Type = "express",
                     Country = expertConnectCountry,
                     Email = User.FindFirst(ClaimTypes.Email)?.Value,
-                    Capabilities = new AccountCapabilitiesOptions
-                    {
-                        Transfers = new AccountCapabilitiesTransfersOptions { Requested = true }
-                    },
+                    Capabilities = global::newApi.Common.StripeConnectCapabilities.BuildCapabilitiesFor(expertConnectCountry),
                     Metadata = new Dictionary<string, string>
                     {
                         { "userId", userId.ToString() }
@@ -976,9 +978,13 @@ namespace newApi.Controllers
                     // habría devuelto el MISMO acct rechazado bajo la key determinista, dejando
                     // al experto atrapado en bucle de rechazo durante un día. El token vacío en
                     // flujo normal preserva la protección original contra retries de red.
+                    // 🛡️ Round 28 Sprint US: prefijo bumped a "v2" para INVALIDAR las respuestas
+                    // cacheadas que se generaron con el bug de capabilities (cuentas US que
+                    // fallaron con la key antigua antes de este fix). Sin este bump, los
+                    // expertos US/CA/GB que probaron pre-fix recibirían el mismo error 24h.
                     var idempotencyKeyValue = string.IsNullOrEmpty(onboardingAttemptToken)
-                        ? $"account-onboarding-{userId}"
-                        : $"account-onboarding-{userId}-{onboardingAttemptToken}";
+                        ? $"account-onboarding-v2-{userId}"
+                        : $"account-onboarding-v2-{userId}-{onboardingAttemptToken}";
                     var accountIdempotencyOptions = new Stripe.RequestOptions
                     {
                         IdempotencyKey = idempotencyKeyValue

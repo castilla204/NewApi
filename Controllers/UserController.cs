@@ -584,12 +584,22 @@ public class UserController : ControllerBase
                 return BadRequest(new { message = "User not found" });
             }
 
-            if (user.Role == UserRole.Expert)
+            // 🛡️ Round 28 MUD-AC (GAP-1 fix): permitir re-onboarding tras mudanza.
+            // El check del UserService MUD-K nunca se alcanza porque este controller corta
+            // primero. Replicamos el mismo isRelocating bypass aquí — sin esto el experto
+            // mudado queda atascado en "You are already an expert" y NO puede completar
+            // el onboarding del nuevo país.
+            var isRelocating = user.ExpertProfile != null
+                            && user.ExpertProfile.RelocatedFromCountry != null
+                            && !user.ExpertProfile.OnboardingCompleted
+                            && string.IsNullOrEmpty(user.ExpertProfile.StripeAccountId);
+
+            if (user.Role == UserRole.Expert && !isRelocating)
             {
                 return BadRequest(new { message = "You are already an expert" });
             }
 
-            if (user.ExpertProfile != null)
+            if (user.ExpertProfile != null && !isRelocating)
             {
                 return BadRequest(new { message = "You already have an expert profile" });
             }

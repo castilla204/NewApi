@@ -39,6 +39,44 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// </summary>
         [MaxLength(3)]
         public string? PreferredCurrency { get; set; }
+
+        /// <summary>
+        /// 🛡️ Round 28 MUD-B: versión de los Términos y Condiciones que el usuario aceptó
+        /// (hash sha256 truncado del HTML de los T&C en el momento de la firma).
+        /// Sin esto, RGPD Art. 7 ("el consentimiento debe ser demostrable") no se cumple, y la
+        /// defensa frente a chargebacks Stripe se debilita ("customer agreement evidence").
+        /// LoginModal envía estos campos en el registro — el endpoint de signup debe persistirlos.
+        /// </summary>
+        [MaxLength(64)]
+        public string? TermsVersion { get; set; }
+        public DateTime? TermsAcceptedAt { get; set; }
+
+        /// <summary>
+        /// 🛡️ Round 28 MUD-B: idem para Política de Privacidad. RGPD Art. 13.3 exige notificar
+        /// al usuario los cambios sustanciales — para detectarlos hay que saber qué versión firmó.
+        /// </summary>
+        [MaxLength(64)]
+        public string? PrivacyVersion { get; set; }
+        public DateTime? PrivacyAcceptedAt { get; set; }
+
+        /// <summary>
+        /// 🛡️ Round 28 MUD-G: país de RESIDENCIA FISCAL declarado por el usuario (ISO 3166-1
+        /// alpha-2). Distinto de ExpertProfile.Country (geo/operativo). Necesario para DAC7
+        /// reporting fiel — la AEAT reporta sellers según residencia fiscal, no según ubicación.
+        /// </summary>
+        [MaxLength(2)]
+        public string? FiscalCountry { get; set; }
+        public DateTime? FiscalCountryChangedAt { get; set; }
+
+        /// <summary>
+        /// 🛡️ Round 28 MUD-G: Tax Identification Number — NIF si fiscalCountry=ES, SSN/EIN/ITIN
+        /// si fiscalCountry=US, etc. Capturable manualmente o vía Stripe Connect (Stripe lo guarda
+        /// pero la plataforma puede necesitarlo para DAC7/1099 sin depender de llamada Stripe).
+        /// </summary>
+        [MaxLength(50)]
+        public string? TaxId { get; set; }
+        [MaxLength(2)]
+        public string? TaxIdCountry { get; set; }
         public virtual ExpertProfile ExpertProfile { get; set; }
         public virtual ICollection<Search> Searches { get; set; }
         public virtual ICollection<Like> Likes { get; set; }

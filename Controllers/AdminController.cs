@@ -49,6 +49,138 @@ namespace newApi.Controllers
         /// El admin debe revisar este endpoint regularmente — sin OSS registrado y cruzando
         /// el umbral, la plataforma incurre en infracción fiscal en cada país UE.
         /// </summary>
+        /// <summary>
+        /// 🛡️ Round 28 MUD-C: detector de divergencia ExpertProfile.Country vs stripe_account.Country.
+        /// Stripe Connect Account.country es INMUTABLE — pero el experto puede cambiar
+        /// ExpertProfile.Country (BD) vía geolocalización o porque admin lo actualizó manual.
+        /// La divergencia hace que nuevos servicios/hires cobren en divisa incorrecta y
+        /// los transfers fallen con currency_mismatch (dinero atascado).
+        ///
+        /// Este endpoint cruza los dos campos y reporta los expertos en estado divergente
+        /// + servicios con Currency != stripe_acct.default_currency (deuda de cobro).
+        ///
+        /// Recomendado: ejecutar como job diario via Hangfire o cron externo + alertar admin.
+        /// </summary>
+        [HttpGet("expert-country-divergence")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> GetExpertCountryDivergence(CancellationToken ct = default)
+        {
+            try
+            {
+                // Solo evaluar expertos con StripeAccountId — sin acct no hay divergencia posible.
+                var profiles = await _context.ExpertProfiles
+                    .IgnoreQueryFilters()
+                    .Where(p => p.StripeAccountId != null
+                             && p.Country != null)
+                    .Select(p => new
+                    {
+                        ExpertProfileId = p.Id,
+                        UserId = p.UserId,
+                        UserEmail = p.User.Email,
+                        Country = p.Country,
+                        StripeAccountId = p.StripeAccountId,
+                        OnboardingCompleted = p.OnboardingCompleted,
+                        StripeStatus = p.StripeStatus,
+                    })
+                    .ToListAsync(ct);
+
+                var stripeAccountSvc = new Stripe.AccountService();
+                var divergent = new System.Collections.Generic.List<object>();
+                var checkedCount = 0;
+                var errorCount = 0;
+
+                foreach (var p in profiles)
+                {
+                    checkedCount++;
+                    try
+                    {
+                        var acct = await stripeAccountSvc.GetAsync(p.StripeAccountId);
+                        var acctCountry = (acct?.Country ?? "").ToUpperInvariant();
+                        var acctCurrency = (acct?.DefaultCurrency ?? "").ToUpperInvariant();
+                        var profileCountry = (p.Country ?? "").ToUpperInvariant();
+
+                        if (!string.IsNullOrEmpty(acctCountry)
+                            && !string.Equals(acctCountry, profileCountry, System.StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Buscar servicios con Currency != stripe acct.default_currency (deuda real).
+                            // Captura local de variables para no usar la del foreach en el lambda.
+                            var expertProfileIdLocal = p.ExpertProfileId;
+                            var acctCurrencyLocal = acctCurrency;
+                            var inconsistentServices = await _context.SearchServices
+                                .AsNoTracking()
+                                .Where(s => s.ExpertProfileId == expertProfileIdLocal
+                                         && s.IsActive
+                                         && s.Currency != null
+                                         && s.Currency.ToUpper() != acctCurrencyLocal)
+                                .Select(s => new { s.Id, s.Currency, s.Price })
+                                .ToListAsync(ct);
+
+                            // Hires en curso con currency != acct (riesgo currency_mismatch al transfer).
+                            var userIdLocal = p.UserId;
+                            var hiresAtRisk = await _context.SearchHires
+                                .AsNoTracking()
+                                .Include(h => h.Status)
+                                .Where(h => h.ExpertId == userIdLocal
+                                         && h.Status != null
+                                         && !h.Status.IsFinalizationStatus
+                                         && h.Currency != null
+                                         && h.Currency.ToUpper() != acctCurrencyLocal)
+                                .Select(h => new { h.Id, h.Currency, h.Amount, h.CreatedAt })
+                                .ToListAsync(ct);
+
+                            divergent.Add(new
+                            {
+                                expertProfileId = p.ExpertProfileId,
+                                userId = p.UserId,
+                                userEmail = p.UserEmail,
+                                profileCountry = profileCountry,
+                                stripeAccountCountry = acctCountry,
+                                stripeAccountId = p.StripeAccountId,
+                                stripeAccountDefaultCurrency = acctCurrency,
+                                onboardingCompleted = p.OnboardingCompleted,
+                                stripeStatus = p.StripeStatus.ToString(),
+                                inconsistentServicesCount = inconsistentServices.Count,
+                                inconsistentServices = inconsistentServices,
+                                hiresAtRiskCount = hiresAtRisk.Count,
+                                hiresAtRisk = hiresAtRisk,
+                                severity = (inconsistentServices.Count > 0 || hiresAtRisk.Count > 0) ? "HIGH" : "MEDIUM",
+                            });
+                        }
+                    }
+                    catch (Stripe.StripeException)
+                    {
+                        errorCount++;
+                    }
+                    catch (System.Exception)
+                    {
+                        errorCount++;
+                    }
+                }
+
+                // Logging crítico si hay divergencias high severity.
+                if (divergent.Any())
+                {
+                    var highSeverity = divergent.Count(d => ((dynamic)d).severity == "HIGH");
+                    _logger.LogWarning("MUD-C: {Total} expertos con divergencia Country↔Stripe; {High} HIGH severity (con servicios/hires afectados)",
+                        divergent.Count, highSeverity);
+                }
+
+                return Ok(new
+                {
+                    checkedCount,
+                    divergentCount = divergent.Count,
+                    errorCount,
+                    divergent,
+                    note = "HIGH severity = experto tiene servicios y/o hires con Currency != stripe_acct.default_currency. Riesgo de currency_mismatch en transfers. Investigar y/o ejecutar reset-stripe.",
+                });
+            }
+            catch (System.Exception ex)
+            {
+                _logger.LogError(ex, "MUD-C: GetExpertCountryDivergence failed");
+                return StatusCode(500, new { error = "Error generando reporte de divergencia", message = ex.Message });
+            }
+        }
+
         [HttpGet("oss-stats")]
         [Authorize(Roles = "Admin")]
         public async Task<IActionResult> GetOssStats(CancellationToken ct = default)

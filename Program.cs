@@ -1495,6 +1495,9 @@ builder.Services.AddScoped<IAppointmentService, AppointmentService>();
 builder.Services.AddScoped<SystemStatusService>();
 builder.Services.AddScoped<IAccountDeletionService, AccountDeletionService>();
 builder.Services.AddScoped<IAccountDeletionNotificationService, AccountDeletionNotificationService>();
+// 🛡️ Round 28 MUD-E: servicio de mudanza self-service del experto (cierra cuenta Stripe Connect
+// preservando User + historial, listo para nuevo onboarding en país distinto).
+builder.Services.AddScoped<newApi.Services.ExpertRelocationService>();
 builder.Services.AddScoped<StripeRefundService>();
 builder.Services.AddScoped<IStripeReconciliationService, StripeReconciliationService>(); // P2-5: conciliación diaria BD↔Stripe
 // 🛡️ Round 28 S2-P0-11: monitor del umbral OSS UE €10.000/año.

@@ -50,7 +50,25 @@ namespace newApi.Controllers
                 return Unauthorized(new { error = "Invalid token" });
 
             var result = await _service.PreflightAsync(userId, ct);
-            return Ok(result);
+
+            // 🛡️ Round 28 MUD-S: Program.cs:826 fuerza PropertyNamingPolicy = null, así
+            // que las propiedades PascalCase de RelocationPreflightResult se serializarían
+            // como PascalCase. El frontend (useExpertRelocation.ts) tipa la respuesta como
+            // camelCase, así que mapeamos explícitamente aquí — mismo patrón que
+            // CurrenciesController. Sin este mapeo, el wizard recibe undefined en todos
+            // los campos camelCase y muestra el step "blocked" vacío.
+            return Ok(new
+            {
+                canProceed = result.CanProceed,
+                blockedReason = result.BlockedReason,
+                pendingDisputes = result.PendingDisputes,
+                activeHires = result.ActiveHires,
+                recentRefunds = result.RecentRefunds,
+                receivedReviewsCount = result.ReceivedReviewsCount,
+                activeServicesCount = result.ActiveServicesCount,
+                currentCountry = result.CurrentCountry,
+                stripeAccountId = result.StripeAccountId,
+            });
         }
 
         /// <summary>

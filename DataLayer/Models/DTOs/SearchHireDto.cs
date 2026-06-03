@@ -114,6 +114,14 @@ namespace newApi.DataLayer.Models.DTOs
         
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
+
+        /// <summary>
+        /// 🛡️ Round 28: divisa en la que se cobró este hire (ISO 4217 MAYÚSCULAS). Snapshot
+        /// inmutable de SearchHire.Currency — frontend la usa para mostrar Amount/BaseAmount/
+        /// TaxAmount con el símbolo correcto en listados ("Mis contrataciones") y detalles.
+        /// </summary>
+        public string ChargeCurrency { get; set; } = "EUR";
+
         public UserDto? Client { get; set; } // ✅ Nullable para manejar usuarios eliminados
         public UserDto? Expert { get; set; }
         public SearchServiceResponseDto Service { get; set; }

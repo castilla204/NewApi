@@ -172,21 +172,24 @@ namespace newApi.Controllers
 
         private string GetStatusMessage(StripeStatus status)
         {
+            // 🛡️ Round 28 v2: mensajes ULTRA CORTOS. El frontend ya muestra los requirements
+            // como lista visual (chips rojo/ámbar), así que aquí solo va el headline + acción.
+            // Sin emojis (los pone el frontend), sin párrafos. Una sola idea por estado.
             return status switch
             {
-                StripeStatus.NotRequested => "🔧 **Configuración Pendiente**: No has configurado tu cuenta de pagos de Stripe. Para ofrecer servicios y recibir pagos, necesitas completar el proceso de verificación. Haz clic en 'Configurar Pagos' para comenzar.",
-                StripeStatus.Pending => "⏳ **Onboarding en Proceso**: Estamos creando tu cuenta en Stripe Connect. Completa el flujo de onboarding para pasar a verificación.",
-                StripeStatus.ActionRequired => "📝 **Información Faltante**: Stripe te pide información/archivos inmediatos (requirements.currently_due). Abre el panel de Stripe y completa los campos pendientes para evitar restricciones.",
-                StripeStatus.PendingVerification => "🔍 **Verificación de Documentos**: Stripe está revisando la documentación enviada. Puedes seguir operando normalmente mientras se completa la verificación.",
-                StripeStatus.RequirementsDue => "⏰ **Requisitos por Vencer**: Stripe marcó requisitos con fecha límite próxima (future requirements). Completa la información solicitada cuanto antes para evitar bloqueos.",
-                StripeStatus.RequirementsPastDue => "❗ **Requisitos Vencidos**: Algunos requisitos vencieron y Stripe bloqueó pagos. Actualiza tus datos en el panel de Stripe para reactivar la cuenta.",
-                StripeStatus.RestrictedSoon => "⚠️ **Restricción Inminente**: Stripe restringirá tu cuenta si no atiendes los requisitos indicados. Ingresa al panel de Stripe y resuélvelos hoy mismo.",
-                StripeStatus.Restricted => "🚫 **Cuenta Restringida**: Stripe limitó temporalmente cobros/pagos hasta que completes las acciones indicadas. Revisa los detalles en el panel de Stripe.",
-                StripeStatus.Disabled => "⛔ **Pagos Deshabilitados**: Stripe deshabilitó los pagos por un incidente o incumplimiento. Debes resolverlo con Stripe para recuperar la cuenta.",
-                StripeStatus.Approved => "✅ **Cuenta Aprobada**: ¡Excelente! Tu cuenta de pagos está completamente verificada y lista para recibir pagos. Ya puedes crear servicios y comenzar a ganar dinero.",
-                StripeStatus.Rejected => "❌ **Cuenta Rechazada**: Stripe rechazó tu cuenta de forma definitiva. Revisa el motivo y contacta a soporte para crear una nueva solicitud solo si Stripe lo permite.",
-                StripeStatus.Deauthorized => "🚫 **Cuenta Desautorizada**: Tu cuenta de pagos fue desconectada manualmente. Vuelve a iniciar el onboarding para reconectar Stripe.",
-                _ => "❓ **Estado Desconocido**: No se pudo determinar el estado de tu cuenta de pagos. Por favor, contacta al soporte técnico para obtener ayuda."
+                StripeStatus.NotRequested => "Configura tu cuenta para empezar a recibir pagos.",
+                StripeStatus.Pending => "Estamos creando tu cuenta. Sigue con la verificación cuando quieras.",
+                StripeStatus.ActionRequired => "Te quedan unos detalles por rellenar. Cuando los completes, tu cuenta se activará automáticamente.",
+                StripeStatus.PendingVerification => "Stripe está revisando tu documentación. Te avisamos en cuanto termine.",
+                StripeStatus.RequirementsDue => "Stripe te pide actualizar algunos datos antes del plazo.",
+                StripeStatus.RequirementsPastDue => "Te faltan detalles por rellenar. Cuando los completes, tu cuenta se reactivará automáticamente.",
+                StripeStatus.RestrictedSoon => "Tu cuenta se restringirá pronto si no completas estos datos.",
+                StripeStatus.Restricted => "Tu cuenta está limitada. Completa los datos pendientes para reactivarla.",
+                StripeStatus.Disabled => "Stripe pausó los pagos. Contacta con soporte para resolverlo.",
+                StripeStatus.Approved => "Tu cuenta está activa y lista para cobrar.",
+                StripeStatus.Rejected => "Stripe rechazó tu cuenta. Revisa el motivo más abajo.",
+                StripeStatus.Deauthorized => "Tu cuenta se desconectó. Vuelve a conectarla para seguir cobrando.",
+                _ => "Estado desconocido. Contacta con soporte."
             };
         }
 
@@ -221,7 +224,16 @@ namespace newApi.Controllers
             {
                 foreach (var error in requirements.Errors)
                 {
-                    requirementErrors.Add($"Code: {error.Code}, Reason: {error.Reason}, Requirement: {error.Requirement}");
+                    // 🛡️ Round 28: traducir el error code a texto humano + nombre del requirement en español.
+                    // Antes se concatenaba RAW: "Code: verification_document_failed, Reason: ..., Requirement: individual.verification.document"
+                    // Ahora: "Documento ilegible (documento de identidad)"
+                    var humanError = GetErrorDescription(error.Code ?? error.Reason ?? "unknown");
+                    var humanRequirement = !string.IsNullOrEmpty(error.Requirement)
+                        ? GetRequirementDescription(error.Requirement)
+                        : null;
+                    requirementErrors.Add(humanRequirement != null
+                        ? $"{humanError} ({humanRequirement})"
+                        : humanError);
                 }
             }
 
@@ -382,14 +394,18 @@ namespace newApi.Controllers
 
         private string BuildStatusDetails(StripeAccountState state)
         {
+            // 🛡️ Round 28 v2: mensaje del backend = HEADLINE corto + (opcional) lista de requirements
+            // y errores en un formato parseable por el frontend.
+            // El frontend NO muestra ya el headline como párrafo; lo usa como subtítulo. Las listas
+            // las pinta como chips visuales (rojo = past_due, ámbar = currently_due).
+            //
+            // FORMATO DEL TEXTO DEVUELTO (clave: stripeStatusDetails):
+            //   "<headline>. [Requisitos pendientes: A, B.] [Stripe indicó requisitos vencidos: C.]
+            //    [Errores a corregir: X (Y); Z (W).]"
+            //
+            // El frontend parsea cada bloque con regex; si no detecta nada, muestra el headline solo.
             var details = new List<string> { GetStatusMessage(state.Status) };
 
-            // 🔧 Round 26 REQ-6: incluir Restricted y Disabled en la rama que muestra
-            // BlockingRequirements. Antes solo ActionRequired/RequirementsPastDue exponían la
-            // lista, por lo que en Restricted/Disabled el experto se quedaba sin pista de qué
-            // campos solicita Stripe y debía abrir el Express Dashboard.
-            // 🔧 Round 26 PERSON-2: pasar cada requirement por GetRequirementDescription para
-            // traducir los tokens (incluyendo el formato per-person `person_XXX.verification.*`).
             if (state.BlockingRequirements.Any() &&
                 (state.Status == StripeStatus.ActionRequired ||
                  state.Status == StripeStatus.RequirementsPastDue ||
@@ -406,15 +422,10 @@ namespace newApi.Controllers
                  state.Status == StripeStatus.RequirementsPastDue))
             {
                 var label = state.FutureRequirementsPastDue ? "requisitos vencidos" : "requisitos futuros";
-                // 🔧 Round 26 PERSON-2: traducir también los requirements futuros.
                 var translatedFuture = state.FutureRequirements.Select(GetRequirementDescription);
                 details.Add($"Stripe indicó {label}: {string.Join(", ", translatedFuture)}.");
             }
 
-            // 🔧 Round 26 ACC-UPD-7: surfacear los errores Stripe (Code+Reason) en ramas
-            // recuperables. Antes solo la rama Rejected los usaba (vía GetRejectionMessage),
-            // por lo que el experto reuploadeaba el mismo documento defectuoso sin saber qué
-            // pasaba ("verification_document_not_readable", "document_failed_uploaded", etc.).
             if (state.RequirementErrors.Any() &&
                 (state.Status == StripeStatus.ActionRequired ||
                  state.Status == StripeStatus.RequirementsPastDue ||
@@ -422,13 +433,7 @@ namespace newApi.Controllers
                  state.Status == StripeStatus.Disabled ||
                  state.Status == StripeStatus.PendingVerification))
             {
-                details.Add($"Detalles de Stripe: {string.Join("; ", state.RequirementErrors)}.");
-            }
-
-            if (!string.IsNullOrWhiteSpace(state.DisabledReason) &&
-                (state.Status == StripeStatus.Disabled || state.Status == StripeStatus.Restricted || state.Status == StripeStatus.Rejected))
-            {
-                details.Add($"Código Stripe: {state.DisabledReason}.");
+                details.Add($"Errores a corregir: {string.Join("; ", state.RequirementErrors)}.");
             }
 
             return string.Join(" ", details.Where(d => !string.IsNullOrWhiteSpace(d)));
@@ -6820,97 +6825,94 @@ namespace newApi.Controllers
         }
 
         /// <summary>
-        /// Genera un mensaje específico para cuentas rechazadas
+        /// Genera un mensaje específico para cuentas rechazadas.
+        /// 🛡️ Round 28: limpiado de **markdown** (el frontend NO renderiza markdown).
+        /// Texto plano natural, emojis solo al inicio para marcar tipo de mensaje.
         /// </summary>
         private string GetRejectionMessage(string? disabledReason, List<string> requirementErrorDetails)
         {
             if (string.IsNullOrEmpty(disabledReason))
             {
-                return "❌ **Cuenta Rechazada**: Tu solicitud de cuenta de pagos fue rechazada por motivos no especificados. Por favor, contacta al soporte técnico para obtener más información y resolver esta situación.";
+                return "❌ Cuenta rechazada. Tu solicitud de cuenta de pagos fue rechazada por motivos no especificados. Contacta con soporte para obtener más información.";
             }
 
-            var baseMessage = "❌ **Cuenta Rechazada** - Tu solicitud de cuenta de pagos fue rechazada.\n\n";
-            var reasonMessage = "";
-            var solutionMessage = "";
+            var baseMessage = "❌ Cuenta rechazada. Tu solicitud de cuenta de pagos fue rechazada por Stripe.";
+            string reasonMessage;
+            string solutionMessage;
 
             switch (disabledReason)
             {
                 case "rejected.fraud":
-                    reasonMessage = "🚨 **Motivo**: Se detectó actividad sospechosa o posible fraude en tu cuenta.";
-                    solutionMessage = "**Solución**: Contacta inmediatamente al soporte de Stripe para resolver este problema. Puede ser necesario proporcionar documentación adicional para verificar tu identidad.";
+                    reasonMessage = "Motivo: Stripe detectó actividad sospechosa o posible fraude en tu cuenta.";
+                    solutionMessage = "Qué hacer: contacta con soporte de Stripe para resolverlo. Puede ser necesario aportar documentación adicional para verificar tu identidad.";
                     break;
 
                 case "rejected.terms_of_service":
-                    reasonMessage = "📜 **Motivo**: No aceptaste los términos de servicio de Stripe o los violaste.";
-                    solutionMessage = "**Solución**: Ve a tu cuenta de Stripe y acepta los términos de servicio. Si ya los aceptaste, revisa que no hayas violado ninguna política.";
+                    reasonMessage = "Motivo: incumplimiento de los términos de servicio de Stripe.";
+                    solutionMessage = "Qué hacer: contacta con soporte. Stripe no permite reapertura automática tras este tipo de rechazo.";
                     break;
 
                 case "rejected.unsupported_business":
-                    reasonMessage = "🏢 **Motivo**: Tu tipo de negocio no está permitido en la plataforma de Stripe.";
-                    solutionMessage = "**Solución**: Contacta al soporte de Stripe para verificar si tu negocio puede ser aceptado. Algunos tipos de negocio requieren aprobación especial.";
+                    reasonMessage = "Motivo: el tipo de negocio declarado no está permitido por Stripe.";
+                    solutionMessage = "Qué hacer: contacta con soporte de Stripe. Algunos negocios requieren aprobación especial.";
                     break;
 
                 case "rejected.other":
-                    reasonMessage = "⚠️ **Motivo**: Rechazo por otros motivos no especificados.";
-                    solutionMessage = "**Solución**: Contacta al soporte de Stripe para obtener detalles específicos sobre el rechazo y los pasos para resolverlo.";
+                    reasonMessage = "Motivo: rechazo por motivos no especificados.";
+                    solutionMessage = "Qué hacer: contacta con soporte de Stripe para conocer los detalles y los pasos para resolverlo.";
                     break;
 
                 case "under_review":
-                    reasonMessage = "🔍 **Motivo**: Tu cuenta está siendo revisada por el equipo de Stripe.";
-                    solutionMessage = "**Solución**: Espera a que se complete la revisión (1-3 días hábiles). Te notificaremos cuando tengamos una decisión.";
+                    reasonMessage = "Motivo: tu cuenta está en revisión por el equipo de Stripe.";
+                    solutionMessage = "Qué hacer: espera a que termine la revisión (1-3 días laborables). Te avisaremos cuando haya una decisión.";
                     break;
 
                 case "listed":
-                    reasonMessage = "🚫 **Motivo**: Tu cuenta está en una lista de sanciones o restricciones (ej. OFAC).";
-                    solutionMessage = "**Solución**: Contacta al soporte de Stripe inmediatamente. Este tipo de restricciones requiere resolución directa con el equipo de cumplimiento.";
+                    reasonMessage = "Motivo: tu cuenta aparece en una lista de sanciones o restricciones (p. ej. OFAC).";
+                    solutionMessage = "Qué hacer: contacta con soporte de Stripe inmediatamente. Este tipo de restricciones requiere resolución directa con el equipo de cumplimiento.";
                     break;
 
                 case "action_required.requested_capabilities":
-                    reasonMessage = "⚡ **Motivo**: Se requiere acción adicional para activar las funcionalidades solicitadas.";
-                    solutionMessage = "**Solución**: Ve a tu panel de Stripe y completa los pasos adicionales requeridos para activar las capacidades de tu cuenta.";
+                    reasonMessage = "Motivo: se requiere acción adicional para activar las funcionalidades solicitadas.";
+                    solutionMessage = "Qué hacer: abre tu panel de Stripe y completa los pasos adicionales requeridos.";
                     break;
 
                 case "requirements.past_due":
-                    reasonMessage = "⏰ **Motivo**: Hay requisitos vencidos que debías completar y no lo hiciste a tiempo.";
-                    solutionMessage = "**Solución**: Ve a tu panel de Stripe y completa inmediatamente todos los requisitos pendientes. Los documentos deben estar actualizados y en alta calidad.";
+                    reasonMessage = "Motivo: hay requisitos vencidos que no completaste a tiempo.";
+                    solutionMessage = "Qué hacer: abre tu panel de Stripe y completa todos los requisitos pendientes. Los documentos deben estar actualizados y en alta calidad.";
                     break;
 
                 case "requirements.pending_verification":
-                    reasonMessage = "🔍 **Motivo**: Hay verificaciones pendientes que no se completaron correctamente.";
-                    solutionMessage = "**Solución**: Revisa tu panel de Stripe y asegúrate de que todos los documentos estén correctamente subidos y sean legibles. Vuelve a enviar cualquier documento que haya sido rechazado.";
+                    reasonMessage = "Motivo: hay verificaciones pendientes que no se completaron correctamente.";
+                    solutionMessage = "Qué hacer: revisa tu panel de Stripe y asegúrate de que todos los documentos estén correctamente subidos y sean legibles.";
                     break;
 
                 case "fields_needed":
-                    reasonMessage = "📝 **Motivo**: Faltan campos de información que debes completar.";
-                    solutionMessage = "**Solución**: Ve a tu panel de Stripe y completa todos los campos requeridos. Una vez completados, podrás reintentar la verificación.";
+                    reasonMessage = "Motivo: faltan datos por completar.";
+                    solutionMessage = "Qué hacer: abre tu panel de Stripe y rellena todos los campos requeridos.";
                     break;
 
                 case "other":
-                    reasonMessage = "⚠️ **Motivo**: Rechazo por motivos no especificados.";
-                    solutionMessage = "**Solución**: Contacta al soporte de Stripe para obtener información específica sobre este rechazo y los pasos para resolverlo.";
+                    reasonMessage = "Motivo: rechazo por motivos no especificados.";
+                    solutionMessage = "Qué hacer: contacta con soporte de Stripe para conocer los detalles.";
                     break;
 
                 default:
-                    reasonMessage = $"⚠️ **Motivo**: {GetDisabledReasonDescription(disabledReason)}";
-                    solutionMessage = "**Solución**: Contacta al soporte de Stripe para obtener información específica sobre este rechazo y los pasos para resolverlo.";
+                    reasonMessage = $"Motivo: {GetDisabledReasonDescription(disabledReason)}";
+                    solutionMessage = "Qué hacer: contacta con soporte de Stripe para conocer los detalles y los pasos para resolverlo.";
                     break;
             }
 
-            var message = baseMessage + reasonMessage + "\n\n" + solutionMessage;
+            var message = $"{baseMessage} {reasonMessage} {solutionMessage}";
 
-            // Agregar información sobre errores específicos si los hay
+            // Agregar información sobre errores específicos si los hay (ya traducidos por GetErrorDescription)
             if (requirementErrorDetails.Any())
             {
-                message += "\n\n**Errores específicos encontrados:**\n";
-                foreach (var error in requirementErrorDetails)
-                {
-                    message += $"• {GetErrorDescription(error)}\n";
-                }
-                message += "\n**Acción requerida**: Corrige estos errores específicos en tu cuenta de Stripe.";
+                var errorsList = string.Join("; ", requirementErrorDetails.Select(GetErrorDescription));
+                message += $" Errores específicos: {errorsList}.";
             }
 
-            message += "\n\n💡 **Consejo**: Una vez resuelto el problema, puedes volver a solicitar la verificación de tu cuenta.";
-
+            message += " Una vez resuelto, puedes volver a solicitar la verificación.";
             return message;
         }
 
@@ -6919,8 +6921,9 @@ namespace newApi.Controllers
         /// </summary>
         private string GetPendingMessage(Account account, List<string> requirementErrorDetails, bool allRequirementsMet, bool paymentsEnabled, bool detailsSubmitted, bool tosAccepted, bool notDisabled, bool noRequirementErrors, bool noPendingVerifications, bool noFutureIssues)
         {
+            // 🛡️ Round 28: limpiado de **markdown**, emojis embebidos en cada bullet, y formato \n
+            // que el frontend NO renderiza. Texto plano natural en una sola línea.
             var issues = new List<string>();
-            var solutions = new List<string>();
 
             if (!allRequirementsMet)
             {
@@ -6928,89 +6931,43 @@ namespace newApi.Controllers
                 if (missingRequirements.Any())
                 {
                     var missingList = string.Join(", ", missingRequirements.Select(GetRequirementDescription));
-                    issues.Add($"📋 **Documentos Faltantes**: {missingList}");
-                    solutions.Add("Ve a tu panel de Stripe y sube los documentos requeridos en alta calidad");
+                    issues.Add($"faltan documentos ({missingList})");
                 }
             }
 
             if (!paymentsEnabled)
             {
-                if (!account.ChargesEnabled)
-                {
-                    issues.Add("💳 **Pagos Deshabilitados**: No puedes procesar pagos de clientes");
-                    solutions.Add("Completa la verificación de identidad en tu cuenta de Stripe");
-                }
-                if (!account.PayoutsEnabled)
-                {
-                    issues.Add("💰 **Transferencias Deshabilitadas**: No puedes recibir pagos");
-                    solutions.Add("Agrega y verifica una cuenta bancaria en tu perfil de Stripe");
-                }
-                if (account.Capabilities?.Transfers != "active")
-                {
-                    issues.Add("🔄 **Transferencias Inactivas**: Las transferencias no están disponibles");
-                    solutions.Add("Espera a que Stripe active esta funcionalidad o contacta soporte");
-                }
+                if (!account.ChargesEnabled) issues.Add("los pagos están deshabilitados");
+                if (!account.PayoutsEnabled) issues.Add("las transferencias bancarias están deshabilitadas");
+                if (account.Capabilities?.Transfers != "active") issues.Add("las transferencias aún no se han activado");
             }
 
-            if (!detailsSubmitted)
-            {
-                issues.Add("📝 **Información Incompleta**: Los detalles de tu cuenta no han sido enviados");
-                solutions.Add("Completa todos los campos requeridos en tu perfil de Stripe");
-            }
-
-            if (!tosAccepted)
-            {
-                issues.Add("📜 **Términos No Aceptados**: Debes aceptar los términos de servicio");
-                solutions.Add("Ve a tu cuenta de Stripe y acepta los términos de servicio");
-            }
+            if (!detailsSubmitted) issues.Add("faltan datos del perfil");
+            if (!tosAccepted) issues.Add("no has aceptado los términos de servicio");
 
             if (!notDisabled)
             {
                 var disabledReason = account.Requirements?.DisabledReason ?? "desconocida";
-                issues.Add($"🚫 **Cuenta Deshabilitada**: Razón: {GetDisabledReasonDescription(disabledReason)}");
-                solutions.Add("Contacta al soporte de Stripe para resolver este problema");
+                issues.Add($"la cuenta está deshabilitada ({GetDisabledReasonDescription(disabledReason)})");
             }
 
             if (!noRequirementErrors && requirementErrorDetails.Any())
             {
                 var errorMessages = requirementErrorDetails.Select(GetErrorDescription).ToList();
-                issues.Add($"⚠️ **Errores Detectados**: {string.Join(", ", errorMessages)}");
-                solutions.Add("Revisa y corrige la información según los errores mostrados");
+                issues.Add($"hubo errores con documentos previos ({string.Join("; ", errorMessages)})");
             }
 
-            if (!noPendingVerifications)
-            {
-                issues.Add("🔍 **Verificaciones Pendientes**: Hay documentos en proceso de verificación");
-                solutions.Add("Espera a que Stripe complete la verificación (1-3 días hábiles)");
-            }
-
-            if (!noFutureIssues)
-            {
-                issues.Add("⏰ **Requisitos Futuros**: Hay requisitos que deben cumplirse próximamente");
-                solutions.Add("Revisa tu panel de Stripe para ver los requisitos pendientes");
-            }
+            if (!noPendingVerifications) issues.Add("hay documentos en proceso de verificación");
+            if (!noFutureIssues) issues.Add("hay requisitos próximos que debes cumplir");
 
             if (issues.Any())
             {
-                var message = "⏳ **Verificación Pendiente** - Tu cuenta de pagos necesita atención:\n\n";
-                message += "**Problemas encontrados:**\n";
-                foreach (var issue in issues)
-                {
-                    message += $"• {issue}\n";
-                }
-                
-                message += "\n**Cómo solucionarlo:**\n";
-                foreach (var solution in solutions)
-                {
-                    message += $"• {solution}\n";
-                }
-                
-                message += "\n💡 **Consejo**: Accede a tu panel de Stripe para completar estos pasos. Una vez resuelto, podrás recibir pagos y ofrecer servicios.";
-                
-                return message;
+                return "⏳ Verificación pendiente. Tu cuenta necesita atención: " +
+                       string.Join("; ", issues) +
+                       ". Abre tu panel de Stripe para resolverlo y empezar a recibir pagos.";
             }
 
-            return "✅ **Verificación en Proceso**: Tu cuenta está siendo revisada por Stripe. Te notificaremos cuando esté lista (1-3 días hábiles).";
+            return "✅ Verificación en proceso. Tu cuenta está siendo revisada por Stripe. Te avisaremos cuando esté lista (1-3 días laborables).";
         }
 
         /// <summary>
@@ -7083,13 +7040,36 @@ namespace newApi.Controllers
                 "individual.phone" => "número de teléfono",
                 "individual.dob" => "fecha de nacimiento",
                 "individual.email" => "email",
+                "individual.first_name" => "nombre",
+                "individual.last_name" => "apellidos",
+                "individual.ssn_last_4" => "últimos 4 dígitos del NIE/SSN",
+                "individual.id_number" => "número de identificación",
                 "company.verification.document" => "documentos de la empresa",
+                "company.tax_id" => "NIF/CIF de la empresa",
+                "company.address" => "dirección de la empresa",
+                "company.phone" => "teléfono de la empresa",
+                "company.name" => "nombre de la empresa",
                 "business_profile.support_address" => "dirección del negocio",
                 "business_profile.url" => "sitio web del negocio",
                 "business_profile.support_phone" => "teléfono de soporte",
                 "business_profile.support_email" => "email de soporte",
-                "tos_acceptance.date" => "aceptar términos de servicio",
+                "business_profile.product_description" => "descripción del producto/servicio",
+                "business_profile.mcc" => "categoría del negocio (MCC)",
+                "business_type" => "tipo de negocio (individual/empresa)",
+                // 🛡️ Round 28: tos_acceptance.* — el flujo de aceptación de términos en Stripe Connect.
+                // El usuario veía "tos acceptance ip" raw; ahora todos los subcampos tienen mensajes claros.
+                "tos_acceptance.date" => "aceptar términos de servicio (fecha)",
+                "tos_acceptance.ip" => "aceptar términos de servicio (IP de aceptación)",
+                "tos_acceptance.user_agent" => "aceptar términos de servicio (navegador)",
+                "tos_acceptance" => "aceptar términos de servicio",
                 "external_account" => "información bancaria",
+                "documents.bank_account_ownership_verification" => "verificación de titularidad bancaria",
+                "documents.company_license" => "licencia de la empresa",
+                "documents.company_memorandum_of_association" => "escritura de constitución",
+                "documents.company_ministerial_decree" => "decreto ministerial de la empresa",
+                "documents.company_registration_verification" => "verificación de registro de empresa",
+                "documents.company_tax_id_verification" => "verificación del NIF/CIF",
+                "documents.proof_of_registration" => "prueba de registro",
                 _ => requirement.Replace("_", " ").Replace(".", " ")
             };
         }

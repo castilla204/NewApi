@@ -461,28 +461,32 @@ namespace newApi.Services
                 }
 
                 // MODIFICACI├ôN: Verificar balance disponible antes de cualquier outflow (best practice Stripe 2025 para evitar negativos)
-                // 🌍 Round 9 — A5: Comprobamos solo el balance EUR porque todos los charges al cliente
-                // se hacen en EUR (la pasarela europea de la plataforma). Si el experto es GB/CH/US/CA,
-                // Stripe convierte automáticamente desde EUR a la divisa destino al crear el transfer.
-                // El balance EUR es por tanto la única fuente de liquidez relevante para outflows.
+                // 🛡️ Round 28 — FIX MULTI-DIVISA: el balance Stripe está SEGREGADO por divisa.
+                // El comentario antiguo decía "todos los charges al cliente se hacen en EUR" — FALSO:
+                // SubscriptionController crea Sessions con `service.Currency.ToLowerInvariant()`. Si el
+                // hire es GBP/CHF/USD, el dinero está en el balance de esa divisa, no en EUR. Leer
+                // solo `balance.Available["eur"]` bloqueaba falsamente refunds en cualquier divisa ≠ EUR.
                 try
                 {
                     var balanceService = new BalanceService();
                     var balance = await balanceService.GetAsync();
-                    var availableEur = balance.Available?.FirstOrDefault(b => b.Currency == "eur")?.Amount / 100.0m ?? 0;
+                    // Divisa del hire (snapshot inmutable en SearchHire.Currency). Stripe usa lowercase.
+                    var hireCurrencyForBalance = (searchHire.Currency ?? "EUR").Trim().ToLowerInvariant();
+                    var availableInHireCurrency = balance.Available?
+                        .FirstOrDefault(b => b.Currency == hireCurrencyForBalance)?.Amount / 100.0m ?? 0;
                     // ✅ CORRECCIÓN CRÍTICA: Verificación de balance debe usar montos reales que se enviarán a Stripe
                     // Refund usa monto con tax proporcional, Transfer usa monto base (sin tax)
                     var totalOutflow = clientRefundAmountForStripe + expertAmountBase;
-                    if (availableEur < totalOutflow)
+                    if (availableInHireCurrency < totalOutflow)
                     {
                         // ­ƒÜ¿ LOG CR├ìTICO: Balance insuficiente (una sola vez, con informaci├│n completa)
                         // IMPORTANTE: Este log se crea ANTES de entrar en la transacci├│n, as├¡ que debe estar disponible inmediatamente
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Insufficient Stripe platform balance for money distribution",
                             details: $"SearchHire {searchHireId} finalization failed due to insufficient Stripe platform balance. " +
-                                    $"Available Balance: {availableEur}€, Required Outflow: {totalOutflow}€ (Client Refund: {clientRefundAmountForStripe:F2}€ with tax, Expert Transfer: {expertAmountBase:F2}€ base). " +
+                                    $"Currency={hireCurrencyForBalance.ToUpperInvariant()}, Available Balance: {availableInHireCurrency} {hireCurrencyForBalance.ToUpperInvariant()}, Required Outflow: {totalOutflow} {hireCurrencyForBalance.ToUpperInvariant()} (Client Refund: {clientRefundAmountForStripe:F2} with tax, Expert Transfer: {expertAmountBase:F2} base). " +
                                     $"Distribution Plan: Client={config.ClientPercentage}%, Expert={config.ExpertPercentage}%, Platform={config.PlatformPercentage}%. " +
-                                    $"Base amounts: Client={clientRefundAmount:F2}€, Expert={expertAmount:F2}€, Platform={platformAmount:F2}€. " +
+                                    $"Base amounts: Client={clientRefundAmount:F2}, Expert={expertAmount:F2}, Platform={platformAmount:F2}. " +
                                     $"Status: {statusValue}, Reason: {reason}, PaymentIntentId: {servicePayment.StripePaymentIntentId}. " +
                                     $"ACTION REQUIRED: Wait for balance to be available (from PaymentIntent capture) or manually verify Stripe balance and retry distribution.",
                             userId: initiatedByUserId ?? searchHire.ClientId,
@@ -492,7 +496,8 @@ namespace newApi.Services
                             additionalData: new {
                                 Status = statusValue,
                                 Reason = reason,
-                                AvailableBalance = availableEur,
+                                Currency = hireCurrencyForBalance.ToUpperInvariant(),
+                                AvailableBalance = availableInHireCurrency,
                                 TotalOutflow = totalOutflow,
                                 ClientRefundAmountBase = clientRefundAmount,
                                 ClientRefundAmountForStripe = clientRefundAmountForStripe,
@@ -1254,19 +1259,30 @@ namespace newApi.Services
                             }
                             catch (StripeException stripeAccEx) when (stripeAccEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
                             {
-                                // 🛡️ R14 FIX: la cuenta Stripe del experto fue eliminada (probablemente por el N4 fix
-                                // del AccountDeletionService que ahora SÍ borra la cuenta Stripe al eliminar User).
-                                // El transfer al experto no se puede hacer — abortar con critical para reconciliación.
+                                // 🛡️ Round 28 FIX: NO bloquear el refund al cliente cuando la cuenta del experto
+                                // fue eliminada. El refund NO necesita la cuenta del experto — Stripe lo deriva
+                                // del PaymentIntent original y descuenta del balance de la plataforma. Antes
+                                // hacíamos `return false` aquí (bug): cliente sin reembolso aunque pagó por un
+                                // servicio que el experto ya no puede entregar. Ahora marcamos el hire para
+                                // revisión manual del transfer perdido, pero permitimos que el bloque
+                                // `if (needsRefund)` siga ejecutándose.
                                 await _loggingService.LogCriticalAsync(
-                                    message: "CRITICAL R14: Expert Stripe account not found (404)",
-                                    details: $"SearchHire {searchHireId}: la cuenta Stripe {expertStripeAccountId} retornó 404 (eliminada o nunca existió). Refund al cliente sí puede proceder pero el transfer al experto está bloqueado. ACCIÓN ADMIN: reconciliar manualmente (devolver al cliente lo que era del experto o re-asignar payout). Error: {stripeAccEx.Message}",
+                                    message: "CRITICAL R14: Expert Stripe account not found (404) — refund continues",
+                                    details: $"SearchHire {searchHireId}: la cuenta Stripe {expertStripeAccountId} retornó 404 (eliminada o nunca existió). " +
+                                             $"REFUND AL CLIENTE CONTINÚA (no requiere la cuenta del experto). " +
+                                             $"TRANSFER AL EXPERTO ABORTADO: el monto {expertAmount:F2} {searchHire.Currency ?? "EUR"} queda RETENIDO por la plataforma — " +
+                                             $"ACCIÓN ADMIN: reconciliar manualmente. Error: {stripeAccEx.Message}",
                                     userId: searchHire.ExpertId,
                                     source: "StripeRefundService.ProcessMoneyDistributionAsync.R14",
                                     relatedEntityType: "SearchHire",
                                     relatedEntityId: searchHireId,
-                                    additionalData: new { StripeAccountId = expertStripeAccountId, ExpertId = searchHire.ExpertId });
-                                if (transaction != null) await transaction.RollbackAsync();
-                                return false;
+                                    additionalData: new { StripeAccountId = expertStripeAccountId, ExpertId = searchHire.ExpertId, RetainedExpertAmount = expertAmount, Currency = searchHire.Currency ?? "EUR" });
+                                searchHire.RequiresManualReview = true;
+                                searchHire.RefundFailedAt = DateTime.UtcNow;
+                                // Marcador de que el transfer se omitió por cuenta inexistente. needsTransfer
+                                // se desactiva y saltamos al final del bloque para que el refund siga.
+                                needsTransfer = false;
+                                goto endTransferBlock;
                             }
                             // 🔧 FIX (pagos): en separate charges & transfers el experto SOLO necesita la capability
                             // "transfers" + payouts; NO "charges". El onboarding pide solo "transfers", así que
@@ -1579,6 +1595,8 @@ namespace newApi.Services
                                     relatedEntityType: "SearchHire",
                                     relatedEntityId: searchHireId);
                             }
+                            // 🛡️ Round 28: label para saltar aquí desde el catch 404 (refund continúa).
+                            endTransferBlock: ;
                         }
 
                         // Refund despu├®s (si aplica)

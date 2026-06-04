@@ -2783,7 +2783,11 @@ namespace newApi.Services
                           ""Password"" = NULL,
                           ""PhoneNumber"" = NULL,
                           ""PhoneVerified"" = false,
-                          ""SubscriptionPlanId"" = NULL
+                          ""SubscriptionPlanId"" = NULL,
+                          ""TaxId"" = NULL,
+                          ""TaxIdCountry"" = NULL,
+                          ""FiscalCountry"" = NULL,
+                          ""FiscalCountryChangedAt"" = NULL
                       WHERE ""Id"" = {0} AND (""IsDeleted"" IS NULL OR ""IsDeleted"" = false)",
                     new object[] { userId }, cancellationToken);
 

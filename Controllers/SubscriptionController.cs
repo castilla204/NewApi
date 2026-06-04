@@ -2016,23 +2016,41 @@ namespace newApi.Controllers
         [NonAction]
         public async Task<IActionResult> LoadMoney([FromBody] LoadMoneyDto request)
         {
-            // 🛡️ MUD-AN: kill-switch defensivo. La ruta está deshabilitada permanentemente.
-            // Si por accidente alguien quitase [NonAction] o invocase por reflexión, esto
-            // genera alerta admin + 410 Gone en lugar de crear un PI sin captura manual.
-            var killUserIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            int.TryParse(killUserIdClaim, out int killUserId);
-            await _loggingService.LogCriticalAsync(
-                message: "CRITICAL MUD-AN: deprecated LoadMoney endpoint was invoked",
-                details: $"User {killUserId} tried to invoke the disabled LoadMoney endpoint. Either [NonAction] was removed by mistake or the method was called via reflection. This endpoint creates auto-captured PIs without DB record — fraud vector. Action: verify route table + redeploy.",
-                userId: killUserId == 0 ? null : killUserId,
-                source: "SubscriptionController.LoadMoney.MUD-AN.KillSwitch",
-                relatedEntityType: "Payment",
-                additionalData: new { Amount = request?.Amount, Endpoint = "LoadMoney" });
+            // 🛡️ MUD-AN + MUD-AW: kill-switch defensivo. La ruta está deshabilitada
+            // permanentemente. Si por accidente alguien quitase [NonAction] o invocase por
+            // reflexión, esto genera alerta admin + 410 Gone en lugar de crear un PI sin
+            // captura manual.
+            //
+            // MUD-AW: invocación vía reflexión sin HttpContext hace `User` accede a
+            // ControllerBase.User → HttpContext.User → NRE. Sin esta protección el log
+            // critical NUNCA se emitía (la NRE escapaba antes), perdiendo el threat model
+            // que el fix pretendía cubrir. Try/catch garantiza log + 410.
+            int? killUserId = null;
+            try
+            {
+                var killUserIdClaim = HttpContext?.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (int.TryParse(killUserIdClaim, out int parsedKill))
+                {
+                    killUserId = parsedKill;
+                }
+            }
+            catch { /* invocación sin HttpContext — log debe seguir siendo emitido */ }
+            try
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL MUD-AN: deprecated LoadMoney endpoint was invoked",
+                    details: $"User {killUserId?.ToString() ?? "(no-http-context)"} tried to invoke the disabled LoadMoney endpoint. Either [NonAction] was removed by mistake or the method was called via reflection. This endpoint creates auto-captured PIs without DB record — fraud vector. Action: verify route table + redeploy.",
+                    userId: killUserId,
+                    source: "SubscriptionController.LoadMoney.MUD-AN.KillSwitch",
+                    relatedEntityType: "Payment",
+                    additionalData: new { Amount = request?.Amount, Endpoint = "LoadMoney" });
+            }
+            catch { /* nunca dejar que un fallo de logging deje pasar el body legacy */ }
             return StatusCode(410, new { message = "This endpoint has been permanently disabled. Use /api/Subscription/load-money-service instead." });
 
+#pragma warning disable CS0162 // Unreachable code detected — código histórico bajo `return` previo
             // ⚠️ Código antiguo conservado bajo guard imposible para referencia histórica.
             if (true) { throw new InvalidOperationException("MUD-AN: LoadMoney is disabled"); }
-#pragma warning disable CS0162 // Unreachable code detected
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
@@ -4687,9 +4705,19 @@ namespace newApi.Controllers
                             if (anyMutation)
                             {
                                 await _context.SaveChangesAsync();
+                                // 🛡️ Round 28 MUD-AR: redactar TaxId en logs (PII fiscal RGPD Art.9 +
+                                // LOPDGDD). El admin solo necesita confirmar que la persistencia
+                                // ocurrió, no el valor exacto. Si necesita el valor, está en la
+                                // tabla Users (acceso controlado por rol). Mostramos los últimos
+                                // 3 chars para soporte forense + el país (no es PII por sí solo).
+                                var redactedTaxId = string.IsNullOrEmpty(userToUpdate.TaxId)
+                                    ? "(none)"
+                                    : userToUpdate.TaxId.Length <= 3
+                                        ? "***"
+                                        : "***" + userToUpdate.TaxId.Substring(userToUpdate.TaxId.Length - 3);
                                 await _loggingService.LogInfoAsync(
                                     message: "MUD-AO: Users tax fields synced from Stripe checkout",
-                                    details: $"User {userId}: TaxId={userToUpdate.TaxId}, TaxIdCountry={userToUpdate.TaxIdCountry}, FiscalCountry={userToUpdate.FiscalCountry} (from session {session.Id}). Used by DAC7 modelo 238 aggregation.",
+                                    details: $"User {userId}: TaxId={redactedTaxId} ({userToUpdate.TaxIdCountry ?? "?"}), FiscalCountry={userToUpdate.FiscalCountry ?? "?"} (from session {session.Id}). Modelo 347 / reverse-charge B2B aggregation. NB: para modelo 238 DAC7 falta TIN del experto, no del cliente.",
                                     userId: userId,
                                     source: "SubscriptionController.HandlePendingHireCompleted.MUD-AO",
                                     relatedEntityType: "User",
@@ -8270,6 +8298,11 @@ namespace newApi.Controllers
 
                     hire.StatusId = cancelledHireStatusId;
                     hire.UpdatedAt = DateTime.UtcNow;
+                    // 🛡️ Round 28 MUD-AS: marcar CaptureStatus="Failed" para que el watchdog
+                    // (PlatformMaintenanceService.ProcessExpiringPaymentIntentsAsync) NO
+                    // reintente cancelar un PI ya muerto. Evita gastos en Stripe API + log
+                    // spam por hire afectado cada tick del cron.
+                    hire.CaptureStatus = "Failed";
                     hireWasCancelledNow = true;
 
                     if (hire.Appointment != null && appointmentCancelledStatusId.HasValue)
@@ -8865,6 +8898,11 @@ namespace newApi.Controllers
 
                     hire.StatusId = cancelledHireStatusId;
                     hire.UpdatedAt = DateTime.UtcNow;
+                    // 🛡️ Round 28 MUD-AS: marcar CaptureStatus="Failed" para que el watchdog
+                    // (PlatformMaintenanceService.ProcessExpiringPaymentIntentsAsync) NO
+                    // reintente cancelar un PI ya muerto. Evita gastos en Stripe API + log
+                    // spam por hire afectado cada tick del cron.
+                    hire.CaptureStatus = "Failed";
                     hireWasCancelledNow = true;
 
                     if (hire.Appointment != null && appointmentCancelledStatusId.HasValue)

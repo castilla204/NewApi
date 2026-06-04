@@ -2898,9 +2898,31 @@ namespace newApi.Controllers
                                     Console.ForegroundColor = originalColor2;
                                 }
                                 catch { }
-                                
-                                var state = EvaluateStripeAccount(account);
-                                
+
+                                // 🛡️ Round 28 MUD-BT: Stripe NO garantiza orden de entrega de webhooks
+                                // (docs.stripe.com/webhooks#delivery-guarantees). Si la cuenta hace 2
+                                // transiciones rápidas (Approved→Restricted→Approved) y los webhooks
+                                // llegan en orden inverso, el handler aplica el evento VIEJO sobre la
+                                // BD ya actualizada. Resultado: BD queda Restricted aunque Stripe live
+                                // es Approved → drift permanente (capability.updated YA hace re-fetch).
+                                // Fix: re-fetch live state SIEMPRE en account.updated. Si Stripe API
+                                // falla, fallback al payload del evento (al menos no es peor que antes).
+                                Account liveAccount = account;
+                                try
+                                {
+                                    liveAccount = await new AccountService().GetAsync(account.Id);
+                                }
+                                catch (StripeException refetchEx)
+                                {
+                                    await _loggingService.LogWarningAsync(
+                                        message: "MUD-BT: account.updated live re-fetch failed, using event payload",
+                                        details: $"Account {account.Id}: {refetchEx.StripeError?.Code} - {refetchEx.Message}. Webhook ordering drift puede dejarse sin corregir.",
+                                        source: "SubscriptionController.account.updated.MUD-BT",
+                                        relatedEntityType: "ExpertProfile",
+                                        relatedEntityId: profileToUpdate.Id);
+                                }
+                                var state = EvaluateStripeAccount(liveAccount);
+
                                 // ✅ LOG DIAGNÓSTICO: Estado evaluado
                                 try
                                 {
@@ -2914,7 +2936,7 @@ namespace newApi.Controllers
                                 }
                                 catch { }
 
-                                ApplyStripeAccountState(profileToUpdate, state, account.Id);
+                                ApplyStripeAccountState(profileToUpdate, state, liveAccount.Id);
 
                                 // ✅ LOG DIAGNÓSTICO: Guardando cambios
                                 try
@@ -2939,7 +2961,7 @@ namespace newApi.Controllers
                                     // (~€300/seller de multa AEAT). Non-blocking.
                                     if (_dac7DataSync != null)
                                     {
-                                        try { await _dac7DataSync.SyncFromAccountAsync(account, profileToUpdate.Id); }
+                                        try { await _dac7DataSync.SyncFromAccountAsync(liveAccount, profileToUpdate.Id); }
                                         catch (Exception dac7Ex)
                                         {
                                             await _loggingService.LogWarningAsync(
@@ -3148,6 +3170,60 @@ namespace newApi.Controllers
                         }
 
                         break;
+                    case "account.external_account.deleted":
+                    case "account.external_account.updated":
+                    case "account.external_account.created":
+                        // 🛡️ Round 28 MUD-BU: experto cambia/borra/añade cuenta bancaria desde
+                        // Stripe Dashboard. ANTES caía en default → ignorado. Consecuencias:
+                        // - Dac7SellerSnapshot.IbanLast4 queda obsoleto → modelo 238 incorrecto.
+                        // - Si borra el ÚNICO bank, los próximos transfer.failed sin contexto.
+                        // - Sin notificación al experto del cambio crítico.
+                        //
+                        // Fix: re-fetch account live + re-sync Dac7. Si transfer falla luego,
+                        // el handler de transfer.failed (MUD-BN) ya notifica al experto.
+                        try
+                        {
+                            var externalAccountId = (stripeEvent.Data?.Object as IHasId)?.Id;
+                            var connectedAcctId = stripeEvent.Account;
+                            if (!string.IsNullOrEmpty(connectedAcctId))
+                            {
+                                var externalProfile = await _context.ExpertProfiles
+                                    .FirstOrDefaultAsync(ep => ep.StripeAccountId == connectedAcctId);
+                                if (externalProfile != null)
+                                {
+                                    Stripe.Account? freshAcct = null;
+                                    try { freshAcct = await new AccountService().GetAsync(connectedAcctId); }
+                                    catch (StripeException) { /* acct gone, no resync */ }
+
+                                    if (freshAcct != null && _dac7DataSync != null)
+                                    {
+                                        await _dac7DataSync.SyncFromAccountAsync(freshAcct, externalProfile.Id);
+                                    }
+
+                                    if (string.Equals(stripeEvent.Type, "account.external_account.deleted", System.StringComparison.Ordinal))
+                                    {
+                                        await _loggingService.LogWarningAsync(
+                                            message: "🏦 Has eliminado tu cuenta bancaria de Stripe",
+                                            details: $"Detectamos que has borrado una cuenta bancaria de tu Connect account ({externalAccountId}). Si era tu única cuenta, los próximos pagos a tu banco fallarán hasta que añadas una nueva en el panel Stripe. Si fue un cambio intencional (renovación de IBAN), ignora este aviso.",
+                                            userId: externalProfile.UserId,
+                                            source: "SubscriptionController.account.external_account.deleted.MUD-BU",
+                                            relatedEntityType: "ExpertProfile",
+                                            relatedEntityId: externalProfile.Id,
+                                            notifyUser: true);
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception extEx)
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "MUD-BU: external_account event processing failed (non-blocking)",
+                                details: $"EventType={stripeEvent.Type} acct={stripeEvent.Account}: {extEx.Message}.",
+                                source: "SubscriptionController.account.external_account.MUD-BU",
+                                relatedEntityType: "ExpertProfile");
+                        }
+                        await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account, null);
+                        break;
                     case "transfer.failed":
                         // 🔧 FIX B4: delega en el método compartido (también llamado desde /webhook-general,
                         // que es donde Stripe entrega los eventos de la cuenta PLATAFORMA en separate charges
@@ -3202,11 +3278,16 @@ namespace newApi.Controllers
                                     }
                                     if (capabilityProfile != null)
                                     {
+                                        // 🛡️ Round 28 MUD-BR (follow-up MUD-BI): 3er sitio del array activeStatusValues.
+                                        // ANTES esto NO incluía TransferFailed → si experto tenía SOLO hires en TransferFailed
+                                        // y capability.updated llegaba con transfers=inactive, activeHiresCount=0 → no
+                                        // disparaba HandleApprovedAccountRejection → hires zombi como pre-MUD-BI.
                                         var activeStatusValues = new[]
                                         {
                                             SearchHireStatus.Pending.ToStringValue(),
                                             SearchHireStatus.AwaitingClientDecision.ToStringValue(),
-                                            SearchHireStatus.Disputed.ToStringValue()
+                                            SearchHireStatus.Disputed.ToStringValue(),
+                                            SearchHireStatus.TransferFailed.ToStringValue()
                                         };
                                         var activeHiresCount = await _context.SearchHires
                                             .Include(sh => sh.Status)
@@ -9632,10 +9713,55 @@ namespace newApi.Controllers
                     "appointment_completed_without_client_approval"
                 };
 
+                // 🛡️ Round 28 MUD-BW (follow-up MUD-BL): mismo guard de Dispute Pending también
+                // aquí. Race: admin arbitrando Dispute interna AHORA + Stripe envía account.updated
+                // degradando a Rejected/Disabled/Restricted → refund 100% automático atropella
+                // decisión admin → posible doble refund + estado inconsistente. MUD-BL solo
+                // protegía deauth; este path es idéntico.
+                var hireIdsInRejection = activeHires.Select(h => h.Id).ToList();
+                var hireIdsWithActiveDispute = await _context.Disputes
+                    .AsNoTracking()
+                    .Where(d => hireIdsInRejection.Contains(d.SearchHireId)
+                             && (d.Status == "Pending" || d.Status == "Resolving"))
+                    .Select(d => d.SearchHireId)
+                    .ToListAsync();
+                var rejectionDisputeSet = new HashSet<int>(hireIdsWithActiveDispute);
+
                 foreach (var hire in activeHires)
                 {
                     var appointmentStatus = hire.Appointment?.Status?.StatusValue;
                     var alreadyServiced = appointmentStatus != null && servicedAppointmentStatuses.Contains(appointmentStatus);
+
+                    // 🛡️ MUD-BW: si tiene dispute interna activa, NO refund automático.
+                    if (rejectionDisputeSet.Contains(hire.Id))
+                    {
+                        hire.RequiresManualReview = true;
+                        hire.UpdatedAt = DateTime.UtcNow;
+                        await _context.SaveChangesAsync();
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL MUD-BW: rejection con Dispute interna activa — refund automático bloqueado",
+                            details: $"SearchHire #{hire.Id}: cuenta Stripe rechazada/disabled/restricted ({disabledReason}) pero hay Dispute Pending/Resolving en curso. NO refund automático para no atropellar arbitraje admin. ExpertId={expertId}.",
+                            userId: expertId,
+                            source: "SubscriptionController.HandleApprovedAccountRejection.MUD-BW",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: hire.Id);
+                        if (hire.ClientId.HasValue)
+                        {
+                            try
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "Tu disputa requiere revisión adicional",
+                                    details: $"El experto involucrado en tu disputa perdió temporalmente su capacidad de cobro. Un administrador revisará el caso completo antes de decidir el reembolso. (SearchHire #{hire.Id})",
+                                    userId: hire.ClientId.Value,
+                                    source: "SubscriptionController.HandleApprovedAccountRejection.MUD-BW",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: hire.Id,
+                                    notifyUser: true);
+                            }
+                            catch { /* best-effort */ }
+                        }
+                        continue;
+                    }
 
                     if (alreadyServiced)
                     {

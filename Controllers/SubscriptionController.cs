@@ -2924,12 +2924,32 @@ namespace newApi.Controllers
                                     Console.ForegroundColor = originalColor2;
                                 }
                                 catch { }
-                                
+
                                 // ✅ FIX CRÍTICO: NO usar transacciones manuales con ExecutionStrategy habilitado
                                 // Guardar directamente sin transacción para evitar conflicto con ExecutionStrategy
                                 try
                                 {
                                     await _context.SaveChangesAsync();
+
+                                    // 🛡️ Round 28 MUD-BH: sincronizar datos legales DAC7 al snapshot del año
+                                    // actual. Antes esto solo se llamaba en el endpoint manual /sync-status
+                                    // (cuando el experto pulsaba un botón). Stripe envía account.updated
+                                    // CADA vez que cambia DOB/IBAN/Address — esa es la fuente canónica.
+                                    // Sin esto, el modelo 238 anual DAC7 podría reportar datos antiguos
+                                    // (~€300/seller de multa AEAT). Non-blocking.
+                                    if (_dac7DataSync != null)
+                                    {
+                                        try { await _dac7DataSync.SyncFromAccountAsync(account, profileToUpdate.Id); }
+                                        catch (Exception dac7Ex)
+                                        {
+                                            await _loggingService.LogWarningAsync(
+                                                message: "MUD-BH: DAC7 sync from webhook failed (non-blocking)",
+                                                details: $"ExpertProfile {profileToUpdate.Id} acct {account.Id}: {dac7Ex.Message}. El webhook account.updated continua; el snapshot DAC7 puede quedar desfasado hasta el siguiente account.updated.",
+                                                source: "SubscriptionController.account.updated.MUD-BH",
+                                                relatedEntityType: "Dac7SellerSnapshot",
+                                                relatedEntityId: profileToUpdate.Id);
+                                        }
+                                    }
                                 }
                                 catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
                                 {
@@ -3055,7 +3075,23 @@ namespace newApi.Controllers
                                                    || state.Status == StripeStatus.Restricted
                                                    || state.Status == StripeStatus.Deauthorized;
 
-                                if (currentPreviousStatus == StripeStatus.Approved && blocksTransfers)
+                                // 🛡️ Round 28 MUD-BM: el guard previo solo cancelaba hires si el estado
+                                // PREVIO era exactamente Approved. Si la cuenta degrada en 2 webhooks
+                                // (Approved → RequirementsPastDue → Rejected), el 2º evento ve
+                                // previousStatus=RequirementsPastDue y NO cancela los hires del 1º.
+                                // Resultado: hires zombi creados durante Approved. La función
+                                // HandleApprovedAccountRejection es idempotente, así que ampliar el
+                                // guard a estados intermedios (que permitían tener hires activos en
+                                // transit) no produce doble cancelación.
+                                var couldHaveActiveHires =
+                                       currentPreviousStatus == StripeStatus.Approved
+                                    || currentPreviousStatus == StripeStatus.RequirementsPastDue
+                                    || currentPreviousStatus == StripeStatus.PendingVerification
+                                    || currentPreviousStatus == StripeStatus.ActionRequired
+                                    || currentPreviousStatus == StripeStatus.RestrictedSoon
+                                    || currentPreviousStatus == StripeStatus.RequirementsDue;
+
+                                if (couldHaveActiveHires && blocksTransfers)
                                 {
                                     await HandleApprovedAccountRejection(profileToUpdate.Id,
                                         state.DisabledReason ?? $"account_updated_to_{state.Status}");
@@ -3191,11 +3227,15 @@ namespace newApi.Controllers
                                         // capability.updated no garantiza account.updated emparejado).
                                         var capabilityPreviousStatus = capabilityProfile.StripeStatus;
                                         StripeAccountState? capabilityRefreshedState = null;
+                                        // 🛡️ MUD-BK: refreshedAccount fuera del try para usarlo después
+                                        // en el check de card_payments latente (necesitamos transfers
+                                        // + payouts_enabled live).
+                                        Stripe.Account? refreshedAccount = null;
                                         bool capabilitySaveFailed = false;
                                         try
                                         {
                                             var accountService = new Stripe.AccountService();
-                                            var refreshedAccount = await accountService.GetAsync(capabilityAccountId);
+                                            refreshedAccount = await accountService.GetAsync(capabilityAccountId);
                                             capabilityRefreshedState = EvaluateStripeAccount(refreshedAccount);
                                             ApplyStripeAccountState(capabilityProfile, capabilityRefreshedState);
                                             await _context.SaveChangesAsync();
@@ -3260,7 +3300,21 @@ namespace newApi.Controllers
                                                 "SubscriptionController.capability.updated");
                                         }
 
-                                        if (activeHiresCount > 0 && isCapabilityInactive)
+                                        // 🛡️ Round 28 MUD-BK: NO cancelar hires por card_payments inactive si
+                                        // transfers sigue active. En US/CA/GB la capability card_payments es
+                                        // "latente" (Stripe la exige por KYC pero el flujo separate-charges
+                                        // de la plataforma no la usa — clientes pagan a platform, platform
+                                        // transfiere via capability transfers). Cancelar hires destruye
+                                        // servicios contratados sin razón financiera real. Solo procedemos
+                                        // si transfers también está inactive o payouts_enabled=false.
+                                        var transfersStillActive = refreshedAccount?.Capabilities?.Transfers == "active";
+                                        var payoutsStillEnabled = refreshedAccount?.PayoutsEnabled == true;
+                                        var realBlockingDeactivation =
+                                            capability.Id != "card_payments"
+                                            || !transfersStillActive
+                                            || !payoutsStillEnabled;
+
+                                        if (activeHiresCount > 0 && isCapabilityInactive && realBlockingDeactivation)
                                         {
                                             await _loggingService.LogCriticalAsync(
                                                 message: "CRITICAL: Stripe capability inactive on expert with active hires",
@@ -3269,8 +3323,21 @@ namespace newApi.Controllers
                                                 source: "SubscriptionController.capability.updated",
                                                 relatedEntityType: "ExpertProfile",
                                                 relatedEntityId: capabilityProfile.Id,
-                                                additionalData: new { capability.Id, capability.Status, AccountId = capabilityAccountId, ActiveHires = activeHiresCount });
+                                                additionalData: new { capability.Id, capability.Status, AccountId = capabilityAccountId, ActiveHires = activeHiresCount, TransfersActive = transfersStillActive, PayoutsEnabled = payoutsStillEnabled });
                                             await HandleApprovedAccountRejection(capabilityProfile.Id, $"capability_{capability.Id}_inactive");
+                                        }
+                                        else if (activeHiresCount > 0 && isCapabilityInactive && !realBlockingDeactivation)
+                                        {
+                                            // card_payments latente inactivada pero transfers+payouts siguen ok.
+                                            // Solo log Warning — no cancelamos hires.
+                                            await _loggingService.LogWarningAsync(
+                                                message: "MUD-BK: card_payments inactive but transfers+payouts OK — hires NOT cancelled",
+                                                details: $"Capability '{capability.Id}' inactive en {capabilityAccountId}. transfers={refreshedAccount?.Capabilities?.Transfers} payouts_enabled={payoutsStillEnabled}. ExpertId={capabilityProfile.UserId}, active hires={activeHiresCount}. Servicios siguen operativos (separate-charges flow). El experto debe completar KYC card_payments en Stripe; sus hires actuales NO se cancelan.",
+                                                userId: capabilityProfile.UserId,
+                                                source: "SubscriptionController.capability.updated.MUD-BK",
+                                                relatedEntityType: "ExpertProfile",
+                                                relatedEntityId: capabilityProfile.Id,
+                                                additionalData: new { capability.Id, capability.Status, AccountId = capabilityAccountId, ActiveHires = activeHiresCount });
                                         }
 
                                         // 🔧 Round 26 CAP-5: si el save de fallback falló, devolver 500 para
@@ -9243,11 +9310,18 @@ namespace newApi.Controllers
             try
             {
                 // 1. Verificar si el experto tiene contrataciones activas
+                // 🛡️ Round 28 MUD-BI: incluir TransferFailed. Si un hire ya prestó el servicio
+                // pero el transfer al experto falló (status=TransferFailed esperando revisión),
+                // y luego el experto se desautoriza/desactiva, ANTES quedaba zombi: el cliente
+                // recibió servicio + dinero atascado en plataforma indefinidamente porque el
+                // scan NO lo encontraba. Ahora lo recogemos: HandleApprovedAccountRejection
+                // lo marcará RequiresManualReview=true + log Critical para admin.
                 var activeStatusValues = new[]
                 {
                     SearchHireStatus.Pending.ToStringValue(),
                     SearchHireStatus.AwaitingClientDecision.ToStringValue(),
-                    SearchHireStatus.Disputed.ToStringValue()
+                    SearchHireStatus.Disputed.ToStringValue(),
+                    SearchHireStatus.TransferFailed.ToStringValue()
                 };
                 var activeHiresList = await _context.SearchHires
                     .Include(sh => sh.Status)
@@ -9281,10 +9355,57 @@ namespace newApi.Controllers
                     "appointment_completed",
                     "appointment_completed_without_client_approval"
                 };
+                // 🛡️ Round 28 MUD-BL: cargar disputes internas Pending/Resolving una sola vez
+                // para chequear race condition contra refund automático. Si admin está
+                // arbitrando una Dispute interna AHORA, NO debemos refund 100% al cliente
+                // por nuestra cuenta — eso atropellaría la decisión admin → posible doble
+                // refund + estado inconsistente. En ese caso, marcamos RequiresManualReview
+                // y dejamos que el admin termine la dispute antes de procesar money flow.
+                var hireIdsInDeauth = activeHiresList.Select(h => h.Id).ToList();
+                var hiresWithActiveDispute = await _context.Disputes
+                    .AsNoTracking()
+                    .Where(d => hireIdsInDeauth.Contains(d.SearchHireId)
+                             && (d.Status == "Pending" || d.Status == "Resolving"))
+                    .Select(d => d.SearchHireId)
+                    .ToListAsync();
+                var hasActiveDisputeSet = new HashSet<int>(hiresWithActiveDispute);
+
                 foreach (var hire in activeHiresList)
                 {
                     var appointmentStatus = hire.Appointment?.Status?.StatusValue;
                     var alreadyServiced = appointmentStatus != null && servicedAppointmentStatuses.Contains(appointmentStatus);
+
+                    // 🛡️ MUD-BL: si tiene dispute interna activa, NO refund automático.
+                    if (hasActiveDisputeSet.Contains(hire.Id))
+                    {
+                        hire.RequiresManualReview = true;
+                        hire.UpdatedAt = DateTime.UtcNow;
+                        await _context.SaveChangesAsync();
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL MUD-BL: deauth con Dispute interna activa — refund automático bloqueado",
+                            details: $"SearchHire #{hire.Id}: experto desautorizó cuenta Stripe pero hay Dispute Pending/Resolving en curso. NO refund automático para no atropellar arbitraje admin. Admin debe resolver dispute primero, luego decidir refund/transfer manualmente. ExpertId={expertId}.",
+                            userId: expertId,
+                            source: "SubscriptionController.HandleAccountDeauthorization.MUD-BL",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: hire.Id);
+                        if (hire.ClientId.HasValue)
+                        {
+                            try
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "Tu disputa requiere revisión adicional",
+                                    details: $"El experto involucrado en tu disputa desconectó su cuenta. Un administrador revisará el caso completo antes de decidir el reembolso. (SearchHire #{hire.Id})",
+                                    userId: hire.ClientId.Value,
+                                    source: "SubscriptionController.HandleAccountDeauthorization.MUD-BL",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: hire.Id,
+                                    notifyUser: true);
+                            }
+                            catch { /* best-effort */ }
+                        }
+                        continue;
+                    }
+
                     if (alreadyServiced)
                     {
                         hire.RequiresManualReview = true;
@@ -9396,11 +9517,18 @@ namespace newApi.Controllers
 
                 var expertId = expertProfile.UserId;
 
+                // 🛡️ Round 28 MUD-BI: incluir TransferFailed. Si un hire ya prestó el servicio
+                // pero el transfer al experto falló (status=TransferFailed esperando revisión),
+                // y luego el experto se desautoriza/desactiva, ANTES quedaba zombi: el cliente
+                // recibió servicio + dinero atascado en plataforma indefinidamente porque el
+                // scan NO lo encontraba. Ahora lo recogemos: HandleApprovedAccountRejection
+                // lo marcará RequiresManualReview=true + log Critical para admin.
                 var activeStatusValues = new[]
                 {
                     SearchHireStatus.Pending.ToStringValue(),
                     SearchHireStatus.AwaitingClientDecision.ToStringValue(),
-                    SearchHireStatus.Disputed.ToStringValue()
+                    SearchHireStatus.Disputed.ToStringValue(),
+                    SearchHireStatus.TransferFailed.ToStringValue()
                 };
 
                 var activeHires = await _context.SearchHires

@@ -4789,6 +4789,12 @@ namespace newApi.Controllers
                     ExpertTimezone = expertTimezone, // ✅ INTERNACIONALIZACIÓN: Snapshot del timezone del lugar de contratación
                     ExpertCountry = expertCountry, // ✅ INTERNACIONALIZACIÓN: Snapshot del país del lugar de contratación
                     RequiresManualReview = taxNotCollectedNeedsReview, // 🔧 FIX D11: IVA no recaudado → revisión fiscal del admin
+                    // 🛡️ Round 28 MUD-AJ: marcar Pending para activar watchdog. Sin esto el
+                    // campo permanecía null y PlatformMaintenanceService.ProcessExpiringPaymentIntents
+                    // (cron 30 min) NUNCA recogía hires huérfanos cuyo EnsurePaymentCapturedAsync
+                    // crasheaba/timeout entre crear hire y commit del PI → PI expira en 7d sin
+                    // cobro pero hire row queda como pending fantasma.
+                    CaptureStatus = "Pending",
                     ClientVatNumber = clientVatNumber,                  // 🔧 FISCAL FLIP: NIF cliente (puede ser null)
                     ClientVatCountryCode = clientVatCountryCode,        // 🔧 FISCAL FLIP: país NIF cliente (puede ser null)
                     ClientPercentageSnapshot = clientPctSnapshot,       // 🛡️ V8 FIX: congela % contractual
@@ -4919,6 +4925,13 @@ namespace newApi.Controllers
                 }
 
                 await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHireId); // ✅ FIX: Usar searchHireId guardado
+
+                // 🛡️ Round 28 MUD-AJ: marcar Captured tras éxito del capture. El watchdog ahora
+                // sabe que este hire NO necesita recovery (solo procesa CaptureStatus="Pending"
+                // antiguos > 1h). Sin esto, todos los hires que sí capturan ok seguían marcados
+                // como Pending → watchdog procesaría hires sanos por error.
+                searchHire.CaptureStatus = "Captured";
+                await _context.SaveChangesAsync();
 
                 try
                 {

@@ -225,7 +225,12 @@ namespace newApi.Services
                             var payoutReqOpts = new RequestOptions
                             {
                                 StripeAccount = acctId,
-                                IdempotencyKey = $"relocation-payout-{expertProfileId}-{avail.Currency}"
+                                // 🛡️ MUD-AE: incluir acctId + Amount. Sin acctId, mudanzas
+                                // back-to-back (ES→IE→UK) reusan la key con balance distinto
+                                // → Stripe idempotency_error. acctId varía por cada Stripe
+                                // acct cerrada (cada mudanza es una acct distinta) → key
+                                // siempre fresca.
+                                IdempotencyKey = $"relocation-payout-{acctId}-{avail.Currency}-{avail.Amount}"
                             };
                             var payout = await payoutSvc.CreateAsync(payoutOpts, payoutReqOpts);
                             stripeOps.Add(new { acctId, op = "final_payout", amount = avail.Amount / 100m, currency = avail.Currency.ToUpperInvariant(), payoutId = payout.Id });

@@ -451,7 +451,12 @@ namespace newApi.Services
             try
             {
                 var now = DateTime.UtcNow;
-                var deadline = now.AddDays(3);
+                // 🛡️ Round 28 MUD-BO: ampliada la ventana 3d → 14d. Stripe puede poner
+                // deadlines de 30-90 días (NIF caducando, IBAN a renovar). Con 3d el
+                // experto que viaja, está de baja o no revisa el panel se entera 3 días
+                // antes — insuficiente para conseguir cita en SEPE/banco/notaría. 14d da
+                // 2 semanas de margen real. La dedup de 23h sigue evitando spam diario.
+                var deadline = now.AddDays(14);
 
                 // 🛡️ Round 27 — R27-T27-2 FIX: dedup vía Notifications existentes.
                 // ANTES: el job corría diario (Cron.Daily 09:00 UTC) y para cada experto en la

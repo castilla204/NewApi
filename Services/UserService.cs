@@ -581,6 +581,19 @@ namespace newApi.Services
                 return (false, null, null, null, null, null, null);
             }
 
+            // 🛡️ Round 28 MUD-AG: para un experto mudado, ProfilePicture puede ser null
+            // (preserva la foto del país anterior). Salteamos todo el bloque de upload
+            // y reusamos los valores del ExpertProfile existente al final.
+            string imageUrl;
+            string objectName;
+            if (request.ProfilePicture == null)
+            {
+                // Solo válido para mudanza (controller ya gateó eso). Reusar valores existentes.
+                imageUrl = user.ExpertProfile?.ProfilePictureUrl ?? string.Empty;
+                objectName = user.ExpertProfile?.ProfilePictureObjectName ?? string.Empty;
+                goto skipUpload;
+            }
+
             // Validar tamaño del archivo (5MB límite para imágenes de perfil)
             if (request.ProfilePicture.Length > 5 * 1024 * 1024)
             {
@@ -614,7 +627,7 @@ namespace newApi.Services
             var bucketName = _configuration["GoogleCloud:BucketName"];
             var uniqueFileName = $"{Guid.NewGuid()}{extension}";
             // ✅ MIGRACIÓN: prefijo 'profiles/' para que las lecturas se enruten al bucket PÚBLICO de imágenes.
-            var objectName = $"profiles/{uniqueFileName}";
+            objectName = $"profiles/{uniqueFileName}";
 
             try
             {
@@ -703,7 +716,10 @@ namespace newApi.Services
                 return (false, null, null, null, null, null, null);
             }
 
-            var imageUrl = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
+            imageUrl = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
+
+            // 🛡️ MUD-AG: punto de aterrizaje cuando un experto mudado conserva foto.
+            skipUpload:
 
             // ✅ CRÍTICO: NO cambiar el rol hasta que el ExpertProfile se guarde exitosamente
             // Si falla después, el usuario quedará con rol Expert pero sin perfil
@@ -882,8 +898,14 @@ namespace newApi.Services
             if (user.ExpertProfile != null && user.ExpertProfile.RelocatedFromCountry != null)
             {
                 expertProfile = user.ExpertProfile;
-                expertProfile.ProfilePictureUrl = imageUrl;
-                expertProfile.ProfilePictureObjectName = objectName;
+                // 🛡️ MUD-AG: solo sobrescribir si hubo nuevo upload (imageUrl !=
+                // existingProfile.ProfilePictureUrl). Si el experto reutilizó su foto
+                // anterior, no tocamos nada para no leak el blob de Supabase.
+                if (request.ProfilePicture != null)
+                {
+                    expertProfile.ProfilePictureUrl = imageUrl;
+                    expertProfile.ProfilePictureObjectName = objectName;
+                }
                 expertProfile.Description = request.Description;
                 expertProfile.Latitude = request.Latitude;
                 expertProfile.Longitude = request.Longitude;
@@ -1242,6 +1264,22 @@ namespace newApi.Services
             try
             {
                 var now = DateTime.UtcNow;
+                // 🛡️ Round 28 MUD-AG: para mudanza, desactivar la availability row anterior
+                // antes de insertar la nueva. Sin esto, ExpertProfile 3 quedaría con DOS rows
+                // activas (IsActive=true, EffectiveTo=null) → search filters/admin reports
+                // doble-cuentan. Mismo patrón que UpdateExpertProfile:1725-1731.
+                if (user.ExpertProfile != null && user.ExpertProfile.RelocatedFromCountry != null)
+                {
+                    var staleAvailabilities = await _context.ExpertAvailabilities
+                        .Where(ea => ea.ExpertId == expertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
+                        .ToListAsync();
+                    foreach (var stale in staleAvailabilities)
+                    {
+                        stale.IsActive = false;
+                        stale.EffectiveTo = now;
+                        stale.UpdatedAt = now;
+                    }
+                }
                 var availability = new ExpertAvailability
                 {
                     ExpertId = expertProfile.Id,

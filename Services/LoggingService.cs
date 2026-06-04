@@ -1,4 +1,5 @@
 using Hangfire;
+using newApi.Common; // 🛡️ MUD-BA: BackgroundLogger
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
@@ -278,7 +279,8 @@ namespace newApi.Services
                             AdditionalData = additionalData
                         };
                         var criticalMsg = $"[CRITICAL] {message}";
-                        _ = Task.Run(async () =>
+                        BackgroundLogger.FireAndForget(async () =>
+                        /* 🛡️ MUD-BA: captura excepciones */
                         {
                             try { await alertChannel.SendCriticalAsync(criticalMsg, criticalPayload); }
                             catch (Exception alertEx)
@@ -911,7 +913,8 @@ namespace newApi.Services
                         if (alertChannel != null)
                         {
                             var fallbackMsg = $"[ADMIN ALERT fallback SMTP] {log.Message} | Details: {log.Details} | Source: {log.Source}";
-                            _ = Task.Run(async () =>
+                            BackgroundLogger.FireAndForget(async () =>
+                            /* 🛡️ MUD-BA: captura excepciones */
                             {
                                 try { await alertChannel.SendCriticalAsync(fallbackMsg, new { log.Source, log.RelatedEntityType, log.RelatedEntityId }); }
                                 catch (Exception fbEx) { Console.Error.WriteLine($"[LOGGING SERVICE] [ALERT FALLBACK] {fbEx.Message}"); }

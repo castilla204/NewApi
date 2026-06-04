@@ -334,7 +334,8 @@ namespace newApi.Controllers
                 // ✅ FIX: Fire-and-forget — el logging abre scope EF + 2 SaveChangesAsync
                 //    y en path de timeout (BD ya saturada) AMPLIFICA el problema, retrasando
                 //    aún más el 408 que devuelve al cliente.
-                _ = Task.Run(async () =>
+                BackgroundLogger.FireAndForget(async () =>
+                /* 🛡️ MUD-BA: captura excepciones para no perderlas en stderr */
                 {
                     try
                     {
@@ -363,7 +364,8 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 // ✅ FIX: Fire-and-forget para no bloquear el response 500 esperando al log.
-                _ = Task.Run(async () =>
+                BackgroundLogger.FireAndForget(async () =>
+                /* 🛡️ MUD-BA: captura excepciones para no perderlas en stderr */
                 {
                     try
                     {

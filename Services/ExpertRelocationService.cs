@@ -109,13 +109,20 @@ namespace newApi.Services
                 .AsNoTracking()
                 .CountAsync(s => s.ExpertProfileId == profile.Id && s.IsActive, ct);
 
-            // 🛡️ Round 28 MUD-AK: leer balance Stripe (Available + Pending) para detectar
-            // dinero aún no liquidado. Si Pending > 0 (PI capturado pero <settlement window),
-            // bloqueamos la mudanza porque al cerrar la cuenta ese balance pendiente revierte
-            // al platform → pérdida real para el experto (no recuperable vía payout, no apta
-            // a TransferReversal). El experto debe esperar 2-7 días al settlement de Stripe.
+            // 🛡️ Round 28 MUD-AK + MUD-AY: leer balance Stripe (Available + Pending) para
+            // detectar dinero aún no liquidado. Si Pending > 0 (PI capturado pero <settlement
+            // window), bloqueamos la mudanza porque al cerrar la cuenta ese balance pendiente
+            // revierte al platform → pérdida real para el experto.
+            //
+            // MUD-AY: si la lectura del balance falla por timeout/5xx/rate-limit, somos
+            // fail-CLOSED (no fail-open). La mudanza es irreversible y un Stripe outage no
+            // debe permitir cerrar una cuenta con Pending invisible. Si Stripe está caído
+            // 30 segundos, el experto reintenta el preflight más tarde — pérdida de UX es
+            // pequeña, pérdida de dinero potencial es alta. El 404 (cuenta ya gone) sí es
+            // benigno: no hay balance a perder.
             decimal pendingMajor = 0m;
             string? pendingCurrencies = null;
+            bool pendingReadFailed = false;
             if (!string.IsNullOrEmpty(profile.StripeAccountId))
             {
                 try
@@ -128,9 +135,9 @@ namespace newApi.Services
                         foreach (var p in bal.Pending)
                         {
                             if (p.Amount <= 0) continue;
-                            // Stripe zero-decimal vs estándar — usamos divisor 100 por defecto;
-                            // los zero-decimal (JPY/KRW) cuentan en unidades enteras pero la
-                            // comparación "tiene saldo" sigue siendo válida (Amount > 0).
+                            // Stripe HUF/ISK/TWD: minor units requeridos múltiplos de 100, divisor
+                            // 100 sigue siendo correcto. True zero-decimal (JPY/KRW/etc) NO están
+                            // en SupportedConnectCountries del proyecto.
                             var major = p.Amount / 100m;
                             pendingMajor += major;
                             parts.Add($"{p.Currency.ToUpperInvariant()}:{major:F2}");
@@ -143,17 +150,16 @@ namespace newApi.Services
                 }
                 catch (StripeException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
                 {
-                    // Cuenta no existe en Stripe → tratamos como sin pending.
+                    // Cuenta no existe en Stripe → tratamos como sin pending (benigno).
                 }
                 catch (System.Exception readEx)
                 {
-                    // No bloqueamos si el read falla — mejor permitir mudanza con log warning
-                    // que dejar al experto atrapado por un fallo de Stripe API.
-                    await _loggingService.LogWarningAsync(
-                        message: "MUD-AK: failed to read Stripe Pending balance during preflight",
-                        details: $"UserId {userId} acct {profile.StripeAccountId}: {readEx.Message}. Continuamos preflight asumiendo Pending=0.",
+                    pendingReadFailed = true;
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL MUD-AY: failed to read Stripe Pending balance during relocation preflight — fail-closed",
+                        details: $"UserId {userId} acct {profile.StripeAccountId}: {readEx.Message}. Bloqueamos la mudanza fail-CLOSED para evitar cerrar cuenta con Pending invisible si Stripe está caído. El experto debe reintentar más tarde. Si persiste >24h, admin debe verificar manualmente.",
                         userId: userId,
-                        source: "ExpertRelocationService.MUD-AK.PendingReadFailed",
+                        source: "ExpertRelocationService.MUD-AY.PendingReadFailed",
                         relatedEntityType: "ExpertProfile",
                         relatedEntityId: profile.Id);
                 }
@@ -161,7 +167,10 @@ namespace newApi.Services
 
             var result = new RelocationPreflightResult
             {
-                CanProceed = pendingDisputes == 0 && activeHires == 0 && recentRefunds == 0 && pendingMajor <= 0m,
+                // 🛡️ MUD-AY: pendingReadFailed se incluye en el gate. Si Stripe API falla,
+                // bloqueamos la mudanza hasta que el experto reintente (en lugar de permitir
+                // cierre con Pending invisible).
+                CanProceed = pendingDisputes == 0 && activeHires == 0 && recentRefunds == 0 && pendingMajor <= 0m && !pendingReadFailed,
                 PendingDisputes = pendingDisputes,
                 ActiveHires = activeHires,
                 RecentRefunds = recentRefunds,
@@ -191,6 +200,12 @@ namespace newApi.Services
                 // liquidado (típico 2-7d). Cerrar ahora hace que ese balance se devuelve al
                 // platform → pérdida real para el experto. Se le pide esperar al settlement.
                 result.BlockedReason = $"Tienes {pendingCurrencies} pendiente(s) de liquidar en Stripe (cobros recientes). Espera 2-7 días al settlement antes de mudarte — si cierras la cuenta ahora, ese dinero se devuelve a la plataforma y NO podemos recuperarlo automáticamente.";
+            }
+            else if (pendingReadFailed)
+            {
+                // 🛡️ MUD-AY: fail-closed. Stripe API caído → no podemos verificar Pending.
+                // Mejor bloquear y reintentar que cerrar a ciegas.
+                result.BlockedReason = "No hemos podido comprobar tu balance pendiente en Stripe ahora mismo. Reintenta en unos minutos. Si persiste tras una hora, contacta soporte — no queremos cerrar tu cuenta sin verificar que no quedan cobros recientes sin liquidar.";
             }
 
             return result;

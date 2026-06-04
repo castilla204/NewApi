@@ -6918,7 +6918,15 @@ namespace newApi.Controllers
         /// </summary>
         private async Task<bool> TryBeginProcessingEventAsync(string eventId, string eventType, string? stripeAccountId)
         {
-            var processingCutoff = DateTime.UtcNow.AddMinutes(-5);
+            // 🛡️ Round 28 MUD-AZ: bumped 5min → 30min. HandlePendingHireCompleted hace ~10 calls
+            // a Stripe API + múltiples SaveChanges en serie. Bajo carga (pool BD saturado,
+            // Stripe latency elevada), puede superar 5min en hires específicos. Con cutoff=5min,
+            // un retry de Stripe a T+5:30 ve Processing con ProcessedAt=T0 ya stale → re-reclama
+            // → corre EN PARALELO con la primera invocación → posible duplicación de SearchHire
+            // y FinancialTransaction (Stripe idempotency keys cubren refund/transfer pero NO
+            // las filas BD del evento). 30min es estancia segura: si un handler tarda >30min
+            // está roto y queremos que el retry sí lo reclame.
+            var processingCutoff = DateTime.UtcNow.AddMinutes(-30);
 
             var existing = await _context.ProcessedWebhookEvents
                 .FirstOrDefaultAsync(e => e.EventId == eventId);
@@ -6987,7 +6995,15 @@ namespace newApi.Controllers
         {
             try
             {
-                var processingCutoff = DateTime.UtcNow.AddMinutes(-5);
+                // 🛡️ Round 28 MUD-AZ: bumped 5min → 30min. HandlePendingHireCompleted hace ~10 calls
+            // a Stripe API + múltiples SaveChanges en serie. Bajo carga (pool BD saturado,
+            // Stripe latency elevada), puede superar 5min en hires específicos. Con cutoff=5min,
+            // un retry de Stripe a T+5:30 ve Processing con ProcessedAt=T0 ya stale → re-reclama
+            // → corre EN PARALELO con la primera invocación → posible duplicación de SearchHire
+            // y FinancialTransaction (Stripe idempotency keys cubren refund/transfer pero NO
+            // las filas BD del evento). 30min es estancia segura: si un handler tarda >30min
+            // está roto y queremos que el retry sí lo reclame.
+            var processingCutoff = DateTime.UtcNow.AddMinutes(-30);
                 return await _context.ProcessedWebhookEvents
                     .AnyAsync(e => e.EventId == eventId &&
                         (e.Status == "Success"

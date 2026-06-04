@@ -320,7 +320,8 @@ public class UserController : ControllerBase
             if (request == null)
             {
                 // ✅ OPTIMIZACIÓN: Logging en background con scope propio para evitar disposed objects
-                _ = Task.Run(async () =>
+                BackgroundLogger.FireAndForget(async () =>
+                /* 🛡️ MUD-BA: helper captura excepciones en ContinueWith para no perderlas silenciosamente */
                 {
                     using var scope = _serviceScopeFactory.CreateScope();
                     var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
@@ -345,7 +346,8 @@ public class UserController : ControllerBase
             {
                 // ✅ OPTIMIZACIÓN: Logging en background con scope propio
                 var email = request.Email; // Capturar antes de Task.Run
-                _ = Task.Run(async () =>
+                BackgroundLogger.FireAndForget(async () =>
+                /* 🛡️ MUD-BA: helper captura excepciones en ContinueWith para no perderlas silenciosamente */
                 {
                     using var scope = _serviceScopeFactory.CreateScope();
                     var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
@@ -373,7 +375,8 @@ public class UserController : ControllerBase
                 // ✅ OPTIMIZACIÓN: Logging en background con scope propio
                 var email = request.Email; // Capturar antes de Task.Run
                 var googleId = request.GoogleId; // Capturar antes de Task.Run
-                _ = Task.Run(async () =>
+                BackgroundLogger.FireAndForget(async () =>
+                /* 🛡️ MUD-BA: helper captura excepciones en ContinueWith para no perderlas silenciosamente */
                 {
                     using var scope = _serviceScopeFactory.CreateScope();
                     var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
@@ -417,7 +420,8 @@ public class UserController : ControllerBase
             if (user == null)
             {
                 // ✅ OPTIMIZACIÓN: Logging en background con scope propio
-                _ = Task.Run(async () =>
+                BackgroundLogger.FireAndForget(async () =>
+                /* 🛡️ MUD-BA: helper captura excepciones en ContinueWith para no perderlas silenciosamente */
                 {
                     using var scope = _serviceScopeFactory.CreateScope();
                     var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
@@ -455,7 +459,8 @@ public class UserController : ControllerBase
             // ✅ OPTIMIZACIÓN: Logging exitoso en background con scope propio
             var userId = user.Id; // Capturar antes de Task.Run
             var userEmail = user.Email; // Capturar antes de Task.Run
-            _ = Task.Run(async () =>
+            BackgroundLogger.FireAndForget(async () =>
+            /* 🛡️ MUD-BA: helper captura excepciones para no perderlas silenciosamente */
             {
                 using var scope = _serviceScopeFactory.CreateScope();
                 var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
@@ -478,7 +483,8 @@ public class UserController : ControllerBase
             var requestEmail = request?.Email; // Capturar antes de Task.Run
             var errorMessage = jwtEx.Message; // Capturar antes de Task.Run
             var errorType = jwtEx.GetType().Name; // Capturar antes de Task.Run
-            _ = Task.Run(async () =>
+            BackgroundLogger.FireAndForget(async () =>
+            /* 🛡️ MUD-BA: helper captura excepciones para no perderlas silenciosamente */
             {
                 using var scope = _serviceScopeFactory.CreateScope();
                 var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();
@@ -513,7 +519,8 @@ public class UserController : ControllerBase
             var errorMessage = ex.Message; // Capturar antes de Task.Run
             var errorType = ex.GetType().Name; // Capturar antes de Task.Run
             var innerExceptionMessage = ex.InnerException?.Message; // Capturar antes de Task.Run
-            _ = Task.Run(async () =>
+            BackgroundLogger.FireAndForget(async () =>
+            /* 🛡️ MUD-BA: helper captura excepciones para no perderlas silenciosamente */
             {
                 using var scope = _serviceScopeFactory.CreateScope();
                 var loggingService = scope.ServiceProvider.GetRequiredService<ILoggingService>();

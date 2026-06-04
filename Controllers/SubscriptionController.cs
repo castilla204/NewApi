@@ -185,6 +185,8 @@ namespace newApi.Controllers
                 StripeStatus.Pending => "Estamos creando tu cuenta. Sigue con la verificación cuando quieras.",
                 StripeStatus.ActionRequired => "Te quedan unos detalles por rellenar. Cuando los completes, tu cuenta se activará automáticamente.",
                 StripeStatus.PendingVerification => "Stripe está revisando tu documentación. Te avisamos en cuanto termine.",
+                // 🛡️ LOTE C-16: mensaje específico para revisión manual de Stripe (más larga, sin acción posible).
+                StripeStatus.UnderReview => "Stripe está revisando tu cuenta manualmente. Puede tardar varios días.",
                 StripeStatus.RequirementsDue => "Stripe te pide actualizar algunos datos antes del plazo.",
                 StripeStatus.RequirementsPastDue => "Te faltan detalles por rellenar. Cuando los completes, tu cuenta se reactivará automáticamente.",
                 StripeStatus.RestrictedSoon => "Tu cuenta se restringirá pronto si no completas estos datos.",
@@ -213,6 +215,37 @@ namespace newApi.Controllers
             // Ahora la exponemos para que BuildStatusDetails pueda surfacearla en otras ramas
             // (ActionRequired, RequirementsPastDue, Restricted, Disabled, PendingVerification).
             public IReadOnlyList<string> RequirementErrors { get; set; } = Array.Empty<string>();
+        }
+
+        /// <summary>
+        /// 🛡️ LOTE D · D-20 — Telemetría de `disabled_reason` desconocidos.
+        ///
+        /// El switch del bloque `disabledReason` mapea TODOS los valores oficiales documentados
+        /// por Stripe a abril 2026. Pero Stripe introduce nuevos disabled_reason con cierta
+        /// frecuencia (p.ej. `under_review` se añadió en 2023, `platform_paused` en 2024).
+        /// Antes: el `_ => Disabled` los tragaba en silencio y el equipo no se enteraba hasta
+        /// que un experto se quejaba por soporte. Ahora: registramos un warning con el reason
+        /// raw y el account id para detectarlos al rebotar en el dashboard de logs.
+        ///
+        /// Fire-and-forget intencional: EvaluateStripeAccount es sync y se llama desde N
+        /// callsites; no podemos awaitear sin propagar async a toda la cadena.
+        /// </summary>
+        private StripeStatus LogAndFallbackDisabled(string disabledReason, string? accountId)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Stripe disabled_reason desconocido — mapeado a Disabled por defecto",
+                        details: $"disabled_reason='{disabledReason}', accountId='{accountId ?? "(null)"}'. Revisar https://docs.stripe.com/api/accounts/object#account_object-requirements-disabled_reason y añadir mapeo explícito en SubscriptionController.EvaluateStripeAccount.",
+                        source: "SubscriptionController.EvaluateStripeAccount.LogAndFallbackDisabled",
+                        relatedEntityType: "StripeAccount",
+                        relatedEntityId: null);
+                }
+                catch { /* swallow: telemetría no puede romper la evaluación */ }
+            });
+            return StripeStatus.Disabled;
         }
 
         private StripeAccountState EvaluateStripeAccount(Account account)
@@ -289,7 +322,7 @@ namespace newApi.Controllers
             {
                 // ✅ FIX: Si disabledReason es pending_verification pero charges/payouts están habilitados,
                 // no bloquear - Stripe permite operar durante verificación
-                if ((disabledReason == "requirements.pending_verification" || disabledReason == "requirements.pending_review") 
+                if ((disabledReason == "requirements.pending_verification" || disabledReason == "requirements.pending_review")
                     && chargesEnabled && payoutsEnabled)
                 {
                     // Stripe permite operar durante pending_verification si los pagos están habilitados
@@ -298,6 +331,16 @@ namespace newApi.Controllers
                     {
                         state.Status = StripeStatus.Approved;
                         state.OnboardingCompleted = true;
+                        // 🛡️ MUD-DC: aplicar el gate MUD-CY también en este early return.
+                        // ANTES: el gate al final de EvaluateStripeAccount NO se ejecutaba en
+                        // este path → cuenta con disabledReason=pending_verification + errors[]
+                        // poblado pasaba como Approved sin degradar (el bug que MUD-CY cerró
+                        // en el flujo principal seguía abierto en este atajo).
+                        if (requirementErrors.Any())
+                        {
+                            state.Status = StripeStatus.ActionRequired;
+                            state.OnboardingCompleted = false;
+                        }
                         state.StatusDetails = BuildStatusDetails(state);
                         return state;
                     }
@@ -321,7 +364,9 @@ namespace newApi.Controllers
                     "action_required.requested_capabilities" => StripeStatus.ActionRequired,
                     "requirements.past_due" => StripeStatus.RequirementsPastDue,
                     "requirements.pending_verification" => StripeStatus.PendingVerification,
-                    "under_review" => StripeStatus.PendingVerification,
+                    // 🛡️ LOTE C-16: under_review es revisión MANUAL del equipo Stripe (no procesamiento
+                    // automático como pending_verification). Estado separado para UX y métricas.
+                    "under_review" => StripeStatus.UnderReview,
                     // Temporal — la plataforma pausó al experto (resoluble desde el Dashboard de la plataforma)
                     "platform_paused" => StripeStatus.Restricted,
                     // Definitivo (rejected.*) — necesita soporte; algunos sub-tipos vienen de la plataforma
@@ -332,7 +377,8 @@ namespace newApi.Controllers
                     "requirements.missing" or "requirements.currently_due" or "requirements.pending_review" => StripeStatus.ActionRequired,
                     "platform_disabled" or "platform_suspended" => StripeStatus.Restricted,
                     _ when disabledReason.StartsWith("requirements.") => StripeStatus.Restricted,
-                    _ => StripeStatus.Disabled
+                    // 🛡️ LOTE D · D-20: nuevos disabled_reason desconocidos → log + fallback a Disabled.
+                    _ => LogAndFallbackDisabled(disabledReason, account.Id)
                 };
                 state.OnboardingCompleted = false;
                 state.StatusDetails = BuildStatusDetails(state);
@@ -377,20 +423,16 @@ namespace newApi.Controllers
             {
                 state.Status = StripeStatus.Pending;
             }
-            else
-            {
-                // ✅ FIX: Si llegamos aquí y charges/payouts están habilitados, aprobar
-                // incluso si hay pending_verification (Stripe permite operar)
-                if (chargesEnabled && payoutsEnabled)
-                {
-                    state.Status = StripeStatus.Approved;
-                    state.OnboardingCompleted = true;
-                }
-                else
-                {
-                    state.Status = StripeStatus.PendingVerification;
-                }
-            }
+            // 🛡️ LOTE D · D-21 — Bloque `else` final eliminado (dead code).
+            //
+            // ANÁLISIS: el flujo de if/else encadenado garantiza que para llegar al `else`
+            // anterior se debían cumplir TODAS estas a la vez: chargesEnabled &&
+            // payoutsEnabled && transfersActive && detailsSubmitted && tosAccepted (negación
+            // de las 3 ramas anteriores + estar bajo `!IsPermanentRejection` y `!disabledReason`).
+            // Pero esa combinación es EXACTAMENTE la condición de la rama Approved anterior,
+            // así que el bloque else era inalcanzable. Su `if/else` interno (Approved vs
+            // PendingVerification) además duplicaba la rama Approved sin chequear `transfersActive`.
+            // Se elimina por completo.
 
             // 🛡️ MUD-CY: errors[] array influye en el state final.
             //
@@ -458,7 +500,9 @@ namespace newApi.Controllers
                  state.Status == StripeStatus.RequirementsPastDue ||
                  state.Status == StripeStatus.Restricted ||
                  state.Status == StripeStatus.Disabled ||
-                 state.Status == StripeStatus.PendingVerification))
+                 state.Status == StripeStatus.PendingVerification ||
+                 // 🛡️ LOTE C-16: si Stripe revisa manualmente y hay errores, mostrarlos.
+                 state.Status == StripeStatus.UnderReview))
             {
                 details.Add($"Errores a corregir: {string.Join("; ", state.RequirementErrors)}.");
             }
@@ -519,6 +563,9 @@ namespace newApi.Controllers
                 case StripeStatus.RequirementsDue:
                 case StripeStatus.RestrictedSoon:
                 case StripeStatus.PendingVerification:
+                // 🛡️ LOTE C-16: UnderReview comparte severidad warning con PendingVerification —
+                // sin acción del experto, solo informar. Mismo canal (in-app + email).
+                case StripeStatus.UnderReview:
                     await _loggingService.LogWarningAsync(
                         message: "Stripe require acciones para el experto",
                         details: details,
@@ -3331,17 +3378,41 @@ namespace newApi.Controllers
                                         await _dac7DataSync.SyncFromAccountAsync(freshAcct, externalProfile.Id);
                                     }
 
+                                    // 🛡️ LOTE C-11: notificar TAMBIÉN .updated y .created (no solo .deleted).
+                                    // Cambio de IBAN (.updated) y adición de cuenta nueva (.created) son tan
+                                    // críticos como el borrado — un cambio no esperado puede ser takeover de
+                                    // cuenta (incident de seguridad). El experto debe verlo de inmediato
+                                    // para confirmar o denunciar.
+                                    string notifMsg;
+                                    string notifDetails;
+                                    string notifSource;
                                     if (string.Equals(stripeEvent.Type, "account.external_account.deleted", System.StringComparison.Ordinal))
                                     {
-                                        await _loggingService.LogWarningAsync(
-                                            message: "🏦 Has eliminado tu cuenta bancaria de Stripe",
-                                            details: $"Detectamos que has borrado una cuenta bancaria de tu Connect account ({externalAccountId}). Si era tu única cuenta, los próximos pagos a tu banco fallarán hasta que añadas una nueva en el panel Stripe. Si fue un cambio intencional (renovación de IBAN), ignora este aviso.",
-                                            userId: externalProfile.UserId,
-                                            source: "SubscriptionController.account.external_account.deleted.MUD-BU",
-                                            relatedEntityType: "ExpertProfile",
-                                            relatedEntityId: externalProfile.Id,
-                                            notifyUser: true);
+                                        notifMsg = "🏦 Has eliminado tu cuenta bancaria de Stripe";
+                                        notifDetails = $"Detectamos que has borrado una cuenta bancaria de tu Connect account ({externalAccountId}). Si era tu única cuenta, los próximos pagos a tu banco fallarán hasta que añadas una nueva en el panel Stripe. Si fue un cambio intencional (renovación de IBAN), ignora este aviso.";
+                                        notifSource = "SubscriptionController.account.external_account.deleted.MUD-BU";
                                     }
+                                    else if (string.Equals(stripeEvent.Type, "account.external_account.updated", System.StringComparison.Ordinal))
+                                    {
+                                        notifMsg = "🏦 Has actualizado tu cuenta bancaria de Stripe";
+                                        notifDetails = $"Detectamos un cambio en una cuenta bancaria de tu Connect account ({externalAccountId}). Si NO fuiste tú (p.ej. cambio de IBAN no autorizado), contacta con soporte de Stripe INMEDIATAMENTE — puede ser un intento de toma de control de cuenta. Si el cambio fue tuyo, los próximos pagos ya irán al IBAN actualizado.";
+                                        notifSource = "SubscriptionController.account.external_account.updated.MUD-BU";
+                                    }
+                                    else // .created
+                                    {
+                                        notifMsg = "🏦 Has añadido una cuenta bancaria nueva";
+                                        notifDetails = $"Detectamos que has añadido una cuenta bancaria nueva a tu Connect account ({externalAccountId}). Si NO fuiste tú, contacta con soporte de Stripe INMEDIATAMENTE — puede ser un intento de toma de control de cuenta. Si fuiste tú, ya puede usarse para recibir pagos según el orden de prioridad que hayas configurado en el Dashboard.";
+                                        notifSource = "SubscriptionController.account.external_account.created.MUD-BU";
+                                    }
+
+                                    await _loggingService.LogWarningAsync(
+                                        message: notifMsg,
+                                        details: notifDetails,
+                                        userId: externalProfile.UserId,
+                                        source: notifSource,
+                                        relatedEntityType: "ExpertProfile",
+                                        relatedEntityId: externalProfile.Id,
+                                        notifyUser: true);
                                 }
                             }
                         }
@@ -3567,7 +3638,7 @@ namespace newApi.Controllers
                                             capabilityRefreshedState = EvaluateStripeAccount(refreshedAccount);
                                             ApplyStripeAccountState(capabilityProfile, capabilityRefreshedState);
 
-                                            // 🛡️ MUD-CX: propagar capability.Requirements (scoped) al StripeFutureRequirements.
+                                            // 🛡️ MUD-CX + MUD-DD: propagar capability.Requirements (scoped) al StripeFutureRequirements.
                                             //
                                             // ANTES: EvaluateStripeAccount solo lee `account.Requirements` (rollup)
                                             // y `account.FutureRequirements`. Stripe documenta que cada capability
@@ -3577,25 +3648,43 @@ namespace newApi.Controllers
                                             // `account.requirements.currently_due` = [] (porque otras capabilities
                                             // ya están OK y Stripe no siempre propaga al rollup).
                                             //
-                                            // AHORA: añadimos los items de la capability (que NO estén ya en el
-                                            // FutureRequirements derivado del account-level) al final del listado
-                                            // para que el StripeStatusCard del experto los muestre. Traducidos con
-                                            // el mismo GetRequirementDescription que el resto.
+                                            // MUD-DD (audit adversarial): dedup ahora por LISTA RAW (split del FutureRequirements
+                                            // existente) y comparación exact-match, NO substring-Contains. Antes
+                                            // `existing.Contains("documento", IgnoreCase)` daba falso positivo para
+                                            // "documento adicional" (descartaba algo legítimamente nuevo).
+                                            //
+                                            // LIMITACIÓN CONOCIDA: cuando llegue un account.updated posterior,
+                                            // ApplyStripeAccountState sobrescribirá StripeFutureRequirements con el
+                                            // rollup account-level y los items scoped se perderán hasta el próximo
+                                            // capability.updated. Solución correcta = columna separada
+                                            // `StripeCapabilityRequirements`, pero requiere migración EF. TODO MUD-DE.
                                             try
                                             {
-                                                var capabilityScoped = new List<string>();
+                                                var capabilityScopedRaw = new List<string>();
                                                 if (capability.Requirements?.CurrentlyDue != null)
-                                                    capabilityScoped.AddRange(capability.Requirements.CurrentlyDue);
+                                                    capabilityScopedRaw.AddRange(capability.Requirements.CurrentlyDue);
                                                 if (capability.Requirements?.PastDue != null)
-                                                    capabilityScoped.AddRange(capability.Requirements.PastDue);
+                                                    capabilityScopedRaw.AddRange(capability.Requirements.PastDue);
 
-                                                if (capabilityScoped.Any())
+                                                if (capabilityScopedRaw.Any())
                                                 {
+                                                    // Translate each raw key independently y dedup contra los items
+                                                    // ya presentes mediante split exacto por ", ".
                                                     var existing = capabilityProfile.StripeFutureRequirements ?? string.Empty;
-                                                    var translatedScoped = capabilityScoped
+                                                    var existingTokens = new HashSet<string>(
+                                                        string.IsNullOrWhiteSpace(existing)
+                                                            ? Array.Empty<string>()
+                                                            : existing.Split(", ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+                                                        StringComparer.OrdinalIgnoreCase);
+
+                                                    var translatedScoped = capabilityScopedRaw
                                                         .Distinct(System.StringComparer.Ordinal)
                                                         .Select(r => GetRequirementDescription(r))
-                                                        .Where(t => !string.IsNullOrWhiteSpace(t) && !existing.Contains(t, System.StringComparison.OrdinalIgnoreCase))
+                                                        .Where(t => !string.IsNullOrWhiteSpace(t))
+                                                        // Etiqueta capability como sufijo individual evita choque con
+                                                        // items account-level (token "[transfers]" hace cada entrada única).
+                                                        .Select(t => $"{t} [{capability.Id}]")
+                                                        .Where(t => !existingTokens.Contains(t))
                                                         .ToList();
 
                                                     if (translatedScoped.Any())
@@ -3604,7 +3693,7 @@ namespace newApi.Controllers
                                                             ? string.Empty
                                                             : existing.TrimEnd('.', ' ') + ", ";
                                                         capabilityProfile.StripeFutureRequirements =
-                                                            $"{prefix}{string.Join(", ", translatedScoped)} (capability {capability.Id})";
+                                                            $"{prefix}{string.Join(", ", translatedScoped)}";
                                                     }
                                                 }
                                             }
@@ -4290,14 +4379,30 @@ namespace newApi.Controllers
 
                     // 🛡️ V11 FIX: charge.refund.updated — refund cambió status (pending→failed/canceled).
                     // Refund a tarjeta caducada falla DESPUÉS de creación → cliente no recibe dinero.
+                    // 🛡️ LOTE C-9: Stripe migró el namespace `charge.refund.*` → `refund.*` (legacy
+                    // sigue emitiéndose pero las cuentas nuevas reciben SOLO el nuevo). Escuchar
+                    // AMBOS — la idempotencia por EventId en TryBeginProcessingEventAsync impide
+                    // doble proceso si llegaran los dos por compat. Doc:
+                    // https://docs.stripe.com/upgrades#2024-11-20.acacia
                     case "charge.refund.updated":
+                    case "refund.updated":
                         await HandleChargeRefundUpdated(stripeEvent.Data.Object as Refund);
                         break;
 
                     // 🛡️ Finding #7 FIX: charge.refund.created — registrar la creación del refund para
                     // poder detectar refunds rechazados temprano (antes de que llegue charge.refund.updated).
+                    // 🛡️ LOTE C-9: idem alias `refund.created` (namespace nuevo).
                     case "charge.refund.created":
+                    case "refund.created":
                         await HandleChargeRefundCreated(stripeEvent.Data.Object as Refund);
+                        break;
+
+                    // 🛡️ LOTE C-9: `refund.failed` (namespace nuevo). El refund nace ya fallido —
+                    // p.ej. tarjeta del cliente cerrada en el banco. Misma semántica que
+                    // `refund.updated` con status=failed → reusar HandleChargeRefundUpdated
+                    // (que ya distingue failed/canceled internamente y emite Critical + MUD-CF).
+                    case "refund.failed":
+                        await HandleChargeRefundUpdated(stripeEvent.Data.Object as Refund);
                         break;
 
                     // 🛡️ A4: charge.failed — el cargo falló a nivel de "charge" (no de payment_intent).
@@ -4384,6 +4489,39 @@ namespace newApi.Controllers
                     case "payout.failed":
                     case "payout.canceled": // 🛡️ A4: ahora también canceled (alerta crítica)
                         await HandlePayoutEvent(stripeEvent.Type, stripeEvent.Data.Object as Payout, stripeEvent.Account);
+                        break;
+
+                    // 🛡️ LOTE C-10: payout.created / payout.updated — INFORMATIVOS.
+                    // ANTES caían en `default` → silencio. Útiles para:
+                    // 1) Correlacionar transfer→payout (el experto ve "tu dinero está en camino"
+                    //    en el panel cuando Stripe agenda el payout, no cuando lo paga).
+                    // 2) Reconciliación DAC7 — el snapshot anual cruza payouts por cuenta conectada.
+                    // 3) Trazar cambios de status intermedios (pending→in_transit→paid) sin
+                    //    perder eventos antes del .paid final.
+                    // No requiere lógica de negocio — solo log estructurado para auditoría.
+                    case "payout.created":
+                    case "payout.updated":
+                        {
+                            var infoPayout = stripeEvent.Data.Object as Payout;
+                            if (infoPayout != null)
+                            {
+                                await _loggingService.LogInfoAsync(
+                                    message: $"Payout {stripeEvent.Type.Substring("payout.".Length)} (informativo)",
+                                    details: $"Payout {infoPayout.Id} ({infoPayout.Amount / 100m} {(infoPayout.Currency ?? "eur").ToUpperInvariant()}) status={infoPayout.Status} arrival={infoPayout.ArrivalDate:yyyy-MM-dd} method={infoPayout.Method} acct={stripeEvent.Account ?? "platform"}",
+                                    source: $"SubscriptionController.HandleGeneralStripeWebhook.{stripeEvent.Type}",
+                                    relatedEntityType: "Payout",
+                                    additionalData: new
+                                    {
+                                        PayoutId = infoPayout.Id,
+                                        Amount = infoPayout.Amount / 100m,
+                                        Currency = infoPayout.Currency,
+                                        Status = infoPayout.Status,
+                                        ArrivalDate = infoPayout.ArrivalDate,
+                                        Method = infoPayout.Method,
+                                        ConnectedAccountId = stripeEvent.Account
+                                    });
+                            }
+                        }
                         break;
 
                     // 🔧 FIX B4 (ROUTING): en separate charges & transfers el Transfer lo crea la PLATAFORMA
@@ -7950,6 +8088,15 @@ namespace newApi.Controllers
                 return string.Empty;
             }
 
+            // 🛡️ LOTE C-14: `interv_*.X.form` — Intervention Requirements de Stripe Compliance.
+            // Stripe emite estas claves cuando su equipo de compliance bloquea la cuenta hasta
+            // que se complete un formulario específico en el Dashboard. El usuario NO puede
+            // resolverlo desde nuestro panel — debe abrir el Dashboard de Stripe.
+            if (requirement.StartsWith("interv_", StringComparison.Ordinal))
+            {
+                return "intervención de compliance (revisa Dashboard Stripe)";
+            }
+
             // 🔧 Round 26 PERSON-2: traducir tokens per-person (`person_XYZ.verification.document`,
             // `person_XYZ.verification.additional_document`, `person_XYZ.address`…) a texto humano.
             // Sin esto el experto veía cosas como "person_1Abc234XyZ5.verification.document" en
@@ -7973,6 +8120,15 @@ namespace newApi.Controllers
                         "ssn_last_4" => "últimos 4 dígitos del NIE/SSN",
                         "id_number" => "número de identificación",
                         "relationship.title" => "cargo del representante",
+                        // 🛡️ LOTE C-14: nuevos sub-campos person_* observados en audit oficial.
+                        "nationality" => "nacionalidad",
+                        "gender" => "género",
+                        "political_exposure" => "exposición política (PEP)",
+                        "maiden_name" => "apellido de soltera/o",
+                        "relationship.owner" => "marca como propietario (≥25%)",
+                        "relationship.director" => "marca como director",
+                        "relationship.executive" => "marca como ejecutivo",
+                        "relationship.percent_ownership" => "porcentaje de propiedad",
                         _ => subRequirement.Replace("_", " ").Replace(".", " ")
                     };
                     return $"{humanSub} de un representante/socio de la empresa";
@@ -7992,17 +8148,39 @@ namespace newApi.Controllers
                 "individual.last_name" => "apellidos",
                 "individual.ssn_last_4" => "últimos 4 dígitos del NIE/SSN",
                 "individual.id_number" => "número de identificación",
+                // 🛡️ LOTE C-14: nuevos individual.* observados en audit oficial.
+                "individual.political_exposure" => "exposición política (PEP)",
+                "individual.nationality" => "nacionalidad",
+                "individual.maiden_name" => "apellido de soltera/o",
+                "individual.gender" => "género",
                 "company.verification.document" => "documentos de la empresa",
                 "company.tax_id" => "NIF/CIF de la empresa",
                 "company.address" => "dirección de la empresa",
                 "company.phone" => "teléfono de la empresa",
                 "company.name" => "nombre de la empresa",
+                // 🛡️ LOTE C-14: nuevos company.* observados en audit oficial.
+                "company.directors_provided" => "confirmar que todos los directores están registrados",
+                "company.executives_provided" => "confirmar que todos los ejecutivos están registrados",
+                "company.owners_provided" => "confirmar que todos los propietarios están registrados",
+                "company.structure" => "estructura jurídica de la empresa",
+                "company.vat_id" => "número de IVA de la empresa",
+                "company.registration_number" => "número de registro mercantil",
+                "company.ownership_declaration.date" => "declaración de propiedad (fecha)",
+                "company.ownership_declaration.ip" => "declaración de propiedad (IP de aceptación)",
+                "company.ownership_declaration.user_agent" => "declaración de propiedad (navegador)",
+                "company.ownership_declaration" => "declaración de propiedad de la empresa",
+                "company.ownership_exemption_reason" => "motivo de exención de declaración de propiedad",
+                "company.verification.additional_document" => "documento adicional de verificación de la empresa",
                 "business_profile.support_address" => "dirección del negocio",
                 "business_profile.url" => "sitio web del negocio",
                 "business_profile.support_phone" => "teléfono de soporte",
                 "business_profile.support_email" => "email de soporte",
                 "business_profile.product_description" => "descripción del producto/servicio",
                 "business_profile.mcc" => "categoría del negocio (MCC)",
+                // 🛡️ LOTE C-14: nuevos business_profile.* observados en audit oficial.
+                "business_profile.annual_revenue" => "ingresos anuales del negocio",
+                "business_profile.estimated_worker_count" => "número estimado de empleados",
+                "business_profile.monthly_estimated_revenue" => "ingresos mensuales estimados",
                 "business_type" => "tipo de negocio (individual/empresa)",
                 // 🛡️ Round 28: tos_acceptance.* — el flujo de aceptación de términos en Stripe Connect.
                 // El usuario veía "tos acceptance ip" raw; ahora todos los subcampos tienen mensajes claros.
@@ -8018,7 +8196,50 @@ namespace newApi.Controllers
                 "documents.company_registration_verification" => "verificación de registro de empresa",
                 "documents.company_tax_id_verification" => "verificación del NIF/CIF",
                 "documents.proof_of_registration" => "prueba de registro",
+                // 🛡️ LOTE C-14: nuevos documents.* observados en audit oficial.
+                "documents.proof_of_address" => "comprobante de domicilio",
+                "documents.proof_of_ownership" => "comprobante de propiedad de la empresa",
+                "documents.passport" => "pasaporte",
+                "documents.company_authorization" => "autorización de la empresa",
+                "documents.proof_of_ultimate_beneficial_ownership" => "comprobante de titularidad real (UBO)",
+                // 🛡️ LOTE C-14: top-level y settings observados en audit oficial.
+                "representative_provided" => "confirmar que el representante legal está registrado",
+                "settings.payments.statement_descriptor" => "descriptor de extracto bancario (lo que ve el cliente en su banco)",
                 _ => requirement.Replace("_", " ").Replace(".", " ")
+            };
+        }
+
+        /// <summary>
+        /// 🛡️ LOTE C-13: traduce los 15 valores oficiales de `Dispute.Reason` (Stripe API) a
+        /// español para el panel admin y el DTO de disputa al frontend.
+        ///
+        /// Mantiene el código RAW como fuente única en BD (`Dispute.Reason`) para auditoría;
+        /// este helper devuelve SOLO la cadena humana, que se usa en logs admin y en
+        /// `DisputeDto.ReasonTranslated`. NO sustituye al raw — coexiste.
+        ///
+        /// Fuente: https://docs.stripe.com/api/disputes/object#dispute_object-reason
+        /// </summary>
+        private string TranslateDisputeReason(string? code)
+        {
+            if (string.IsNullOrEmpty(code)) return "sin especificar";
+            return code switch
+            {
+                "bank_cannot_process"          => "el banco no pudo procesar el pago",
+                "check_returned"               => "cheque devuelto",
+                "credit_not_processed"         => "crédito/reembolso no procesado por el comercio",
+                "customer_initiated"           => "iniciada por el cliente sin motivo bancario",
+                "debit_not_authorized"         => "el cliente alega que no autorizó el cargo",
+                "duplicate"                    => "cargo duplicado",
+                "fraudulent"                   => "fraude (tarjeta no reconocida por el titular)",
+                "general"                      => "general (sin motivo concreto del banco)",
+                "incorrect_account_details"    => "datos de cuenta incorrectos",
+                "insufficient_funds"           => "fondos insuficientes",
+                "noncompliant"                 => "incumple normativa de la red de tarjetas",
+                "product_not_received"         => "el cliente alega que no recibió el producto/servicio",
+                "product_unacceptable"         => "el cliente alega que el producto/servicio no era aceptable",
+                "subscription_canceled"        => "suscripción cancelada antes del cargo",
+                "unrecognized"                 => "el cliente no reconoce el cargo",
+                _                              => $"código '{code}' (consulta con soporte)"
             };
         }
 
@@ -8166,7 +8387,7 @@ namespace newApi.Controllers
                 var inquiryAmount = dispute.Amount / 100m;
                 await _loggingService.LogWarningAsync(
                     message: "Stripe Inquiry (pre-dispute warning) received — NO clawback",
-                    details: $"Inquiry {dispute.Id} for {inquiryAmount}€ (status: {dispute.Status}, reason: {dispute.Reason}). " +
+                    details: $"Inquiry {dispute.Id} for {inquiryAmount}€ (status: {dispute.Status}, reason: {dispute.Reason} — {TranslateDisputeReason(dispute.Reason)}). " +
                              $"ChargeId: {dispute.ChargeId}, PI: {dispute.PaymentIntentId}. " +
                              $"Stripe HAS NOT withdrawn funds — this is a warning, not a chargeback. " +
                              $"Respond via Stripe Dashboard if needed. If it escalates, Stripe enviará otro " +
@@ -8193,7 +8414,7 @@ namespace newApi.Controllers
 
             await _loggingService.LogCriticalAsync(
                 message: "CRITICAL: Chargeback (dispute) opened on a payment",
-                details: $"Dispute {dispute.Id} created for {amount}€ (reason: {dispute.Reason}, status: {dispute.Status}). " +
+                details: $"Dispute {dispute.Id} created for {amount}€ (reason: {dispute.Reason} — {TranslateDisputeReason(dispute.Reason)}, status: {dispute.Status}). " +
                          $"ChargeId: {dispute.ChargeId}, PaymentIntentId: {dispute.PaymentIntentId}. " +
                          (hireId.HasValue
                             ? $"Related SearchHire: {hireId}, ExpertId: {expertId}, ClientId: {clientId}. ACTION REQUIRED: if the expert was already paid via transfer, reverse that transfer to avoid double loss."
@@ -8794,7 +9015,7 @@ namespace newApi.Controllers
                 // Sólo log info, no alerta.
                 await _loggingService.LogInfoAsync(
                     message: "charge.dispute.updated for unknown local dispute",
-                    details: $"StripeDisputeId={dispute.Id} status={dispute.Status} reason={dispute.Reason}",
+                    details: $"StripeDisputeId={dispute.Id} status={dispute.Status} reason={dispute.Reason} ({TranslateDisputeReason(dispute.Reason)})",
                     source: "SubscriptionController.HandleChargeDisputeUpdated",
                     relatedEntityType: "Dispute");
                 return;
@@ -8815,7 +9036,7 @@ namespace newApi.Controllers
 
             await _loggingService.LogInfoAsync(
                 message: "charge.dispute.updated processed",
-                details: $"DisputeId={local.Id} StripeDisputeId={dispute.Id} stripeStatus={dispute.Status} reason={dispute.Reason} changed={changed}",
+                details: $"DisputeId={local.Id} StripeDisputeId={dispute.Id} stripeStatus={dispute.Status} reason={dispute.Reason} ({TranslateDisputeReason(dispute.Reason)}) changed={changed}",
                 source: "SubscriptionController.HandleChargeDisputeUpdated",
                 relatedEntityType: "Dispute",
                 relatedEntityId: local.Id);

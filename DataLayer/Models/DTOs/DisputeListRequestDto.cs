@@ -108,10 +108,16 @@ namespace newApi.DataLayer.Models.DTOs
         public int ReporterId { get; set; }
         
         /// <summary>
-        /// Razón de la disputa
+        /// Razón de la disputa (código raw de Stripe — útil para auditoría / lógica frontend)
         /// </summary>
         public string Reason { get; set; } = string.Empty;
-        
+
+        /// <summary>
+        /// 🛡️ LOTE C-13: razón traducida al español para mostrar al usuario.
+        /// Se rellena en los controllers vía TranslateDisputeReason(Reason).
+        /// </summary>
+        public string ReasonTranslated { get; set; } = string.Empty;
+
         /// <summary>
         /// Estado actual de la disputa
         /// </summary>

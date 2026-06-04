@@ -540,9 +540,16 @@ namespace newApi.Services
 
                     try
                     {
+                        // 🛡️ LOTE D · D-19 — Dedup vs el email automático de Stripe Compliance.
+                        // Stripe envía emails directos a los Express experts cuando hay future
+                        // requirements → el experto recibía DOS emails con la misma info en
+                        // pocas horas → fatiga + soporte ("¿quién me está pidiendo qué?").
+                        // Fix: diferenciar explícitamente texto y subject ("Inspecciono" en
+                        // la subject line y "recordatorio" en el cuerpo) para que el experto
+                        // entienda que NO sustituye al email técnico de Stripe; lo complementa.
                         await _loggingService.LogWarningAsync(
-                            message: $"⏰ Plazo Stripe próximo ({hoursLeft:F0}h) — completa tus datos pendientes",
-                            details: $"Tu cuenta de pagos tiene un plazo a las {ep.StripeFutureDueAt:dd/MM HH:mm} UTC. {detailsText} Accede a tu panel y completa los requisitos para evitar que Stripe pause tus transferencias.",
+                            message: $"[Inspecciono · recordatorio] Plazo Stripe próximo ({hoursLeft:F0}h)",
+                            details: $"Stripe ya te ha enviado los detalles técnicos por su cuenta. Este es un recordatorio de Inspecciono: tu cuenta de pagos tiene un plazo a las {ep.StripeFutureDueAt:dd/MM HH:mm} UTC. {detailsText} Accede a tu panel y completa los requisitos para evitar que Stripe pause tus transferencias.",
                             userId: ep.UserId,
                             source: "PlatformMaintenanceService.NotifyUpcomingStripeDeadlinesAsync",
                             relatedEntityType: "ExpertProfile",

@@ -43,6 +43,11 @@ namespace newApi.Services
         private readonly IEmailService _emailService;
         private readonly IServiceScopeFactory _serviceScopeFactory;
         private readonly IMemoryCache _cache;
+        // 🛡️ LOTE D · D-25 — Base URL del frontend para los links del email.
+        // Antes: hardcoded "https://inspecciono.com" en 4 sitios → en dev (localhost:5173)
+        // los emails ofrecían links rotos que no apuntaban al stack local. Ahora se lee
+        // del mismo App:FrontendBaseUrl que ya usa todo Stripe checkout/onboarding.
+        private readonly string _frontendBaseUrl;
 
         // P3-2: dedup/throttle de alertas de admin. Los primeros 3 hits con el mismo (source|message|entity)
         // dentro de la ventana siempre van por email; los siguientes se reagrupan en un digest periódico.
@@ -64,12 +69,18 @@ namespace newApi.Services
             public int? EntityId;
         }
 
-        public LoggingService(AppDbContext context, IEmailService emailService, IServiceScopeFactory serviceScopeFactory, IMemoryCache cache)
+        public LoggingService(AppDbContext context, IEmailService emailService, IServiceScopeFactory serviceScopeFactory, IMemoryCache cache, Microsoft.Extensions.Configuration.IConfiguration configuration)
         {
             _context = context;
             _emailService = emailService;
             _serviceScopeFactory = serviceScopeFactory;
             _cache = cache;
+            // 🛡️ LOTE D · D-25 — Normalizar la base URL (sin trailing slash) UNA vez en el ctor.
+            // Default `https://inspecciono.com` por si el setting falta en algún appsettings.
+            var baseUrl = configuration["App:FrontendBaseUrl"];
+            _frontendBaseUrl = string.IsNullOrWhiteSpace(baseUrl)
+                ? "https://inspecciono.com"
+                : baseUrl.TrimEnd('/');
         }
 
         public async Task LogCriticalAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false)
@@ -951,6 +962,30 @@ namespace newApi.Services
                 // Determinar el título y tipo de notificación según el nivel de log
                 var (title, notificationType) = GetNotificationTitleAndType(logLevel);
 
+                // 🛡️ LOTE D · D-24 — Throttle global de notificaciones duplicadas.
+                //
+                // ANTES: cada LogXxxAsync(notifyUser:true) creaba una fila en Notifications
+                // + un email vía Hangfire SIN deduplicación. Ejemplo real visto en prod:
+                // un webhook de Stripe con account.updated.action_required disparaba a la vez
+                // EvaluateStripeAccount y NotifyUpcomingStripeDeadlines en el mismo ciclo de
+                // sync — el experto recibía 2 notificaciones y 2 emails idénticos en <30s.
+                //
+                // FIX: ventana de 5 minutos por (UserId, Title). Si ya existe una notificación
+                // con el mismo título en ese rango, no crear duplicado (ni fila ni email).
+                // Granularidad por Title (no Message) porque el mensaje varía con timestamps
+                // dinámicos (hoursLeft, deadlines) pero el title agrupa la naturaleza del aviso.
+                var throttleWindowStart = DateTime.UtcNow.AddMinutes(-5);
+                var alreadyNotified = await context.Notifications
+                    .AsNoTracking()
+                    .AnyAsync(n => n.UserId == userId
+                                && n.Title == title
+                                && n.CreatedAt > throttleWindowStart);
+                if (alreadyNotified)
+                {
+                    Console.WriteLine($"[LOGGING SERVICE] [D-24 THROTTLE] Notificación duplicada omitida para UserId={userId} Title='{title}' (ventana 5min).");
+                    return;
+                }
+
                 // Crear mensaje completo
                 var fullMessage = message;
                 if (!string.IsNullOrEmpty(details))
@@ -1013,13 +1048,14 @@ namespace newApi.Services
                             Accede a tu panel para más detalles.
                         </p>";
 
-                    // Determinar URL y Texto del botón
-                    string actionUrl = "https://inspecciono.com/notifications";
+                    // 🛡️ LOTE D · D-25 — URLs del email leídas desde App:FrontendBaseUrl.
+                    // Antes hardcoded a inspecciono.com → links rotos en dev/staging.
+                    string actionUrl = $"{_frontendBaseUrl}/notifications";
                     string actionText = "Ver notificaciones";
 
                     if (relatedEntityType == "SearchHire" && relatedEntityId.HasValue)
                     {
-                        actionUrl = $"https://inspecciono.com/detalles/{relatedEntityId}";
+                        actionUrl = $"{_frontendBaseUrl}/detalles/{relatedEntityId}";
                         actionText = "Ver detalles";
                     }
                     else if (relatedEntityType == "Appointment" && relatedEntityId.HasValue)
@@ -1032,12 +1068,12 @@ namespace newApi.Services
 
                         if (appointment != null)
                         {
-                             actionUrl = $"https://inspecciono.com/detalles/{appointment.SearchHireId}";
+                             actionUrl = $"{_frontendBaseUrl}/detalles/{appointment.SearchHireId}";
                              actionText = "Ver detalles";
                         }
                         else
                         {
-                             actionUrl = "https://inspecciono.com/appointments";
+                             actionUrl = $"{_frontendBaseUrl}/appointments";
                              actionText = "Ver cita";
                         }
                     }

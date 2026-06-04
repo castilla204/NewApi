@@ -13,7 +13,16 @@ namespace newApi.DataLayer.Models.PostGresModels
         RequirementsPastDue = 8, // Hay requisitos vencidos (requirements.past_due o future_requirements.past_due)
         RestrictedSoon = 9,      // Stripe marcará la cuenta como limitada pronto (restricted soon / future restriction)
         Restricted = 10,         // Cuenta restringida (restricted_forever, disabled_reason no fatal)
-        Disabled = 11            // Stripe deshabilitó pagos/cobros (disabled_reason crítico no rechazado)
+        Disabled = 11,           // Stripe deshabilitó pagos/cobros (disabled_reason crítico no rechazado)
+        // 🛡️ LOTE C-16: estado separado de PendingVerification.
+        // PendingVerification = Stripe está procesando docs que YA subió el experto (automático, minutos/horas).
+        // UnderReview = el equipo de Stripe está revisando MANUALMENTE la cuenta (caso atípico, días). Causas
+        // típicas: monto alto, MCC sensible, Radar flagged, KYC ambiguo. El experto no puede hacer nada,
+        // pero merece un mensaje distinto y los admins deben verlo en métricas separadas.
+        // Fuente: disabled_reason="under_review" del API de Stripe Accounts.
+        // BD: columna `StripeStatus` es `integer` sin CHECK constraint → añadir un valor más NO requiere
+        // migración estructural (el `Add-Migration` solo bumpea el snapshot del modelo).
+        UnderReview = 12
     }
 
     public class ExpertProfile

@@ -1130,6 +1130,7 @@ namespace newApi.Controllers
                     SearchHireId = dispute.SearchHireId,
                     ReporterId = dispute.ReporterId,
                     Reason = dispute.Reason,
+                    ReasonTranslated = TranslateDisputeReason(dispute.Reason),
                     Status = dispute.Status,
                     StatusTranslated = DisputeStatusExtensions.ToSpanishTranslation(dispute.Status),
                     ResolutionComments = dispute.ResolutionComments,
@@ -2018,6 +2019,7 @@ namespace newApi.Controllers
                     SearchHireId = dispute.SearchHireId,
                     ReporterId = dispute.ReporterId,
                     Reason = dispute.Reason,
+                    ReasonTranslated = TranslateDisputeReason(dispute.Reason),
                     Status = dispute.Status,
                     StatusTranslated = DisputeStatusExtensions.ToSpanishTranslation(dispute.Status),
                     ResolutionComments = dispute.ResolutionComments,
@@ -2465,6 +2467,36 @@ namespace newApi.Controllers
             {
                 return null;
             }
+        }
+
+        /// <summary>
+        /// 🛡️ LOTE C-13: traducción local de los 15 valores oficiales de `Dispute.Reason`.
+        /// Espejo del método homónimo en SubscriptionController. Si se añaden más razones,
+        /// actualizar AMBOS sitios (o extraer a un helper compartido en Helpers/).
+        /// Fuente: https://docs.stripe.com/api/disputes/object#dispute_object-reason
+        /// </summary>
+        private static string TranslateDisputeReason(string? code)
+        {
+            if (string.IsNullOrEmpty(code)) return "sin especificar";
+            return code switch
+            {
+                "bank_cannot_process"          => "el banco no pudo procesar el pago",
+                "check_returned"               => "cheque devuelto",
+                "credit_not_processed"         => "crédito/reembolso no procesado por el comercio",
+                "customer_initiated"           => "iniciada por el cliente sin motivo bancario",
+                "debit_not_authorized"         => "el cliente alega que no autorizó el cargo",
+                "duplicate"                    => "cargo duplicado",
+                "fraudulent"                   => "fraude (tarjeta no reconocida por el titular)",
+                "general"                      => "general (sin motivo concreto del banco)",
+                "incorrect_account_details"    => "datos de cuenta incorrectos",
+                "insufficient_funds"           => "fondos insuficientes",
+                "noncompliant"                 => "incumple normativa de la red de tarjetas",
+                "product_not_received"         => "el cliente alega que no recibió el producto/servicio",
+                "product_unacceptable"         => "el cliente alega que el producto/servicio no era aceptable",
+                "subscription_canceled"        => "suscripción cancelada antes del cargo",
+                "unrecognized"                 => "el cliente no reconoce el cargo",
+                _                              => $"código '{code}' (consulta con soporte)"
+            };
         }
 
     }

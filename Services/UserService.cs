@@ -429,7 +429,10 @@ namespace newApi.Services
             return (true, combinedToken, user, null);
         }
 
-        public async Task<(bool success, string token, User user, ExpertProfile expertProfile)> BecomeExpert(
+        // 🛡️ Round 28: extendido con errorCode/errorMessage/detectedCountry para que el controller
+        // mapee a HTTP status + mensaje específico al cliente. Patrón consistente con GoogleAuth.
+        public async Task<(bool success, string? token, User? user, ExpertProfile? expertProfile,
+                          string? errorCode, string? errorMessage, string? detectedCountry)> BecomeExpert(
             int userId,
             BecomeExpertRequestDto request)
         {
@@ -439,7 +442,7 @@ namespace newApi.Services
 
             if (user == null)
             {
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // ✅ VALIDACIÓN: Usuario bloqueado no puede convertirse en experto
@@ -453,17 +456,28 @@ namespace newApi.Services
                     relatedEntityType: "User",
                     relatedEntityId: user.Id
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
-            if (user.Role == UserRole.Expert)
+            // 🛡️ Round 28 MUD-K (GAP-1 fix): permitir re-onboarding tras mudanza.
+            // Si el experto pasó por ExpertRelocationService.ExecuteAsync, su perfil queda con
+            //   RelocatedFromCountry != null && OnboardingCompleted == false && StripeAccountId == null
+            // y NO debemos rechazar — al contrario, el BecomeExpert UPDATEA el ExpertProfile
+            // existente con el nuevo país (no inserta otra fila). Sin este check, el experto
+            // queda bloqueado para siempre.
+            var isRelocating = user.ExpertProfile != null
+                            && user.ExpertProfile.RelocatedFromCountry != null
+                            && !user.ExpertProfile.OnboardingCompleted
+                            && string.IsNullOrEmpty(user.ExpertProfile.StripeAccountId);
+
+            if (user.Role == UserRole.Expert && !isRelocating)
             {
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
-            if (user.ExpertProfile != null)
+            if (user.ExpertProfile != null && !isRelocating)
             {
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // 🚨 VALIDACIÓN CRÍTICA: Verificar que todas las contrataciones como cliente estén finalizadas
@@ -493,7 +507,7 @@ namespace newApi.Services
                     }
                 );
                 
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // Validar Latitude y Longitude
@@ -508,7 +522,7 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "MissingLatitudeOrLongitude" }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             if (!decimal.TryParse(request.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var latitude))
@@ -522,7 +536,7 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "InvalidLatitudeFormat", Latitude = request.Latitude }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             if (!decimal.TryParse(request.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var longitude))
@@ -536,7 +550,7 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "InvalidLongitudeFormat", Longitude = request.Longitude }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             if (latitude < -90m || latitude > 90m)
@@ -550,7 +564,7 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "LatitudeOutOfRange", Latitude = latitude }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             if (longitude < -180m || longitude > 180m)
@@ -564,7 +578,20 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "LongitudeOutOfRange", Longitude = longitude }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
+            }
+
+            // 🛡️ Round 28 MUD-AG: para un experto mudado, ProfilePicture puede ser null
+            // (preserva la foto del país anterior). Salteamos todo el bloque de upload
+            // y reusamos los valores del ExpertProfile existente al final.
+            string imageUrl;
+            string objectName;
+            if (request.ProfilePicture == null)
+            {
+                // Solo válido para mudanza (controller ya gateó eso). Reusar valores existentes.
+                imageUrl = user.ExpertProfile?.ProfilePictureUrl ?? string.Empty;
+                objectName = user.ExpertProfile?.ProfilePictureObjectName ?? string.Empty;
+                goto skipUpload;
             }
 
             // Validar tamaño del archivo (5MB límite para imágenes de perfil)
@@ -579,7 +606,7 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "ProfilePictureTooLarge", Size = request.ProfilePicture.Length }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // Validar tipo de archivo
@@ -595,12 +622,12 @@ namespace newApi.Services
                     relatedEntityId: userId,
                     additionalData: new { Action = "BecomeExpert", UserId = userId, Reason = "InvalidFileExtension", Extension = extension, FileName = request.ProfilePicture.FileName }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
             var bucketName = _configuration["GoogleCloud:BucketName"];
             var uniqueFileName = $"{Guid.NewGuid()}{extension}";
             // ✅ MIGRACIÓN: prefijo 'profiles/' para que las lecturas se enruten al bucket PÚBLICO de imágenes.
-            var objectName = $"profiles/{uniqueFileName}";
+            objectName = $"profiles/{uniqueFileName}";
 
             try
             {
@@ -686,10 +713,13 @@ namespace newApi.Services
                     }
                 );
                 
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
-            var imageUrl = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
+            imageUrl = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
+
+            // 🛡️ MUD-AG: punto de aterrizaje cuando un experto mudado conserva foto.
+            skipUpload:
 
             // ✅ CRÍTICO: NO cambiar el rol hasta que el ExpertProfile se guarde exitosamente
             // Si falla después, el usuario quedará con rol Expert pero sin perfil
@@ -700,27 +730,73 @@ namespace newApi.Services
             string? expertCountry = null;
             string? expertCity = null;
             
-            try
+            // 🛡️ Round 28: reintentos con backoff exponencial (0s, 1s, 2s) ANTES de declarar fallo.
+            // Antes una sola excepción de Mapbox (timeout, 5xx, DNS) bloqueaba el registro completo.
+            // NO añadimos IP-country fallback intencionalmente: Stripe Connect account.country es
+            // INMUTABLE tras activación; usar IP-country (VPN/roaming/datacenter) crearía cuentas
+            // con jurisdicción equivocada → KYC fallaría irreversiblemente. Conservar el comportamiento
+            // de bloquear con error claro + admin notification (vía LogCritical en catch final).
+            const int MAX_GEOCODE_ATTEMPTS = 3;
+            var geocodeDelays = new[] { 0, 1000, 2000 }; // ms
+            Exception? lastGeocodeError = null;
+
+            for (int attempt = 0; attempt < MAX_GEOCODE_ATTEMPTS; attempt++)
             {
-                expertTimezone = await _timezoneService.GetTimezoneFromCoordinatesAsync(latitude, longitude);
-                expertCountry = await _timezoneService.GetCountryFromCoordinatesAsync(latitude, longitude);
-                expertCity = await _timezoneService.GetCityFromCoordinatesAsync(latitude, longitude);
+                if (geocodeDelays[attempt] > 0) await Task.Delay(geocodeDelays[attempt]);
+                try
+                {
+                    expertTimezone = await _timezoneService.GetTimezoneFromCoordinatesAsync(latitude, longitude);
+                    expertCountry = await _timezoneService.GetCountryFromCoordinatesAsync(latitude, longitude);
+                    expertCity = await _timezoneService.GetCityFromCoordinatesAsync(latitude, longitude);
+                    lastGeocodeError = null;
+                    if (attempt > 0)
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "Mapbox geocoding succeeded on retry",
+                            details: $"User {userId}: Mapbox respondió OK en intento {attempt + 1}/{MAX_GEOCODE_ATTEMPTS} para ({latitude}, {longitude}) → {expertCountry}.",
+                            userId: userId,
+                            source: "UserService.BecomeExpert",
+                            relatedEntityType: "User",
+                            relatedEntityId: userId,
+                            additionalData: new { Attempt = attempt + 1, Country = expertCountry });
+                    }
+                    break;
+                }
+                catch (Exception ex) when (attempt < MAX_GEOCODE_ATTEMPTS - 1)
+                {
+                    lastGeocodeError = ex;
+                    // Intermedio: no Critical para no spamear admin con fallos transitorios.
+                    await _loggingService.LogInfoAsync(
+                        message: "Mapbox geocoding failed, retrying",
+                        details: $"User {userId}: intento {attempt + 1}/{MAX_GEOCODE_ATTEMPTS} falló: {ex.Message}. Reintentando en {(geocodeDelays.Length > attempt + 1 ? geocodeDelays[attempt + 1] : 0)}ms.",
+                        userId: userId,
+                        source: "UserService.BecomeExpert",
+                        relatedEntityType: "User",
+                        relatedEntityId: userId,
+                        additionalData: new { Attempt = attempt + 1, Error = ex.Message });
+                }
+                catch (Exception ex)
+                {
+                    lastGeocodeError = ex;
+                }
             }
-            catch (Exception ex)
+
+            if (lastGeocodeError != null)
             {
-                // Si falla la detección, usar UTC como fallback y continuar
-                await _loggingService.LogWarningAsync(
-                    message: "Failed to detect timezone/country/city from coordinates",
-                    details: $"Could not detect timezone/country/city for coordinates ({latitude}, {longitude}): {ex.Message}. Using UTC as fallback.",
+                // 🛡️ Round 28: SUBIDO a Critical (notifica admin) y solo tras agotar reintentos.
+                await _loggingService.LogCriticalAsync(
+                    message: "Failed to detect timezone/country/city from coordinates (exhausted retries)",
+                    details: $"User {userId}: Mapbox falló {MAX_GEOCODE_ATTEMPTS} intentos consecutivos para ({latitude}, {longitude}). Último error: {lastGeocodeError.Message}. ACCION ADMIN: revisar token Mapbox, rate-limit (100k/mes free), o conectividad outbound desde Render.",
                     userId: userId,
                     source: "UserService.BecomeExpert",
                     relatedEntityType: "ExpertProfile",
                     relatedEntityId: null,
-                    additionalData: new { 
+                    additionalData: new {
                         Action = "DetectTimezoneCountryCity",
                         Latitude = latitude,
                         Longitude = longitude,
-                        Exception = ex.Message
+                        Exception = lastGeocodeError.Message,
+                        AttemptsExhausted = MAX_GEOCODE_ATTEMPTS
                     }
                 );
             }
@@ -728,17 +804,60 @@ namespace newApi.Services
             // 🔧 GATE DE PAÍS (P3, paso 1): NO promover a Expert si el país detectado no puede recibir pagos.
             // Sin esto se crea un "experto zombie": perfil publicado y contratable que NUNCA puede cobrar
             // (el paso 2, onboarding Stripe, devolvería BadRequest). Usamos la MISMA whitelist que el paso 2.
-            // Country == null (geocoding falló o no devolvió país) → rechazamos también: promover con país
-            // desconocido reproduce el bug y crear la cuenta Stripe con país equivocado es irreversible.
+            //
+            // 🛡️ Round 28: SEPARADO en 2 ramas para distinguir causa al admin:
+            //   - country=null (Mapbox no devolvió) → Critical (infra down, notify admin via email)
+            //   - country no soportado → Information (negocio normal, no satura admin)
+            // Antes ambas causas mezcladas en un solo Warning silencioso que no avisaba a nadie.
+            if (string.IsNullOrWhiteSpace(expertCountry))
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "BecomeExpert ABORTADO: no se pudo detectar pais (Mapbox)",
+                    details: $"User {userId} ({user.Email}): geocoding devolvió country=null para coords ({latitude}, {longitude}). " +
+                             "Posible causa: Mapbox token mal configurado, timeout, 5xx, coords en zona sin coverage (océano/Antártida), o respuesta sin context.country. " +
+                             "Registro abortado para no crear experto-zombie. ACCION ADMIN: revisar logs de TimezoneService y estado de api.mapbox.com.",
+                    userId: userId,
+                    source: "UserService.BecomeExpert.CountryGate",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId,
+                    additionalData: new
+                    {
+                        Action = "CountryGate",
+                        UserId = userId,
+                        UserEmail = user.Email,
+                        Latitude = latitude,
+                        Longitude = longitude,
+                        Cause = "GeocodingReturnedNull"
+                    }
+                );
+                // 🛡️ Round 28: limpiar foto huérfana en Supabase (se subió antes del gate de país).
+                // Sin esto, cada rechazo deja una imagen pagando storage hasta intervención manual.
+                try
+                {
+                    await _supabaseStorage.DeleteAsync(_supabaseStorage.ImagesBucket, objectName);
+                }
+                catch (Exception cleanupEx)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Could not cleanup profile picture after CountryGate (null) rejection",
+                        details: $"User {userId}: foto {objectName} quedó huérfana en Supabase. Error: {cleanupEx.Message}. Limpiar manualmente.",
+                        userId: userId,
+                        source: "UserService.BecomeExpert.OrphanPhotoCleanup");
+                }
+                return (false, null, null, null,
+                        BecomeExpertErrorCodes.CountryDetectionFailed,
+                        "No pudimos verificar tu ubicación. Inténtalo en unos minutos o contacta con soporte.",
+                        null);
+            }
+
             if (!SupportedConnectCountries.IsSupported(expertCountry))
             {
-                await _loggingService.LogWarningAsync(
-                    message: "BecomeExpert bloqueado: pais no soportado o no detectado",
-                    details: $"User {userId} no se promueve a Expert. Country detectado='{expertCountry ?? "null"}'. " +
-                             "No soportado para Stripe Connect (separate charges & transfers desde plataforma EEA) " +
-                             "o geocoding no devolvio pais. Se evita crear un experto que no podria cobrar.",
+                await _loggingService.LogInfoAsync(
+                    message: "BecomeExpert rechazado: pais fuera de whitelist Stripe Connect",
+                    details: $"User {userId}: country={expertCountry} no soportado para separate charges & transfers desde plataforma EEA. " +
+                             "Se evita crear un experto que no podria cobrar. Esto es negocio normal (no fallo de sistema).",
                     userId: userId,
-                    source: "UserService.BecomeExpert",
+                    source: "UserService.BecomeExpert.CountryGate",
                     relatedEntityType: "User",
                     relatedEntityId: userId,
                     additionalData: new
@@ -747,34 +866,84 @@ namespace newApi.Services
                         UserId = userId,
                         DetectedCountry = expertCountry,
                         Latitude = latitude,
-                        Longitude = longitude
+                        Longitude = longitude,
+                        Cause = "CountryNotInWhitelist"
                     }
                 );
 
-                return (false, null, null, null);
+                // 🛡️ Round 28: limpiar foto huérfana en Supabase (rechazo por país no soportado).
+                try
+                {
+                    await _supabaseStorage.DeleteAsync(_supabaseStorage.ImagesBucket, objectName);
+                }
+                catch (Exception cleanupEx)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Could not cleanup profile picture after CountryGate (not-supported) rejection",
+                        details: $"User {userId}: foto {objectName} quedó huérfana en Supabase tras rechazo por país {expertCountry}. Error: {cleanupEx.Message}. Limpiar manualmente.",
+                        userId: userId,
+                        source: "UserService.BecomeExpert.OrphanPhotoCleanup");
+                }
+
+                return (false, null, null, null,
+                        BecomeExpertErrorCodes.CountryNotSupported,
+                        $"Tu país ({expertCountry}) aún no está disponible para recibir pagos en la plataforma. Elige una ubicación en un país soportado o contacta con soporte.",
+                        expertCountry);
             }
 
-            var expertProfile = new ExpertProfile
+            // 🛡️ Round 28 MUD-K (GAP-1 fix): si el experto se está re-onboardeando tras una
+            // mudanza (ExpertProfile ya existe con RelocatedFromCountry != null), actualizamos
+            // la fila existente en lugar de crear una nueva — preservando Id (FKs) y reviews.
+            ExpertProfile expertProfile;
+            if (user.ExpertProfile != null && user.ExpertProfile.RelocatedFromCountry != null)
             {
-                UserId = user.Id,
-                ProfilePictureUrl = imageUrl,
-                ProfilePictureObjectName = objectName,
-                Description = request.Description,
-                Latitude = request.Latitude,
-                Longitude = request.Longitude,
-                Timezone = expertTimezone,
-                Country = expertCountry,
-                City = expertCity,
-                StripeAccountId = null, // No guardar StripeAccountId, se genera en el onboarding
-                CreatedAt = DateTime.UtcNow
-            };
+                expertProfile = user.ExpertProfile;
+                // 🛡️ MUD-AG: solo sobrescribir si hubo nuevo upload (imageUrl !=
+                // existingProfile.ProfilePictureUrl). Si el experto reutilizó su foto
+                // anterior, no tocamos nada para no leak el blob de Supabase.
+                if (request.ProfilePicture != null)
+                {
+                    expertProfile.ProfilePictureUrl = imageUrl;
+                    expertProfile.ProfilePictureObjectName = objectName;
+                }
+                expertProfile.Description = request.Description;
+                expertProfile.Latitude = request.Latitude;
+                expertProfile.Longitude = request.Longitude;
+                expertProfile.Timezone = expertTimezone;
+                expertProfile.Country = expertCountry;
+                expertProfile.City = expertCity;
+                expertProfile.StripeAccountId = null;
+                expertProfile.PendingStripeAccountId = null;
+                expertProfile.StripeStatus = StripeStatus.NotRequested;
+                expertProfile.StripeStatusDetails = null;
+                expertProfile.OnboardingCompleted = false;
+                expertProfile.IsOnVacation = false; // ya hay nuevo país; activable de nuevo
+                // RelocatedFromCountry/RelocatedAt SE PRESERVAN — son histórico de auditoría.
+            }
+            else
+            {
+                expertProfile = new ExpertProfile
+                {
+                    UserId = user.Id,
+                    ProfilePictureUrl = imageUrl,
+                    ProfilePictureObjectName = objectName,
+                    Description = request.Description,
+                    Latitude = request.Latitude,
+                    Longitude = request.Longitude,
+                    Timezone = expertTimezone,
+                    Country = expertCountry,
+                    City = expertCity,
+                    StripeAccountId = null,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _context.ExpertProfiles.Add(expertProfile);
+            }
 
             // 🛡️ V7 FIX: atomicidad ExpertProfile + Role en un solo SaveChanges. Antes
             // eran 2 SaveChanges separados — si el segundo fallaba, ExpertProfile quedaba en BD
             // pero User con Role=Client (inconsistente). Combinar cambios y persistir UNA vez:
             // si falla, ChangeTracker descarta AMBOS.
             user.Role = UserRole.Expert;
-            _context.ExpertProfiles.Add(expertProfile);
 
             // ✅ FIX: Manejar ObjectDisposedException y DbUpdateException específicamente
             try
@@ -811,7 +980,7 @@ namespace newApi.Services
                 var scopedUser = await scopedContext.Users.FindAsync(userId);
                 if (scopedUser == null)
                 {
-                    return (false, null, null, null);
+                    return (false, null, null, null, null, null, null);
                 }
                 
                 // Re-attach el expertProfile al nuevo contexto
@@ -848,7 +1017,7 @@ namespace newApi.Services
                 else
                 {
                     // Si aún falla, retornar error
-                    return (false, null, null, null);
+                    return (false, null, null, null, null, null, null);
                 }
             }
             catch (ObjectDisposedException ex)
@@ -903,7 +1072,7 @@ namespace newApi.Services
                 else
                 {
                     // Si aún falla, retornar error
-                    return (false, null, null, null);
+                    return (false, null, null, null, null, null, null);
                 }
             }
             catch (DbUpdateException dbEx)
@@ -930,7 +1099,7 @@ namespace newApi.Services
                             StackTrace = dbEx.StackTrace
                         }
                     );
-                    return (false, null, null, null);
+                    return (false, null, null, null, null, null, null);
                 }
                 else
                 {
@@ -951,7 +1120,7 @@ namespace newApi.Services
                             StackTrace = dbEx.StackTrace
                         }
                     );
-                    return (false, null, null, null);
+                    return (false, null, null, null, null, null, null);
                 }
             }
             catch (Exception ex)
@@ -972,7 +1141,7 @@ namespace newApi.Services
                         StackTrace = ex.StackTrace
                     }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // ✅ VALIDACIÓN: La disponibilidad horaria es OBLIGATORIA al crear un perfil de experto
@@ -1003,7 +1172,7 @@ namespace newApi.Services
                         AvailabilityEndTime = request.AvailabilityEndTime
                     }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // Parsear y validar tiempos
@@ -1032,7 +1201,7 @@ namespace newApi.Services
                         AvailabilityEndTime = request.AvailabilityEndTime
                     }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // Validar días válidos
@@ -1062,7 +1231,7 @@ namespace newApi.Services
                         AllDays = request.AvailabilityDaysOfWeek
                     }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             if (startTime >= endTime)
@@ -1088,13 +1257,29 @@ namespace newApi.Services
                         EndTime = endTime.ToString()
                     }
                 );
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             // Crear disponibilidad horaria inicial (obligatoria)
             try
             {
                 var now = DateTime.UtcNow;
+                // 🛡️ Round 28 MUD-AG: para mudanza, desactivar la availability row anterior
+                // antes de insertar la nueva. Sin esto, ExpertProfile 3 quedaría con DOS rows
+                // activas (IsActive=true, EffectiveTo=null) → search filters/admin reports
+                // doble-cuentan. Mismo patrón que UpdateExpertProfile:1725-1731.
+                if (user.ExpertProfile != null && user.ExpertProfile.RelocatedFromCountry != null)
+                {
+                    var staleAvailabilities = await _context.ExpertAvailabilities
+                        .Where(ea => ea.ExpertId == expertProfile.Id && ea.IsActive && ea.EffectiveTo == null)
+                        .ToListAsync();
+                    foreach (var stale in staleAvailabilities)
+                    {
+                        stale.IsActive = false;
+                        stale.EffectiveTo = now;
+                        stale.UpdatedAt = now;
+                    }
+                }
                 var availability = new ExpertAvailability
                 {
                     ExpertId = expertProfile.Id,
@@ -1155,7 +1340,7 @@ namespace newApi.Services
                     }
                 );
                 
-                return (false, null, null, null);
+                return (false, null, null, null, null, null, null);
             }
 
             var token = GenerateJwtToken(user);
@@ -1179,8 +1364,8 @@ namespace newApi.Services
             var accessToken = GenerateJwtToken(user);
             var refreshToken = await GenerateRefreshTokenAsync(user.Id, "BecomeExpert");
             var combinedToken = $"{accessToken}|{refreshToken}";
-            
-            return (true, combinedToken, user, expertProfile);
+
+            return (true, combinedToken, user, expertProfile, null, null, expertCountry);
         }
 
         public async Task<ExpertProfileDto?> GetExpertProfile(int userId)
@@ -1240,12 +1425,17 @@ namespace newApi.Services
                 // ✅ INTERNACIONALIZACIÓN
                 Timezone = expertProfile.Timezone,
                 Country = expertProfile.Country,
-                City = expertProfile.City
+                City = expertProfile.City,
+                // 🛡️ Round 28 MUD-W: señaliza relocation al frontend.
+                RelocatedFromCountry = expertProfile.RelocatedFromCountry,
+                RelocatedAt = expertProfile.RelocatedAt,
             };
         }
 
 
-        public async Task<(bool Success, ExpertProfileDto? UpdatedProfile)> UpdateExpertProfile(int userId, UpdateExpertProfileRequestDto request)
+        // 🛡️ Round 28: extendido con errorCode/errorMessage/detectedCountry como BecomeExpert.
+        public async Task<(bool Success, ExpertProfileDto? UpdatedProfile,
+                          string? errorCode, string? errorMessage, string? detectedCountry)> UpdateExpertProfile(int userId, UpdateExpertProfileRequestDto request)
         {
             try
             {
@@ -1256,20 +1446,20 @@ namespace newApi.Services
 
                 if (expertProfile == null)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 // Validar coordenadas
                 if (!decimal.TryParse(request.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var latitude) ||
                     latitude < -90m || latitude > 90m)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 if (!decimal.TryParse(request.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var longitude) ||
                     longitude < -180m || longitude > 180m)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 // Actualizar los campos básicos
@@ -1298,34 +1488,113 @@ namespace newApi.Services
                         if (!string.IsNullOrEmpty(detectedCountry)
                             && !SupportedConnectCountries.IsSupported(detectedCountry))
                         {
-                            await _loggingService.LogWarningAsync(
-                                message: "E3: Expert update REJECTED — new coordinates resolve to unsupported country",
-                                details: $"UserId {userId}: nuevas coords ({latitude},{longitude}) → {detectedCountry} no está en la whitelist de Stripe Connect. Update abortado.",
+                            // 🛡️ Round 28: BAJADO a Information (negocio normal, no infra).
+                            // País real fuera de whitelist no satura admin via email.
+                            await _loggingService.LogInfoAsync(
+                                message: "E3: Expert update rechazado — coords resuelven a país fuera de whitelist",
+                                details: $"UserId {userId}: nuevas coords ({latitude},{longitude}) → {detectedCountry} no está en la whitelist de Stripe Connect. Update abortado. (Negocio normal, no fallo de sistema.)",
                                 userId: userId,
                                 source: "UserService.UpdateExpertProfile.E3",
                                 relatedEntityType: "ExpertProfile",
                                 relatedEntityId: expertProfile.Id,
-                                additionalData: new { Latitude = latitude, Longitude = longitude, DetectedCountry = detectedCountry, CurrentCountry = expertProfile.Country });
-                            return (false, null);
+                                additionalData: new { Latitude = latitude, Longitude = longitude, DetectedCountry = detectedCountry, CurrentCountry = expertProfile.Country, Cause = "CountryNotInWhitelist" });
+                            return (false, null,
+                                    BecomeExpertErrorCodes.CountryNotSupported,
+                                    $"Tu nueva ubicación ({detectedCountry}) no está disponible para recibir pagos. Elige otra dentro de los países soportados.",
+                                    detectedCountry);
+                        }
+
+                        // 🛡️ Round 28 — STRIPE_COUNTRY_LOCKED gate: si el experto tiene cuenta
+                        // Stripe Connect creada (incluso si no completó onboarding), su Account.country
+                        // YA está fijado en Stripe e es INMUTABLE. Permitir que expertProfile.Country
+                        // diverja del Stripe Account.country crea currency_mismatch en transfers.
+                        // 🛡️ MUD-3: condición original requería OnboardingCompleted=true, pero el acct
+                        // ya tiene country fijado desde el momento de su creación (AccountCreateOptions).
+                        // Un experto que creó acct US y abandonó el onboarding podía mover su pin a ES
+                        // sin restricción → divergencia silenciosa. Ahora basta con que exista
+                        // StripeAccountId para activar el gate.
+                        if (!string.IsNullOrEmpty(detectedCountry)
+                            && !string.IsNullOrEmpty(expertProfile.StripeAccountId))
+                        {
+                            try
+                            {
+                                var stripeAccountService = new Stripe.AccountService();
+                                var stripeAccount = await stripeAccountService.GetAsync(expertProfile.StripeAccountId);
+                                if (!string.IsNullOrEmpty(stripeAccount?.Country)
+                                    && !string.Equals(stripeAccount.Country, detectedCountry, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    await _loggingService.LogInfoAsync(
+                                        message: "STRIPE_COUNTRY_LOCKED: rechazado cambio de país por inmutabilidad de Stripe Connect",
+                                        details: $"UserId {userId}: nuevas coords ({latitude},{longitude}) detectan país {detectedCountry}, pero Stripe Account {expertProfile.StripeAccountId} tiene country={stripeAccount.Country} (inmutable). Update abortado. Para mudarse, el experto debe cerrar su cuenta y volver a registrarse en el nuevo país.",
+                                        userId: userId,
+                                        source: "UserService.UpdateExpertProfile.StripeCountryLocked",
+                                        relatedEntityType: "ExpertProfile",
+                                        relatedEntityId: expertProfile.Id,
+                                        additionalData: new { Latitude = latitude, Longitude = longitude, DetectedCountry = detectedCountry, StripeAccountCountry = stripeAccount.Country, StripeAccountId = expertProfile.StripeAccountId });
+                                    return (false, null,
+                                            BecomeExpertErrorCodes.StripeCountryLocked,
+                                            $"Tu cuenta Stripe está vinculada a {stripeAccount.Country.ToUpperInvariant()} y no se puede cambiar a {detectedCountry}. Stripe no permite mover una cuenta entre países. Para hacerlo, ve al panel de experto → 'Mudarme a otro país' y completa el asistente; cerraremos tu cuenta Stripe actual y podrás iniciar onboarding fresco en el nuevo país (tu User, historial de cliente y reseñas se preservan).",
+                                            detectedCountry);
+                                }
+                            }
+                            catch (Stripe.StripeException stripeReadEx) when (stripeReadEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                            {
+                                // Stripe Account ya no existe (404) — sin gate posible, permitir el update.
+                                // El UserController/AccountDeletion debería haber limpiado StripeAccountId, pero
+                                // si no, log defensivo y continuar.
+                                await _loggingService.LogWarningAsync(
+                                    message: "STRIPE_COUNTRY_LOCKED gate skipped: Stripe Account 404",
+                                    details: $"UserId {userId} ExpertProfile {expertProfile.Id}: StripeAccountId={expertProfile.StripeAccountId} no existe en Stripe (404). Gate de country-locked omitido — update procederá.",
+                                    userId: userId,
+                                    source: "UserService.UpdateExpertProfile.StripeCountryLockedSkipped",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfile.Id);
+                            }
+                            catch (Exception stripeReadEx)
+                            {
+                                // Falla de red/Stripe — no bloquear update por esto, pero loguear para auditoría.
+                                await _loggingService.LogWarningAsync(
+                                    message: "STRIPE_COUNTRY_LOCKED gate skipped: Stripe Account read failed",
+                                    details: $"UserId {userId} ExpertProfile {expertProfile.Id}: no se pudo leer Stripe Account {expertProfile.StripeAccountId} para validar país: {stripeReadEx.Message}. Gate omitido — update procederá; riesgo: si el país en Stripe difiere, transfers fallarán con currency_mismatch.",
+                                    userId: userId,
+                                    source: "UserService.UpdateExpertProfile.StripeCountryLockedSkipped",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfile.Id);
+                            }
                         }
                     }
                     catch (Exception detectEx)
                     {
-                        // Si falla la detección de país, ANTES persistía las coords igual; ahora
-                        // continuamos sin actualizar Timezone/Country/City (manejado más abajo).
-                        await _loggingService.LogWarningAsync(
+                        // 🛡️ Round 28: SUBIDO a Critical. Mapbox tiró excepción durante un update de
+                        // coords (infra down). Admin debe enterarse via email — solo Critical notifica.
+                        await _loggingService.LogCriticalAsync(
                             message: "Failed to detect country from new coordinates (E3 gate)",
-                            details: $"Could not detect country for ({latitude},{longitude}): {detectEx.Message}. Coords ACEPTADAS pero Timezone/Country/City NO se actualizan.",
+                            details: $"Could not detect country for ({latitude},{longitude}): {detectEx.Message}. Coords ACEPTADAS pero Timezone/Country/City NO se actualizan. ACCION ADMIN: revisar Mapbox/token/rate-limit.",
                             userId: userId,
                             source: "UserService.UpdateExpertProfile",
                             relatedEntityType: "ExpertProfile",
-                            relatedEntityId: expertProfile.Id);
+                            relatedEntityId: expertProfile.Id,
+                            additionalData: new { Latitude = latitude, Longitude = longitude, Exception = detectEx.Message });
                         detectedCountry = null; // marcar como "no detectado"
                     }
                 }
 
-                expertProfile.Latitude = request.Latitude;
-                expertProfile.Longitude = request.Longitude;
+                // 🛡️ Round 28 — Sprint 3: solo persistir coords si el geocoding tuvo éxito o las
+                // coords no cambiaron. Antes persistíamos lat/lng aunque Mapbox fallase, dejando
+                // el perfil con coords en otro país pero Country/Timezone obsoletos.
+                if (!coordinatesChanged)
+                {
+                    expertProfile.Latitude = request.Latitude;
+                    expertProfile.Longitude = request.Longitude;
+                }
+                else if (detectedCountry != null)
+                {
+                    // Geocoding OK y país aceptado → persistir TODO el set (coords + tz + country + city) atómico.
+                    expertProfile.Latitude = request.Latitude;
+                    expertProfile.Longitude = request.Longitude;
+                }
+                // Si coordinatesChanged && detectedCountry == null → NO persistir nada (las coords
+                // quedan con sus valores anteriores). El bloque siguiente solo se ejecuta si hubo éxito.
 
                 // Si cambian las coordenadas, aplicar timezone/country/city (ya validados arriba)
                 if (coordinatesChanged && detectedCountry != null)
@@ -1379,14 +1648,14 @@ namespace newApi.Services
                     // Validar tamaño del archivo (5MB límite para imágenes de perfil)
                     if (request.ProfilePicture.Length > 5 * 1024 * 1024)
                     {
-                        return (false, null);
+                        return (false, null, null, null, null);
                     }
 
                     // Validar tipo de archivo
                     var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
                     if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
                     {
-                        return (false, null);
+                        return (false, null, null, null, null);
                     }
 
                     var bucketName = _configuration["GoogleCloud:BucketName"];
@@ -1438,7 +1707,7 @@ namespace newApi.Services
                     }
                     catch (Exception ex)
                     {
-                        return (false, null);
+                        return (false, null, null, null, null);
                     }
                 }
 
@@ -1457,19 +1726,19 @@ namespace newApi.Services
 
                 if (currentAvailability != null && !hasAvailabilityProvided)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 if (!hasAvailabilityProvided)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 // Parsear y validar tiempos
                 if (!TimeSpan.TryParse(request.AvailabilityStartTime, out var startTime) ||
                     !TimeSpan.TryParse(request.AvailabilityEndTime, out var endTime))
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 // Validar días válidos
@@ -1478,12 +1747,12 @@ namespace newApi.Services
                 
                 if (invalidDays.Any())
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 if (startTime >= endTime)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 // Actualizar disponibilidad horaria
@@ -1517,7 +1786,7 @@ namespace newApi.Services
                 }
                 catch (Exception ex)
                 {
-                    return (false, null);
+                    return (false, null, null, null, null);
                 }
 
                 await _context.SaveChangesAsync();
@@ -1571,13 +1840,16 @@ namespace newApi.Services
                     // ✅ INTERNACIONALIZACIÓN
                     Timezone = expertProfile.Timezone,
                     Country = expertProfile.Country,
-                    City = expertProfile.City
+                    City = expertProfile.City,
+                    // 🛡️ MUD-W
+                    RelocatedFromCountry = expertProfile.RelocatedFromCountry,
+                    RelocatedAt = expertProfile.RelocatedAt,
                 };
-                return (true, updatedProfileDto);
+                return (true, updatedProfileDto, null, null, expertProfile.Country);
             }
             catch (Exception ex)
             {
-                return (false, null);
+                return (false, null, null, null, null);
             }
         }
 
@@ -1593,6 +1865,33 @@ namespace newApi.Services
                 if (expertProfile == null)
                 {
                     return (false, false);
+                }
+
+                // 🛡️ Round 28 MUD-AI: si está TURNING ON vacation (false → true), bloquear si hay
+                // hires activos. Sin esto: experto con 10 hires confirmados activa vacaciones,
+                // no-shows masivos en sus appointments confirmados → 10× 95/0/5 refunds + Stripe
+                // fees + reseñas negativas + soporte. El relocation preflight ya hace este check;
+                // copiar el patrón aquí.
+                if (!expertProfile.IsOnVacation)
+                {
+                    var activeHiresCount = await _context.SearchHires
+                        .Include(h => h.Status)
+                        .CountAsync(h => h.ExpertId == userId
+                                      && h.Status != null
+                                      && !h.Status.IsFinalizationStatus);
+                    if (activeHiresCount > 0)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "ToggleVacationMode blocked — active hires",
+                            details: $"UserId {userId} intentó activar vacaciones con {activeHiresCount} hires activos. Bloqueado para evitar no-shows masivos. Debe finalizar/cancelar los hires primero.",
+                            userId: userId,
+                            source: "UserService.ToggleVacationMode.ActiveHiresGuard",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: expertProfile.Id,
+                            additionalData: new { ActiveHires = activeHiresCount },
+                            notifyUser: true);
+                        return (false, expertProfile.IsOnVacation); // sigue OFF
+                    }
                 }
 
                 // Cambiar el estado de vacaciones
@@ -1636,7 +1935,11 @@ namespace newApi.Services
                 issuer: _configuration["Jwt:Issuer"],
                 audience: _configuration["Jwt:Audience"],
                 claims: claims,
-                expires: DateTime.UtcNow.AddHours(1), // ✅ BEST PRACTICE 2024: 1 hora (estándar Microsoft/Google/Auth0)
+                // 🛡️ Round 28 MUD-AF: 24h matches marketplace standard (eBay/Etsy). El refresh
+                // token (90d, rotation + reuse detection) cubre la seguridad. Con 1h el usuario
+                // perdía sesión mid-flow muy a menudo si el silent-refresh fallaba por timing
+                // de Chrome (setTimeout throttled cuando tab background) o hop entre rutas.
+                expires: DateTime.UtcNow.AddHours(24),
                 notBefore: DateTime.UtcNow, // ✅ SEGURIDAD: Token válido desde ahora
                 signingCredentials: creds
             );

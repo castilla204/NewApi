@@ -249,6 +249,8 @@ namespace newApi.Services
                 TaxAmount = hire.TaxAmount, // ✅ STRIPE TAX: IVA calculado
                 CreatedAt = hire.CreatedAt,
                 UpdatedAt = hire.UpdatedAt,
+                // 🛡️ Round 28: emitir ChargeCurrency (snapshot inmutable) para listados.
+                ChargeCurrency = string.IsNullOrWhiteSpace(hire.Currency) ? "EUR" : hire.Currency.Trim().ToUpperInvariant(),
                 Client = hire.ClientId.HasValue && hire.Client != null ? new UserDto
                 {
                     Name = hire.Client.Name,
@@ -268,6 +270,11 @@ namespace newApi.Services
                     ServiceTypeCategoryId = hire.SearchService.ServiceType?.ServiceTypeCategoryId,
                     RequiresAppointment = hire.SearchService.ServiceType?.RequiresAppointment ?? false,
                     Price = hire.SearchService.Price,
+                    // 🛡️ Round 28: emitir Currency real del servicio para que el frontend formatee
+                    // con el símbolo correcto (£/CHF/$) en lugar de caer al default EUR del DTO.
+                    Currency = string.IsNullOrWhiteSpace(hire.SearchService.Currency)
+                        ? "EUR"
+                        : hire.SearchService.Currency.Trim().ToUpperInvariant(),
                     Conditions = hire.SearchService.Conditions,
                     DurationInHours = hire.SearchService.DurationInHours ?? 0,
                     CreatedAt = hire.SearchService.CreatedAt,

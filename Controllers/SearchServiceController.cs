@@ -331,19 +331,29 @@ namespace newApi.Controllers
             }
             catch (OperationCanceledException)
             {
-                await _loggingService.LogErrorAsync(
-                    message: "Timeout al obtener expertos del mapa",
-                    details: "La operación excedió el tiempo máximo de espera (90 segundos)",
-                    source: "SearchServiceController.GetMapExperts",
-                    relatedEntityType: "MapExperts",
-                    additionalData: new { categoryId, serviceTypeId },
-                    notifyUser: false
-                );
+                // ✅ FIX: Fire-and-forget — el logging abre scope EF + 2 SaveChangesAsync
+                //    y en path de timeout (BD ya saturada) AMPLIFICA el problema, retrasando
+                //    aún más el 408 que devuelve al cliente.
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _loggingService.LogErrorAsync(
+                            message: "Timeout al obtener expertos del mapa",
+                            details: "La operación excedió el tiempo máximo de espera (90 segundos)",
+                            source: "SearchServiceController.GetMapExperts",
+                            relatedEntityType: "MapExperts",
+                            additionalData: new { categoryId, serviceTypeId },
+                            notifyUser: false
+                        );
+                    }
+                    catch { /* swallow — log no debe romper response */ }
+                });
                 // ✅ CRÍTICO: Asegurar headers CORS y Content-Type ANTES de devolver StatusCode
                 Response.Headers["Access-Control-Allow-Origin"] = Request.Headers["Origin"].ToString();
                 Response.Headers["Access-Control-Allow-Credentials"] = "true";
                 Response.ContentType = "application/json";
-                
+
                 return StatusCode(408, new { message = "Request timeout. Please try again.", detail = "The request took too long to complete" });
             }
             catch (ArgumentException ex)
@@ -352,23 +362,31 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                await _loggingService.LogErrorAsync(
-                    message: "Error al obtener expertos del mapa",
-                    details: $"Exception: {ex.Message}\nStackTrace: {ex.StackTrace}",
-                    source: "SearchServiceController.GetMapExperts",
-                    relatedEntityType: "MapExperts",
-                    additionalData: new
+                // ✅ FIX: Fire-and-forget para no bloquear el response 500 esperando al log.
+                _ = Task.Run(async () =>
+                {
+                    try
                     {
-                        categoryId,
-                        serviceTypeId,
-                        latitude,
-                        longitude,
-                        locationRange,
-                        innerException = ex.InnerException?.Message,
-                        exceptionType = ex.GetType().Name
-                    },
-                    notifyUser: false
-                );
+                        await _loggingService.LogErrorAsync(
+                            message: "Error al obtener expertos del mapa",
+                            details: $"Exception: {ex.Message}\nStackTrace: {ex.StackTrace}",
+                            source: "SearchServiceController.GetMapExperts",
+                            relatedEntityType: "MapExperts",
+                            additionalData: new
+                            {
+                                categoryId,
+                                serviceTypeId,
+                                latitude,
+                                longitude,
+                                locationRange,
+                                innerException = ex.InnerException?.Message,
+                                exceptionType = ex.GetType().Name
+                            },
+                            notifyUser: false
+                        );
+                    }
+                    catch { /* swallow */ }
+                });
                 return StatusCode(500, new { message = "Failed to retrieve map experts", detail = ex.Message });
             }
         }
@@ -661,18 +679,37 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "La duración debe ser mayor que 0" });
                 }
 
-                // 🌍 Currency: normalizar y validar contra SupportedCurrenciesList.
-                // Si el front no envía nada, deja vacío → fallback EUR en el service.
-                // Si envía una divisa no soportada, también fallback EUR (no romper la creación
-                // por algo recuperable; el service loguea Warning si mismatch con Stripe Connect).
-                if (!string.IsNullOrWhiteSpace(request.Currency))
+                // 🛡️ Round 28 — CUR-1 FIX CRÍTICO: derivar la divisa del país del experto.
+                // Antes (R28 original): solo derivaba si `request.Currency` venía vacío. PERO el DTO
+                // `CreateSearchServiceRequestDto.Currency` tiene default "EUR" → el frontend que NO
+                // envía el campo (caso real, lo confirmó el Agente 1 con query a BD: 188/188 servicios
+                // en EUR incluso para expertos US) hace que `request.Currency == "EUR"` SIEMPRE y la
+                // rama de derivación NUNCA se ejecuta → experto US creaba servicios en EUR → mismatch
+                // con su Stripe Account USD → currency_mismatch en payouts.
+                //
+                // Nueva regla:
+                //  1. Si el frontend mandó algo distinto de EUR (USD/GBP/CHF/etc.) → respetar y validar.
+                //  2. Si el frontend mandó EUR (default) Y el país del experto NO deriva en EUR
+                //     (US→USD, GB→GBP, CH→CHF, SE→SEK, etc.) → preferir SIEMPRE la divisa del país.
+                //     (Esto es lo que estaba roto: trataba EUR-default como decisión explícita.)
+                //  3. Si el frontend mandó EUR y el país deriva en EUR (ES/DE/FR/IT/PT/...) → EUR.
+                var derivedCurrency = global::newApi.Common.StripeCurrencyMapping
+                    .GetCurrencyForCountry(expertProfile.Country)
+                    .ToUpperInvariant();
+                var normalizedRequest = global::newApi.Common.SupportedCurrenciesList.Normalize(request.Currency);
+
+                if (string.IsNullOrEmpty(normalizedRequest)
+                    || (string.Equals(normalizedRequest, "EUR", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(derivedCurrency, "EUR", StringComparison.OrdinalIgnoreCase)))
                 {
-                    var normalized = global::newApi.Common.SupportedCurrenciesList.Normalize(request.Currency);
-                    request.Currency = normalized ?? "EUR";
+                    // Caso 1: vacío/inválido. Caso 2: default EUR del DTO con experto no-eurozona.
+                    // En ambos casos preferimos la divisa derivada del país del experto.
+                    request.Currency = derivedCurrency;
                 }
                 else
                 {
-                    request.Currency = "EUR";
+                    // El frontend mandó una divisa explícita distinta del default — respetar.
+                    request.Currency = normalizedRequest;
                 }
 
                 // ✅ VALIDACIÓN: Verificar que al menos un tipo de entregable esté seleccionado

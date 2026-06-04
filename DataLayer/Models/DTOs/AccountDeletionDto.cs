@@ -35,6 +35,12 @@ namespace newApi.DataLayer.Models.DTOs
         public string Status { get; set; } = string.Empty;
         public string ServiceName { get; set; } = string.Empty;
         public decimal Amount { get; set; }
+        /// <summary>
+        /// 🛡️ Round 28 — Sprint 3: divisa del hire (ISO 4217 MAYÚSCULAS). Frontend la usa para
+        /// formatear Amount con el símbolo correcto en AccountSettingsModal y AccountDeletionModal.
+        /// Default "EUR" para retro-compat con flujos legacy que no setean este campo.
+        /// </summary>
+        public string Currency { get; set; } = "EUR";
         public DateTime CreatedAt { get; set; }
         public string OtherPartyName { get; set; } = string.Empty;
         public string OtherPartyEmail { get; set; } = string.Empty;

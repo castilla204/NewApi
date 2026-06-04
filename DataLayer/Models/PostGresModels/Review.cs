@@ -11,6 +11,16 @@
         public string[] Images { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+        /// <summary>
+        /// 🛡️ Round 28 MUD-D: país donde se prestó el servicio cuando se creó la review
+        /// (snapshot inmutable). Backfill desde SearchHire.ExpertCountry. Necesario para
+        /// mostrar badge "Servicio prestado en {país}" en ReviewCard cuando el experto se
+        /// muda y opera ahora desde un país distinto. Sin este campo, las reviews previas
+        /// se mezclan visualmente con las nuevas y confunden al cliente.
+        /// </summary>
+        [System.ComponentModel.DataAnnotations.MaxLength(2)]
+        public string? ReceivedInCountry { get; set; }
+
         public virtual User Reviewer { get; set; }
         public virtual User Expert { get; set; }
         public virtual SearchHire SearchHire { get; set; } 

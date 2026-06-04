@@ -4,7 +4,9 @@ namespace newApi.ScrapperGateway.DataLayer.Models.DTOs
 {
     public class BecomeExpertRequestDto
     {
-        public IFormFile ProfilePicture { get; set; }
+        // 🛡️ Round 28 MUD-AG: nullable para soportar re-onboarding tras mudanza
+        // (el experto puede conservar su foto del país anterior sin re-uploadear).
+        public IFormFile? ProfilePicture { get; set; }
         public string Description { get; set; }
         public string Latitude { get; set; }
         public string Longitude { get; set; }

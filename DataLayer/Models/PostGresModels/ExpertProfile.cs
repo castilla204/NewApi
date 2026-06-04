@@ -50,9 +50,18 @@ namespace newApi.DataLayer.Models.PostGresModels
 
         /// <summary>
         /// Nombre de la ciudad del experto (ej: "Madrid", "Barcelona", "México City")
-        /// Se detecta automáticamente desde las coordenadas usando Google Geocoding API
+        /// Se detecta automáticamente desde las coordenadas usando Mapbox Geocoding API
         /// </summary>
         public string? City { get; set; }
+
+        /// <summary>
+        /// 🛡️ Round 28 MUD-D: si el experto se mudó (vía wizard de mudanza), guardamos el
+        /// país anterior para auditoría + UI ("Antiguo experto en US"). Permite distinguir
+        /// reviews recibidas en el contexto anterior de las nuevas.
+        /// </summary>
+        [System.ComponentModel.DataAnnotations.MaxLength(2)]
+        public string? RelocatedFromCountry { get; set; }
+        public DateTime? RelocatedAt { get; set; }
 
         /// <summary>
         /// 🌍 Round 21: timestamp del último payout exitoso (payout.paid webhook).

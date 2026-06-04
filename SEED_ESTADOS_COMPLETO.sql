@@ -96,7 +96,15 @@ FROM (VALUES
   ('appointment_cancelled_by_client_no_proposal',   0, 100, 0),  -- culpa del cliente -> experto 100%
   ('appointment_cancelled_by_expert_no_response', 100,   0, 0),  -- culpa del experto -> cliente 100%
   ('appointment_cancelled_by_no_report',           95,   0, 5),  -- culpa del experto -> cliente 95% / plataforma 5%
-  ('appointment_completed_without_client_approval', 0,  95, 5)   -- auto-aprobado a favor del experto -> 95% / 5%
+  ('appointment_completed_without_client_approval', 0,  95, 5),  -- auto-aprobado a favor del experto -> 95% / 5%
+  -- 🛡️ Round 28 MUD-AI: cliente cancela 2ª vez (tras 1ª permitida) en cita confirmada.
+  -- ANTES: caía a mapping → 'cancelled' → 100/0/0 → cliente recupera 100% sin haber
+  -- prestado servicio el experto. EXPLOIT: cliente paga, propone, expert confirma,
+  -- cancela 2×, recupera todo el dinero, expert pierde su slot reservado.
+  -- AHORA: cliente al fault → expert 95% / platform 5% (mismo que approve-without-decision).
+  ('appointment_cancelled_by_client_second',        0,  95, 5),
+  -- expert cancela 2× con cita confirmada (cliente sin culpa) → cliente 100%
+  ('appointment_cancelled_by_expert_second',      100,   0, 0)
 ) AS v("sv","cp","ep","pp")
 JOIN "SystemStatuses" s ON s."StatusValue"=v."sv" AND s."StatusType"='AppointmentStatus'
 WHERE NOT EXISTS (SELECT 1 FROM "StatusConfigurations" sc WHERE sc."StatusId"=s."Id" AND sc."CategoryId" IS NULL AND sc."ServiceTypeCategoryId" IS NULL);

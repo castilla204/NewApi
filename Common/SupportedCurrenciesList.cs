@@ -25,13 +25,27 @@ namespace newApi.Common
         /// <summary>
         /// Códigos ISO 4217 en MAYÚSCULAS. Comparación case-insensitive vía el HashSet.
         /// </summary>
+        // 🛡️ Round 28: ampliado para cubrir TODAS las divisas locales de países en
+        // SupportedConnectCountries. Antes solo EUR/USD/GBP/CAD/CHF → un experto sueco
+        // no podía seleccionar SEK como PreferredCurrency.
         public static readonly HashSet<string> Codes = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase)
         {
-            "EUR", // EEA
+            // Zona euro
+            "EUR",
+            // No-EEA principales
             "USD", // United States
             "GBP", // United Kingdom
             "CAD", // Canada
-            "CHF", // Switzerland
+            "CHF", // Switzerland + Liechtenstein
+            // EU/EEA con divisa propia
+            "SEK", // Sweden
+            "DKK", // Denmark
+            "NOK", // Norway
+            "PLN", // Poland
+            "HUF", // Hungary
+            "CZK", // Czech Republic
+            "BGN", // Bulgaria
+            "RON", // Romania
         };
 
         /// <summary>

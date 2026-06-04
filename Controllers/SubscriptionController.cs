@@ -5036,12 +5036,16 @@ namespace newApi.Controllers
 
                 await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHireId); // ✅ FIX: Usar searchHireId guardado
 
-                // 🛡️ Round 28 MUD-AJ: marcar Captured tras éxito del capture. El watchdog ahora
-                // sabe que este hire NO necesita recovery (solo procesa CaptureStatus="Pending"
-                // antiguos > 1h). Sin esto, todos los hires que sí capturan ok seguían marcados
-                // como Pending → watchdog procesaría hires sanos por error.
+                // 🛡️ Round 28 MUD-AJ + MUD-AT: marcar Captured tras éxito del capture. El
+                // watchdog (PlatformMaintenanceService.ProcessExpiringPaymentIntentsAsync) NO
+                // procesa hires con CaptureStatus="Captured".
+                //
+                // MUD-AT: NO hacer SaveChangesAsync extra aquí — EF flushea la mutación al
+                // CommitAsync de abajo. El SaveChanges intermedio anterior abría ventana de
+                // fallo (Stripe captured OK pero conexión BD caída entre SaveChanges y Commit)
+                // sin recovery, mientras el catch(commitEx) sí tiene compensación Stripe.
+                // Asignación pura → EF lo persiste atómicamente con el commit.
                 searchHire.CaptureStatus = "Captured";
-                await _context.SaveChangesAsync();
 
                 try
                 {

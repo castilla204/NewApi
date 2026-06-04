@@ -2038,6 +2038,62 @@ namespace newApi.Services
                                         relatedEntityType: "SearchHire",
                                         relatedEntityId: searchHireId);
                                 }
+                                // 🛡️ Round 28 MUD-AV: experto ya retiró el balance Stripe Connect
+                                // a su banco externo → reversal del transfer es imposible vía API.
+                                // Stripe devuelve "insufficient_funds_for_transfer_reversal" o
+                                // "balance_insufficient". SIN este catch dedicado, caía al catch
+                                // genérico y el Hangfire retry job lo reintentaba indefinidamente
+                                // (5+ veces antes de RefundFailedAt). Cada reintento = call Stripe
+                                // API + LogCritical → email admin spam con la MISMA alerta.
+                                //
+                                // Acción correcta: registrar FT TransferReversal con marker de
+                                // pérdida + Critical UNA SOLA VEZ con notifyUser, y NO throw → el
+                                // flow continúa marcando el dispute Resolved-with-LossToPlatform.
+                                // El admin recupera el dinero off-Stripe (transferencia bancaria
+                                // directa entre el ex-experto y la plataforma) o lo asume como
+                                // pérdida. La FT marker evita reentry del guard clawbackPending.
+                                catch (StripeException balCbEx) when (
+                                    balCbEx.StripeError?.Code == "insufficient_funds_for_transfer_reversal"
+                                    || balCbEx.StripeError?.Code == "balance_insufficient")
+                                {
+                                    // Marker FT con Amount=0 — no movimiento real, solo señal al
+                                    // guard clawbackPending de que ya intentamos el clawback (con
+                                    // misma TransactionType+StripeTransferId). Detalle textual va
+                                    // al log Critical.
+                                    _context.FinancialTransactions.Add(new FinancialTransaction
+                                    {
+                                        UserId = searchHire.ExpertId,
+                                        Amount = 0m,
+                                        AmountCents = 0,
+                                        Currency = searchHire.Currency,
+                                        TransactionType = "TransferReversal",
+                                        RelatedEntityType = "SearchHire",
+                                        RelatedEntityId = searchHireId,
+                                        StripeTransferId = existingTransfer.StripeTransferId,
+                                        StripePaymentIntentId = servicePayment.StripePaymentIntentId,
+                                        CreatedAt = DateTime.UtcNow
+                                    });
+                                    try { await _context.SaveChangesAsync(); }
+                                    catch (Exception persistEx)
+                                    {
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL MUD-AV: failed to persist clawback-impossible marker",
+                                            details: $"SearchHire {searchHireId}: Stripe code={balCbEx.StripeError?.Code}, persist falló: {persistEx.Message}. El guard clawbackPending puede reintentar — admin debe insertar manualmente FT TransferReversal marker.",
+                                            userId: searchHire.ExpertId,
+                                            source: "StripeRefundService.ProcessMoneyDistributionAsync.MUD-AV.PersistFailed",
+                                            relatedEntityType: "SearchHire",
+                                            relatedEntityId: searchHireId);
+                                    }
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL MUD-AV: clawback impossible — expert already withdrew balance (platform absorbs loss)",
+                                        details: $"SearchHire {searchHireId}: Stripe respondió '{balCbEx.StripeError?.Code}' al revertir transfer {existingTransfer.StripeTransferId} ({clawbackAmountEur:F2} {searchHire.Currency}). El experto retiró el balance Stripe Connect a su banco externo ANTES del clawback. No podemos reversar vía API. ACCIÓN ADMIN: (a) reclamar el dinero off-Stripe (transferencia bancaria directa expert→platform) o (b) asumir como pérdida operativa. NO se reintenta automáticamente (FT marker insertada). Cliente sigue refundado correctamente.",
+                                        userId: searchHire.ExpertId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync.MUD-AV.WithdrawnBalance",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId,
+                                        additionalData: new { TransferId = existingTransfer.StripeTransferId, ClawbackAmount = clawbackAmountEur, Currency = searchHire.Currency, StripeError = balCbEx.StripeError?.Code },
+                                        notifyUser: true);
+                                }
                                 catch (Exception clawbackEx)
                                 {
                                     // 🛡️ FIX #11: clawback falló DESPUÉS de que refund/transfer ya fueron persistidos.

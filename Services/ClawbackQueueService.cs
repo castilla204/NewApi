@@ -16,9 +16,9 @@ namespace newApi.Services
     public class ClawbackQueueService
     {
         private readonly AppDbContext _context;
-        private readonly LoggingService _loggingService;
+        private readonly ILoggingService _loggingService;
 
-        public ClawbackQueueService(AppDbContext context, LoggingService loggingService)
+        public ClawbackQueueService(AppDbContext context, ILoggingService loggingService)
         {
             _context = context;
             _loggingService = loggingService;

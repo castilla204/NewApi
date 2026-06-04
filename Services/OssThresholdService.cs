@@ -191,6 +191,9 @@ namespace newApi.Services
         /// el umbral está cruzado (o cerca) y no está OSS registrado. Idempotente — no inunda
         /// notificaciones al admin: el caller debe deduplicar (un email/día por estado).
         /// </summary>
+        // 🛡️ Round 28 MUD-CG: lock multi-réplica. Job mensual; con HPA Render 2+ workers
+        // podían emitir doble alerta al admin + métricas duplicadas. Timeout 5min suficiente.
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 300)]
         public async Task EmitAlertIfNeededAsync(CancellationToken ct = default)
         {
             var report = await GetCurrentYearReportAsync(ct);

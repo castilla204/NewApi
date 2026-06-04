@@ -35,6 +35,8 @@ namespace newApi.Services
 
         // 🛡️ Round 28 MUD-BD: cola de pérdidas pendientes off-Stripe.
         private readonly ClawbackQueueService? _clawbackQueue;
+        // 🛡️ Round 28 MUD-CH: sync final DAC7 antes de Stripe.Account.Delete.
+        private readonly Dac7DataSyncService? _dac7DataSync;
 
         public AccountDeletionService(
             AppDbContext context,
@@ -43,7 +45,8 @@ namespace newApi.Services
             ILoggingService loggingService,
             SystemStatusService systemStatusService,
             ISupabaseStorageService storage,
-            ClawbackQueueService? clawbackQueue = null)
+            ClawbackQueueService? clawbackQueue = null,
+            Dac7DataSyncService? dac7DataSync = null)
         {
             _context = context;
             _notificationService = notificationService;
@@ -52,6 +55,7 @@ namespace newApi.Services
             _systemStatusService = systemStatusService;
             _storage = storage;
             _clawbackQueue = clawbackQueue;
+            _dac7DataSync = dac7DataSync;
         }
 
         /// <summary>
@@ -2360,9 +2364,11 @@ namespace newApi.Services
                             // US, verificar capability tax_reporting_us_1099_misc activa ANTES del close.
                             // Sin ella Stripe NO emite 1099-MISC final → exposición IRS ($290-$630 por
                             // seller no reportado). Best-effort: si la lectura falla, continuar pero log.
+                            // 🛡️ MUD-CH: preCheckAcct movido fuera del try para reusar en sync DAC7 final.
+                            Stripe.Account? preCheckAcct = null;
                             try
                             {
-                                var preCheckAcct = await new Stripe.AccountService().GetAsync(stripeAccountIdToDelete);
+                                preCheckAcct = await new Stripe.AccountService().GetAsync(stripeAccountIdToDelete);
                                 var preCheckCountry = preCheckAcct?.Country;
                                 if (string.Equals(preCheckCountry, "US", System.StringComparison.OrdinalIgnoreCase))
                                 {
@@ -2391,6 +2397,30 @@ namespace newApi.Services
                                     source: "AccountDeletionService.MUD-AI.Tax1099CheckFailed",
                                     relatedEntityType: "ExpertProfile",
                                     relatedEntityId: expertProfileId);
+                            }
+
+                            // 🛡️ Round 28 MUD-CH: sync FINAL DAC7 antes de Stripe.Account.Delete.
+                            // El experto puede haber actualizado DOB/Address/IBAN entre el último
+                            // webhook account.updated y el delete. Tras Stripe.Account.Delete los
+                            // datos legales son IRRECUPERABLES (GetAsync devuelve 404). El job
+                            // dac7-annual-snapshot del 20-ene siguiente intentaría reconstruir
+                            // desde Users.* pero Users ya está anonimizado (GDPR Art.17). Resultado:
+                            // XML modelo 238 con campos vacíos → multa €600/seller incompleto AEAT.
+                            // preCheckAcct ya está cargado (MUD-AI) — reutilizamos para evitar
+                            // segundo GetAsync.
+                            if (_dac7DataSync != null && preCheckAcct != null)
+                            {
+                                try { await _dac7DataSync.SyncFromAccountAsync(preCheckAcct, expertProfileId); }
+                                catch (Exception dac7FinalEx)
+                                {
+                                    await _loggingService.LogWarningAsync(
+                                        message: "MUD-CH: final DAC7 sync pre-delete failed (non-blocking)",
+                                        details: $"ExpertProfile {expertProfileId} acct {stripeAccountIdToDelete}: {dac7FinalEx.Message}. Snapshot puede quedar con datos del último account.updated webhook en lugar del estado más reciente. Admin debería verificar manualmente antes del modelo 238 anual.",
+                                        userId: userId,
+                                        source: "AccountDeletionService.MUD-CH",
+                                        relatedEntityType: "Dac7SellerSnapshot",
+                                        relatedEntityId: expertProfileId);
+                                }
                             }
 
                             var balancesSnapshot = new System.Text.StringBuilder();

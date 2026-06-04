@@ -3137,12 +3137,27 @@ namespace newApi.Controllers
                                 {
                                     try
                                     {
+                                        // 🛡️ Round 28 MUD-CI (follow-up MUD-CB): EXCLUIR disputed y
+                                        // transfer_failed del clear. Ambos tienen IsFinalizationStatus=true
+                                        // (porque no aceptan más transiciones de lifecycle), PERO el
+                                        // dinero NO está resuelto:
+                                        //  - disputed: admin arbitrando — borrar flag oculta arbitraje.
+                                        //  - transfer_failed: dinero RETENIDO en plataforma esperando
+                                        //    reconciliación admin — borrar flag = dinero atascado
+                                        //    invisible para siempre.
+                                        // El clear solo aplica a estados FINALIZADOS REALES (cancelled,
+                                        // completed, dispute_resolved_*) donde el money flow ya está
+                                        // cerrado y RequiresManualReview era reliquia del bloqueo previo.
+                                        var unresolvedFinalStates = new[] {
+                                            SearchHireStatus.Disputed.ToStringValue(),
+                                            SearchHireStatus.TransferFailed.ToStringValue()
+                                        };
                                         var clearedCount = await _context.SearchHires
-                                            .Include(sh => sh.Status)
                                             .Where(sh => sh.ExpertId == profileToUpdate.UserId
                                                       && sh.RequiresManualReview == true
                                                       && sh.Status != null
-                                                      && sh.Status.IsFinalizationStatus)
+                                                      && sh.Status.IsFinalizationStatus
+                                                      && !unresolvedFinalStates.Contains(sh.Status.StatusValue))
                                             .ExecuteUpdateAsync(set => set
                                                 .SetProperty(sh => sh.RequiresManualReview, false)
                                                 .SetProperty(sh => sh.UpdatedAt, DateTime.UtcNow));
@@ -4895,13 +4910,28 @@ namespace newApi.Controllers
                             .FirstOrDefaultAsync(u => u.Id == userId);
                         if (userToUpdate != null)
                         {
+                            // 🛡️ Round 28 MUD-CL: capturar valores PREVIOS antes de sobreescribir.
+                            // GDPR Art.5 accountability + detección fraude: cambios de identidad
+                            // fiscal deben dejar traza. Sin esto, si un atacante compromete la
+                            // cuenta y cambia TaxId para canalizar futuros reembolsos, no hay
+                            // rastro estructurado. Para modelo 347/238: cambios cross-country
+                            // entre checkouts atribuyen toda la actividad al último país.
+                            var previousTaxId = userToUpdate.TaxId;
+                            var previousTaxIdCountry = userToUpdate.TaxIdCountry;
+                            var previousFiscalCountry = userToUpdate.FiscalCountry;
+                            string Redact(string? v) => string.IsNullOrEmpty(v) ? "(none)"
+                                : v.Length <= 3 ? "***" : "***" + v.Substring(v.Length - 3);
+
                             var anyMutation = false;
+                            var taxIdChanged = false;
+                            var fiscalCountryChanged = false;
                             if (!string.IsNullOrWhiteSpace(clientVatNumber)
                                 && (string.IsNullOrWhiteSpace(userToUpdate.TaxId)
                                     || !string.Equals(userToUpdate.TaxId, clientVatNumber, System.StringComparison.OrdinalIgnoreCase)))
                             {
                                 userToUpdate.TaxId = clientVatNumber;
                                 userToUpdate.TaxIdCountry = clientVatCountryCode; // ej "ES", "DE"
+                                taxIdChanged = true;
                                 anyMutation = true;
                             }
                             // FiscalCountry desde customer_details.address.country (más fiable que el
@@ -4914,8 +4944,32 @@ namespace newApi.Controllers
                                 {
                                     userToUpdate.FiscalCountry = normalized;
                                     userToUpdate.FiscalCountryChangedAt = DateTime.UtcNow;
+                                    fiscalCountryChanged = true;
                                     anyMutation = true;
                                 }
+                            }
+                            // 🛡️ MUD-CL: si cambió algo, log INFO con previous→new para auditoría.
+                            // El "previous" se redacta igual que el "new" (PII fiscal). Detecta
+                            // cambios cross-country (rojo en revisión admin), reuso de NIF entre
+                            // 2 usuarios distintos, etc.
+                            if (anyMutation && (taxIdChanged || fiscalCountryChanged))
+                            {
+                                var changes = new System.Collections.Generic.List<string>();
+                                if (taxIdChanged)
+                                {
+                                    changes.Add($"TaxId: {Redact(previousTaxId)} ({previousTaxIdCountry ?? "?"}) → {Redact(clientVatNumber)} ({clientVatCountryCode ?? "?"})");
+                                }
+                                if (fiscalCountryChanged)
+                                {
+                                    changes.Add($"FiscalCountry: {previousFiscalCountry ?? "(none)"} → {userToUpdate.FiscalCountry}");
+                                }
+                                await _loggingService.LogInfoAsync(
+                                    message: "MUD-CL: tax identity changed for user",
+                                    details: $"User {userId} (session {session.Id}): {string.Join("; ", changes)}. Audit GDPR Art.5 + fraud detection. Si admin sospecha fraude, revisar SearchHires del usuario y bloquear refunds preventivamente.",
+                                    userId: userId,
+                                    source: "SubscriptionController.HandlePendingHireCompleted.MUD-CL",
+                                    relatedEntityType: "User",
+                                    relatedEntityId: userId);
                             }
                             if (anyMutation)
                             {
@@ -8257,6 +8311,29 @@ namespace newApi.Controllers
                     source: "SubscriptionController.HandleChargeRefundUpdated.V11",
                     relatedEntityType: "Refund",
                     relatedEntityId: localFt?.RelatedEntityId);
+
+                // 🛡️ Round 28 MUD-CF: notificar al CLIENTE de su refund fallido.
+                // ANTES: solo log Critical con notifyUser=false → admin se enteraba pero el
+                // cliente seguía creyendo que iba a recibir el dinero hasta que abriera
+                // ticket de soporte → riesgo chargeback formal + golpe de confianza.
+                // Patrón espejo de HandleAccountDeauthorization (que sí notifica refund-fail).
+                if (localFt?.UserId.HasValue == true)
+                {
+                    try
+                    {
+                        var refundAmount = refund.Amount / 100m;
+                        var refundCurrency = (refund.Currency ?? "eur").ToUpperInvariant();
+                        await _loggingService.LogWarningAsync(
+                            message: "💳 Hemos tenido un problema con tu reembolso",
+                            details: $"Tu reembolso de {refundAmount:F2} {refundCurrency} no se ha podido completar. Motivo: {refund.FailureReason ?? "el banco lo rechazó"}. Suele pasar cuando la tarjeta original ha caducado o se ha cerrado. NO te preocupes — el dinero sigue retenido y nuestro equipo te contactará en las próximas 24h para reintentar el reembolso (puede ser por transferencia bancaria alternativa). Ref interna: Refund {refund.Id}.",
+                            userId: localFt.UserId.Value,
+                            source: "SubscriptionController.HandleChargeRefundUpdated.MUD-CF",
+                            relatedEntityType: "Refund",
+                            relatedEntityId: localFt.RelatedEntityId,
+                            notifyUser: true);
+                    }
+                    catch { /* best-effort; admin Critical sigue siendo señal primaria */ }
+                }
             }
         }
 
@@ -8336,18 +8413,22 @@ namespace newApi.Controllers
 
                 // 🛡️ MUD-BN: notificación in-app + email DEDICADA al experto. Mensaje específico
                 // con guía de acción (revisar cuenta bancaria en Stripe Dashboard).
-                // 🛡️ MUD-BX (follow-up MUD-BN): dedup contra Notifications recientes (23h).
-                // Stripe puede emitir múltiples payout.failed para reintentos del MISMO payout
-                // (cada uno con eventId distinto → TryBeginProcessingEventAsync los acepta) →
-                // ANTES el experto recibía 3+ emails idénticos. Patrón espejo de MUD-BO/D3.
+                // 🛡️ MUD-BX + MUD-CK: dedup por (titulo prefijo + failure code). Stripe reintenta
+                // el MISMO payout → dedup correcto. Pero si el experto tiene 2 cuentas bancarias
+                // con failures DISTINTOS (banco-A account_closed, banco-B insufficient_funds),
+                // dedup solo por título perdía el 2º aviso. Diferenciar por FailureCode (que va
+                // dentro del details/additionalData de la Notification) recupera ambas alertas.
                 if (expertUserId.HasValue)
                 {
                     var dedupCutoff = DateTime.UtcNow.AddHours(-23);
+                    var failureCodeMarker = $"failure_code={payout.FailureCode ?? "unknown"}";
                     var alreadyNotified = await _context.Notifications
                         .AsNoTracking()
                         .AnyAsync(n => n.UserId == expertUserId.Value
                                     && n.CreatedAt >= dedupCutoff
-                                    && n.Title.StartsWith("💸 No hemos podido enviarte un pago"));
+                                    && n.Title.StartsWith("💸 No hemos podido enviarte un pago")
+                                    && n.Message != null
+                                    && n.Message.Contains(failureCodeMarker));
                     if (alreadyNotified)
                     {
                         // Skip dup notification, pero el LogCritical al admin sí persiste (audit).
@@ -8356,7 +8437,9 @@ namespace newApi.Controllers
                     var failureExplanation = TranslatePayoutFailureCode(payout.FailureCode);
                     await _loggingService.LogWarningAsync(
                         message: "💸 No hemos podido enviarte un pago",
-                        details: $"Intentamos transferir {amount:F2} {currency} a tu cuenta bancaria pero el banco lo rechazó ({failureExplanation}). Tu dinero sigue seguro en tu balance Stripe; no se ha perdido. ACCIÓN: revisa los datos de tu cuenta bancaria en el panel Stripe (Banking → External accounts). Te volveremos a intentar el payout cuando corrijas los datos.",
+                        // 🛡️ MUD-CK: incluir [failure_code=X] marker en el detail para dedup
+                        // posterior (futuros payout.failed con código distinto sí notifican).
+                        details: $"Intentamos transferir {amount:F2} {currency} a tu cuenta bancaria pero el banco lo rechazó ({failureExplanation}). Tu dinero sigue seguro en tu balance Stripe; no se ha perdido. ACCIÓN: revisa los datos de tu cuenta bancaria en el panel Stripe (Banking → External accounts). Te volveremos a intentar el payout cuando corrijas los datos. [{failureCodeMarker}]",
                         userId: expertUserId.Value,
                         source: "SubscriptionController.HandlePayoutEvent.MUD-BN",
                         relatedEntityType: "Payout",

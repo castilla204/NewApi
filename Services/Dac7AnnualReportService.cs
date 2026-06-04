@@ -51,6 +51,13 @@ namespace newApi.Services
         /// Genera/actualiza Dac7SellerSnapshots para el año natural completo.
         /// Idempotente: si ya existe la fila (ExpertProfileId, Year) la actualiza.
         /// </summary>
+        // 🛡️ Round 28 MUD-CG: lock global por año. Sin esto, en HPA multi-réplica Render
+        // 2+ workers pueden ejecutar el job simultáneamente, ambos hacen Add/Update sobre
+        // (ExpertProfileId, Year) → DbUpdateConcurrencyException o violación del unique
+        // IX_Dac7SellerSnapshot_Expert_Year_uq → snapshot anual CORRUPTO. Como el job solo
+        // corre 1 vez al año, el admin se entera 11 días después al revisar el XML.
+        // Timeout 1h cubre el peor caso (miles de expertos × FX conversions).
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 3600)]
         public async Task<int> GenerateForYearAsync(int year, CancellationToken ct = default)
         {
             var startOfYear = new DateTime(year, 1, 1, 0, 0, 0, DateTimeKind.Utc);

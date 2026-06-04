@@ -1870,7 +1870,11 @@ namespace newApi.Services
                 issuer: _configuration["Jwt:Issuer"],
                 audience: _configuration["Jwt:Audience"],
                 claims: claims,
-                expires: DateTime.UtcNow.AddHours(1), // ✅ BEST PRACTICE 2024: 1 hora (estándar Microsoft/Google/Auth0)
+                // 🛡️ Round 28 MUD-AF: 24h matches marketplace standard (eBay/Etsy). El refresh
+                // token (90d, rotation + reuse detection) cubre la seguridad. Con 1h el usuario
+                // perdía sesión mid-flow muy a menudo si el silent-refresh fallaba por timing
+                // de Chrome (setTimeout throttled cuando tab background) o hop entre rutas.
+                expires: DateTime.UtcNow.AddHours(24),
                 notBefore: DateTime.UtcNow, // ✅ SEGURIDAD: Token válido desde ahora
                 signingCredentials: creds
             );

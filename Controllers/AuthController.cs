@@ -173,7 +173,8 @@ namespace newApi.Controllers
                 // 🛡️ Round 15 — R2 FIX: access TTL 1h uniforme con UserService.GenerateJwtToken
                 // (era 30min aquí pero 1h en login → inconsistencia). 1h balancea seguridad y UX
                 // de mobile (menos rotación → menos batería + menos llamadas).
-                var newAccessTokenExpiration = DateTime.UtcNow.AddHours(1);
+                // 🛡️ MUD-AF: bumped a 24h (sync con UserService.GenerateJwtToken).
+                var newAccessTokenExpiration = DateTime.UtcNow.AddHours(24);
 
                 // 4. ✅ ROTACIÓN DE TOKENS: Revocar token actual y generar uno nuevo
                 storedToken.IsRevoked = true;
@@ -324,8 +325,8 @@ namespace newApi.Controllers
                 issuer: _configuration["Jwt:Issuer"],
                 audience: _configuration["Jwt:Audience"],
                 claims: claims,
-                // 🛡️ Round 15 — R2 FIX: 1h uniforme con UserService.GenerateJwtToken.
-                expires: DateTime.UtcNow.AddHours(1),
+                // 🛡️ MUD-AF: bumped a 24h (sync con UserService.GenerateJwtToken).
+                expires: DateTime.UtcNow.AddHours(24),
                 notBefore: DateTime.UtcNow,
                 signingCredentials: creds
             );

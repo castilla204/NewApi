@@ -53,6 +53,8 @@ namespace newApi.DataLayer.Models
         public DbSet<MessageAttachment> MessageAttachments { get; set; }
         public DbSet<SearchHireDeliverable> SearchHireDeliverables { get; set; }
         public DbSet<ProcessedWebhookEvent> ProcessedWebhookEvents { get; set; }
+        // 🛡️ Round 28 MUD-BB: snapshots anuales DAC7 (Directiva UE 2021/514 modelo 238).
+        public DbSet<Dac7SellerSnapshot> Dac7SellerSnapshots { get; set; }
         // 🛡️ Round 16: códigos OTP para verificación de email en registro/reset/step-up.
         public DbSet<EmailVerificationCode> EmailVerificationCodes { get; set; }
         public DbSet<Appointment> Appointments { get; set; }
@@ -78,6 +80,21 @@ namespace newApi.DataLayer.Models
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
+
+            // 🛡️ Round 28 MUD-BB: índice único compuesto (ExpertProfileId, Year) para idempotencia
+            // del Hangfire job anual (no genera 2 snapshots para el mismo año). Configurable
+            // posteriormente con decimal precision adecuada (18,2 default en Postgres ya OK para
+            // GrossSales en EUR).
+            modelBuilder.Entity<Dac7SellerSnapshot>()
+                .HasIndex(d => new { d.ExpertProfileId, d.Year })
+                .IsUnique()
+                .HasDatabaseName("IX_Dac7SellerSnapshot_Expert_Year_uq");
+
+            modelBuilder.Entity<Dac7SellerSnapshot>()
+                .HasOne(d => d.ExpertProfile)
+                .WithMany() // no navegación inversa para no contaminar ExpertProfile con un List grande
+                .HasForeignKey(d => d.ExpertProfileId)
+                .OnDelete(DeleteBehavior.Restrict); // ⚠️ NO cascade: si GDPR-borran al experto, el snapshot DEBE preservarse (obligación legal Art.17 excepción)
 
             modelBuilder.Entity<Like>()
                 .HasOne(l => l.User)

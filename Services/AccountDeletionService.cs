@@ -2351,6 +2351,43 @@ namespace newApi.Services
                             // (3) Tras drenaje (o sin balance): probar Delete; si Stripe sigue rechazando,
                             //     usar Account.Reject(reason:"other") como fallback (cierra la cuenta y deja
                             //     que Stripe haga reverso del balance pendiente al platform automáticamente).
+                            // 🛡️ Round 28 MUD-AI (mirror MUD-L de ExpertRelocationService): para expertos
+                            // US, verificar capability tax_reporting_us_1099_misc activa ANTES del close.
+                            // Sin ella Stripe NO emite 1099-MISC final → exposición IRS ($290-$630 por
+                            // seller no reportado). Best-effort: si la lectura falla, continuar pero log.
+                            try
+                            {
+                                var preCheckAcct = await new Stripe.AccountService().GetAsync(stripeAccountIdToDelete);
+                                var preCheckCountry = preCheckAcct?.Country;
+                                if (string.Equals(preCheckCountry, "US", System.StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var cap1099 = preCheckAcct?.Capabilities?.TaxReportingUs1099Misc;
+                                    var has1099 = string.Equals(cap1099, "active", System.StringComparison.OrdinalIgnoreCase)
+                                               || string.Equals(cap1099, "pending", System.StringComparison.OrdinalIgnoreCase);
+                                    if (!has1099)
+                                    {
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "MUD-AI: US expert account deletion without 1099 capability — IRS exposure",
+                                            details: $"UserId {userId} (acct {stripeAccountIdToDelete}): NO tiene capability tax_reporting_us_1099_misc activa (estado: {cap1099 ?? "none"}). Stripe NO emitirá 1099-MISC al cierre. ACCIÓN ADMIN: verificar exposición IRS antes/después del cierre.",
+                                            userId: userId,
+                                            source: "AccountDeletionService.MUD-AI.Tax1099Missing",
+                                            relatedEntityType: "ExpertProfile",
+                                            relatedEntityId: expertProfileId,
+                                            additionalData: new { Capability1099 = cap1099, StripeAccountId = stripeAccountIdToDelete });
+                                    }
+                                }
+                            }
+                            catch (Exception preCheckEx)
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "MUD-AI: failed to pre-check 1099 capability",
+                                    details: $"UserId {userId}: {preCheckEx.Message}. Proceeding with deletion; admin should manually verify IRS reporting.",
+                                    userId: userId,
+                                    source: "AccountDeletionService.MUD-AI.Tax1099CheckFailed",
+                                    relatedEntityType: "ExpertProfile",
+                                    relatedEntityId: expertProfileId);
+                            }
+
                             var balancesSnapshot = new System.Text.StringBuilder();
                             var hadBalance = false;
                             try

@@ -557,24 +557,8 @@ public class UserController : ControllerBase
                 return Unauthorized(new { message = "Invalid user identification" });
             }
 
-            // Validaciones previas
-            if (request.ProfilePicture == null)
-            {
-                return BadRequest(new { message = "Profile picture is required" });
-            }
-
-            if (request.ProfilePicture.Length > 5 * 1024 * 1024)
-            {
-                return BadRequest(new { message = "Profile picture must be smaller than 5MB" });
-            }
-
-            var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
-            if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
-            {
-                return BadRequest(new { message = "Profile picture must be a JPG or PNG image" });
-            }
-
-            // ✅ MEJORA: Validaciones adicionales antes de llamar al servicio
+            // 🛡️ Round 28 MUD-AG: cargar User+Profile PRIMERO para detectar isRelocating.
+            // Para mudanza, ProfilePicture es opcional (se reusa la foto del perfil anterior).
             var user = await _context.Users
                 .Include(u => u.ExpertProfile)
                 .FirstOrDefaultAsync(u => u.Id == userId);
@@ -602,6 +586,31 @@ public class UserController : ControllerBase
             if (user.ExpertProfile != null && !isRelocating)
             {
                 return BadRequest(new { message = "You already have an expert profile" });
+            }
+
+            // 🛡️ Round 28 MUD-AG: Photo validation MOVIDO AQUÍ desde arriba.
+            // - First-time expert: ProfilePicture REQUERIDA.
+            // - Relocating expert: opcional — si null, se preserva la foto del país anterior.
+            // - Si se envía nueva foto: validar tamaño + extensión normalmente.
+            if (request.ProfilePicture == null)
+            {
+                if (!isRelocating || string.IsNullOrEmpty(user.ExpertProfile?.ProfilePictureUrl))
+                {
+                    return BadRequest(new { message = "Profile picture is required" });
+                }
+                // isRelocating && existing URL exists → OK, se preserva en el service.
+            }
+            else
+            {
+                if (request.ProfilePicture.Length > 5 * 1024 * 1024)
+                {
+                    return BadRequest(new { message = "Profile picture must be smaller than 5MB" });
+                }
+                var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
+                if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
+                {
+                    return BadRequest(new { message = "Profile picture must be a JPG or PNG image" });
+                }
             }
 
             // Validar Latitude y Longitude

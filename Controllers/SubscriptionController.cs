@@ -2008,9 +2008,31 @@ namespace newApi.Controllers
         // 🔧 FIX (#4): la funcionalidad "cargar saldo" fue ELIMINADA (el webhook ignora estas sesiones). Se
         // quita la ruta HTTP y se marca [NonAction] para que NADIE pueda iniciar un cobro que se auto-captura
         // (mode=payment sin captura manual) SIN contrapartida ni registro en BD. El frontend no la invoca.
+        //
+        // 🛡️ Round 28 MUD-AN: defensa-en-profundidad. El [NonAction] previo confiaba SOLO en que nadie
+        // quitase el atributo. Si alguien lo eliminara (refactor, merge accidental, IDE auto-fix), el
+        // método tenía cap €1000 pinned EUR — vector de fraud explotable. Ahora el método aborta con
+        // log critical + throw aunque alguien quite el [NonAction] o lo invoque vía reflection.
         [NonAction]
         public async Task<IActionResult> LoadMoney([FromBody] LoadMoneyDto request)
         {
+            // 🛡️ MUD-AN: kill-switch defensivo. La ruta está deshabilitada permanentemente.
+            // Si por accidente alguien quitase [NonAction] o invocase por reflexión, esto
+            // genera alerta admin + 410 Gone en lugar de crear un PI sin captura manual.
+            var killUserIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            int.TryParse(killUserIdClaim, out int killUserId);
+            await _loggingService.LogCriticalAsync(
+                message: "CRITICAL MUD-AN: deprecated LoadMoney endpoint was invoked",
+                details: $"User {killUserId} tried to invoke the disabled LoadMoney endpoint. Either [NonAction] was removed by mistake or the method was called via reflection. This endpoint creates auto-captured PIs without DB record — fraud vector. Action: verify route table + redeploy.",
+                userId: killUserId == 0 ? null : killUserId,
+                source: "SubscriptionController.LoadMoney.MUD-AN.KillSwitch",
+                relatedEntityType: "Payment",
+                additionalData: new { Amount = request?.Amount, Endpoint = "LoadMoney" });
+            return StatusCode(410, new { message = "This endpoint has been permanently disabled. Use /api/Subscription/load-money-service instead." });
+
+            // ⚠️ Código antiguo conservado bajo guard imposible para referencia histórica.
+            if (true) { throw new InvalidOperationException("MUD-AN: LoadMoney is disabled"); }
+#pragma warning disable CS0162 // Unreachable code detected
             try
             {
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
@@ -2144,6 +2166,7 @@ namespace newApi.Controllers
                 
                 return StatusCode(500, new { message = "Failed to create load money session" });
             }
+#pragma warning restore CS0162
         }
 
 

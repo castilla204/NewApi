@@ -48,16 +48,37 @@ namespace newApi.Services
         {
             try
             {
-                // Bloqueo a nivel de fila para consistencia
-                var searchHire = await _context.SearchHires
-                    .FromSqlInterpolated($"SELECT *, xmin FROM \"SearchHires\" WHERE \"Id\" = {searchHireId} FOR UPDATE")
-                    .Include(sh => sh.Status)
-                    .Include(sh => sh.Client)
-                    .Include(sh => sh.Expert)
-                        .ThenInclude(e => e.ExpertProfile)
-                    .Include(sh => sh.SearchService)
-                        .ThenInclude(ss => ss.ServiceType)
-                    .FirstOrDefaultAsync();
+                // 🛡️ Round 28 MUD-AM: el `SELECT ... FOR UPDATE` previo era no-op porque
+                // EF abría/cerraba una tx implícita por SELECT — el row-lock se liberaba
+                // al cerrar el cursor de FirstOrDefaultAsync (microsegundos), antes de
+                // que se procese el resto del método. Resultado: dos refunds concurrentes
+                // del MISMO searchHireId podían ejecutarse simultáneamente (idempotency
+                // de Stripe los des-duplicaba en su mayoría, pero la Fase 2 update de
+                // estado podía aplicarse dos veces).
+                //
+                // Fix: pg_advisory_xact_lock dentro de tx explícita. El advisory lock se
+                // mantiene HASTA el commit/rollback de la tx (no se libera por SaveChanges).
+                // Durante esta ventana, otro request con el mismo searchHireId se queda
+                // esperando. Cargamos el snapshot + commit → liberamos el lock antes de
+                // las llamadas Stripe (Fase 3) que pueden durar segundos. Las escrituras
+                // posteriores son protegidas por idempotency Stripe + checks de estado.
+                SearchHire? searchHire;
+                using (var lockTx = await _context.Database.BeginTransactionAsync())
+                {
+                    await _context.Database.ExecuteSqlInterpolatedAsync(
+                        $"SELECT pg_advisory_xact_lock({(long)searchHireId})");
+
+                    searchHire = await _context.SearchHires
+                        .Include(sh => sh.Status)
+                        .Include(sh => sh.Client)
+                        .Include(sh => sh.Expert)
+                            .ThenInclude(e => e.ExpertProfile)
+                        .Include(sh => sh.SearchService)
+                            .ThenInclude(ss => ss.ServiceType)
+                        .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+
+                    await lockTx.CommitAsync();
+                }
 
                 if (searchHire == null)
                 {

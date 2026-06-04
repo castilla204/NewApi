@@ -8982,6 +8982,25 @@ namespace newApi.Controllers
                         // Stripe.Payout.ArrivalDate es DateTime no-nullable; si llega por defecto (MinValue) usar UtcNow.
                         expertProfile.LastPayoutDate = payout.ArrivalDate != default ? payout.ArrivalDate : DateTime.UtcNow;
                         await _context.SaveChangesAsync();
+
+                        // 🛡️ MUD-DP — notificar al experto cuando recibe un payout.
+                        // ANTES: payout.paid solo persistía LastPayoutDate en BD; el experto NO
+                        // se enteraba in-app/email de que el dinero ya estaba en su banco.
+                        // Auditoría adversarial de 5 agentes detectó este silencio como P1.
+                        // AHORA: log Info + notifyUser → entra en el inbox (drawer + página
+                        // /notifications) + email vía Hangfire con throttle MUD-DL aplicado.
+                        try
+                        {
+                            var currencyDisplay = (payout.Currency ?? "eur").ToUpperInvariant();
+                            await _loggingService.LogInfoAsync(
+                                message: $"💰 Has recibido un pago de {amount:F2} {currencyDisplay}",
+                                details: $"Stripe ha completado el envío del payout {payout.Id} a tu cuenta bancaria. Fecha estimada de llegada: {payout.ArrivalDate:dd/MM/yyyy}. Si no lo ves reflejado en tu banco en 1-2 días hábiles, contacta primero con tu banco.",
+                                userId: expertProfile.UserId,
+                                source: "SubscriptionController.HandlePayoutEvent.MUD-DP",
+                                relatedEntityType: "Payout",
+                                notifyUser: true);
+                        }
+                        catch { /* best-effort — la persistencia ya se hizo arriba */ }
                     }
                     else
                     {

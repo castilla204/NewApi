@@ -1270,7 +1270,8 @@ namespace newApi.Controllers
                             {
                                 await _loggingService.LogInfoAsync(
                                     message: "Servicio aprobado por el cliente",
-                                    details: $"El cliente ha aprobado tu servicio #{searchHire.Id}. Has recibido {searchHire.Amount:F2}€.",
+                                    // 🛡️ MUD-AH: usar Currency del SearchHire para experts no-EUR.
+                                    details: $"El cliente ha aprobado tu servicio #{searchHire.Id}. Has recibido {searchHire.Amount:F2} {(searchHire.Currency ?? "EUR").ToUpperInvariant()}.",
                                     userId: searchHire.ExpertId.Value,
                                     source: "SearchHireController.CompleteService",
                                     relatedEntityType: "SearchHire",

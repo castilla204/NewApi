@@ -30,7 +30,20 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// </summary>
         [Required]
         public TimeSpan EndTime { get; set; }
-        
+
+        /// <summary>
+        /// 🛡️ Round 28 MUD-A: snapshot del timezone IANA al crear esta disponibilidad
+        /// (p.ej. "America/New_York", "Europe/Madrid"). Antes el frontend leía
+        /// `expertProfile.Timezone` actual para renderizar, lo que causaba que
+        /// post-mudanza un "09:00-18:00" creado en Aiken (US) se mostrara como
+        /// "09:00-18:00 Madrid" sin moverse 6h — interpretación silenciosamente errónea.
+        /// Con este snapshot, el frontend puede mostrar la zona horaria original o
+        /// pedir al experto que actualice las horas tras una mudanza.
+        /// Nullable para retro-compatibilidad con filas legacy creadas pre-R28.
+        /// </summary>
+        [MaxLength(50)]
+        public string? Timezone { get; set; }
+
         /// <summary>
         /// Fecha desde la cual esta disponibilidad está vigente
         /// </summary>

@@ -1338,10 +1338,15 @@ namespace newApi.Services
                     return (false, null, null);
                 }
 
-                // 🌍 Currency: normalizar el valor recibido y advertir si no coincide con
-                // la default_currency del Stripe Connect account del experto. Solo Warning;
-                // la validación dura se hace en checkout (RefundService/SearchHire), aquí el
-                // experto puede tener pendiente el onboarding o estar cambiando de divisa.
+                // 🌍 Currency: normalizar el valor recibido. Si el experto tiene Stripe Account
+                // activo, FORZAR la divisa al default del Stripe Account (verdad autoritativa e
+                // inmutable). Esto cubre el caso de mudanza: experto se registró en US (Stripe
+                // acct USD), cambia ExpertProfile.Country a ES → CreateService deriva EUR del país,
+                // pero el Stripe acct sigue siendo USD. Sin esta corrección, el servicio se
+                // crearía en EUR y cualquier transfer al experto fallaría con currency_mismatch
+                // (RefundService.cs:1316-1342 → RequiresManualReview + dinero atascado).
+                // 🛡️ Round 28 MUD-1: el Warning se convierte en CORRECCIÓN ACTIVA — preferimos
+                // SIEMPRE la divisa del Stripe acct sobre la derivada del país del perfil.
                 var resolvedCurrency = Common.SupportedCurrenciesList.Normalize(request.Currency) ?? "EUR";
 
                 if (!string.IsNullOrEmpty(expertProfile.StripeAccountId))
@@ -1350,13 +1355,25 @@ namespace newApi.Services
                     {
                         var stripeAccount = await new Stripe.AccountService().GetAsync(expertProfile.StripeAccountId);
                         var accountDefault = stripeAccount?.DefaultCurrency;
-                        if (!string.IsNullOrEmpty(accountDefault) &&
-                            !string.Equals(accountDefault, resolvedCurrency, StringComparison.OrdinalIgnoreCase))
+                        if (!string.IsNullOrEmpty(accountDefault))
                         {
-                            _logger.LogWarning(
-                                "Currency mismatch on CreateSearchService: requested {RequestedCurrency} but Stripe Connect account {StripeAccountId} (expert {ExpertProfileId}) default_currency is {AccountDefaultCurrency}. Service will be created; final validation runs at checkout.",
-                                resolvedCurrency, expertProfile.StripeAccountId, expertProfile.Id, accountDefault.ToUpperInvariant());
+                            var normalizedAccountDefault = accountDefault.Trim().ToUpperInvariant();
+                            if (!string.Equals(normalizedAccountDefault, resolvedCurrency, StringComparison.OrdinalIgnoreCase))
+                            {
+                                _logger.LogWarning(
+                                    "Currency mismatch on CreateSearchService — OVERRIDING: requested {RequestedCurrency} but Stripe Connect account {StripeAccountId} (expert {ExpertProfileId}) default_currency is {AccountDefaultCurrency}. Service will be created with {AccountDefaultCurrency} to avoid currency_mismatch in future transfers. This typically indicates a country relocation (e.g. expert moved from US→ES but Stripe account is still USD).",
+                                    resolvedCurrency, expertProfile.StripeAccountId, expertProfile.Id, normalizedAccountDefault, normalizedAccountDefault);
+                                resolvedCurrency = normalizedAccountDefault;
+                            }
                         }
+                    }
+                    catch (Stripe.StripeException stripeEx) when (stripeEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        // Stripe acct ya no existe — el experto debería re-onboardar. Permitir creación con la divisa
+                        // derivada del país; el guard de RefundService capturará el problema en el primer transfer.
+                        _logger.LogWarning(
+                            "Stripe Account {StripeAccountId} for expert {ExpertProfileId} not found (404). Allowing CreateSearchService with currency {RequestedCurrency} — expert should re-onboard.",
+                            expertProfile.StripeAccountId, expertProfile.Id, resolvedCurrency);
                     }
                     catch (Exception stripeEx)
                     {
@@ -1738,6 +1755,8 @@ namespace newApi.Services
                 ServiceTypeCategoryId = ss.ServiceType?.ServiceTypeCategoryId,
                 RequiresAppointment = ss.ServiceType?.RequiresAppointment ?? false,
                 Price = ss.Price,
+                // 🛡️ Round 28: emitir Currency real del servicio (no asumir EUR en cards/panel).
+                Currency = string.IsNullOrWhiteSpace(ss.Currency) ? "EUR" : ss.Currency.Trim().ToUpperInvariant(),
                 Conditions = ss.Conditions,
                 DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,
@@ -1851,6 +1870,7 @@ namespace newApi.Services
                 ServiceTypeCategoryId = baseDto.ServiceTypeCategoryId, // ✅ CORRECCIÓN: Incluir ServiceTypeCategoryId
                 RequiresAppointment = baseDto.RequiresAppointment, // ✅ CORRECCIÓN: Incluir RequiresAppointment
                 Price = baseDto.Price,
+                Currency = baseDto.Currency, // 🛡️ Round 28: copiar Currency al DTO de detalle
                 Conditions = baseDto.Conditions,
                 DurationInHours = baseDto.DurationInHours,
                 CreatedAt = baseDto.CreatedAt,
@@ -1871,7 +1891,7 @@ namespace newApi.Services
 
         private SearchServiceResponseDto MapToResponseDto(SearchService ss)
         {
-            
+
             var searchService = new SearchServiceResponseDto
             {
                 Id = ss.Id,
@@ -1882,6 +1902,8 @@ namespace newApi.Services
                 ServiceTypeCategoryId = ss.ServiceType?.ServiceTypeCategoryId,
                 RequiresAppointment = ss.ServiceType?.RequiresAppointment ?? false,
                 Price = ss.Price,
+                // 🛡️ Round 28: emitir Currency real del servicio.
+                Currency = string.IsNullOrWhiteSpace(ss.Currency) ? "EUR" : ss.Currency.Trim().ToUpperInvariant(),
                 Conditions = ss.Conditions,
                 DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,
@@ -2049,20 +2071,48 @@ namespace newApi.Services
 
                 // Paso 1: Inactivar el servicio existente
                 existingService.IsActive = false;
+
+                // 🛡️ Round 28 MUD-AH (P0): re-validar Currency contra Stripe acct.DefaultCurrency.
+                // R27-T27-1-4 fija preservar la Currency del row existente, PERO si el row legacy
+                // tenía la moneda incorrecta (típicamente porque se creó antes de MUD-1, o porque
+                // el experto se mudó), ESTA es la oportunidad de auto-rebalancear. Sin esto, cada
+                // edit perpetuaba el currency_mismatch y bloqueaba transfers indefinidamente.
+                var currencyToUse = existingService.Currency ?? "EUR";
+                if (!string.IsNullOrEmpty(existingService.ExpertProfile?.StripeAccountId))
+                {
+                    try
+                    {
+                        var acctSvc = new Stripe.AccountService();
+                        var acct = await acctSvc.GetAsync(existingService.ExpertProfile.StripeAccountId);
+                        var acctDefault = (acct?.DefaultCurrency ?? "").Trim().ToUpperInvariant();
+                        if (!string.IsNullOrEmpty(acctDefault) && acctDefault != currencyToUse.ToUpperInvariant())
+                        {
+                            _logger.LogWarning(
+                                "MUD-AH: SearchService {ServiceId} Currency rebased on edit. BD='{Before}' Stripe acct DefaultCurrency='{After}'. Override evita currency_mismatch en próximo hire.",
+                                existingService.Id, currencyToUse, acctDefault);
+                            currencyToUse = acctDefault;
+                        }
+                    }
+                    catch (Stripe.StripeException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        // Acct 404 → mantener Currency original (no podemos re-validar).
+                    }
+                    catch (System.Exception ex)
+                    {
+                        _logger.LogWarning(ex, "MUD-AH: Stripe acct read failed during UpdateSearchService currency rebase");
+                    }
+                }
+
                 // Paso 2: Crear el nuevo servicio con los datos actualizados
-                // 🛡️ Round 27 — R27-T27-1-4 FIX: copiar Currency del servicio original. Antes
-                // este soft-replace OMITÍA Currency, así que la nueva fila caía al default del
-                // modelo ("EUR"). Cualquier experto UK/USD/MXN que editase el servicio quedaba
-                // con Currency=EUR; el siguiente hire se cobraba en EUR pero la cuenta Stripe
-                // Connect era GBP/USD/MXN → RefundService.cs:1313-1341 detectaba currency
-                // mismatch en cada transfer y marcaba RequiresManualReview=true para siempre.
+                // 🛡️ Round 27 — R27-T27-1-4 FIX: copiar Currency del servicio original (ahora con
+                // posible rebase MUD-AH si divergía de Stripe acct).
                 var newSearchService = new SearchService
                 {
                     ExpertProfileId = existingService.ExpertProfileId, // Mantener el mismo ExpertProfile
                     CategoryId = request.CategoryId,
                     ServiceTypeId = request.ServiceTypeId,
                     Price = request.Price,
-                    Currency = existingService.Currency, // ← R27-T27-1-4 FIX
+                    Currency = currencyToUse, // ← R27-T27-1-4 + MUD-AH
                     Conditions = request.Conditions,
                     DurationInHours = request.DurationInHours ?? 0,
                     CreatedAt = DateTime.UtcNow,
@@ -2098,7 +2148,7 @@ namespace newApi.Services
                         CategoryId = request.CategoryId,
                         ServiceTypeId = request.ServiceTypeId,
                         Price = request.Price,
-                        Currency = existingService.Currency, // ← R27-T27-1-4 FIX
+                        Currency = currencyToUse, // ← R27-T27-1-4 + MUD-AH (rebase si Stripe acct divergía)
                         Conditions = request.Conditions,
                         DurationInHours = request.DurationInHours ?? 0,
                         CreatedAt = DateTime.UtcNow,
@@ -2132,7 +2182,7 @@ namespace newApi.Services
                         CategoryId = request.CategoryId,
                         ServiceTypeId = request.ServiceTypeId,
                         Price = request.Price,
-                        Currency = existingService.Currency, // ← R27-T27-1-4 FIX
+                        Currency = currencyToUse, // ← R27-T27-1-4 + MUD-AH (rebase si Stripe acct divergía)
                         Conditions = request.Conditions,
                         DurationInHours = request.DurationInHours ?? 0,
                         CreatedAt = DateTime.UtcNow,

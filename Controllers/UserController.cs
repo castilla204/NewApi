@@ -557,24 +557,8 @@ public class UserController : ControllerBase
                 return Unauthorized(new { message = "Invalid user identification" });
             }
 
-            // Validaciones previas
-            if (request.ProfilePicture == null)
-            {
-                return BadRequest(new { message = "Profile picture is required" });
-            }
-
-            if (request.ProfilePicture.Length > 5 * 1024 * 1024)
-            {
-                return BadRequest(new { message = "Profile picture must be smaller than 5MB" });
-            }
-
-            var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
-            if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
-            {
-                return BadRequest(new { message = "Profile picture must be a JPG or PNG image" });
-            }
-
-            // ✅ MEJORA: Validaciones adicionales antes de llamar al servicio
+            // 🛡️ Round 28 MUD-AG: cargar User+Profile PRIMERO para detectar isRelocating.
+            // Para mudanza, ProfilePicture es opcional (se reusa la foto del perfil anterior).
             var user = await _context.Users
                 .Include(u => u.ExpertProfile)
                 .FirstOrDefaultAsync(u => u.Id == userId);
@@ -584,14 +568,49 @@ public class UserController : ControllerBase
                 return BadRequest(new { message = "User not found" });
             }
 
-            if (user.Role == UserRole.Expert)
+            // 🛡️ Round 28 MUD-AC (GAP-1 fix): permitir re-onboarding tras mudanza.
+            // El check del UserService MUD-K nunca se alcanza porque este controller corta
+            // primero. Replicamos el mismo isRelocating bypass aquí — sin esto el experto
+            // mudado queda atascado en "You are already an expert" y NO puede completar
+            // el onboarding del nuevo país.
+            var isRelocating = user.ExpertProfile != null
+                            && user.ExpertProfile.RelocatedFromCountry != null
+                            && !user.ExpertProfile.OnboardingCompleted
+                            && string.IsNullOrEmpty(user.ExpertProfile.StripeAccountId);
+
+            if (user.Role == UserRole.Expert && !isRelocating)
             {
                 return BadRequest(new { message = "You are already an expert" });
             }
 
-            if (user.ExpertProfile != null)
+            if (user.ExpertProfile != null && !isRelocating)
             {
                 return BadRequest(new { message = "You already have an expert profile" });
+            }
+
+            // 🛡️ Round 28 MUD-AG: Photo validation MOVIDO AQUÍ desde arriba.
+            // - First-time expert: ProfilePicture REQUERIDA.
+            // - Relocating expert: opcional — si null, se preserva la foto del país anterior.
+            // - Si se envía nueva foto: validar tamaño + extensión normalmente.
+            if (request.ProfilePicture == null)
+            {
+                if (!isRelocating || string.IsNullOrEmpty(user.ExpertProfile?.ProfilePictureUrl))
+                {
+                    return BadRequest(new { message = "Profile picture is required" });
+                }
+                // isRelocating && existing URL exists → OK, se preserva en el service.
+            }
+            else
+            {
+                if (request.ProfilePicture.Length > 5 * 1024 * 1024)
+                {
+                    return BadRequest(new { message = "Profile picture must be smaller than 5MB" });
+                }
+                var extension = Path.GetExtension(request.ProfilePicture.FileName).ToLowerInvariant();
+                if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
+                {
+                    return BadRequest(new { message = "Profile picture must be a JPG or PNG image" });
+                }
             }
 
             // Validar Latitude y Longitude
@@ -677,37 +696,45 @@ public class UserController : ControllerBase
                 });
             }
 
-            var (success, token, userResult, expertProfile) = await _userService.BecomeExpert(userId, request);
+            var (success, token, userResult, expertProfile, errorCode, errorMessage, detectedCountry)
+                = await _userService.BecomeExpert(userId, request);
             if (!success)
             {
-                // ✅ LOG: Fallo al convertirse en experto (WARNING, no crítico - el servicio ya logueó el error específico)
+                // 🛡️ Round 28: log conciso (el service ya logueó el detalle específico arriba).
                 await _loggingService.LogWarningAsync(
-                    message: "Failed to become expert - unexpected error",
-                    details: $"User {userId} failed to become expert after all validations passed. Check logs for specific error details.",
+                    message: $"BecomeExpert failed: {errorCode ?? "UNKNOWN"}",
+                    details: $"User {userId} failed to become expert. ErrorCode={errorCode ?? "n/a"}. DetectedCountry={detectedCountry ?? "n/a"}. El service registró el detalle.",
                     userId: userId,
                     source: "UserController.BecomeExpert",
                     relatedEntityType: "User",
                     relatedEntityId: userId,
-                    additionalData: new { 
+                    additionalData: new {
                         Action = "BecomeExpert",
                         UserId = userId,
                         Success = false,
-                        RequestData = new {
-                            Description = request.Description,
-                            ProfilePictureSize = request.ProfilePicture?.Length ?? 0,
-                            ProfilePictureFileName = request.ProfilePicture?.FileName,
-                            Latitude = request.Latitude,
-                            Longitude = request.Longitude,
-                            AvailabilityDaysOfWeek = request.AvailabilityDaysOfWeek?.Count ?? 0,
-                            AvailabilityStartTime = request.AvailabilityStartTime,
-                            AvailabilityEndTime = request.AvailabilityEndTime
-                        }
+                        ErrorCode = errorCode,
+                        DetectedCountry = detectedCountry
                     }
                 );
-                
-                // Mensaje más específico basado en posibles causas
-                return BadRequest(new { 
-                    message = "Failed to become expert. This could be due to: 1) Profile picture upload failed (check image format and size), 2) Google Cloud Storage configuration issue, or 3) Database error. Please check the logs for details and try again." 
+
+                // 🛡️ Round 28: mapeo errorCode → HTTP status + mensaje específico.
+                // Reemplaza al mensaje fósil "Google Cloud Storage configuration issue".
+                var statusCode = errorCode switch
+                {
+                    BecomeExpertErrorCodes.CountryDetectionFailed => StatusCodes.Status503ServiceUnavailable,
+                    BecomeExpertErrorCodes.ProfilePictureUploadFailed => StatusCodes.Status500InternalServerError,
+                    BecomeExpertErrorCodes.AvailabilityCreationFailed => StatusCodes.Status500InternalServerError,
+                    BecomeExpertErrorCodes.DatabaseError => StatusCodes.Status500InternalServerError,
+                    BecomeExpertErrorCodes.InternalError => StatusCodes.Status500InternalServerError,
+                    BecomeExpertErrorCodes.UserBlocked => StatusCodes.Status403Forbidden,
+                    BecomeExpertErrorCodes.UserNotFound => StatusCodes.Status404NotFound,
+                    _ => StatusCodes.Status400BadRequest,
+                };
+
+                return StatusCode(statusCode, new {
+                    message = errorMessage ?? "No se pudo completar el registro como experto. Revisa los datos e inténtalo de nuevo.",
+                    errorCode = errorCode ?? "UNKNOWN_ERROR",
+                    detectedCountry = detectedCountry
                 });
             }
 
@@ -861,10 +888,24 @@ public class UserController : ControllerBase
             {
                 return BadRequest(new { message = "Latitud y Longitud son requeridas" });
             }
-            var (success, updatedProfile) = await _userService.UpdateExpertProfile(userId, request);
+            var (success, updatedProfile, errorCode, errorMessage, detectedCountry)
+                = await _userService.UpdateExpertProfile(userId, request);
             if (!success)
             {
-                return BadRequest(new { message = "Failed to update expert profile. Please check your data and try again." });
+                // 🛡️ Round 28: mapeo errorCode → HTTP status + mensaje específico.
+                var statusCode = errorCode switch
+                {
+                    BecomeExpertErrorCodes.CountryDetectionFailed => StatusCodes.Status503ServiceUnavailable,
+                    BecomeExpertErrorCodes.ProfilePictureUploadFailed => StatusCodes.Status500InternalServerError,
+                    BecomeExpertErrorCodes.DatabaseError => StatusCodes.Status500InternalServerError,
+                    BecomeExpertErrorCodes.ExpertProfileNotFound => StatusCodes.Status404NotFound,
+                    _ => StatusCodes.Status400BadRequest,
+                };
+                return StatusCode(statusCode, new {
+                    message = errorMessage ?? "No se pudo actualizar el perfil. Revisa los datos e inténtalo de nuevo.",
+                    errorCode = errorCode ?? "UNKNOWN_ERROR",
+                    detectedCountry = detectedCountry
+                });
             }
 
             var response = new UpdateExpertProfileResponseDto
@@ -995,6 +1036,47 @@ public class UserController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 🛡️ Round 28 S2-P0-13: GDPR Art. 20 — Derecho a la Portabilidad de datos.
+    /// Devuelve un JSON estructurado con todos los datos personales del usuario autenticado.
+    /// Plazo legal de respuesta: 30 días desde la solicitud (Art. 12.3 RGPD).
+    /// Hard-cap por ahora: 1000 mensajes más recientes para no explotar el payload.
+    /// </summary>
+    [HttpGet("me/export")]
+    [Authorize]
+    public async Task<IActionResult> ExportMyData([FromServices] newApi.Services.DataPortabilityService portabilityService, CancellationToken ct)
+    {
+        try
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            {
+                return Unauthorized(new { message = "Invalid user identification" });
+            }
+
+            var export = await portabilityService.ExportUserDataAsync(userId, ct);
+            if (export == null)
+            {
+                return NotFound(new { message = "User not found" });
+            }
+
+            // Cabecera para que el navegador sugiera descarga como JSON (Art. 20: lectura mecánica).
+            Response.Headers.Append("Content-Disposition", $"attachment; filename=\"inspecciono-data-export-{userId}-{System.DateTime.UtcNow:yyyyMMdd}.json\"");
+            return Ok(export);
+        }
+        catch (Exception ex)
+        {
+            await _loggingService.LogErrorAsync(
+                message: "GDPR Art. 20 — data export failed",
+                details: $"Export failed: {ex.Message}",
+                userId: int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int uid) ? uid : (int?)null,
+                source: "UserController.ExportMyData",
+                relatedEntityType: "User",
+                additionalData: new { Error = ex.Message, ErrorType = ex.GetType().Name });
+            return StatusCode(500, new { message = "Failed to export user data — contacta soporte para gestionar la solicitud manualmente." });
+        }
+    }
+
     private string ResolveProfilePictureUrl(ExpertProfile? expertProfile)
     {
         if (expertProfile == null)
@@ -1027,4 +1109,8 @@ public class UserController : ControllerBase
         public string PhoneNumber { get; set; }
         public string Code { get; set; }
     }
+
+    // 🛡️ Round 28 MUD-R: ExpertRelocationController extraído a su propio archivo
+    // Controllers/ExpertRelocationController.cs porque ASP.NET Core no descubre
+    // controllers anidados (TypeInfo.IsPublic devuelve false para nested types).
 }

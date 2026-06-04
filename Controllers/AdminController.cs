@@ -24,19 +24,360 @@ namespace newApi.Controllers
         private readonly ILogger<AdminController> _logger;
         private readonly IStripeConfigService _stripeConfigService;
         private readonly IConfiguration _configuration;
+        // 🛡️ Round 28 S2-P0-11: monitor del umbral OSS UE.
+        private readonly OssThresholdService _ossThresholdService;
 
         public AdminController(
-            AppDbContext context, 
+            AppDbContext context,
             StripeRefundService refundService,
             ILogger<AdminController> logger,
             IStripeConfigService stripeConfigService,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            OssThresholdService ossThresholdService)
         {
             _context = context;
             _refundService = refundService;
             _logger = logger;
             _stripeConfigService = stripeConfigService;
             _configuration = configuration;
+            _ossThresholdService = ossThresholdService;
+        }
+
+        /// <summary>
+        /// 🛡️ Round 28 S2-P0-11: snapshot del umbral OSS UE €10.000/año del año actual.
+        /// Devuelve YTD por país + porcentaje del umbral + estado de compliance.
+        /// El admin debe revisar este endpoint regularmente — sin OSS registrado y cruzando
+        /// el umbral, la plataforma incurre en infracción fiscal en cada país UE.
+        /// </summary>
+        /// <summary>
+        /// 🛡️ Round 28 MUD-C: detector de divergencia ExpertProfile.Country vs stripe_account.Country.
+        /// Stripe Connect Account.country es INMUTABLE — pero el experto puede cambiar
+        /// ExpertProfile.Country (BD) vía geolocalización o porque admin lo actualizó manual.
+        /// La divergencia hace que nuevos servicios/hires cobren en divisa incorrecta y
+        /// los transfers fallen con currency_mismatch (dinero atascado).
+        ///
+        /// Este endpoint cruza los dos campos y reporta los expertos en estado divergente
+        /// + servicios con Currency != stripe_acct.default_currency (deuda de cobro).
+        ///
+        /// Recomendado: ejecutar como job diario via Hangfire o cron externo + alertar admin.
+        /// </summary>
+        [HttpGet("expert-country-divergence")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> GetExpertCountryDivergence(CancellationToken ct = default)
+        {
+            try
+            {
+                // Solo evaluar expertos con StripeAccountId — sin acct no hay divergencia posible.
+                var profiles = await _context.ExpertProfiles
+                    .IgnoreQueryFilters()
+                    .Where(p => p.StripeAccountId != null
+                             && p.Country != null)
+                    .Select(p => new
+                    {
+                        ExpertProfileId = p.Id,
+                        UserId = p.UserId,
+                        UserEmail = p.User.Email,
+                        Country = p.Country,
+                        StripeAccountId = p.StripeAccountId,
+                        OnboardingCompleted = p.OnboardingCompleted,
+                        StripeStatus = p.StripeStatus,
+                    })
+                    .ToListAsync(ct);
+
+                var stripeAccountSvc = new Stripe.AccountService();
+                var divergent = new System.Collections.Generic.List<object>();
+                var checkedCount = 0;
+                var errorCount = 0;
+
+                foreach (var p in profiles)
+                {
+                    checkedCount++;
+                    try
+                    {
+                        var acct = await stripeAccountSvc.GetAsync(p.StripeAccountId);
+                        var acctCountry = (acct?.Country ?? "").ToUpperInvariant();
+                        var acctCurrency = (acct?.DefaultCurrency ?? "").ToUpperInvariant();
+                        var profileCountry = (p.Country ?? "").ToUpperInvariant();
+
+                        if (!string.IsNullOrEmpty(acctCountry)
+                            && !string.Equals(acctCountry, profileCountry, System.StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Buscar servicios con Currency != stripe acct.default_currency (deuda real).
+                            // Captura local de variables para no usar la del foreach en el lambda.
+                            var expertProfileIdLocal = p.ExpertProfileId;
+                            var acctCurrencyLocal = acctCurrency;
+                            var inconsistentServices = await _context.SearchServices
+                                .AsNoTracking()
+                                .Where(s => s.ExpertProfileId == expertProfileIdLocal
+                                         && s.IsActive
+                                         && s.Currency != null
+                                         && s.Currency.ToUpper() != acctCurrencyLocal)
+                                .Select(s => new { s.Id, s.Currency, s.Price })
+                                .ToListAsync(ct);
+
+                            // Hires en curso con currency != acct (riesgo currency_mismatch al transfer).
+                            var userIdLocal = p.UserId;
+                            var hiresAtRisk = await _context.SearchHires
+                                .AsNoTracking()
+                                .Include(h => h.Status)
+                                .Where(h => h.ExpertId == userIdLocal
+                                         && h.Status != null
+                                         && !h.Status.IsFinalizationStatus
+                                         && h.Currency != null
+                                         && h.Currency.ToUpper() != acctCurrencyLocal)
+                                .Select(h => new { h.Id, h.Currency, h.Amount, h.CreatedAt })
+                                .ToListAsync(ct);
+
+                            divergent.Add(new
+                            {
+                                expertProfileId = p.ExpertProfileId,
+                                userId = p.UserId,
+                                userEmail = p.UserEmail,
+                                profileCountry = profileCountry,
+                                stripeAccountCountry = acctCountry,
+                                stripeAccountId = p.StripeAccountId,
+                                stripeAccountDefaultCurrency = acctCurrency,
+                                onboardingCompleted = p.OnboardingCompleted,
+                                stripeStatus = p.StripeStatus.ToString(),
+                                inconsistentServicesCount = inconsistentServices.Count,
+                                inconsistentServices = inconsistentServices,
+                                hiresAtRiskCount = hiresAtRisk.Count,
+                                hiresAtRisk = hiresAtRisk,
+                                severity = (inconsistentServices.Count > 0 || hiresAtRisk.Count > 0) ? "HIGH" : "MEDIUM",
+                            });
+                        }
+                    }
+                    catch (Stripe.StripeException)
+                    {
+                        errorCount++;
+                    }
+                    catch (System.Exception)
+                    {
+                        errorCount++;
+                    }
+                }
+
+                // Logging crítico si hay divergencias high severity.
+                if (divergent.Any())
+                {
+                    var highSeverity = divergent.Count(d => ((dynamic)d).severity == "HIGH");
+                    _logger.LogWarning("MUD-C: {Total} expertos con divergencia Country↔Stripe; {High} HIGH severity (con servicios/hires afectados)",
+                        divergent.Count, highSeverity);
+                }
+
+                return Ok(new
+                {
+                    checkedCount,
+                    divergentCount = divergent.Count,
+                    errorCount,
+                    divergent,
+                    note = "HIGH severity = experto tiene servicios y/o hires con Currency != stripe_acct.default_currency. Riesgo de currency_mismatch en transfers. Investigar y/o ejecutar reset-stripe.",
+                });
+            }
+            catch (System.Exception ex)
+            {
+                _logger.LogError(ex, "MUD-C: GetExpertCountryDivergence failed");
+                return StatusCode(500, new { error = "Error generando reporte de divergencia", message = ex.Message });
+            }
+        }
+
+        [HttpGet("oss-stats")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> GetOssStats(CancellationToken ct = default)
+        {
+            try
+            {
+                var report = await _ossThresholdService.GetCurrentYearReportAsync(ct);
+                return Ok(report);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetOssStats failed");
+                return StatusCode(500, new { error = "Error generando snapshot OSS", message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// 🛡️ Round 28 S2-P0-11: dispara la evaluación + alertas críticas si procede.
+        /// Llamar manualmente para forzar el envío del aviso al admin (idempotente — el log
+        /// Critical solo se emite si compliance status es WARNING o VIOLATION).
+        /// </summary>
+        [HttpPost("oss-stats/check")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> RunOssThresholdCheck(CancellationToken ct = default)
+        {
+            try
+            {
+                await _ossThresholdService.EmitAlertIfNeededAsync(ct);
+                var report = await _ossThresholdService.GetCurrentYearReportAsync(ct);
+                return Ok(new { triggered = true, report });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "RunOssThresholdCheck failed");
+                return StatusCode(500, new { error = "Error ejecutando OSS threshold check", message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// 🛡️ Round 28 — Sprint US-2 (SUS2-8): reset completo del estado Stripe Connect de un experto.
+        /// Útil cuando un experto queda atascado en un acct corrupto (capabilities erróneas, idempotency
+        /// cacheada, requirements imposibles, etc.). Ejecuta:
+        ///  1. Lee StripeAccountId/PendingStripeAccountId del ExpertProfile.
+        ///  2. Intenta DeleteAsync sobre cada acct (404 → OK). Si falla, fallback a RejectAsync(other).
+        ///  3. Resetea estado en BD: StripeAccountId=null, PendingStripeAccountId=null,
+        ///     StripeStatus=NotRequested, StripeStatusDetails=null, OnboardingCompleted=false.
+        ///  4. Loguea crítico con el adminUserId actor para auditoría.
+        /// El experto puede volver a iniciar onboarding limpio.
+        /// </summary>
+        [HttpPost("expert/{expertUserId:int}/reset-stripe")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> ResetStripeForExpert(int expertUserId, CancellationToken ct = default)
+        {
+            try
+            {
+                var adminUserIdStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                _ = int.TryParse(adminUserIdStr, out int adminUserId);
+
+                var profile = await _context.ExpertProfiles
+                    .IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(p => p.UserId == expertUserId, ct);
+                if (profile == null)
+                {
+                    return NotFound(new { message = $"ExpertProfile not found for user {expertUserId}" });
+                }
+
+                // 🛡️ Round 28 MUD-4: guards previos al reset para no dejar disputas/hires en limbo.
+                // Antes el endpoint borraba acct sin verificar estado del experto → si tenía dispute
+                // Pending o hire en AwaitingClientDecision, el reset rompía el flujo:
+                //  - Dispute: StripeDisputeId huérfano en una cuenta rejected.
+                //  - Hire: ProcessMoneyDistributionAsync intentaba transfer a acct inexistente → 404.
+                // Admite ?force=true para casos de emergencia (acct corrupto irrecuperable).
+                var force = Request.Query.ContainsKey("force") && Request.Query["force"] == "true";
+                if (!force)
+                {
+                    var pendingDisputes = await _context.Disputes
+                        .AsNoTracking()
+                        .Where(d => (d.Status == "Pending" || d.Status == "Resolving")
+                                 && d.SearchHire != null
+                                 && (d.SearchHire.ExpertId == expertUserId || d.ReporterId == expertUserId))
+                        .CountAsync(ct);
+                    if (pendingDisputes > 0)
+                    {
+                        return BadRequest(new
+                        {
+                            error = "blocked_by_pending_disputes",
+                            message = $"No se puede resetear el Stripe del experto: tiene {pendingDisputes} disputa(s) activa(s) (Pending/Resolving). Resolver primero las disputas y reintentar. Para forzar (NO recomendado, deja StripeDisputeId huérfano): añadir ?force=true.",
+                            pendingDisputes,
+                        });
+                    }
+
+                    var activeHires = await _context.SearchHires
+                        .AsNoTracking()
+                        .Include(h => h.Status)
+                        .Where(h => h.ExpertId == expertUserId
+                                 && h.Status != null
+                                 && !h.Status.IsFinalizationStatus)
+                        .CountAsync(ct);
+                    if (activeHires > 0)
+                    {
+                        return BadRequest(new
+                        {
+                            error = "blocked_by_active_hires",
+                            message = $"No se puede resetear el Stripe del experto: tiene {activeHires} contratación(es) activa(s) en estado no-final. Esperar a su finalización (o cancelarlas vía /api/admin/searchhire) y reintentar. Para forzar (deja hires sin destinatario en transfers): añadir ?force=true.",
+                            activeHires,
+                        });
+                    }
+
+                    var pendingRefunds = await _context.FinancialTransactions
+                        .AsNoTracking()
+                        .Where(ft => ft.UserId == expertUserId
+                                  && ft.TransactionType == "Refund"
+                                  && ft.CreatedAt > System.DateTime.UtcNow.AddHours(-24))
+                        .CountAsync(ct);
+                    if (pendingRefunds > 0)
+                    {
+                        return BadRequest(new
+                        {
+                            error = "blocked_by_recent_refunds",
+                            message = $"No se puede resetear: hay {pendingRefunds} refund(s) en las últimas 24h. Esperar a su settlement Stripe.",
+                            pendingRefunds,
+                        });
+                    }
+                }
+
+                var beforeStripeAccountId = profile.StripeAccountId;
+                var beforePendingStripeAccountId = profile.PendingStripeAccountId;
+                var beforeStatus = profile.StripeStatus;
+                var stripeOpsResults = new List<object>();
+
+                async Task TryCleanupStripeAccount(string? acctId, string label)
+                {
+                    if (string.IsNullOrEmpty(acctId)) return;
+                    try
+                    {
+                        var svc = new AccountService();
+                        await svc.DeleteAsync(acctId);
+                        stripeOpsResults.Add(new { acctId, label, op = "deleted" });
+                    }
+                    catch (StripeException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        stripeOpsResults.Add(new { acctId, label, op = "already_gone_404" });
+                    }
+                    catch (StripeException delEx)
+                    {
+                        // Fallback a Reject.
+                        try
+                        {
+                            var svc = new AccountService();
+                            await svc.RejectAsync(acctId, new AccountRejectOptions { Reason = "other" });
+                            stripeOpsResults.Add(new { acctId, label, op = "rejected_after_delete_failed", deleteError = delEx.StripeError?.Code });
+                        }
+                        catch (Exception rejEx)
+                        {
+                            stripeOpsResults.Add(new { acctId, label, op = "delete_and_reject_failed", deleteError = delEx.Message, rejectError = rejEx.Message });
+                        }
+                    }
+                    catch (Exception unexpectedEx)
+                    {
+                        stripeOpsResults.Add(new { acctId, label, op = "unexpected_error", error = unexpectedEx.Message });
+                    }
+                }
+
+                await TryCleanupStripeAccount(beforeStripeAccountId, "StripeAccountId");
+                if (!string.Equals(beforePendingStripeAccountId, beforeStripeAccountId, StringComparison.Ordinal))
+                {
+                    await TryCleanupStripeAccount(beforePendingStripeAccountId, "PendingStripeAccountId");
+                }
+
+                profile.StripeAccountId = null;
+                profile.PendingStripeAccountId = null;
+                profile.StripeStatus = global::newApi.DataLayer.Models.PostGresModels.StripeStatus.NotRequested;
+                profile.StripeStatusDetails = null;
+                profile.OnboardingCompleted = false;
+                profile.StripeFutureRequirements = null;
+                profile.StripeFutureDueAt = null;
+                await _context.SaveChangesAsync(ct);
+
+                _logger.LogWarning("Admin {AdminUserId} reset Stripe for expert {ExpertUserId}: was acct={Acct}, pending={Pending}, status={Status}",
+                    adminUserId, expertUserId, beforeStripeAccountId, beforePendingStripeAccountId, beforeStatus);
+
+                return Ok(new
+                {
+                    success = true,
+                    expertUserId,
+                    adminUserId,
+                    before = new { StripeAccountId = beforeStripeAccountId, PendingStripeAccountId = beforePendingStripeAccountId, Status = beforeStatus.ToString() },
+                    after = new { StripeAccountId = (string?)null, PendingStripeAccountId = (string?)null, Status = "NotRequested" },
+                    stripeOperations = stripeOpsResults,
+                    nextStep = "El experto puede iniciar onboarding limpio. Idempotency key se regenerará en la próxima llamada."
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ResetStripeForExpert failed for user {ExpertUserId}", expertUserId);
+                return StatusCode(500, new { error = "Error reseteando Stripe del experto", message = ex.Message });
+            }
         }
 
         /// <summary>

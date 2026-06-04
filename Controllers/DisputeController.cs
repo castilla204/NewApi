@@ -216,114 +216,98 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Ya existe una disputa abierta para este servicio." });
                 }
 
-                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
-                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
-                // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
-                _context.Database.AutoSavepointsEnabled = false;
-                using var transaction = await _context.Database.BeginTransactionAsync();
+                // 🛡️ Round 28 TX-3: envuelto en CreateExecutionStrategy().ExecuteAsync.
+                // Antes el comentario decía "NO usar ExecutionStrategy con transacciones en PgBouncer".
+                // YA NO APLICA — ahora usamos Render PostgreSQL nativo (ver Program.cs:746) y
+                // EnableRetryOnFailure está activo (Program.cs:1245). Sin este wrap, retry de EF
+                // lanzaba InvalidOperationException y la dispute quedaba en estado inconsistente.
+                List<string> hangfireJobIdsToCancel = new List<string>();
+                int createdDisputeId = 0;
                 try
                 {
-                        searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
-                        searchHire.ClientApproved = false;
-                        searchHire.UpdatedAt = DateTime.UtcNow;
-
-                        var dispute = new Dispute
+                    var disputeStrategy = _context.Database.CreateExecutionStrategy();
+                    await disputeStrategy.ExecuteAsync(async () =>
+                    {
+                        _context.Database.AutoSavepointsEnabled = false;
+                        using var transaction = await _context.Database.BeginTransactionAsync();
+                        try
                         {
-                            SearchHireId = searchHire.Id,
-                            ReporterId = userId,
-                            Reason = request.Reason,
-                            Status = "Pending",
-                            CreatedAt = DateTime.UtcNow,
-                            // 🔧 FIX F2: ventana de 48h para que el experto responda (paridad con
-                            // CreateDisputeWithFiles). Sin esto, Dispute.CanExpertRespond es SIEMPRE false
-                            // (deadline null) y el experto nunca podía responder a una disputa creada aquí.
-                            ExpertResponseDeadline = DateTime.UtcNow.AddHours(48)
-                        };
+                            searchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
+                            searchHire.ClientApproved = false;
+                            searchHire.UpdatedAt = DateTime.UtcNow;
 
-                        _context.Disputes.Add(dispute);
-                        await _context.SaveChangesAsync();
-                        
-                        // ✅ FIX: Cancelar todos los timers activos del appointment cuando se crea una disputa
-                        var appointment = await _context.Appointments
-                            .Include(a => a.Timers)
-                            .FirstOrDefaultAsync(a => a.SearchHireId == request.SearchHireId);
-                        
-                        var hangfireJobIdsToCancel = new List<string>();
-                        
-                        if (appointment != null)
-                        {
-                            var activeTimers = appointment.Timers
-                                .Where(t => !t.IsExpired)
-                                .ToList();
-                            
-                            foreach (var timer in activeTimers)
+                            var dispute = new Dispute
                             {
-                                timer.IsExpired = true;
-                                timer.ExpiredAt = DateTime.UtcNow;
-                                
-                                if (!string.IsNullOrEmpty(timer.HangfireJobId))
-                                {
-                                    hangfireJobIdsToCancel.Add(timer.HangfireJobId);
-                                    timer.HangfireJobId = null;
-                                }
-                            }
-                            
+                                SearchHireId = searchHire.Id,
+                                ReporterId = userId,
+                                Reason = request.Reason,
+                                Status = "Pending",
+                                CreatedAt = DateTime.UtcNow,
+                                ExpertResponseDeadline = DateTime.UtcNow.AddHours(48)
+                            };
+
+                            _context.Disputes.Add(dispute);
                             await _context.SaveChangesAsync();
-                        }
-                        
-                        await transaction.CommitAsync();
-                        
-                        // Cancelar jobs de Hangfire DESPUÉS del commit
-                        foreach (var jobId in hangfireJobIdsToCancel)
-                        {
-                            try
+
+                            // Cancelar todos los timers activos del appointment cuando se crea una disputa
+                            var appointment = await _context.Appointments
+                                .Include(a => a.Timers)
+                                .FirstOrDefaultAsync(a => a.SearchHireId == request.SearchHireId);
+
+                            // Acumular en variable de scope externo (lista local del retry — se reinicializa por intento).
+                            var localHangfireJobIdsToCancel = new List<string>();
+
+                            if (appointment != null)
                             {
-                                BackgroundJob.Delete(jobId);
+                                var activeTimers = appointment.Timers
+                                    .Where(t => !t.IsExpired)
+                                    .ToList();
+
+                                foreach (var timer in activeTimers)
+                                {
+                                    timer.IsExpired = true;
+                                    timer.ExpiredAt = DateTime.UtcNow;
+
+                                    if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                                    {
+                                        localHangfireJobIdsToCancel.Add(timer.HangfireJobId);
+                                        timer.HangfireJobId = null;
+                                    }
+                                }
+
+                                await _context.SaveChangesAsync();
                             }
-                            catch
-                            {
-                                // Si el job ya no existe o fue procesado, continuar sin error
-                            }
-                        }
-                        
-                        return Ok(new { message = "Dispute opened", disputeId = dispute.Id });
-                    }
-                    catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
-                    {
-                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
-                        try
-                        {
-                            await transaction.RollbackAsync();
+
+                            await transaction.CommitAsync();
+
+                            // Propagar resultados al scope externo SOLO tras commit exitoso.
+                            createdDisputeId = dispute.Id;
+                            hangfireJobIdsToCancel = localHangfireJobIdsToCancel;
                         }
                         catch
                         {
-                            // Ignorar errores de rollback si la conexión ya está disposed
+                            try { await transaction.RollbackAsync(); } catch { }
+                            throw;
                         }
-                        return StatusCode(500, new { message = "Failed to open dispute - connection error" });
-                    }
-                    catch (ObjectDisposedException disposedEx)
-                    {
-                        // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar rollback
-                        try
-                        {
-                            await transaction.RollbackAsync();
-                        }
-                        catch
-                        {
-                            // Ignorar errores de rollback si la conexión ya está disposed
-                        }
-                        return StatusCode(500, new { message = "Failed to open dispute - connection error" });
-                    }
-                    catch (Exception ex)
-                    {
-                        await transaction.RollbackAsync();
-                        await _loggingService.LogCriticalAsync(
-                            message: "CRITICAL: Failed to open dispute",
-                            details: $"Dispute creation failed and was rolled back: {ex.Message}",
-                            source: "DisputeController.CreateDispute",
-                            relatedEntityType: "Dispute");
-                        return StatusCode(500, new { message = "Failed to open dispute" });
-                    }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Failed to open dispute",
+                        details: $"Dispute creation failed: {ex.Message}",
+                        source: "DisputeController.CreateDispute",
+                        relatedEntityType: "Dispute");
+                    return StatusCode(500, new { message = "Failed to open dispute" });
+                }
+
+                // 🛡️ Cancelar jobs Hangfire FUERA del lambda (side-effect no-idempotente).
+                foreach (var jobId in hangfireJobIdsToCancel)
+                {
+                    try { BackgroundJob.Delete(jobId); } catch { /* job ya no existe */ }
+                }
+
+                return Ok(new { message = "Dispute opened", disputeId = createdDisputeId });
             }
             catch (Exception ex)
             {
@@ -917,7 +901,8 @@ namespace newApi.Controllers
                         {
                             await _loggingService.LogInfoAsync(
                                 message: "Disputa resuelta a tu favor",
-                                details: $"La disputa del servicio #{dispute.SearchHire.Id} se resolvió a tu favor. Se procesará tu reembolso de {dispute.SearchHire.Amount:F2}€.",
+                                // 🛡️ MUD-AH: usar Currency real del hire.
+                                details: $"La disputa del servicio #{dispute.SearchHire.Id} se resolvió a tu favor. Se procesará tu reembolso de {dispute.SearchHire.Amount:F2} {(dispute.SearchHire.Currency ?? "EUR").ToUpperInvariant()}.",
                                 userId: dispute.SearchHire.ClientId,
                                 source: "DisputeController.ResolveDispute",
                                 relatedEntityType: "Dispute",
@@ -945,7 +930,8 @@ namespace newApi.Controllers
                             {
                                 await _loggingService.LogInfoAsync(
                                     message: "Disputa resuelta a tu favor",
-                                    details: $"La disputa del servicio #{dispute.SearchHire.Id} se resolvió a tu favor. Has recibido {dispute.SearchHire.Amount:F2}€.",
+                                    // 🛡️ MUD-AH: usar Currency real del hire.
+                                    details: $"La disputa del servicio #{dispute.SearchHire.Id} se resolvió a tu favor. Has recibido {dispute.SearchHire.Amount:F2} {(dispute.SearchHire.Currency ?? "EUR").ToUpperInvariant()}.",
                                     userId: dispute.SearchHire.ExpertId.Value,
                                     source: "DisputeController.ResolveDispute",
                                     relatedEntityType: "Dispute",
@@ -2223,89 +2209,30 @@ namespace newApi.Controllers
                 {
                     return BadRequest(new { message = "Expert has already responded to this dispute" });
                 }
-                // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
-                // PgBouncer Transaction Pooler no admite savepoints automáticos que EF Core intenta crear
-                // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
-                _context.Database.AutoSavepointsEnabled = false;
-                using var transaction = await _context.Database.BeginTransactionAsync();
-                
-                try
+                // 🛡️ Round 28 TX-4: envuelto en CreateExecutionStrategy().ExecuteAsync.
+                // Antes: BeginTransactionAsync sin strategy era incompatible con EnableRetryOnFailure
+                // (Program.cs:1245) → InvalidOperationException → la respuesta del experto se perdía
+                // y la ventana 48h seguía corriendo, pudiendo auto-resolver contra el experto.
+                var expertResponseStrategy = _context.Database.CreateExecutionStrategy();
+                await expertResponseStrategy.ExecuteAsync(async () =>
                 {
-                    // Actualizar la respuesta del experto
-                    dispute.ExpertResponse = request.Response;
-                    dispute.ExpertResponseAt = DateTime.UtcNow;
+                    _context.Database.AutoSavepointsEnabled = false;
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
+                    {
+                        // Actualizar la respuesta del experto
+                        dispute.ExpertResponse = request.Response;
+                        dispute.ExpertResponseAt = DateTime.UtcNow;
 
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
-                }
-                catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
-                {
-                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
-                    try
-                    {
-                        await transaction.RollbackAsync();
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
                     }
                     catch
                     {
-                        // Ignorar errores de rollback si la conexión ya está disposed
+                        try { await transaction.RollbackAsync(); } catch { }
+                        throw;
                     }
-                    
-                    using var recoveryScope = _serviceScopeFactory.CreateScope();
-                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    var recoveryDispute = await recoveryContext.Disputes
-                        .FirstOrDefaultAsync(d => d.Id == disputeId);
-                    
-                    if (recoveryDispute != null)
-                    {
-                        recoveryDispute.ExpertResponse = request.Response;
-                        recoveryDispute.ExpertResponseAt = DateTime.UtcNow;
-                        await recoveryContext.SaveChangesAsync();
-                    }
-                    else
-                    {
-                        return StatusCode(500, new { message = "Failed to respond to dispute - connection error" });
-                    }
-                }
-                catch (ObjectDisposedException disposedEx)
-                {
-                    // ✅ FIX CRÍTICO: Si la conexión está disposed, intentar con nuevo contexto
-                    try
-                    {
-                        await transaction.RollbackAsync();
-                    }
-                    catch
-                    {
-                        // Ignorar errores de rollback si la conexión ya está disposed
-                    }
-                    
-                    using var recoveryScope = _serviceScopeFactory.CreateScope();
-                    var recoveryContext = recoveryScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    var recoveryDispute = await recoveryContext.Disputes
-                        .FirstOrDefaultAsync(d => d.Id == disputeId);
-                    
-                    if (recoveryDispute != null)
-                    {
-                        recoveryDispute.ExpertResponse = request.Response;
-                        recoveryDispute.ExpertResponseAt = DateTime.UtcNow;
-                        await recoveryContext.SaveChangesAsync();
-                    }
-                    else
-                    {
-                        return StatusCode(500, new { message = "Failed to respond to dispute - connection error" });
-                    }
-                }
-                catch (Exception ex)
-                {
-                    try
-                    {
-                        await transaction.RollbackAsync();
-                    }
-                    catch
-                    {
-                        // Ignorar errores de rollback
-                    }
-                    throw;
-                }
+                });
 
                 // Handle file uploads if any (outside transaction for better performance)
                 var stripeFileIds = new List<string>();

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
+using Npgsql; // 🛡️ Fix 23505: PostgresException tipado para absorber colisión IX_FT_StripeRefundId_uq
 using Stripe;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.DataLayer.Models.enums;
@@ -460,28 +461,32 @@ namespace newApi.Services
                 }
 
                 // MODIFICACI├ôN: Verificar balance disponible antes de cualquier outflow (best practice Stripe 2025 para evitar negativos)
-                // 🌍 Round 9 — A5: Comprobamos solo el balance EUR porque todos los charges al cliente
-                // se hacen en EUR (la pasarela europea de la plataforma). Si el experto es GB/CH/US/CA,
-                // Stripe convierte automáticamente desde EUR a la divisa destino al crear el transfer.
-                // El balance EUR es por tanto la única fuente de liquidez relevante para outflows.
+                // 🛡️ Round 28 — FIX MULTI-DIVISA: el balance Stripe está SEGREGADO por divisa.
+                // El comentario antiguo decía "todos los charges al cliente se hacen en EUR" — FALSO:
+                // SubscriptionController crea Sessions con `service.Currency.ToLowerInvariant()`. Si el
+                // hire es GBP/CHF/USD, el dinero está en el balance de esa divisa, no en EUR. Leer
+                // solo `balance.Available["eur"]` bloqueaba falsamente refunds en cualquier divisa ≠ EUR.
                 try
                 {
                     var balanceService = new BalanceService();
                     var balance = await balanceService.GetAsync();
-                    var availableEur = balance.Available?.FirstOrDefault(b => b.Currency == "eur")?.Amount / 100.0m ?? 0;
+                    // Divisa del hire (snapshot inmutable en SearchHire.Currency). Stripe usa lowercase.
+                    var hireCurrencyForBalance = (searchHire.Currency ?? "EUR").Trim().ToLowerInvariant();
+                    var availableInHireCurrency = balance.Available?
+                        .FirstOrDefault(b => b.Currency == hireCurrencyForBalance)?.Amount / 100.0m ?? 0;
                     // ✅ CORRECCIÓN CRÍTICA: Verificación de balance debe usar montos reales que se enviarán a Stripe
                     // Refund usa monto con tax proporcional, Transfer usa monto base (sin tax)
                     var totalOutflow = clientRefundAmountForStripe + expertAmountBase;
-                    if (availableEur < totalOutflow)
+                    if (availableInHireCurrency < totalOutflow)
                     {
                         // ­ƒÜ¿ LOG CR├ìTICO: Balance insuficiente (una sola vez, con informaci├│n completa)
                         // IMPORTANTE: Este log se crea ANTES de entrar en la transacci├│n, as├¡ que debe estar disponible inmediatamente
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Insufficient Stripe platform balance for money distribution",
                             details: $"SearchHire {searchHireId} finalization failed due to insufficient Stripe platform balance. " +
-                                    $"Available Balance: {availableEur}€, Required Outflow: {totalOutflow}€ (Client Refund: {clientRefundAmountForStripe:F2}€ with tax, Expert Transfer: {expertAmountBase:F2}€ base). " +
+                                    $"Currency={hireCurrencyForBalance.ToUpperInvariant()}, Available Balance: {availableInHireCurrency} {hireCurrencyForBalance.ToUpperInvariant()}, Required Outflow: {totalOutflow} {hireCurrencyForBalance.ToUpperInvariant()} (Client Refund: {clientRefundAmountForStripe:F2} with tax, Expert Transfer: {expertAmountBase:F2} base). " +
                                     $"Distribution Plan: Client={config.ClientPercentage}%, Expert={config.ExpertPercentage}%, Platform={config.PlatformPercentage}%. " +
-                                    $"Base amounts: Client={clientRefundAmount:F2}€, Expert={expertAmount:F2}€, Platform={platformAmount:F2}€. " +
+                                    $"Base amounts: Client={clientRefundAmount:F2}, Expert={expertAmount:F2}, Platform={platformAmount:F2}. " +
                                     $"Status: {statusValue}, Reason: {reason}, PaymentIntentId: {servicePayment.StripePaymentIntentId}. " +
                                     $"ACTION REQUIRED: Wait for balance to be available (from PaymentIntent capture) or manually verify Stripe balance and retry distribution.",
                             userId: initiatedByUserId ?? searchHire.ClientId,
@@ -491,7 +496,8 @@ namespace newApi.Services
                             additionalData: new {
                                 Status = statusValue,
                                 Reason = reason,
-                                AvailableBalance = availableEur,
+                                Currency = hireCurrencyForBalance.ToUpperInvariant(),
+                                AvailableBalance = availableInHireCurrency,
                                 TotalOutflow = totalOutflow,
                                 ClientRefundAmountBase = clientRefundAmount,
                                 ClientRefundAmountForStripe = clientRefundAmountForStripe,
@@ -1253,19 +1259,30 @@ namespace newApi.Services
                             }
                             catch (StripeException stripeAccEx) when (stripeAccEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
                             {
-                                // 🛡️ R14 FIX: la cuenta Stripe del experto fue eliminada (probablemente por el N4 fix
-                                // del AccountDeletionService que ahora SÍ borra la cuenta Stripe al eliminar User).
-                                // El transfer al experto no se puede hacer — abortar con critical para reconciliación.
+                                // 🛡️ Round 28 FIX: NO bloquear el refund al cliente cuando la cuenta del experto
+                                // fue eliminada. El refund NO necesita la cuenta del experto — Stripe lo deriva
+                                // del PaymentIntent original y descuenta del balance de la plataforma. Antes
+                                // hacíamos `return false` aquí (bug): cliente sin reembolso aunque pagó por un
+                                // servicio que el experto ya no puede entregar. Ahora marcamos el hire para
+                                // revisión manual del transfer perdido, pero permitimos que el bloque
+                                // `if (needsRefund)` siga ejecutándose.
                                 await _loggingService.LogCriticalAsync(
-                                    message: "CRITICAL R14: Expert Stripe account not found (404)",
-                                    details: $"SearchHire {searchHireId}: la cuenta Stripe {expertStripeAccountId} retornó 404 (eliminada o nunca existió). Refund al cliente sí puede proceder pero el transfer al experto está bloqueado. ACCIÓN ADMIN: reconciliar manualmente (devolver al cliente lo que era del experto o re-asignar payout). Error: {stripeAccEx.Message}",
+                                    message: "CRITICAL R14: Expert Stripe account not found (404) — refund continues",
+                                    details: $"SearchHire {searchHireId}: la cuenta Stripe {expertStripeAccountId} retornó 404 (eliminada o nunca existió). " +
+                                             $"REFUND AL CLIENTE CONTINÚA (no requiere la cuenta del experto). " +
+                                             $"TRANSFER AL EXPERTO ABORTADO: el monto {expertAmount:F2} {searchHire.Currency ?? "EUR"} queda RETENIDO por la plataforma — " +
+                                             $"ACCIÓN ADMIN: reconciliar manualmente. Error: {stripeAccEx.Message}",
                                     userId: searchHire.ExpertId,
                                     source: "StripeRefundService.ProcessMoneyDistributionAsync.R14",
                                     relatedEntityType: "SearchHire",
                                     relatedEntityId: searchHireId,
-                                    additionalData: new { StripeAccountId = expertStripeAccountId, ExpertId = searchHire.ExpertId });
-                                if (transaction != null) await transaction.RollbackAsync();
-                                return false;
+                                    additionalData: new { StripeAccountId = expertStripeAccountId, ExpertId = searchHire.ExpertId, RetainedExpertAmount = expertAmount, Currency = searchHire.Currency ?? "EUR" });
+                                searchHire.RequiresManualReview = true;
+                                searchHire.RefundFailedAt = DateTime.UtcNow;
+                                // Marcador de que el transfer se omitió por cuenta inexistente. needsTransfer
+                                // se desactiva y saltamos al final del bloque para que el refund siga.
+                                needsTransfer = false;
+                                goto endTransferBlock;
                             }
                             // 🔧 FIX (pagos): en separate charges & transfers el experto SOLO necesita la capability
                             // "transfers" + payouts; NO "charges". El onboarding pide solo "transfers", así que
@@ -1330,14 +1347,15 @@ namespace newApi.Services
                                     ExpertCountry = searchHire.ExpertCountry,
                                     Status = statusValue
                                 });
+                            // 🛡️ Round 28 MUD-AH (CRITICAL fix): antes hacíamos RollbackAsync + return false
+                            // → cliente NUNCA recibía su refund porque la rama del refund nunca corría.
+                            // Patrón paralelo al R14 (acct 404): saltar al refund block, marcar el transfer
+                            // como pendiente de revisión manual, dejar que el cliente reciba su reembolso.
+                            // Sin esto, "cliente pagó CHF + experto mudó a IE EUR + cancela" = client refund stranded forever.
                             searchHire.RequiresManualReview = true;
-                            searchHire.RefundFailedAt = DateTime.UtcNow;
+                            needsTransfer = false; // saltar al refund block
                             await _context.SaveChangesAsync();
-                            if (transaction != null)
-                            {
-                                await transaction.RollbackAsync();
-                            }
-                            return false;
+                            goto endTransferBlock;
                         }
 
                         var transferOptions = new TransferCreateOptions
@@ -1578,6 +1596,8 @@ namespace newApi.Services
                                     relatedEntityType: "SearchHire",
                                     relatedEntityId: searchHireId);
                             }
+                            // 🛡️ Round 28: label para saltar aquí desde el catch 404 (refund continúa).
+                            endTransferBlock: ;
                         }
 
                         // Refund despu├®s (si aplica)
@@ -1641,7 +1661,12 @@ namespace newApi.Services
                                             relatedEntityId: searchHireId);
                                         // Marcar refund como "completado" para el resto del flujo (no hay nada que persistir como FT Refund).
                                         servicePayment.IsRefunded = true;
-                                        servicePayment.StripeRefundId = "n10-canceled-pre-capture";
+                                        // 🛡️ FIX 23505 (Round 28): NO escribir un literal en servicePayment.StripeRefundId.
+                                        // El índice único parcial IX_FT_StripeRefundId_uq no filtra por TransactionType ni por
+                                        // valor, así que el mismo literal "n10-canceled-pre-capture" en 2 cancelaciones
+                                        // pre-capture distintas haría chocar la segunda con 23505. IsRefunded=true ya marca
+                                        // el estado funcional; no se necesita StripeRefundId para una cancelación pre-capture
+                                        // (no hubo refund real en Stripe, solo PI canceled).
                                         needsRefund = false; // skip el CreateAsync de refund
                                     }
                                     catch (StripeException cancelEx) when (cancelEx.StripeError?.Code == "payment_intent_unexpected_state")
@@ -1731,13 +1756,19 @@ namespace newApi.Services
                             {
                                 await _loggingService.LogWarningAsync(
                                     message: "N11: refund idempotency hit (already done)",
-                                    details: $"SearchHire {searchHireId}: Stripe respondió '{idemRefundEx.StripeError?.Code}' al crear refund — ya estaba aplicado. Marcando como completado sin crear FT Refund nueva (el refund original está en Stripe).",
+                                    details: $"SearchHire {searchHireId}: Stripe respondió '{idemRefundEx.StripeError?.Code}' al crear refund — ya estaba aplicado. Marcando como completado sin crear FT Refund nueva (el refund original está en Stripe; StripeReconciliationService rellenará la fila FT en la próxima pasada diaria).",
                                     userId: searchHire.ClientId,
                                     source: "StripeRefundService.ProcessMoneyDistributionAsync.N11Refund",
                                     relatedEntityType: "SearchHire",
                                     relatedEntityId: searchHireId);
-                                // No tenemos el refund.Id real, marcamos placeholder para que el flujo continúe.
-                                createdRefundId = "n11-already-refunded";
+                                // 🛡️ FIX 23505 (Round 28): NO usar literal "n11-already-refunded" como StripeRefundId.
+                                // El índice único IX_FT_StripeRefundId_uq haría chocar dos hits N11 concurrentes con el
+                                // mismo literal. Setear createdRefundId=null + needsRefund=false hace que el bloque
+                                // L1995 se salte y NO se inserte FT Refund con placeholder. La fila FT real la creará
+                                // StripeReconciliationService.RunDailyReconciliationAsync (job Hangfire cron 3:00 UTC)
+                                // detectando la divergencia Stripe-vs-BD para este PaymentIntent.
+                                createdRefundId = null;
+                                needsRefund = false;
                                 servicePayment.IsRefunded = true;
                             }
                             catch (StripeException refundEx)
@@ -2010,7 +2041,16 @@ namespace newApi.Services
                             _context.FinancialTransactions.Add(refundTx);
 
                             servicePayment.IsRefunded = true;
-                            servicePayment.StripeRefundId = createdRefundId;
+                            // 🛡️ FIX 23505 (Round 28): NO escribir servicePayment.StripeRefundId aquí.
+                            // El índice único parcial IX_FT_StripeRefundId_uq filtra solo por
+                            // StripeRefundId IS NOT NULL (sin discriminar TransactionType), por lo que
+                            // emitir el mismo `re_xxx` en la fila Refund (INSERT) y en la fila
+                            // ServicePayment (UPDATE) dentro del MISMO SaveChanges viola el unique.
+                            // El cross-link funcional se preserva vía StripePaymentIntentId (ambas filas
+                            // lo comparten) + IsRefunded=true como marcador de estado. La fila Refund
+                            // ya guarda StripeRefundId como fuente canónica. Verificado: ninguna lectura
+                            // en código vivo depende de servicePayment.StripeRefundId.
+                            // Mismo patrón ya aplicado en SubscriptionController.cs:7597 (R27-T27-1-5).
 
                             // 🛡️ N3 FIX (refund principal): SaveChanges INMEDIATO tras el Add. Antes había
                             // ~252 líneas entre refundSvc.CreateAsync (línea ~1254) y el SaveChanges de la
@@ -2019,6 +2059,50 @@ namespace newApi.Services
                             try
                             {
                                 await _context.SaveChangesAsync();
+                            }
+                            // 🛡️ FIX 23505 (Round 28): absorber colisión del índice único IX_FT_StripeRefundId_uq
+                            // de forma idempotente. Se dispara si la fila FT Refund con este StripeRefundId
+                            // YA existe (replay de NpgsqlRetryingExecutionStrategy, webhook concurrente, o
+                            // residuo de la mutación legacy en servicePayment.StripeRefundId pre-fix). El
+                            // refund REAL ya está en Stripe + alguna fila local lo registra → idempotencia OK.
+                            catch (DbUpdateException dbEx) when (
+                                dbEx.InnerException is PostgresException pgEx
+                                && pgEx.SqlState == "23505"
+                                && (pgEx.ConstraintName?.Contains("StripeRefundId") ?? false))
+                            {
+                                // Detach la entidad pendiente: sin esto, el SaveChanges global posterior
+                                // reintentaría el mismo INSERT y volveríamos a chocar.
+                                _context.Entry(refundTx).State = EntityState.Detached;
+
+                                // Re-aplicar IsRefunded por si el rollback interno de EF descartó la mutación.
+                                servicePayment.IsRefunded = true;
+
+                                // Sanity check: la fila Refund con este StripeRefundId DEBE existir.
+                                // Si NO existe, la colisión vino por otra ruta sutil → re-lanzar al catch genérico.
+                                var existing = await _context.FinancialTransactions
+                                    .AsNoTracking()
+                                    .FirstOrDefaultAsync(ft => ft.StripeRefundId == createdRefundId);
+                                if (existing == null)
+                                {
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "23505 IX_FT_StripeRefundId_uq absorbed but no existing row found — abort",
+                                        details: $"SearchHire {searchHireId}: PostgresException 23505 en {pgEx.ConstraintName} para refund {createdRefundId}, pero AsNoTracking lookup NO encuentra fila preexistente. Posible inconsistencia: re-lanzando. Stripe: refund SÍ ejecutado, BD: vacía → RECONCILIACIÓN MANUAL.",
+                                        userId: searchHire.ClientId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync.23505NoRow",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId,
+                                        additionalData: new { RefundId = createdRefundId, ConstraintName = pgEx.ConstraintName, SqlState = pgEx.SqlState });
+                                    throw;
+                                }
+
+                                await _loggingService.LogInfoAsync(
+                                    message: "23505 IX_FT_StripeRefundId_uq absorbed (idempotent)",
+                                    details: $"SearchHire {searchHireId}: refund {createdRefundId} ya existe en FT (id={existing.Id}, type={existing.TransactionType}). Colisión esperada en retries/replays — continuando sin re-throw.",
+                                    userId: searchHire.ClientId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync.23505Idem",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId,
+                                    additionalData: new { RefundId = createdRefundId, ExistingFtId = existing.Id, ExistingType = existing.TransactionType });
                             }
                             catch (Exception persistEx)
                             {
@@ -2079,13 +2163,17 @@ namespace newApi.Services
                         await transaction.CommitAsync();
                         }
 
-                        // Ô£à Notificar a usuarios sobre movimientos de dinero exitosos
+                        // ✅ Notificar a usuarios sobre movimientos de dinero exitosos
+                        // 🛡️ Round 28 Sprint US-2 (SUS2-3): texto reescrito en UTF-8 limpio (antes
+                        // tenía mojibake "proces├│", "llegar├í", "d├¡as" por edición Windows-1252).
+                        // 🛡️ Sprint 3: usar divisa real del hire en lugar de € hardcoded.
+                        var notifCurrencyLabel = (searchHire.Currency ?? "EUR").Trim().ToUpperInvariant();
                         if (needsRefund && !string.IsNullOrEmpty(createdRefundId))
                         {
                             // Refund exitoso - notificar al cliente
                             await _loggingService.LogInfoAsync(
                                 message: "Reembolso procesado",
-                                details: $"Se proces├│ tu reembolso de {clientRefundAmountForStripe:F2}€ por el servicio #{searchHireId}. El dinero llegar├í a tu cuenta en 5-10 d├¡as h├íbiles.",
+                                details: $"Se procesó tu reembolso de {clientRefundAmountForStripe:F2} {notifCurrencyLabel} por el servicio #{searchHireId}. El dinero llegará a tu cuenta en 5-10 días hábiles.",
                                 userId: searchHire.ClientId,
                                 source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                 relatedEntityType: "SearchHire",
@@ -2099,7 +2187,7 @@ namespace newApi.Services
                             // Transfer exitoso - notificar al experto
                             await _loggingService.LogInfoAsync(
                                 message: "Pago recibido",
-                                details: $"Has recibido {expertAmountForStripe:F2}€ por el servicio #{searchHireId}. El dinero est├í disponible en tu cuenta de Stripe.",
+                                details: $"Has recibido {expertAmountForStripe:F2} {notifCurrencyLabel} por el servicio #{searchHireId}. El dinero está disponible en tu cuenta de Stripe.",
                                 userId: searchHire.ExpertId.Value,
                                 source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                 relatedEntityType: "SearchHire",

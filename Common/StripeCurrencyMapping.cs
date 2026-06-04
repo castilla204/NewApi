@@ -35,23 +35,35 @@ namespace newApi.Common
         /// para cualquier país EEA o desconocido (no rompe — Stripe rechazaría más tarde
         /// con un error claro si fuese país no soportado).
         /// </summary>
+        // 🛡️ Round 28: corregido mapping. Antes SE/DK/NO/LI/PL/HU/CZ/BG/RO estaban mapeados
+        // a "eur" (INCORRECTO). Cada país tiene su propia divisa local que Stripe espera
+        // como default_currency de la cuenta Connect. Fuente: docs.stripe.com/api/country_specs
         private static readonly Dictionary<string, string> CountryCurrency =
             new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase)
             {
-                // EEA — euro
-                { "AT", "eur" }, { "BE", "eur" }, { "BG", "eur" }, { "HR", "eur" },
-                { "CY", "eur" }, { "CZ", "eur" }, { "DK", "eur" }, { "EE", "eur" },
+                // ── Zona euro (20 países usan EUR como moneda oficial)
+                { "AT", "eur" }, { "BE", "eur" }, { "CY", "eur" }, { "EE", "eur" },
                 { "FI", "eur" }, { "FR", "eur" }, { "DE", "eur" }, { "GR", "eur" },
-                { "HU", "eur" }, { "IE", "eur" }, { "IT", "eur" }, { "LV", "eur" },
-                { "LT", "eur" }, { "LU", "eur" }, { "MT", "eur" }, { "NL", "eur" },
-                { "PL", "eur" }, { "PT", "eur" }, { "RO", "eur" }, { "SK", "eur" },
-                { "SI", "eur" }, { "ES", "eur" }, { "SE", "eur" }, { "NO", "eur" },
-                { "LI", "eur" },
-                // No-EEA soportados
+                { "HR", "eur" }, // Croacia adoptó EUR en 2023-01-01
+                { "IE", "eur" }, { "IT", "eur" }, { "LV", "eur" }, { "LT", "eur" },
+                { "LU", "eur" }, { "MT", "eur" }, { "NL", "eur" }, { "PT", "eur" },
+                { "SK", "eur" }, { "SI", "eur" }, { "ES", "eur" },
+                // ── EU/EEA no eurozona — divisa local
+                { "SE", "sek" },  // Suecia — corona sueca
+                { "DK", "dkk" },  // Dinamarca — corona danesa
+                { "NO", "nok" },  // Noruega — corona noruega (EEA, no UE)
+                { "PL", "pln" },  // Polonia — złoty
+                { "HU", "huf" },  // Hungría — forint (zero-decimal)
+                { "CZ", "czk" },  // República Checa — corona checa
+                { "BG", "bgn" },  // Bulgaria — lev
+                { "RO", "ron" },  // Rumanía — leu
+                // ── Suiza y Liechtenstein — franco suizo
+                { "CH", "chf" },
+                { "LI", "chf" },  // Liechtenstein usa CHF (no EUR)
+                // ── No-EEA soportados
+                { "GB", "gbp" },  // Reino Unido — libra esterlina
                 { "US", "usd" },
                 { "CA", "cad" },
-                { "GB", "gbp" },
-                { "CH", "chf" },
             };
 
         /// <summary>

@@ -1502,6 +1502,8 @@ builder.Services.AddScoped<StripeRefundService>();
 builder.Services.AddScoped<IStripeReconciliationService, StripeReconciliationService>(); // P2-5: conciliación diaria BD↔Stripe
 // 🛡️ Round 28 S2-P0-11: monitor del umbral OSS UE €10.000/año.
 builder.Services.AddScoped<newApi.Services.OssThresholdService>();
+// 🛡️ Round 28 MUD-BB: DAC7 modelo 238 anual (Directiva UE 2021/514).
+builder.Services.AddScoped<newApi.Services.Dac7AnnualReportService>();
 // 🛡️ Round 28 S2-P0-13: GDPR Art. 20 — exportación portable de datos del usuario.
 builder.Services.AddScoped<newApi.Services.DataPortabilityService>();
 builder.Services.AddScoped<IEmailService, EmailService>();
@@ -1912,6 +1914,18 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.OssThresholdService>(
     "oss-threshold-monthly",
     service => service.EmitAlertIfNeededAsync(default),
     Hangfire.Cron.Monthly(1, 4),
+    n29UtcOptions);
+
+// 🛡️ Round 28 MUD-BB: DAC7 modelo 238 — snapshot anual el día 20 de enero a las 2 UTC.
+// AEAT acepta el modelo 238 hasta el 31-enero del año siguiente. Generar el día 20 da
+// 11 días de margen para revisar manualmente datos faltantes (TIN/IBAN/DOB pendientes
+// de Dac7DataSyncService), corregir desde Stripe Dashboard y subir el XML.
+// El job es IDEMPOTENTE (re-ejecutar updatea filas existentes) → si el admin necesita
+// regenerar tras una corrección puede invocar /api/admin/dac7/generate/{year}.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.Dac7AnnualReportService>(
+    "dac7-annual-snapshot",
+    service => service.GenerateForYearAsync(DateTime.UtcNow.Year - 1, default),
+    "0 2 20 1 *", // 02:00 UTC el 20 de enero de cada año
     n29UtcOptions);
 
 // 🛡️ Round 16: cleanup diario de EmailVerificationCodes (OTPs no consumidos > 15 min).

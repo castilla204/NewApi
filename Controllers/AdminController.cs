@@ -27,13 +27,17 @@ namespace newApi.Controllers
         // 🛡️ Round 28 S2-P0-11: monitor del umbral OSS UE.
         private readonly OssThresholdService _ossThresholdService;
 
+        // 🛡️ Round 28 MUD-BB: servicio DAC7 modelo 238 (Directiva UE 2021/514).
+        private readonly Dac7AnnualReportService _dac7Service;
+
         public AdminController(
             AppDbContext context,
             StripeRefundService refundService,
             ILogger<AdminController> logger,
             IStripeConfigService stripeConfigService,
             IConfiguration configuration,
-            OssThresholdService ossThresholdService)
+            OssThresholdService ossThresholdService,
+            Dac7AnnualReportService dac7Service)
         {
             _context = context;
             _refundService = refundService;
@@ -41,6 +45,82 @@ namespace newApi.Controllers
             _stripeConfigService = stripeConfigService;
             _configuration = configuration;
             _ossThresholdService = ossThresholdService;
+            _dac7Service = dac7Service;
+        }
+
+        // ────────────────────────────────────────────────────────────────────
+        // 🛡️ Round 28 MUD-BB — DAC7 modelo 238 endpoints admin
+        // ────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Genera/actualiza Dac7SellerSnapshots para el año especificado.
+        /// Idempotente: re-ejecutar sobre el mismo año actualiza filas existentes con datos
+        /// agregados frescos (útil si cambia un hire post-cierre por dispute resolved).
+        /// </summary>
+        [HttpPost("dac7/generate/{year:int}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> GenerateDac7(int year, CancellationToken ct)
+        {
+            if (year < 2023 || year > DateTime.UtcNow.Year)
+            {
+                return BadRequest(new { message = $"Año inválido. DAC7 aplica desde 2023 y no se puede generar para años futuros." });
+            }
+            try
+            {
+                var count = await _dac7Service.GenerateForYearAsync(year, ct);
+                var reportable = await _dac7Service.CountReportableForYearAsync(year, ct);
+                return Ok(new
+                {
+                    year,
+                    snapshotsGenerated = count,
+                    sellersAboveThreshold = reportable,
+                    message = $"Snapshots generados/actualizados para {year}. {reportable} sellers cruzaron umbral DAC7 (>= €2.000 OR >= 30 tx). Descarga el XML en /api/admin/dac7/export/{year}."
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "MUD-BB: DAC7 generation failed for year {Year}", year);
+                return StatusCode(500, new { message = "Error al generar snapshots DAC7", error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Descarga el XML modelo 238 del año especificado. Solo incluye sellers que cruzaron
+        /// umbral (>= €2.000 OR >= 30 tx). Admin sube manualmente a sede.agenciatributaria.gob.es
+        /// antes del 31-enero del año siguiente.
+        /// </summary>
+        [HttpGet("dac7/export/{year:int}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> ExportDac7(int year, CancellationToken ct)
+        {
+            if (year < 2023 || year > DateTime.UtcNow.Year)
+            {
+                return BadRequest(new { message = $"Año inválido. DAC7 aplica desde 2023 y no se puede exportar para años futuros." });
+            }
+            try
+            {
+                var xml = await _dac7Service.ExportXmlForYearAsync(year, ct);
+                var bytes = System.Text.Encoding.UTF8.GetBytes(xml);
+                return File(bytes, "application/xml", $"modelo238_{year}.xml");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "MUD-BB: DAC7 export failed for year {Year}", year);
+                return StatusCode(500, new { message = "Error al exportar XML DAC7", error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Cuenta sellers que cruzarían el threshold DAC7 sin generar XML.
+        /// Útil para dashboard admin de estado fiscal: "tienes N expertos sujetos a DAC7 este año".
+        /// </summary>
+        [HttpGet("dac7/status/{year:int}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> Dac7Status(int year, CancellationToken ct)
+        {
+            var reportable = await _dac7Service.CountReportableForYearAsync(year, ct);
+            var totalSnapshots = await _context.Dac7SellerSnapshots.AsNoTracking().CountAsync(s => s.Year == year, ct);
+            return Ok(new { year, totalSnapshots, sellersAboveThreshold = reportable });
         }
 
         /// <summary>

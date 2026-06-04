@@ -21,6 +21,9 @@ namespace newApi.Services
         /// <summary>
         /// Eliminar tokens expirados o revocados que tengan más de 30 días
         /// </summary>
+        // 🛡️ Round 28 MUD-CG: lock multi-réplica. Cleanup diario; sin lock 2+ workers HPA
+        // hacen DELETE concurrente — no catastrófico pero genera contention. 5min sobra.
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 300)]
         public async Task CleanupExpiredTokensAsync()
         {
             try

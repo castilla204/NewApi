@@ -363,6 +363,46 @@ namespace newApi.Services
             {
                 if (string.IsNullOrEmpty(acctId)) return;
                 await DrainBalanceIfAnyAsync(acctId);
+
+                // 🛡️ Round 28 MUD-BE: re-leer balance JUSTO ANTES del Delete. Si entre el
+                // primer read (DrainBalanceIfAnyAsync líneas 287-340) y el Delete, un
+                // Transfer en vuelo aterriza en Pending (webhook PI capturado segundos antes
+                // de la mudanza), el primer log Critical MUD-AK no lo captura. La ventana
+                // típica es ~100-500ms pero con webhook latency Stripe (~1-3s) puede
+                // ocurrir si una compra justo concluyó. Sin servicios desactivados todavía
+                // (línea 397, tras este cleanup), LoadMoneyService sigue aceptando
+                // checkouts durante toda la ejecución.
+                try
+                {
+                    var balSvc2 = new BalanceService();
+                    var bal2 = await balSvc2.GetAsync(new RequestOptions { StripeAccount = acctId });
+                    if (bal2?.Pending != null)
+                    {
+                        foreach (var pending in bal2.Pending)
+                        {
+                            if (pending.Amount <= 0) continue;
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL MUD-BE: in-flight transfer landed in Pending between drain and delete",
+                                details: $"UserId {userId} acct {acctId}: en el segundo read del balance (post-drain, pre-delete) detectamos {pending.Amount / 100m:F2} {pending.Currency.ToUpperInvariant()} en Pending que NO existían en el primer read. Esto indica un Transfer en vuelo (webhook PI capturado entre Preflight y Cleanup). El dinero se pierde igual al Delete. ACCIÓN ADMIN: igual que MUD-AK — recuperar off-Stripe desde platform balance.",
+                                userId: userId,
+                                source: "ExpertRelocationService.MUD-BE.InFlightTransfer",
+                                relatedEntityType: "ExpertProfile",
+                                relatedEntityId: expertProfileId,
+                                additionalData: new { Amount = pending.Amount / 100m, Currency = pending.Currency.ToUpperInvariant(), StripeAccountId = acctId });
+                            stripeOps.Add(new { acctId, op = "inflight_pending_lost", amount = pending.Amount / 100m, currency = pending.Currency.ToUpperInvariant() });
+                        }
+                    }
+                }
+                catch (StripeException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    // Cuenta gone entre llamadas — proceder con el catch del Delete (también dará 404).
+                }
+                catch (System.Exception reReadEx)
+                {
+                    // Fallo en re-read: no abortamos, el primer read ya cubrió el caso normal.
+                    stripeOps.Add(new { acctId, op = "second_balance_read_failed", error = reReadEx.Message });
+                }
+
                 try
                 {
                     var svc = new AccountService();

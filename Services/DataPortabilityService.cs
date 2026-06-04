@@ -68,6 +68,12 @@ namespace newApi.Services
             public List<DisputeExport> DisputesReported { get; set; } = new();
             public List<MessageExport> MessagesSent { get; set; } = new();
             public List<AppointmentExport> Appointments { get; set; } = new();
+            // 🛡️ Round 28 MUD-BC: nuevos exports GDPR Art.20 completos.
+            public List<ServiceImageExport> ServiceImages { get; set; } = new();
+            public List<DeliverableExport> Deliverables { get; set; } = new();
+            // Si MessagesSent fue truncado (Take cap), avisamos explícitamente al usuario.
+            public bool MessagesTruncated { get; set; }
+            public int? MessagesTotalAvailable { get; set; }
 
             // Metadata
             public System.DateTime ExportedAt { get; set; } = System.DateTime.UtcNow;
@@ -161,6 +167,25 @@ namespace newApi.Services
             public int Id { get; set; }
             public string? Status { get; set; }
             public System.DateTime? ScheduledAt { get; set; }
+            public System.DateTime CreatedAt { get; set; }
+        }
+
+        // 🛡️ Round 28 MUD-BC: imágenes de servicios y entregables que el usuario subió.
+        // URLs públicas (Supabase Storage) — el usuario puede descargarlas con el link.
+        public class ServiceImageExport
+        {
+            public int ServiceId { get; set; }
+            public string? Url { get; set; }
+            public System.DateTime UploadedAt { get; set; }
+        }
+
+        public class DeliverableExport
+        {
+            public int Id { get; set; }
+            public int SearchHireId { get; set; }
+            public string? Url { get; set; }
+            public string? FileName { get; set; }
+            public string? Description { get; set; }
             public System.DateTime CreatedAt { get; set; }
         }
 
@@ -329,14 +354,22 @@ namespace newApi.Services
                 })
                 .ToListAsync(ct);
 
-            // Mensajes enviados: redactamos contenido si supera 2000 chars (audit lite — el contenido
-            // pertenece a la conversación con otros; bajo GDPR el dato es del usuario, así que se
-            // incluye en su totalidad). Para una versión completa, eliminar la limitación.
+            // 🛡️ Round 28 MUD-BC: GDPR Art. 20 requiere export COMPLETO. Antes truncábamos
+            // a 1000 messages SIN avisar al usuario → violación material. Ahora subimos a
+            // 100.000 (suficiente para usuarios activos) y si superan, marcamos flag
+            // MessagesTruncated=true + MessagesTotalAvailable para que sepa que tiene más.
+            // Para casos extremos (chats automatizados, scrapers), admin puede generar
+            // export ad-hoc por SQL directo.
+            const int MESSAGE_CAP = 100_000;
+            var totalMessages = await _context.Messages
+                .AsNoTracking()
+                .Where(m => m.SenderId == userId)
+                .CountAsync(ct);
             dto.MessagesSent = await _context.Messages
                 .AsNoTracking()
                 .Where(m => m.SenderId == userId)
-                .OrderByDescending(m => m.SentAt) // Message usa SentAt, no CreatedAt
-                .Take(1000) // hard cap para no explotar el payload
+                .OrderByDescending(m => m.SentAt)
+                .Take(MESSAGE_CAP)
                 .Select(m => new MessageExport
                 {
                     Id = m.Id,
@@ -344,6 +377,11 @@ namespace newApi.Services
                     CreatedAt = m.SentAt
                 })
                 .ToListAsync(ct);
+            if (totalMessages > MESSAGE_CAP)
+            {
+                dto.MessagesTruncated = true;
+                dto.MessagesTotalAvailable = totalMessages;
+            }
 
             dto.Appointments = await _context.Appointments
                 .AsNoTracking()
@@ -357,6 +395,36 @@ namespace newApi.Services
                 })
                 .ToListAsync(ct);
 
+            // 🛡️ Round 28 MUD-BC: imágenes de servicios subidas por el experto (datos del usuario).
+            dto.ServiceImages = await _context.SearchServiceImages
+                .AsNoTracking()
+                .Where(img => img.SearchService != null
+                           && img.SearchService.ExpertProfile != null
+                           && img.SearchService.ExpertProfile.UserId == userId)
+                .Select(img => new ServiceImageExport
+                {
+                    ServiceId = img.SearchServiceId,
+                    Url = img.ImageUrl,
+                    UploadedAt = img.CreatedAt
+                })
+                .ToListAsync(ct);
+
+            // 🛡️ Round 28 MUD-BC: entregables que el usuario subió (como experto) o recibió (como cliente).
+            dto.Deliverables = await _context.SearchHireDeliverables
+                .AsNoTracking()
+                .Where(d => d.SearchHire != null
+                         && (d.SearchHire.ExpertId == userId || d.SearchHire.ClientId == userId))
+                .Select(d => new DeliverableExport
+                {
+                    Id = d.Id,
+                    SearchHireId = d.SearchHireId,
+                    Url = d.Url,
+                    FileName = d.ObjectName,
+                    Description = d.Type,
+                    CreatedAt = d.CreatedAt
+                })
+                .ToListAsync(ct);
+
             // Auditoría AEPD: cada export se loguea como Information.
             await _loggingService.LogInfoAsync(
                 message: "GDPR Art. 20 — data export requested",
@@ -364,8 +432,10 @@ namespace newApi.Services
                          $"hires_client={dto.HiresAsClient.Count}, hires_expert={dto.HiresAsExpert.Count}, " +
                          $"services={dto.Services.Count}, reviews_given={dto.ReviewsGiven.Count}, " +
                          $"reviews_received={dto.ReviewsReceived.Count}, ft={dto.FinancialTransactions.Count}, " +
-                         $"disputes={dto.DisputesReported.Count}, messages={dto.MessagesSent.Count}, " +
-                         $"appointments={dto.Appointments.Count}.",
+                         $"disputes={dto.DisputesReported.Count}, messages={dto.MessagesSent.Count}" +
+                         (dto.MessagesTruncated ? $" (TRUNCATED de {dto.MessagesTotalAvailable})" : "") +
+                         $", appointments={dto.Appointments.Count}, service_images={dto.ServiceImages.Count}, " +
+                         $"deliverables={dto.Deliverables.Count}.",
                 userId: userId,
                 source: "DataPortabilityService.ExportUserDataAsync",
                 relatedEntityType: "User",

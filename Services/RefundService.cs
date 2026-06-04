@@ -1347,14 +1347,15 @@ namespace newApi.Services
                                     ExpertCountry = searchHire.ExpertCountry,
                                     Status = statusValue
                                 });
+                            // 🛡️ Round 28 MUD-AH (CRITICAL fix): antes hacíamos RollbackAsync + return false
+                            // → cliente NUNCA recibía su refund porque la rama del refund nunca corría.
+                            // Patrón paralelo al R14 (acct 404): saltar al refund block, marcar el transfer
+                            // como pendiente de revisión manual, dejar que el cliente reciba su reembolso.
+                            // Sin esto, "cliente pagó CHF + experto mudó a IE EUR + cancela" = client refund stranded forever.
                             searchHire.RequiresManualReview = true;
-                            searchHire.RefundFailedAt = DateTime.UtcNow;
+                            needsTransfer = false; // saltar al refund block
                             await _context.SaveChangesAsync();
-                            if (transaction != null)
-                            {
-                                await transaction.RollbackAsync();
-                            }
-                            return false;
+                            goto endTransferBlock;
                         }
 
                         var transferOptions = new TransferCreateOptions

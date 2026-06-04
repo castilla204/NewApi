@@ -4766,8 +4766,12 @@ namespace newApi.Controllers
                     BaseAmount = baseAmount, // Base sin IVA (€90.91) ✅ STRIPE TAX
                     TaxAmount = taxAmount, // IVA (€19.09) ✅ STRIPE TAX
                     // 🌍 Round 21: snapshot del currency del SearchService — inmutable durante toda la vida del hire.
-                    // Fallback "EUR" para defenderse de servicios legacy sin currency seteado.
-                    Currency = service.Currency ?? "EUR",
+                    // 🛡️ Round 28 MUD-AH (CRITICAL): preferimos sessionWithTax.Currency (lo que Stripe
+                    // realmente cobró tras MUD-6/7/9 override por divergencia con Stripe acct DefaultCurrency).
+                    // Antes guardábamos service.Currency stale → RefundService.cs:1332 abortaba TODOS los
+                    // transfers + refunds en hires donde el override ocurrió → money locked en
+                    // "RequiresManualReview" forever. Fallback "EUR" para defensiva legacy.
+                    Currency = (session?.Currency ?? service.Currency ?? "eur").ToUpperInvariant(),
                     CreatedAt = DateTime.UtcNow,
                     CompletionDeadline = DateTime.UtcNow.AddDays(7),
                     ExpertAvailabilityId = currentAvailabilityId, // Guardar la disponibilidad usada
@@ -5128,7 +5132,8 @@ namespace newApi.Controllers
                 {
                     await _loggingService.LogInfoAsync(
                         message: "Nueva contratación recibida",
-                        details: $"Has recibido una nueva contratación #{searchHireId} por {service.Price}€. Revisa los detalles y contacta con el cliente.", // ✅ FIX: Usar searchHireId guardado
+                        // 🛡️ MUD-AH: usar service.Currency para experts no-EUR.
+                        details: $"Has recibido una nueva contratación #{searchHireId} por {service.Price} {(service.Currency ?? "EUR").ToUpperInvariant()}. Revisa los detalles y contacta con el cliente.",
                         userId: expertuserid,
                         source: "SubscriptionController.HandlePendingHireCompleted",
                         relatedEntityType: "SearchHire",
@@ -8079,7 +8084,8 @@ namespace newApi.Controllers
 
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Payment intent failed",
-                    details: $"Payment intent {paymentIntent.Id} failed. Amount: {amount}€ {paymentIntent.Currency?.ToUpper()}. Error: {paymentIntent.LastPaymentError?.Message ?? "No error details"}, Code: {paymentIntent.LastPaymentError?.Code}, Type: {paymentIntent.LastPaymentError?.Type}, DeclineCode: {paymentIntent.LastPaymentError?.DeclineCode}",
+                    // 🛡️ MUD-AH: solo ISO currency (antes mezclaba € + ISO contradictorio).
+                    details: $"Payment intent {paymentIntent.Id} failed. Amount: {amount} {paymentIntent.Currency?.ToUpper() ?? "EUR"}. Error: {paymentIntent.LastPaymentError?.Message ?? "No error details"}, Code: {paymentIntent.LastPaymentError?.Code}, Type: {paymentIntent.LastPaymentError?.Type}, DeclineCode: {paymentIntent.LastPaymentError?.DeclineCode}",
                     userId: userId,
                     source: "SubscriptionController.HandlePaymentIntentFailed",
                     relatedEntityType: "Payment",
@@ -8691,7 +8697,8 @@ namespace newApi.Controllers
 
                 await _loggingService.LogWarningAsync(
                     message: "Payment intent canceled (deferred capture expired or voided)",
-                    details: $"PaymentIntent {paymentIntent.Id} canceled. Amount: {amount}€ {paymentIntent.Currency?.ToUpper()}. CancellationReason: {paymentIntent.CancellationReason ?? "n/a"}, Status: {paymentIntent.Status}.",
+                    // 🛡️ MUD-AH: solo ISO currency.
+                    details: $"PaymentIntent {paymentIntent.Id} canceled. Amount: {amount} {paymentIntent.Currency?.ToUpper() ?? "EUR"}. CancellationReason: {paymentIntent.CancellationReason ?? "n/a"}, Status: {paymentIntent.Status}.",
                     userId: userId,
                     source: "SubscriptionController.HandlePaymentIntentCanceled",
                     relatedEntityType: "Payment",

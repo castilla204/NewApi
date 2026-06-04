@@ -2071,20 +2071,48 @@ namespace newApi.Services
 
                 // Paso 1: Inactivar el servicio existente
                 existingService.IsActive = false;
+
+                // 🛡️ Round 28 MUD-AH (P0): re-validar Currency contra Stripe acct.DefaultCurrency.
+                // R27-T27-1-4 fija preservar la Currency del row existente, PERO si el row legacy
+                // tenía la moneda incorrecta (típicamente porque se creó antes de MUD-1, o porque
+                // el experto se mudó), ESTA es la oportunidad de auto-rebalancear. Sin esto, cada
+                // edit perpetuaba el currency_mismatch y bloqueaba transfers indefinidamente.
+                var currencyToUse = existingService.Currency ?? "EUR";
+                if (!string.IsNullOrEmpty(existingService.ExpertProfile?.StripeAccountId))
+                {
+                    try
+                    {
+                        var acctSvc = new Stripe.AccountService();
+                        var acct = await acctSvc.GetAsync(existingService.ExpertProfile.StripeAccountId);
+                        var acctDefault = (acct?.DefaultCurrency ?? "").Trim().ToUpperInvariant();
+                        if (!string.IsNullOrEmpty(acctDefault) && acctDefault != currencyToUse.ToUpperInvariant())
+                        {
+                            _logger.LogWarning(
+                                "MUD-AH: SearchService {ServiceId} Currency rebased on edit. BD='{Before}' Stripe acct DefaultCurrency='{After}'. Override evita currency_mismatch en próximo hire.",
+                                existingService.Id, currencyToUse, acctDefault);
+                            currencyToUse = acctDefault;
+                        }
+                    }
+                    catch (Stripe.StripeException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        // Acct 404 → mantener Currency original (no podemos re-validar).
+                    }
+                    catch (System.Exception ex)
+                    {
+                        _logger.LogWarning(ex, "MUD-AH: Stripe acct read failed during UpdateSearchService currency rebase");
+                    }
+                }
+
                 // Paso 2: Crear el nuevo servicio con los datos actualizados
-                // 🛡️ Round 27 — R27-T27-1-4 FIX: copiar Currency del servicio original. Antes
-                // este soft-replace OMITÍA Currency, así que la nueva fila caía al default del
-                // modelo ("EUR"). Cualquier experto UK/USD/MXN que editase el servicio quedaba
-                // con Currency=EUR; el siguiente hire se cobraba en EUR pero la cuenta Stripe
-                // Connect era GBP/USD/MXN → RefundService.cs:1313-1341 detectaba currency
-                // mismatch en cada transfer y marcaba RequiresManualReview=true para siempre.
+                // 🛡️ Round 27 — R27-T27-1-4 FIX: copiar Currency del servicio original (ahora con
+                // posible rebase MUD-AH si divergía de Stripe acct).
                 var newSearchService = new SearchService
                 {
                     ExpertProfileId = existingService.ExpertProfileId, // Mantener el mismo ExpertProfile
                     CategoryId = request.CategoryId,
                     ServiceTypeId = request.ServiceTypeId,
                     Price = request.Price,
-                    Currency = existingService.Currency, // ← R27-T27-1-4 FIX
+                    Currency = currencyToUse, // ← R27-T27-1-4 + MUD-AH
                     Conditions = request.Conditions,
                     DurationInHours = request.DurationInHours ?? 0,
                     CreatedAt = DateTime.UtcNow,
@@ -2120,7 +2148,7 @@ namespace newApi.Services
                         CategoryId = request.CategoryId,
                         ServiceTypeId = request.ServiceTypeId,
                         Price = request.Price,
-                        Currency = existingService.Currency, // ← R27-T27-1-4 FIX
+                        Currency = currencyToUse, // ← R27-T27-1-4 + MUD-AH (rebase si Stripe acct divergía)
                         Conditions = request.Conditions,
                         DurationInHours = request.DurationInHours ?? 0,
                         CreatedAt = DateTime.UtcNow,
@@ -2154,7 +2182,7 @@ namespace newApi.Services
                         CategoryId = request.CategoryId,
                         ServiceTypeId = request.ServiceTypeId,
                         Price = request.Price,
-                        Currency = existingService.Currency, // ← R27-T27-1-4 FIX
+                        Currency = currencyToUse, // ← R27-T27-1-4 + MUD-AH (rebase si Stripe acct divergía)
                         Conditions = request.Conditions,
                         DurationInHours = request.DurationInHours ?? 0,
                         CreatedAt = DateTime.UtcNow,

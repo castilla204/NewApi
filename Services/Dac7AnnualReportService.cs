@@ -139,17 +139,21 @@ namespace newApi.Services
                     };
                 }
 
-                snapshot!.LegalFirstName = user?.Name; // Aproximación; admin puede editar manualmente
-                snapshot.LegalLastName = null; // Splitting Name → FirstName/LastName requiere parseo no fiable
-                snapshot.DateOfBirth = null; // Pendiente Dac7DataSyncService desde Stripe.individual.dob
-                snapshot.TinCountry = user?.TaxIdCountry;
-                snapshot.TinValue = user?.TaxId;
-                snapshot.FiscalCountry = user?.FiscalCountry ?? profile?.Country;
-                snapshot.VatNumber = null; // Pendiente wiring desde Stripe tax_id
-                snapshot.AddressLine = null; // Pendiente
-                snapshot.AddressCity = null; // Pendiente
-                snapshot.AddressPostalCode = null; // Pendiente
-                snapshot.IbanLast4 = null; // Pendiente wiring desde Stripe external_accounts[0].last4
+                // 🛡️ Round 28 MUD-BS (follow-up MUD-BH/BF): NO destruir datos que el webhook
+                // Dac7DataSyncService ha ido sincronizando durante el año. ANTES estas
+                // asignaciones eran '=' incondicionales → el job anual @20-enero nulleaba
+                // DOB/Address/IbanLast4 que el webhook account.updated había acumulado todo
+                // el año → modelo 238 a AEAT con campos vacíos → multa €300/seller.
+                // Ahora usamos '??=' (asignar SOLO si null): el job solo PUEDE rellenar
+                // campos faltantes, NUNCA sobreescribir lo que el webhook ya capturó. Si el
+                // snapshot del año tiene datos legales completos vía webhook, queda intacto.
+                snapshot!.LegalFirstName ??= user?.Name;
+                // LegalLastName/DateOfBirth/AddressLine/AddressCity/AddressPostalCode/
+                // VatNumber/IbanLast4: SOLO los pone Dac7DataSyncService desde Stripe.account
+                // (más fiable que Users). El job anual ya no los toca.
+                snapshot.TinCountry ??= user?.TaxIdCountry;
+                snapshot.TinValue ??= user?.TaxId;
+                snapshot.FiscalCountry ??= user?.FiscalCountry ?? profile?.Country;
 
                 snapshot.GrossSalesQ1 = aggQ1.Gross;
                 snapshot.GrossSalesQ2 = aggQ2.Gross;

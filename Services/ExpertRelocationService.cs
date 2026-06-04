@@ -58,6 +58,11 @@ namespace newApi.Services
             public int ActiveServicesCount { get; set; }
             public string? CurrentCountry { get; set; }
             public string? StripeAccountId { get; set; }
+            // 🛡️ Round 28 MUD-AK: balance Stripe aún no liquidado (PIs capturados pero <2-7d antiguos).
+            // Si > 0, cerrar la cuenta ahora hace que el dinero revierta al platform → pérdida real.
+            // Se expone para que el frontend muestre el monto y avise al experto que espere al settlement.
+            public decimal PendingBalanceMajorUnits { get; set; }
+            public string? PendingBalanceCurrencies { get; set; } // "EUR:120.50,USD:30.00" para debug del wizard
         }
 
         public async Task<RelocationPreflightResult> PreflightAsync(int userId, CancellationToken ct = default)
@@ -104,9 +109,59 @@ namespace newApi.Services
                 .AsNoTracking()
                 .CountAsync(s => s.ExpertProfileId == profile.Id && s.IsActive, ct);
 
+            // 🛡️ Round 28 MUD-AK: leer balance Stripe (Available + Pending) para detectar
+            // dinero aún no liquidado. Si Pending > 0 (PI capturado pero <settlement window),
+            // bloqueamos la mudanza porque al cerrar la cuenta ese balance pendiente revierte
+            // al platform → pérdida real para el experto (no recuperable vía payout, no apta
+            // a TransferReversal). El experto debe esperar 2-7 días al settlement de Stripe.
+            decimal pendingMajor = 0m;
+            string? pendingCurrencies = null;
+            if (!string.IsNullOrEmpty(profile.StripeAccountId))
+            {
+                try
+                {
+                    var balSvc = new BalanceService();
+                    var bal = await balSvc.GetAsync(new RequestOptions { StripeAccount = profile.StripeAccountId });
+                    if (bal?.Pending != null && bal.Pending.Count > 0)
+                    {
+                        var parts = new List<string>();
+                        foreach (var p in bal.Pending)
+                        {
+                            if (p.Amount <= 0) continue;
+                            // Stripe zero-decimal vs estándar — usamos divisor 100 por defecto;
+                            // los zero-decimal (JPY/KRW) cuentan en unidades enteras pero la
+                            // comparación "tiene saldo" sigue siendo válida (Amount > 0).
+                            var major = p.Amount / 100m;
+                            pendingMajor += major;
+                            parts.Add($"{p.Currency.ToUpperInvariant()}:{major:F2}");
+                        }
+                        if (parts.Count > 0)
+                        {
+                            pendingCurrencies = string.Join(",", parts);
+                        }
+                    }
+                }
+                catch (StripeException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    // Cuenta no existe en Stripe → tratamos como sin pending.
+                }
+                catch (System.Exception readEx)
+                {
+                    // No bloqueamos si el read falla — mejor permitir mudanza con log warning
+                    // que dejar al experto atrapado por un fallo de Stripe API.
+                    await _loggingService.LogWarningAsync(
+                        message: "MUD-AK: failed to read Stripe Pending balance during preflight",
+                        details: $"UserId {userId} acct {profile.StripeAccountId}: {readEx.Message}. Continuamos preflight asumiendo Pending=0.",
+                        userId: userId,
+                        source: "ExpertRelocationService.MUD-AK.PendingReadFailed",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: profile.Id);
+                }
+            }
+
             var result = new RelocationPreflightResult
             {
-                CanProceed = pendingDisputes == 0 && activeHires == 0 && recentRefunds == 0,
+                CanProceed = pendingDisputes == 0 && activeHires == 0 && recentRefunds == 0 && pendingMajor <= 0m,
                 PendingDisputes = pendingDisputes,
                 ActiveHires = activeHires,
                 RecentRefunds = recentRefunds,
@@ -114,6 +169,8 @@ namespace newApi.Services
                 ActiveServicesCount = activeServicesCount,
                 CurrentCountry = profile.Country,
                 StripeAccountId = profile.StripeAccountId,
+                PendingBalanceMajorUnits = pendingMajor,
+                PendingBalanceCurrencies = pendingCurrencies,
             };
 
             if (pendingDisputes > 0)
@@ -127,6 +184,13 @@ namespace newApi.Services
             else if (recentRefunds > 0)
             {
                 result.BlockedReason = $"Hay {recentRefunds} refund(s) en las últimas 24h. Espera a su settlement Stripe antes de mudarte.";
+            }
+            else if (pendingMajor > 0m)
+            {
+                // 🛡️ Round 28 MUD-AK: bloqueo crítico. Stripe Pending = dinero capturado pero no
+                // liquidado (típico 2-7d). Cerrar ahora hace que ese balance se devuelve al
+                // platform → pérdida real para el experto. Se le pide esperar al settlement.
+                result.BlockedReason = $"Tienes {pendingCurrencies} pendiente(s) de liquidar en Stripe (cobros recientes). Espera 2-7 días al settlement antes de mudarte — si cierras la cuenta ahora, ese dinero se devuelve a la plataforma y NO podemos recuperarlo automáticamente.";
             }
 
             return result;
@@ -204,6 +268,30 @@ namespace newApi.Services
                     var balanceService = new BalanceService();
                     var reqOpts = new RequestOptions { StripeAccount = acctId };
                     var acctBalance = await balanceService.GetAsync(reqOpts);
+
+                    // 🛡️ Round 28 MUD-AK: si llegamos aquí con Pending>0, el preflight ha sido
+                    // bypaseado (force=true típicamente por admin). Loggear Critical porque
+                    // ese balance pendiente se va a perder al cerrar la cuenta — Stripe lo
+                    // devuelve al platform y NO hay TransferReversal posible (el dinero
+                    // todavía no estaba en Available, así que no hay charge.transfer.id
+                    // contra el que clawbackear). Es money loss real.
+                    if (acctBalance?.Pending != null)
+                    {
+                        foreach (var pending in acctBalance.Pending)
+                        {
+                            if (pending.Amount <= 0) continue;
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL MUD-AK: relocation closing Stripe acct with Pending balance — money will revert to platform",
+                                details: $"UserId {userId} acct {acctId}: tiene {pending.Amount / 100m:F2} {pending.Currency.ToUpperInvariant()} en Pending. Al cerrar la cuenta Stripe devuelve este balance al platform y NO hay forma de hacer clawback automático (no es Available, no hay transfer.id contra el que reversar). ACCIÓN ADMIN: enviar el dinero al experto manualmente desde el platform balance una vez Stripe libere el settlement (2-7d). force=true bypasea esta guarda — solo usar si el experto acepta la pérdida explícitamente.",
+                                userId: userId,
+                                source: "ExpertRelocationService.MUD-AK.PendingLoss",
+                                relatedEntityType: "ExpertProfile",
+                                relatedEntityId: expertProfileId,
+                                additionalData: new { Amount = pending.Amount / 100m, Currency = pending.Currency.ToUpperInvariant(), StripeAccountId = acctId });
+                            stripeOps.Add(new { acctId, op = "pending_balance_lost", amount = pending.Amount / 100m, currency = pending.Currency.ToUpperInvariant() });
+                        }
+                    }
+
                     if (acctBalance?.Available == null) return;
                     foreach (var avail in acctBalance.Available)
                     {

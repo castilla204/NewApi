@@ -2395,6 +2395,29 @@ namespace newApi.Services
                                 var balanceService = new Stripe.BalanceService();
                                 var stripeRequestOpts = new Stripe.RequestOptions { StripeAccount = stripeAccountIdToDelete };
                                 var acctBalance = await balanceService.GetAsync(stripeRequestOpts);
+
+                                // 🛡️ Round 28 MUD-AK: detectar balance Pending (PI capturado pero pre-settlement).
+                                // En GDPR delete NO podemos bloquear (el derecho al olvido es irrevocable: art. 17),
+                                // pero sí debemos avisar admin para clawback manual desde platform balance una vez
+                                // Stripe libere el settlement (2-7d). El dinero pendiente se devuelve al platform
+                                // al hacer Reject — no se pierde, pero queda en limbo administrativo.
+                                if (acctBalance.Pending != null)
+                                {
+                                    foreach (var pending in acctBalance.Pending)
+                                    {
+                                        if (pending.Amount <= 0) continue;
+                                        balancesSnapshot.Append($"pending={pending.Amount / 100m:F2} {pending.Currency.ToUpperInvariant()}; ");
+                                        await _loggingService.LogCriticalAsync(
+                                            message: "CRITICAL MUD-AK: account deletion with Pending Stripe balance — money will revert to platform",
+                                            details: $"UserId {userId} acct {stripeAccountIdToDelete}: tiene {pending.Amount / 100m:F2} {pending.Currency.ToUpperInvariant()} en Pending Stripe balance. Al hacer Delete/Reject este balance pendiente se devuelve al platform cuando Stripe libere el settlement (2-7d). NO es payout-able ahora (no es Available) y NO hay TransferReversal posible. ACCIÓN ADMIN: una vez Stripe libere el settlement, devolver el dinero al ex-experto manualmente desde el platform balance. Si el usuario es GDPR-deleted, este balance queda como ingreso platform si no se actúa.",
+                                            userId: userId,
+                                            source: "AccountDeletionService.MUD-AK.PendingLoss",
+                                            relatedEntityType: "ExpertProfile",
+                                            relatedEntityId: expertProfileId,
+                                            additionalData: new { Amount = pending.Amount / 100m, Currency = pending.Currency.ToUpperInvariant(), StripeAccountId = stripeAccountIdToDelete });
+                                    }
+                                }
+
                                 if (acctBalance.Available != null)
                                 {
                                     foreach (var avail in acctBalance.Available)

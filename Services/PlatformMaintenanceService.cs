@@ -505,10 +505,21 @@ namespace newApi.Services
                 // aprobado. La dedup escalonada se aplica DESPUÉS de cargar candidatos.
                 var candidates = await _context.ExpertProfiles
                     .Include(ep => ep.User)
+                    // 🛡️ MUD-DN — Antes filtrábamos solo Approved → expertos que ya cayeron a
+                    // ActionRequired/RequirementsDue/etc se quedaban sin recordatorios (ya tenían
+                    // un banner genérico pero el job de deadlines escalonada 14/7/3/1d nunca
+                    // disparaba para ellos). Resultado: pasaban de warning a PastDue sin alerta
+                    // urgente "te quedan 24h". Ampliamos a todos los estados donde el experto
+                    // PUEDE resolver el problema y donde la cuenta sigue gestionable.
                     .Where(ep => ep.StripeFutureDueAt != null
                               && ep.StripeFutureDueAt > now
                               && ep.StripeFutureDueAt <= deadline
-                              && ep.StripeStatus == DataLayer.Models.PostGresModels.StripeStatus.Approved
+                              && (ep.StripeStatus == DataLayer.Models.PostGresModels.StripeStatus.Approved
+                                  || ep.StripeStatus == DataLayer.Models.PostGresModels.StripeStatus.ActionRequired
+                                  || ep.StripeStatus == DataLayer.Models.PostGresModels.StripeStatus.RequirementsDue
+                                  || ep.StripeStatus == DataLayer.Models.PostGresModels.StripeStatus.RestrictedSoon
+                                  || ep.StripeStatus == DataLayer.Models.PostGresModels.StripeStatus.PendingVerification
+                                  || ep.StripeStatus == DataLayer.Models.PostGresModels.StripeStatus.UnderReview)
                               && ep.User != null
                               && !ep.User.IsDeleted)
                     .OrderBy(ep => ep.StripeFutureDueAt) // 🛡️ prioridad: deadlines más cercanos primero

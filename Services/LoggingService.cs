@@ -962,35 +962,60 @@ namespace newApi.Services
                 // Determinar el título y tipo de notificación según el nivel de log
                 var (title, notificationType) = GetNotificationTitleAndType(logLevel);
 
-                // 🛡️ LOTE D · D-24 — Throttle global de notificaciones duplicadas.
+                // 🛡️ LOTE D · D-24 (refinado por MUD-DL) — Throttle global por (UserId, Title, Message).
                 //
-                // ANTES: cada LogXxxAsync(notifyUser:true) creaba una fila en Notifications
-                // + un email vía Hangfire SIN deduplicación. Ejemplo real visto en prod:
-                // un webhook de Stripe con account.updated.action_required disparaba a la vez
-                // EvaluateStripeAccount y NotifyUpcomingStripeDeadlines en el mismo ciclo de
-                // sync — el experto recibía 2 notificaciones y 2 emails idénticos en <30s.
+                // ANTES MUD-DL: throttle solo por (UserId, Title). Pero el Title se colapsa a 5
+                // strings genéricos en GetNotificationTitleAndType ("❌ Error", "⚠️ Advertencia"...)
+                // → un Error de payout.failed suprimía durante 5min un Error de transfer.failed o
+                // refund.failed completamente NO relacionados. Pérdida silenciosa de avisos
+                // legítimos. Auditoría adversarial de 5 agentes detectó esto como P0.
                 //
-                // FIX: ventana de 5 minutos por (UserId, Title). Si ya existe una notificación
-                // con el mismo título en ese rango, no crear duplicado (ni fila ni email).
-                // Granularidad por Title (no Message) porque el mensaje varía con timestamps
-                // dinámicos (hoursLeft, deadlines) pero el title agrupa la naturaleza del aviso.
+                // AHORA: añade el Message exacto al hash. Dos avisos con mismo Title pero distinto
+                // Message ya no chocan. Mismo Title+Message en <5min (verdadero duplicado: mismo
+                // webhook retried) sí se suprime. Granularidad correcta sin perder señales.
+                var fullMessage = message;
+                if (!string.IsNullOrEmpty(details))
+                {
+                    fullMessage += $" - {details}";
+                }
                 var throttleWindowStart = DateTime.UtcNow.AddMinutes(-5);
                 var alreadyNotified = await context.Notifications
                     .AsNoTracking()
                     .AnyAsync(n => n.UserId == userId
                                 && n.Title == title
+                                && n.Message == fullMessage
                                 && n.CreatedAt > throttleWindowStart);
                 if (alreadyNotified)
                 {
-                    Console.WriteLine($"[LOGGING SERVICE] [D-24 THROTTLE] Notificación duplicada omitida para UserId={userId} Title='{title}' (ventana 5min).");
+                    Console.WriteLine($"[LOGGING SERVICE] [D-24/DL THROTTLE] Notificación duplicada omitida para UserId={userId} Title='{title}' (ventana 5min, match exacto title+message).");
                     return;
                 }
 
-                // Crear mensaje completo
-                var fullMessage = message;
-                if (!string.IsNullOrEmpty(details))
+                // 🛡️ MUD-DK — calcular Url (deep-link) para la fila Notification.
+                // ANTES: Url quedaba null porque ProcessUserNotificationAsync solo construía la URL
+                // del email. El inbox in-app mostraba el item pero sin "Ver detalles" porque la
+                // columna Url estaba vacía. Auditoría detectó que el cliente no podía navegar al
+                // recurso afectado desde el drawer.
+                string? notificationUrl = null;
+                if (relatedEntityType == "SearchHire" && relatedEntityId.HasValue)
                 {
-                    fullMessage += $" - {details}";
+                    notificationUrl = $"/detalles/{relatedEntityId.Value}";
+                }
+                else if (relatedEntityType == "Appointment" && relatedEntityId.HasValue)
+                {
+                    var appt = await context.Appointments
+                        .AsNoTracking()
+                        .Select(a => new { a.Id, a.SearchHireId })
+                        .FirstOrDefaultAsync(a => a.Id == relatedEntityId.Value);
+                    notificationUrl = appt != null ? $"/detalles/{appt.SearchHireId}" : "/appointments";
+                }
+                else if (relatedEntityType == "ExpertProfile")
+                {
+                    notificationUrl = "/expert-panel";
+                }
+                else if (relatedEntityType == "Refund" || relatedEntityType == "Payout" || relatedEntityType == "Transfer" || relatedEntityType == "Dispute")
+                {
+                    notificationUrl = "/transacciones";
                 }
 
                 // Crear notificación para el usuario
@@ -1002,7 +1027,8 @@ namespace newApi.Services
                     Type = notificationType,
                     UserId = userId,
                     Read = false,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = DateTime.UtcNow,
+                    Url = notificationUrl, // 🛡️ MUD-DK
                 };
 
                 context.Notifications.Add(notification);
@@ -1037,8 +1063,12 @@ namespace newApi.Services
                         templateHtml = "<html><body style='font-family:sans-serif;'><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
                     }
 
-                    // Preparar contenido (convertir saltos de línea a <br>)
-                    var formattedMessage = fullMessage?.Replace("\n", "<br>") ?? "";
+                    // 🛡️ MUD-DM — HtmlEncode antes de inyectar en el email.
+                    // ANTES: el `fullMessage` se interpolaba SIN encode en el body del email →
+                    // XSS via campos user-controlled (nombres de servicio, mensajes de error con
+                    // HTML, etc.). ProcessAdminNotificationAsync ya lo hace; aplicamos aquí también.
+                    var encodedMessage = System.Net.WebUtility.HtmlEncode(fullMessage ?? "");
+                    var formattedMessage = encodedMessage.Replace("\n", "<br>");
                     
                     var contentHtml = $@"
                         <p style='margin:0 0 12px 0;font-size:14px;line-height:22px;color:#374151;'>

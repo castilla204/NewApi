@@ -1,4 +1,5 @@
 using Hangfire;
+using newApi.Common; // 🛡️ MUD-BA: BackgroundLogger
 using Hangfire.Client;
 using Hangfire.Common;
 using Hangfire.Server;
@@ -58,7 +59,8 @@ namespace newApi.Services
                         var capturedExceptionMessage = exception?.Message;
                         var capturedRecipient = job.Job.Args.Count > 0 ? job.Job.Args[0]?.ToString() : null;
                         var capturedSubject = job.Job.Args.Count > 1 ? job.Job.Args[1]?.ToString() : null;
-                        _ = Task.Run(async () =>
+                        BackgroundLogger.FireAndForget(async () =>
+                        /* 🛡️ MUD-BA: captura excepciones */
                         {
                             try
                             {
@@ -110,7 +112,8 @@ namespace newApi.Services
                 {
                     var capturedHireId = failedHireId;
                     var capturedExceptionMessage = exception?.Message;
-                    _ = Task.Run(async () =>
+                    BackgroundLogger.FireAndForget(async () =>
+                    /* 🛡️ MUD-BA: captura excepciones */
                     {
                         try
                         {
@@ -153,7 +156,8 @@ namespace newApi.Services
                 {
                     
                     // Crear log crítico para alertar a soporte
-                    _ = Task.Run(async () =>
+                    BackgroundLogger.FireAndForget(async () =>
+                    /* 🛡️ MUD-BA: captura excepciones */
                     {
                         try
                         {

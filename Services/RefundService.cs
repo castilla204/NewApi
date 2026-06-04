@@ -48,23 +48,46 @@ namespace newApi.Services
         {
             try
             {
-                // 🛡️ Round 28 MUD-AM: el `SELECT ... FOR UPDATE` previo era no-op porque
-                // EF abría/cerraba una tx implícita por SELECT — el row-lock se liberaba
-                // al cerrar el cursor de FirstOrDefaultAsync (microsegundos), antes de
-                // que se procese el resto del método. Resultado: dos refunds concurrentes
-                // del MISMO searchHireId podían ejecutarse simultáneamente (idempotency
-                // de Stripe los des-duplicaba en su mayoría, pero la Fase 2 update de
-                // estado podía aplicarse dos veces).
+                // 🛡️ Round 28 MUD-AM (+ MUD-AP regression fix): el `SELECT ... FOR UPDATE`
+                // previo era no-op porque EF abría/cerraba una tx implícita por SELECT — el
+                // row-lock se liberaba al cerrar el cursor de FirstOrDefaultAsync.
                 //
-                // Fix: pg_advisory_xact_lock dentro de tx explícita. El advisory lock se
-                // mantiene HASTA el commit/rollback de la tx (no se libera por SaveChanges).
-                // Durante esta ventana, otro request con el mismo searchHireId se queda
-                // esperando. Cargamos el snapshot + commit → liberamos el lock antes de
-                // las llamadas Stripe (Fase 3) que pueden durar segundos. Las escrituras
-                // posteriores son protegidas por idempotency Stripe + checks de estado.
+                // MUD-AP: NO abrir tx propia si el caller ya tiene una. CancelService /
+                // ForceFinalize / ResolveDispute admin (SubscriptionController.cs:6172/6312/6497)
+                // abren tx exterior antes de llamar. EF Core lanza InvalidOperationException
+                // si BeginTransactionAsync se invoca con CurrentTransaction != null. Esa
+                // excepción caía en el outer catch genérico → todos los refunds desde esos
+                // 3 endpoints fallaban silenciosos con "ProcessMoneyDistributionAsync failed".
+                //
+                // Patrón correcto: detectar CurrentTransaction (igual que L647 y L1055 ya
+                // hacen para Phase 2). Si hay tx exterior, el pg_advisory_xact_lock atado
+                // a esa tx persiste hasta su commit/rollback del caller (mejor lifetime
+                // todavía). Si no hay, abrimos micro-tx propia que liberamos antes de
+                // Stripe calls.
                 SearchHire? searchHire;
-                using (var lockTx = await _context.Database.BeginTransactionAsync())
+                if (_context.Database.CurrentTransaction == null)
                 {
+                    using (var lockTx = await _context.Database.BeginTransactionAsync())
+                    {
+                        await _context.Database.ExecuteSqlInterpolatedAsync(
+                            $"SELECT pg_advisory_xact_lock({(long)searchHireId})");
+
+                        searchHire = await _context.SearchHires
+                            .Include(sh => sh.Status)
+                            .Include(sh => sh.Client)
+                            .Include(sh => sh.Expert)
+                                .ThenInclude(e => e.ExpertProfile)
+                            .Include(sh => sh.SearchService)
+                                .ThenInclude(ss => ss.ServiceType)
+                            .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
+
+                        await lockTx.CommitAsync();
+                    }
+                }
+                else
+                {
+                    // Tx exterior — reusar y atar el lock a su lifetime (mejor garantía:
+                    // el lock cubre TODO el flujo del caller, no solo el SELECT inicial).
                     await _context.Database.ExecuteSqlInterpolatedAsync(
                         $"SELECT pg_advisory_xact_lock({(long)searchHireId})");
 
@@ -76,8 +99,6 @@ namespace newApi.Services
                         .Include(sh => sh.SearchService)
                             .ThenInclude(ss => ss.ServiceType)
                         .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
-
-                    await lockTx.CommitAsync();
                 }
 
                 if (searchHire == null)

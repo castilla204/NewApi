@@ -4649,7 +4649,66 @@ namespace newApi.Controllers
                             relatedEntityId: null
                         );
                     }
-                    
+
+                    // 🛡️ Round 28 MUD-AO: persistir TaxId/FiscalCountry en Users (no solo en SearchHire).
+                    // Antes el NIF se guardaba SOLO en SearchHire.ClientVatNumber. Para DAC7 (EU Directive
+                    // 2021/514) la plataforma debe reportar TIN consolidado por seller cross-hire, no
+                    // por contratación individual. Sin esto, la generación del modelo 238 anual tiene
+                    // que reconstruir el TIN por aggregate del último hire de cada usuario — frágil y
+                    // pierde el TIN si el último hire es anonymizado por GDPR.
+                    try
+                    {
+                        var userToUpdate = await _context.Users
+                            .FirstOrDefaultAsync(u => u.Id == userId);
+                        if (userToUpdate != null)
+                        {
+                            var anyMutation = false;
+                            if (!string.IsNullOrWhiteSpace(clientVatNumber)
+                                && (string.IsNullOrWhiteSpace(userToUpdate.TaxId)
+                                    || !string.Equals(userToUpdate.TaxId, clientVatNumber, System.StringComparison.OrdinalIgnoreCase)))
+                            {
+                                userToUpdate.TaxId = clientVatNumber;
+                                userToUpdate.TaxIdCountry = clientVatCountryCode; // ej "ES", "DE"
+                                anyMutation = true;
+                            }
+                            // FiscalCountry desde customer_details.address.country (más fiable que el
+                            // VAT prefix para usuarios sin VAT — el VAT es opcional, address no).
+                            var customerCountry = sessionWithTax?.CustomerDetails?.Address?.Country;
+                            if (!string.IsNullOrWhiteSpace(customerCountry))
+                            {
+                                var normalized = customerCountry.Trim().ToUpperInvariant();
+                                if (!string.Equals(userToUpdate.FiscalCountry, normalized, System.StringComparison.Ordinal))
+                                {
+                                    userToUpdate.FiscalCountry = normalized;
+                                    userToUpdate.FiscalCountryChangedAt = DateTime.UtcNow;
+                                    anyMutation = true;
+                                }
+                            }
+                            if (anyMutation)
+                            {
+                                await _context.SaveChangesAsync();
+                                await _loggingService.LogInfoAsync(
+                                    message: "MUD-AO: Users tax fields synced from Stripe checkout",
+                                    details: $"User {userId}: TaxId={userToUpdate.TaxId}, TaxIdCountry={userToUpdate.TaxIdCountry}, FiscalCountry={userToUpdate.FiscalCountry} (from session {session.Id}). Used by DAC7 modelo 238 aggregation.",
+                                    userId: userId,
+                                    source: "SubscriptionController.HandlePendingHireCompleted.MUD-AO",
+                                    relatedEntityType: "User",
+                                    relatedEntityId: userId);
+                            }
+                        }
+                    }
+                    catch (Exception persistEx)
+                    {
+                        // No bloqueamos checkout por fallo de wiring fiscal — el SearchHire ya tiene el VAT.
+                        await _loggingService.LogWarningAsync(
+                            message: "MUD-AO: failed to persist Users tax fields (non-blocking)",
+                            details: $"User {userId} session {session.Id}: {persistEx.Message}. SearchHire.ClientVatNumber sigue con el dato; el wiring Users es defensa-en-profundidad para DAC7.",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted.MUD-AO",
+                            relatedEntityType: "User",
+                            relatedEntityId: userId);
+                    }
+
                     if (sessionWithTax.AmountTotal.HasValue)
                     {
                         totalAmount = sessionWithTax.AmountTotal.Value / 100m; // Total pagado (en centavos, dividir por 100)

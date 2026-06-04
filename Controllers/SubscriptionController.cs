@@ -7473,6 +7473,32 @@ namespace newApi.Controllers
         /// <summary>
         /// Convierte códigos de requisitos en descripciones amigables
         /// </summary>
+        // 🛡️ Round 28 MUD-BN: traducir failure codes de Stripe Payout a español humano.
+        // Lista oficial: https://docs.stripe.com/api/payouts/failures
+        private static string TranslatePayoutFailureCode(string? code)
+        {
+            if (string.IsNullOrEmpty(code)) return "motivo desconocido";
+            return code switch
+            {
+                "account_closed" => "tu cuenta bancaria está cerrada",
+                "account_frozen" => "tu cuenta bancaria está congelada (contacta con tu banco)",
+                "bank_account_restricted" => "tu cuenta tiene restricciones que impiden recibir transferencias",
+                "bank_ownership_changed" => "el titular de tu cuenta ha cambiado",
+                "could_not_process" => "el banco no pudo procesar la transferencia (suele resolverse al reintentar)",
+                "debit_not_authorized" => "tu cuenta no está autorizada para recibir desde Stripe",
+                "declined" => "tu banco rechazó la transferencia",
+                "incorrect_account_holder_name" => "el nombre del titular no coincide con el de la cuenta bancaria",
+                "incorrect_account_holder_address" => "la dirección del titular no coincide",
+                "incorrect_account_holder_tax_id" => "el NIF del titular no coincide",
+                "insufficient_funds" => "la cuenta de la plataforma no tiene fondos suficientes (admin debe revisar)",
+                "invalid_account_number" => "el número de cuenta es inválido",
+                "invalid_currency" => "la divisa no coincide con la cuenta bancaria",
+                "no_account" => "no se encontró la cuenta bancaria",
+                "unsupported_card" => "la tarjeta no soporta payouts",
+                _ => $"código '{code}' (consulta tu banco)"
+            };
+        }
+
         private string GetRequirementDescription(string requirement)
         {
             if (string.IsNullOrEmpty(requirement))
@@ -8134,24 +8160,58 @@ namespace newApi.Controllers
         {
             if (payout == null) return;
             var amount = payout.Amount / 100m;
+            var currency = (payout.Currency ?? "EUR").ToUpperInvariant();
+
+            // 🛡️ Round 28 MUD-BN: resolver el experto desde accountId para poder notificarle.
+            // ANTES los logs Critical iban con userId=null → admin recibía email pero el experto
+            // (cuyo banco rechazó el payout) NO se enteraba hasta revisar el panel por casualidad.
+            // Su dinero queda parado en Stripe Connect y él no sabe por qué no le llega.
+            int? expertUserId = null;
+            if (!string.IsNullOrEmpty(accountId))
+            {
+                try
+                {
+                    var expertProfileForPayout = await _context.ExpertProfiles
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(ep => ep.StripeAccountId == accountId);
+                    expertUserId = expertProfileForPayout?.UserId;
+                }
+                catch { /* best-effort, log Critical sigue con userId=null */ }
+            }
 
             if (string.Equals(eventType, "payout.failed", StringComparison.OrdinalIgnoreCase))
             {
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Payout failed",
-                    details: $"Payout {payout.Id} of {amount}€ failed for account '{accountId ?? "platform"}'. Reason: {payout.FailureMessage} ({payout.FailureCode}). ACTION REQUIRED: revisar saldo, configuración bancaria y reintentar el payout manualmente.",
-                    userId: null,
+                    details: $"Payout {payout.Id} of {amount} {currency} failed for account '{accountId ?? "platform"}'. Reason: {payout.FailureMessage} ({payout.FailureCode}). ACTION REQUIRED: revisar saldo, configuración bancaria y reintentar el payout manualmente.",
+                    userId: expertUserId,
                     source: "SubscriptionController.HandlePayoutEvent",
                     relatedEntityType: "Payout",
                     additionalData: new
                     {
                         PayoutId = payout.Id,
                         Amount = amount,
+                        Currency = currency,
                         AccountId = accountId,
                         payout.FailureMessage,
                         payout.FailureCode,
                         payout.Status
                     });
+
+                // 🛡️ MUD-BN: notificación in-app + email DEDICADA al experto. Mensaje específico
+                // con guía de acción (revisar cuenta bancaria en Stripe Dashboard).
+                if (expertUserId.HasValue)
+                {
+                    var failureExplanation = TranslatePayoutFailureCode(payout.FailureCode);
+                    await _loggingService.LogWarningAsync(
+                        message: "💸 No hemos podido enviarte un pago",
+                        details: $"Intentamos transferir {amount:F2} {currency} a tu cuenta bancaria pero el banco lo rechazó ({failureExplanation}). Tu dinero sigue seguro en tu balance Stripe; no se ha perdido. ACCIÓN: revisa los datos de tu cuenta bancaria en el panel Stripe (Banking → External accounts). Te volveremos a intentar el payout cuando corrijas los datos.",
+                        userId: expertUserId.Value,
+                        source: "SubscriptionController.HandlePayoutEvent.MUD-BN",
+                        relatedEntityType: "Payout",
+                        relatedEntityId: null,
+                        notifyUser: true);
+                }
             }
             else if (string.Equals(eventType, "payout.canceled", StringComparison.OrdinalIgnoreCase))
             {
@@ -8160,19 +8220,33 @@ namespace newApi.Controllers
                 // experto queda con el dinero "en el aire" y la plataforma no se entera.
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Payout canceled",
-                    details: $"Payout {payout.Id} of {amount}€ CANCELED for account '{accountId ?? "platform"}'. Reason: {payout.FailureMessage ?? "n/a"} ({payout.FailureCode ?? "n/a"}). ACTION REQUIRED: contactar al experto, revisar cuenta bancaria/KYC y reagendar el payout.",
-                    userId: null,
+                    details: $"Payout {payout.Id} of {amount} {currency} CANCELED for account '{accountId ?? "platform"}'. Reason: {payout.FailureMessage ?? "n/a"} ({payout.FailureCode ?? "n/a"}). ACTION REQUIRED: contactar al experto, revisar cuenta bancaria/KYC y reagendar el payout.",
+                    userId: expertUserId,
                     source: "SubscriptionController.HandlePayoutEvent",
                     relatedEntityType: "Payout",
                     additionalData: new
                     {
                         PayoutId = payout.Id,
                         Amount = amount,
+                        Currency = currency,
                         AccountId = accountId,
                         payout.FailureMessage,
                         payout.FailureCode,
                         payout.Status
                     });
+
+                // 🛡️ MUD-BN: notificar al experto también para payout.canceled.
+                if (expertUserId.HasValue)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "⏸️ Un pago a tu cuenta ha sido cancelado",
+                        details: $"Stripe canceló el envío de {amount:F2} {currency} a tu cuenta bancaria. Suele ocurrir cuando los datos bancarios no son válidos o la verificación KYC necesita actualizarse. Tu dinero sigue en tu balance Stripe (no se ha perdido). Revisa los datos de tu cuenta bancaria en el panel Stripe; un administrador puede contactarte si necesita más información.",
+                        userId: expertUserId.Value,
+                        source: "SubscriptionController.HandlePayoutEvent.MUD-BN",
+                        relatedEntityType: "Payout",
+                        relatedEntityId: null,
+                        notifyUser: true);
+                }
             }
             else
             {

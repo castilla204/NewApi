@@ -392,6 +392,29 @@ namespace newApi.Controllers
                 }
             }
 
+            // 🛡️ MUD-CY: errors[] array influye en el state final.
+            //
+            // ANTES: el array `requirements.errors[]` se recolectaba en `requirementErrors`
+            // pero SOLO se usaba para BuildStatusDetails (mostrar al usuario). Una cuenta
+            // con `currently_due=[]` pero `errors[]` poblado (típico: re-upload de
+            // documento fallido tras verificación) entraba al `else` final como
+            // `Approved` con un detail que listaba los errores, pero el banner/badge
+            // decía Aprobado → contradicción visual.
+            //
+            // Stripe docs: "Details about validation and verification failures for `due`
+            // requirements that must be resolved."
+            // https://docs.stripe.com/api/accounts/object#account_object-requirements-errors
+            //
+            // AHORA: si llegamos a `Approved` con errores acumulados, degradar a
+            // `ActionRequired` para que el experto reciba la notificación y el banner
+            // refleje la realidad. NO afecta a `Rejected`/`Restricted`/etc. (ya
+            // bloqueantes por su propia rama).
+            if (state.Status == StripeStatus.Approved && requirementErrors.Any())
+            {
+                state.Status = StripeStatus.ActionRequired;
+                state.OnboardingCompleted = false;
+            }
+
             state.StatusDetails = BuildStatusDetails(state);
             return state;
         }
@@ -510,6 +533,22 @@ namespace newApi.Controllers
                 case StripeStatus.Disabled:
                     await _loggingService.LogErrorAsync(
                         message: "Cuenta de Stripe restringida o deshabilitada",
+                        details: details,
+                        userId: expertProfile.UserId,
+                        source: source,
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: expertProfile.Id,
+                        notifyUser: true);
+                    break;
+                // 🛡️ MUD-CS: Deauthorized necesita notificación POR EMAIL al experto.
+                // ANTES caía en `default` con LogInfoAsync SIN notifyUser:true. La única
+                // notificación que llegaba era la in-app de `NotifyExpertOfAccountDeauthorization`
+                // (inserción manual en `Notifications`) — sin email. El experto que ya no
+                // miraba el panel se enteraba semanas después de que no podía cobrar.
+                // Ahora va por el canal estándar (in-app + email) como Rejected.
+                case StripeStatus.Deauthorized:
+                    await _loggingService.LogErrorAsync(
+                        message: "Tu cuenta de Stripe se ha desconectado",
                         details: details,
                         userId: expertProfile.UserId,
                         source: source,
@@ -2747,6 +2786,12 @@ namespace newApi.Controllers
                                 source: "SubscriptionController.account.application.deauthorized",
                                 relatedEntityType: "StripeAccount",
                                 relatedEntityId: null);
+                            // 🛡️ MUD-CW: cerrar el evento como "Skipped" para no dejarlo colgado en
+                            // "Processing" forever. Antes el `break` directo dejaba la fila huérfana
+                            // en `ProcessedWebhookEvent` → no se podía replay desde Dashboard y los
+                            // dashboards admin de webhook health la veían como "perdida".
+                            await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, accountId ?? string.Empty, null, "Skipped", "Deauthorization event without account id");
+                            eventMarkedProcessing = false;
                             break;
                         }
 
@@ -2762,6 +2807,9 @@ namespace newApi.Controllers
                                 source: "SubscriptionController.account.application.deauthorized",
                                 relatedEntityType: "StripeAccount",
                                 relatedEntityId: null);
+                            // 🛡️ MUD-CW: igual que arriba, no dejar el evento colgado.
+                            await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, accountId, null, "Skipped", "Expert profile not found");
+                            eventMarkedProcessing = false;
                             break;
                         }
 
@@ -3307,6 +3355,122 @@ namespace newApi.Controllers
                         }
                         await MarkEventAsProcessedAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account, null);
                         break;
+                    // 🛡️ MUD-CV: handler person.created/updated/deleted.
+                    //
+                    // Express con `business_type=individual` (caso típico marketplace ES) tiene
+                    // SIEMPRE un objeto Person separado representando al representative. Stripe
+                    // emite `person.updated` cuando cambia DOB, dirección, nombre, documento de
+                    // verificación, requirements.errors, etc. Estos cambios NO siempre escalan
+                    // inmediatamente a `account.updated` — concretamente, los `verification.errors`
+                    // a nivel Person pueden estar listos minutos antes que el rollup account.
+                    //
+                    // Antes: cayéndose al `default` perdíamos esa ventana. El experto subía un
+                    // documento mal, Stripe lo rechazaba a nivel Person, y nosotros no nos
+                    // enterábamos hasta que `requirements.past_due` escalase (peor UX).
+                    //
+                    // Ahora: re-fetch del Account live (`MUD-BT`-style) + re-evaluar + persistir.
+                    // Idempotencia por EventId evita re-proceso si llega también `account.updated`.
+                    //
+                    // Docs: https://docs.stripe.com/api/persons + https://docs.stripe.com/connect/handling-api-verification
+                    case "person.created":
+                    case "person.updated":
+                    case "person.deleted":
+                        {
+                            var personAccountId = stripeEvent.Account;
+                            if (string.IsNullOrEmpty(personAccountId))
+                            {
+                                await _loggingService.LogWarningAsync(
+                                    message: "MUD-CV: person.* event without account id",
+                                    details: $"event_id={stripeEvent.Id}, type={stripeEvent.Type}",
+                                    source: "SubscriptionController.person.MUD-CV",
+                                    relatedEntityType: "StripePerson");
+                                break;
+                            }
+
+                            try
+                            {
+                                var personProfile = await _context.ExpertProfiles
+                                    .FirstOrDefaultAsync(ep => ep.StripeAccountId == personAccountId || ep.PendingStripeAccountId == personAccountId);
+                                // Mirror MUD-M relocation guard: ignorar eventos rezagados para cuenta recién mudada.
+                                if (personProfile != null
+                                    && personProfile.RelocatedAt != null
+                                    && personProfile.RelocatedAt.Value > System.DateTime.UtcNow.AddMinutes(-15)
+                                    && !string.Equals(personProfile.StripeAccountId, personAccountId, System.StringComparison.Ordinal)
+                                    && !string.Equals(personProfile.PendingStripeAccountId, personAccountId, System.StringComparison.Ordinal))
+                                {
+                                    personProfile = null;
+                                }
+
+                                if (personProfile == null)
+                                {
+                                    // No perfil → log informativo, sin escándalo.
+                                    await _loggingService.LogInfoAsync(
+                                        message: "MUD-CV: person event for unknown account",
+                                        details: $"event_id={stripeEvent.Id} type={stripeEvent.Type} acct={personAccountId}",
+                                        source: "SubscriptionController.person.MUD-CV",
+                                        relatedEntityType: "StripePerson");
+                                    break;
+                                }
+
+                                // person.deleted: solo loguear, no re-evaluar (Stripe enviará account.updated).
+                                if (string.Equals(stripeEvent.Type, "person.deleted", System.StringComparison.OrdinalIgnoreCase))
+                                {
+                                    await _loggingService.LogInfoAsync(
+                                        message: "MUD-CV: person.deleted recibido (no requiere acción)",
+                                        details: $"acct={personAccountId} (espera el account.updated emparejado para re-evaluar).",
+                                        userId: personProfile.UserId,
+                                        source: "SubscriptionController.person.MUD-CV",
+                                        relatedEntityType: "ExpertProfile",
+                                        relatedEntityId: personProfile.Id);
+                                    break;
+                                }
+
+                                // person.created / person.updated → re-fetch live + re-evaluar.
+                                Stripe.Account? personLiveAccount = null;
+                                try
+                                {
+                                    personLiveAccount = await new Stripe.AccountService().GetAsync(personAccountId);
+                                }
+                                catch (Exception fetchEx)
+                                {
+                                    await _loggingService.LogWarningAsync(
+                                        message: "MUD-CV: fetch live Account falló tras person.*",
+                                        details: $"acct={personAccountId} type={stripeEvent.Type}: {fetchEx.Message}",
+                                        userId: personProfile.UserId,
+                                        source: "SubscriptionController.person.MUD-CV",
+                                        relatedEntityType: "ExpertProfile",
+                                        relatedEntityId: personProfile.Id);
+                                    break;
+                                }
+
+                                if (personLiveAccount == null) break;
+
+                                var previousPersonStatus = personProfile.StripeStatus;
+                                var personState = EvaluateStripeAccount(personLiveAccount);
+                                ApplyStripeAccountState(personProfile, personState);
+                                await _context.SaveChangesAsync();
+
+                                if (previousPersonStatus != personState.Status)
+                                {
+                                    await NotifyStripeStatusTransitionAsync(
+                                        personProfile,
+                                        previousPersonStatus,
+                                        personState,
+                                        $"SubscriptionController.{stripeEvent.Type}.MUD-CV");
+                                }
+                            }
+                            catch (Exception personEx)
+                            {
+                                await _loggingService.LogErrorAsync(
+                                    message: "MUD-CV: error procesando person.* event",
+                                    details: $"event_id={stripeEvent.Id} type={stripeEvent.Type} acct={personAccountId}: {personEx.Message}",
+                                    source: "SubscriptionController.person.MUD-CV",
+                                    relatedEntityType: "StripePerson",
+                                    additionalData: new { EventId = stripeEvent.Id, AccountId = personAccountId, Error = personEx.Message });
+                            }
+                            break;
+                        }
+
                     case "transfer.failed":
                         // 🔧 FIX B4: delega en el método compartido (también llamado desde /webhook-general,
                         // que es donde Stripe entrega los eventos de la cuenta PLATAFORMA en separate charges
@@ -3402,6 +3566,50 @@ namespace newApi.Controllers
                                             refreshedAccount = await accountService.GetAsync(capabilityAccountId);
                                             capabilityRefreshedState = EvaluateStripeAccount(refreshedAccount);
                                             ApplyStripeAccountState(capabilityProfile, capabilityRefreshedState);
+
+                                            // 🛡️ MUD-CX: propagar capability.Requirements (scoped) al StripeFutureRequirements.
+                                            //
+                                            // ANTES: EvaluateStripeAccount solo lee `account.Requirements` (rollup)
+                                            // y `account.FutureRequirements`. Stripe documenta que cada capability
+                                            // tiene SU PROPIO objeto requirements (https://docs.stripe.com/api/capabilities/object).
+                                            // Ejemplo real: `transfers.requirements.currently_due` =
+                                            // ["documents.bank_account_ownership_verification"] mientras que
+                                            // `account.requirements.currently_due` = [] (porque otras capabilities
+                                            // ya están OK y Stripe no siempre propaga al rollup).
+                                            //
+                                            // AHORA: añadimos los items de la capability (que NO estén ya en el
+                                            // FutureRequirements derivado del account-level) al final del listado
+                                            // para que el StripeStatusCard del experto los muestre. Traducidos con
+                                            // el mismo GetRequirementDescription que el resto.
+                                            try
+                                            {
+                                                var capabilityScoped = new List<string>();
+                                                if (capability.Requirements?.CurrentlyDue != null)
+                                                    capabilityScoped.AddRange(capability.Requirements.CurrentlyDue);
+                                                if (capability.Requirements?.PastDue != null)
+                                                    capabilityScoped.AddRange(capability.Requirements.PastDue);
+
+                                                if (capabilityScoped.Any())
+                                                {
+                                                    var existing = capabilityProfile.StripeFutureRequirements ?? string.Empty;
+                                                    var translatedScoped = capabilityScoped
+                                                        .Distinct(System.StringComparer.Ordinal)
+                                                        .Select(r => GetRequirementDescription(r))
+                                                        .Where(t => !string.IsNullOrWhiteSpace(t) && !existing.Contains(t, System.StringComparison.OrdinalIgnoreCase))
+                                                        .ToList();
+
+                                                    if (translatedScoped.Any())
+                                                    {
+                                                        var prefix = string.IsNullOrWhiteSpace(existing)
+                                                            ? string.Empty
+                                                            : existing.TrimEnd('.', ' ') + ", ";
+                                                        capabilityProfile.StripeFutureRequirements =
+                                                            $"{prefix}{string.Join(", ", translatedScoped)} (capability {capability.Id})";
+                                                    }
+                                                }
+                                            }
+                                            catch { /* propagación best-effort; no romper el handler */ }
+
                                             await _context.SaveChangesAsync();
                                         }
                                         catch (Exception evalEx)
@@ -7700,10 +7908,38 @@ namespace newApi.Controllers
                 "incorrect_account_holder_tax_id" => "el NIF del titular no coincide",
                 "insufficient_funds" => "la cuenta de la plataforma no tiene fondos suficientes (admin debe revisar)",
                 "invalid_account_number" => "el número de cuenta es inválido",
+                // 🛡️ MUD-CU: códigos adicionales 2024-2026 que faltaban.
+                "bank_account_unusable" => "tu cuenta bancaria no es válida para recibir transferencias (contacta con tu banco)",
+                "incorrect_account_type" => "el tipo de cuenta es incorrecto (corriente vs ahorros — revisa con tu banco)",
+                "invalid_account_number_length" => "el IBAN/número de cuenta tiene longitud incorrecta",
                 "invalid_currency" => "la divisa no coincide con la cuenta bancaria",
                 "no_account" => "no se encontró la cuenta bancaria",
                 "unsupported_card" => "la tarjeta no soporta payouts",
                 _ => $"código '{code}' (consulta tu banco)"
+            };
+        }
+
+        // 🛡️ MUD-CU: traducir failure_reason de Stripe Refund a español humano.
+        //
+        // ANTES: HandleChargeRefundUpdated interpolaba `refund.FailureReason` raw
+        // en la notificación al cliente → el cliente español veía "Motivo:
+        // lost_or_stolen_card" sin entender qué significaba → tickets soporte +
+        // posible chargeback formal por desconfianza.
+        //
+        // Lista oficial (7 valores): https://docs.stripe.com/api/refunds/object#refund_object-failure_reason
+        private static string TranslateRefundFailureReason(string? reason)
+        {
+            if (string.IsNullOrEmpty(reason)) return "el banco lo rechazó (motivo no especificado)";
+            return reason switch
+            {
+                "lost_or_stolen_card" => "la tarjeta fue reportada como perdida o robada",
+                "expired_or_canceled_card" => "la tarjeta original ha caducado o fue cancelada",
+                "charge_for_pending_refund_disputed" => "ya hay una disputa abierta por este pago",
+                "insufficient_funds" => "el banco no aceptó el reembolso por falta de fondos",
+                "declined" => "el banco rechazó el reembolso",
+                "merchant_request" => "el reembolso fue cancelado por la plataforma",
+                "unknown" => "el banco no especificó el motivo",
+                _ => $"código '{reason}' (consulta con soporte)"
             };
         }
 
@@ -8341,9 +8577,11 @@ namespace newApi.Controllers
                     {
                         var refundAmount = refund.Amount / 100m;
                         var refundCurrency = (refund.Currency ?? "eur").ToUpperInvariant();
+                        // 🛡️ MUD-CU: traducir el código raw de Stripe a español.
+                        var refundReasonTranslated = TranslateRefundFailureReason(refund.FailureReason);
                         await _loggingService.LogWarningAsync(
                             message: "💳 Hemos tenido un problema con tu reembolso",
-                            details: $"Tu reembolso de {refundAmount:F2} {refundCurrency} no se ha podido completar. Motivo: {refund.FailureReason ?? "el banco lo rechazó"}. Suele pasar cuando la tarjeta original ha caducado o se ha cerrado. NO te preocupes — el dinero sigue retenido y nuestro equipo te contactará en las próximas 24h para reintentar el reembolso (puede ser por transferencia bancaria alternativa). Ref interna: Refund {refund.Id}.",
+                            details: $"Tu reembolso de {refundAmount:F2} {refundCurrency} no se ha podido completar. Motivo: {refundReasonTranslated}. NO te preocupes — el dinero sigue retenido y nuestro equipo te contactará en las próximas 24h para reintentar el reembolso (puede ser por transferencia bancaria alternativa). Ref interna: Refund {refund.Id}.",
                             userId: localFt.UserId.Value,
                             source: "SubscriptionController.HandleChargeRefundUpdated.MUD-CF",
                             relatedEntityType: "Refund",

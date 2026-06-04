@@ -2733,6 +2733,63 @@ namespace newApi.Services
                     relatedEntityId: searchHireId);
                 return;
             }
+            // 🛡️ Round 28 MUD-BJ: experto ya retiró balance Stripe Connect a banco externo
+            // ANTES del chargeback. Stripe devuelve insufficient_funds_for_transfer_reversal
+            // o balance_insufficient. SIN este catch, caía al genérico → Hangfire reintenta
+            // infinitamente → spam Critical sin auto-resolver → pérdida silente platform.
+            // Mismo patrón que MUD-AV en ProcessMoneyDistributionAsync (clawback): inserta
+            // FT marker Amount=0 para que reentries lo detecten + log Critical UNA vez +
+            // encola en ClawbackQueues para dashboard admin + NO throw (no Hangfire retry).
+            catch (StripeException balCbEx) when (
+                balCbEx.StripeError?.Code == "insufficient_funds_for_transfer_reversal"
+                || balCbEx.StripeError?.Code == "balance_insufficient")
+            {
+                _context.FinancialTransactions.Add(new FinancialTransaction
+                {
+                    UserId = payout.UserId,
+                    Amount = 0m,
+                    AmountCents = 0,
+                    Currency = payout.Currency ?? "EUR",
+                    TransactionType = "ChargebackReversal",
+                    RelatedEntityType = "SearchHire",
+                    RelatedEntityId = searchHireId,
+                    StripeTransferId = payout.StripeTransferId,
+                    StripePaymentIntentId = payout.StripePaymentIntentId,
+                    CreatedAt = DateTime.UtcNow
+                });
+                try { await _context.SaveChangesAsync(); }
+                catch (Exception persistEx2)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL MUD-BJ: failed to persist chargeback-impossible marker",
+                        details: $"SearchHire {searchHireId} Stripe code={balCbEx.StripeError?.Code} persist falló: {persistEx2.Message}. Hangfire podría reintentar — admin debe insertar manualmente FT ChargebackReversal marker.",
+                        userId: payout.UserId,
+                        source: "StripeRefundService.ReverseExpertTransferForChargebackAsync.MUD-BJ.PersistFailed",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId);
+                }
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL MUD-BJ: chargeback reversal impossible — expert already withdrew balance",
+                    details: $"SearchHire {searchHireId}: Stripe '{balCbEx.StripeError?.Code}' al revertir transfer {payout.StripeTransferId} ({reverseAmount:F2} {payout.Currency}). Experto retiró el balance Stripe Connect a banco externo ANTES del chargeback. Sin reversal posible. ACCIÓN ADMIN: (a) reclamar off-Stripe (transferencia directa expert→platform) o (b) absorber pérdida. NO se reintenta (FT marker insertada). Cliente sigue refundado por el chargeback Stripe.",
+                    userId: payout.UserId,
+                    source: "StripeRefundService.ReverseExpertTransferForChargebackAsync.MUD-BJ.WithdrawnBalance",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId,
+                    additionalData: new { TransferId = payout.StripeTransferId, ReverseAmount = reverseAmount, Currency = payout.Currency, StripeError = balCbEx.StripeError?.Code },
+                    notifyUser: true);
+                if (_clawbackQueue != null && payout.UserId.HasValue)
+                {
+                    await _clawbackQueue.EnqueueAsync(
+                        userId: payout.UserId.Value,
+                        stripeAccountId: null, // payout no tiene acctId directo aquí
+                        amountMajor: reverseAmount,
+                        currency: payout.Currency ?? "EUR",
+                        reason: "WithdrawnBalance",
+                        notes: $"Chargeback reversal impossible: experto retiró balance pre-chargeback ({balCbEx.StripeError?.Code}). Transfer {payout.StripeTransferId}. Reason: {reason}",
+                        searchHireId: searchHireId);
+                }
+                return;
+            }
             catch (Exception ex)
             {
                 await _loggingService.LogCriticalAsync(

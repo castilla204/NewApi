@@ -2399,6 +2399,28 @@ namespace newApi.Services
                                     relatedEntityId: expertProfileId);
                             }
 
+                            // 🛡️ Round 28 MUD-CN (follow-up MUD-CH): si preCheckAcct quedó null
+                            // porque la llamada Stripe del MUD-AI lanzó (timeout, 429, 5xx),
+                            // intentamos un SEGUNDO fetch dedicado a DAC7. Sin esto el sync se
+                            // saltaba silenciosamente y el snapshot quedaba con datos viejos.
+                            if (preCheckAcct == null && _dac7DataSync != null)
+                            {
+                                try
+                                {
+                                    preCheckAcct = await new Stripe.AccountService().GetAsync(stripeAccountIdToDelete);
+                                }
+                                catch (Exception fetchAgainEx)
+                                {
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL MUD-CN: DAC7 sync skipped — both Stripe fetches failed pre-delete",
+                                        details: $"UserId {userId} acct {stripeAccountIdToDelete}: dos intentos Stripe.AccountService.GetAsync fallaron. Snapshot DAC7 del año vigente NO recibe los últimos datos legales (DOB/Address/IBAN). Si el experto cruzó umbral DAC7 (>= €2.000 o >= 30 tx), el modelo 238 puede salir con campos vacíos → multa €600/seller. ACCIÓN ADMIN: completar manualmente Dac7SellerSnapshots desde Stripe Dashboard ANTES del Stripe.Account.Delete (que ocurre a continuación). Error: {fetchAgainEx.Message}.",
+                                        userId: userId,
+                                        source: "AccountDeletionService.MUD-CN.DAC7SkipDueToStripeFailure",
+                                        relatedEntityType: "ExpertProfile",
+                                        relatedEntityId: expertProfileId);
+                                }
+                            }
+
                             // 🛡️ Round 28 MUD-CH: sync FINAL DAC7 antes de Stripe.Account.Delete.
                             // El experto puede haber actualizado DOB/Address/IBAN entre el último
                             // webhook account.updated y el delete. Tras Stripe.Account.Delete los

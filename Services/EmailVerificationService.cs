@@ -358,6 +358,10 @@ namespace newApi.Services
         }
 
         /// <inheritdoc />
+        // 🛡️ Round 28 MUD-CP (follow-up MUD-CG): único RecurringJob sin DCE en el inventario.
+        // El DELETE es idempotente pero en HPA multi-réplica Render 2 workers pueden emitir
+        // logs inflados ("[OTP-CLEANUP] Borrados N" con N agregando por race). 5min sobra.
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 300)]
         public async Task<int> CleanupExpiredCodesAsync()
         {
             // Borra todas las filas con ConsumedAt=null AND CreatedAt < ahora - 15min.

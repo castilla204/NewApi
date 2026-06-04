@@ -27,9 +27,9 @@ namespace newApi.Services
     public class Dac7DataSyncService
     {
         private readonly AppDbContext _context;
-        private readonly LoggingService _loggingService;
+        private readonly ILoggingService _loggingService;
 
-        public Dac7DataSyncService(AppDbContext context, LoggingService loggingService)
+        public Dac7DataSyncService(AppDbContext context, ILoggingService loggingService)
         {
             _context = context;
             _loggingService = loggingService;

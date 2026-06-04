@@ -39,9 +39,9 @@ namespace newApi.Services
     public class Dac7AnnualReportService
     {
         private readonly AppDbContext _context;
-        private readonly LoggingService _loggingService;
+        private readonly ILoggingService _loggingService;
 
-        public Dac7AnnualReportService(AppDbContext context, LoggingService loggingService)
+        public Dac7AnnualReportService(AppDbContext context, ILoggingService loggingService)
         {
             _context = context;
             _loggingService = loggingService;

@@ -542,9 +542,27 @@ namespace newApi.Controllers
                 // DeleteAsync/RejectAsync), evitamos que ApplyStripeAccountState sobrescriba
                 // StripeStatus + StripeStatusDetails recién reseteados — el experto vería
                 // "cuenta rechazada" en lugar de la guía hacia /become-expert.
+                //
+                // 🛡️ Round 28 MUD-CR (CRITICAL fix MUD-M): si account.Id COINCIDE con el
+                // StripeAccountId/PendingStripeAccountId ACTUAL del profile, NO es un webhook
+                // tardío de la cuenta vieja — es la cuenta NUEVA recién creada post-mudanza
+                // (porque StripeAccountId vacío + se asigna a la nueva tras autorización).
+                // MUD-M solo debe bloquear cuando account.Id pertenece a la cuenta VIEJA
+                // (que ya fue Delete/Reject y NO matchea con StripeAccountId actual).
+                //
+                // Comportamiento original BUG: experto mudó GB→CA → cuenta nueva
+                // acct_X creada → 9 webhooks account.updated llegan en los 15 min
+                // posteriores → TODOS skipped "Expert profile not found" → BD queda
+                // stale en PendingVerification mientras Stripe live muestra Approved.
+                bool accountIdMatchesCurrent =
+                    string.Equals(profile.StripeAccountId, account.Id, System.StringComparison.Ordinal)
+                    || string.Equals(profile.PendingStripeAccountId, account.Id, System.StringComparison.Ordinal);
+
                 if (profile.RelocatedAt != null
-                    && profile.RelocatedAt.Value > System.DateTime.UtcNow.AddMinutes(-15))
+                    && profile.RelocatedAt.Value > System.DateTime.UtcNow.AddMinutes(-15)
+                    && !accountIdMatchesCurrent)
                 {
+                    // Cuenta vieja (no matches current) + reloc reciente → es webhook tardío.
                     return null;
                 }
                 return profile;

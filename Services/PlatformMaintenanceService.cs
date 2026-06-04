@@ -463,36 +463,73 @@ namespace newApi.Services
                 // ventana de 3 días emitía LogWarningAsync(notifyUser=true) → nueva Notification
                 // + email. SIN throttle. Un experto con deadline a 70h recibía la misma alerta
                 // 3 días seguidos antes de que el deadline pasara → banner blindness + waste
-                // de SMTP/Hangfire. El comment original del método postulaba que cambiar el
-                // StripeStatus pararía el spam, pero el status QUEDA Approved durante toda la
-                // ventana de 3 días por definición (FutureDueAt es un plazo futuro).
-                // AHORA: query Notifications de las últimas 23h con título prefijo
-                // "⏰ Plazo Stripe próximo" y excluimos esos UserIds. 23h < 24h (gap entre runs)
-                // garantiza que al día siguiente la dedup expira limpiamente sin saltar uno.
-                var dedupCutoff = now.AddHours(-23);
-                var alreadyNotifiedUserIds = await _context.Notifications
+                // 🛡️ Round 28 MUD-CC: dedup ESCALONADA según proximidad del deadline.
+                //
+                // ANTES: dedup uniforme de 23h. Con ventana 14d (MUD-BO), un experto recibía
+                // hasta 14 emails idénticos en 2 semanas → banner-blindness severo.
+                //
+                // AHORA: notificar solo en hitos significativos — 14, 7, 3, 1 días antes
+                // del deadline. Implementación: dedup escalonada por "ventana hasta el
+                // anterior hito":
+                //   - Si deadline > 7d (hito día 14): dedup últimos 6d antes de re-avisar
+                //   - Si 3d < deadline ≤ 7d (hito día 7): dedup últimos 3d
+                //   - Si 1d < deadline ≤ 3d (hito día 3): dedup últimos 1d
+                //   - Si deadline ≤ 1d (hito día 1, urgente): dedup últimas 23h (como antes)
+                // Resultado: max 4 emails durante toda la ventana de 14d en lugar de 14.
+                //
+                // El job sigue corriendo diario. Cada experto se filtra por una de 4 ventanas
+                // de dedup según su deadline. Si el deadline pasa de 8d → 6d, se mete en el
+                // bucket "≤7d" y la dedup correspondiente expira limpiamente → nueva notif.
+                var hoursLeftPerCutoff = new {
+                    UrgentDeadlineCutoff = now.AddHours(-23),    // ≤ 1d
+                    ShortDeadlineCutoff = now.AddDays(-1),        // 1-3d
+                    MediumDeadlineCutoff = now.AddDays(-3),       // 3-7d
+                    LongDeadlineCutoff = now.AddDays(-6),         // 7-14d
+                };
+
+                // Pre-cargar notificaciones de hasta 14d (el peor caso de dedup que aplicará).
+                // Filtramos en memoria luego por ventana específica.
+                var oldestRelevant = now.AddDays(-7);
+                var recentDeadlineNotifications = await _context.Notifications
                     .AsNoTracking()
                     .Where(n => n.UserId != null
-                                && n.CreatedAt >= dedupCutoff
+                                && n.CreatedAt >= oldestRelevant
                                 && n.Title.StartsWith("⏰ Plazo Stripe próximo"))
-                    .Select(n => n.UserId!.Value)
-                    .Distinct()
+                    .Select(n => new { UserId = n.UserId!.Value, n.CreatedAt })
                     .ToListAsync();
+                var lastNotifByUser = recentDeadlineNotifications
+                    .GroupBy(n => n.UserId)
+                    .ToDictionary(g => g.Key, g => g.Max(n => n.CreatedAt));
 
-                // Filtro: deadline en próximos 3 días, todavía no past_due, experto aprobado
-                // (los que ya están en RequirementsDue/RestrictedSoon ya recibieron notificación
-                // vía NotifyStripeStatusTransitionAsync al cambiar de estado), Y no avisado en 23h.
-                var experts = await _context.ExpertProfiles
+                // Filtro: deadline en próximos 14 días (MUD-BO), todavía no past_due, experto
+                // aprobado. La dedup escalonada se aplica DESPUÉS de cargar candidatos.
+                var candidates = await _context.ExpertProfiles
                     .Include(ep => ep.User)
                     .Where(ep => ep.StripeFutureDueAt != null
                               && ep.StripeFutureDueAt > now
                               && ep.StripeFutureDueAt <= deadline
                               && ep.StripeStatus == DataLayer.Models.PostGresModels.StripeStatus.Approved
                               && ep.User != null
-                              && !ep.User.IsDeleted
-                              && !alreadyNotifiedUserIds.Contains(ep.UserId)) // ← R27-T27-2 FIX
-                    .Take(100) // paginar por seguridad si hay backlog
+                              && !ep.User.IsDeleted)
+                    .OrderBy(ep => ep.StripeFutureDueAt) // 🛡️ prioridad: deadlines más cercanos primero
+                    .Take(200) // ampliado de 100 con ventana 14d
                     .ToListAsync();
+
+                // Aplicar dedup escalonada en memoria.
+                var experts = candidates.Where(ep =>
+                {
+                    if (!lastNotifByUser.TryGetValue(ep.UserId, out var lastNotif))
+                    {
+                        return true; // nunca notificado → enviar
+                    }
+                    var hoursLeftForExpert = (ep.StripeFutureDueAt!.Value - now).TotalHours;
+                    DateTime applicableCutoff;
+                    if (hoursLeftForExpert <= 24) applicableCutoff = hoursLeftPerCutoff.UrgentDeadlineCutoff;
+                    else if (hoursLeftForExpert <= 72) applicableCutoff = hoursLeftPerCutoff.ShortDeadlineCutoff;
+                    else if (hoursLeftForExpert <= 168) applicableCutoff = hoursLeftPerCutoff.MediumDeadlineCutoff;
+                    else applicableCutoff = hoursLeftPerCutoff.LongDeadlineCutoff;
+                    return lastNotif < applicableCutoff;
+                }).ToList();
 
                 foreach (var ep in experts)
                 {

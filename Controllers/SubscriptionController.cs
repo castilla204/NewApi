@@ -3118,6 +3118,56 @@ namespace newApi.Controllers
                                     await HandleApprovedAccountRejection(profileToUpdate.Id,
                                         state.DisabledReason ?? $"account_updated_to_{state.Status}");
                                 }
+
+                                // 🛡️ Round 28 MUD-CB: recovery automático — si la cuenta vuelve a
+                                // Approved desde un estado de bloqueo (Rejected/Disabled/Restricted/
+                                // Deauthorized), los hires que quedaron con RequiresManualReview=true
+                                // por la rejection anterior se vuelven backlog falso (el experto ya
+                                // está operativo, esos hires probablemente fueron refunded en su
+                                // momento). Sin limpieza, admin ve indefinidamente flags zombi.
+                                //
+                                // Solo limpiamos flags en hires que estén en estado FINALIZADO
+                                // (Cancelled, Completed, dispute_resolved_*) — los activos siguen
+                                // necesitando review real.
+                                var wasBlocked = currentPreviousStatus == StripeStatus.Rejected
+                                              || currentPreviousStatus == StripeStatus.Disabled
+                                              || currentPreviousStatus == StripeStatus.Restricted
+                                              || currentPreviousStatus == StripeStatus.Deauthorized;
+                                if (wasBlocked && state.Status == StripeStatus.Approved)
+                                {
+                                    try
+                                    {
+                                        var clearedCount = await _context.SearchHires
+                                            .Include(sh => sh.Status)
+                                            .Where(sh => sh.ExpertId == profileToUpdate.UserId
+                                                      && sh.RequiresManualReview == true
+                                                      && sh.Status != null
+                                                      && sh.Status.IsFinalizationStatus)
+                                            .ExecuteUpdateAsync(set => set
+                                                .SetProperty(sh => sh.RequiresManualReview, false)
+                                                .SetProperty(sh => sh.UpdatedAt, DateTime.UtcNow));
+                                        if (clearedCount > 0)
+                                        {
+                                            await _loggingService.LogInfoAsync(
+                                                message: $"MUD-CB: auto-cleared {clearedCount} RequiresManualReview flags on account recovery",
+                                                details: $"ExpertProfile {profileToUpdate.Id} (UserId {profileToUpdate.UserId}) transitioned {currentPreviousStatus} → Approved. {clearedCount} hires en estado finalizado tenían RequiresManualReview=true por el bloqueo previo — limpiados automáticamente. Admin ya no los verá en backlog.",
+                                                userId: profileToUpdate.UserId,
+                                                source: "SubscriptionController.account.updated.MUD-CB",
+                                                relatedEntityType: "ExpertProfile",
+                                                relatedEntityId: profileToUpdate.Id);
+                                        }
+                                    }
+                                    catch (Exception clearEx)
+                                    {
+                                        // Non-blocking — flags zombi no son bloqueantes para el webhook.
+                                        await _loggingService.LogWarningAsync(
+                                            message: "MUD-CB: failed to clear RequiresManualReview flags",
+                                            details: $"ExpertProfile {profileToUpdate.Id}: {clearEx.Message}. Flags zombi se quedan en BD; admin debe limpiarlos a mano si quiere.",
+                                            source: "SubscriptionController.account.updated.MUD-CB",
+                                            relatedEntityType: "ExpertProfile",
+                                            relatedEntityId: profileToUpdate.Id);
+                                    }
+                                }
                                 
                                 await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, profileToUpdate.UserId);
                         }

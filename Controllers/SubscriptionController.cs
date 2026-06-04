@@ -3381,18 +3381,23 @@ namespace newApi.Controllers
                                                 "SubscriptionController.capability.updated");
                                         }
 
-                                        // 🛡️ Round 28 MUD-BK: NO cancelar hires por card_payments inactive si
+                                        // 🛡️ Round 28 MUD-BK + MUD-BY: NO cancelar hires por card_payments inactive si
                                         // transfers sigue active. En US/CA/GB la capability card_payments es
                                         // "latente" (Stripe la exige por KYC pero el flujo separate-charges
                                         // de la plataforma no la usa — clientes pagan a platform, platform
                                         // transfiere via capability transfers). Cancelar hires destruye
-                                        // servicios contratados sin razón financiera real. Solo procedemos
-                                        // si transfers también está inactive o payouts_enabled=false.
-                                        var transfersStillActive = refreshedAccount?.Capabilities?.Transfers == "active";
+                                        // servicios contratados sin razón financiera real.
+                                        //
+                                        // MUD-BY: distinguir transfers="pending" (transitorio: Stripe re-verificando
+                                        // KYC, dura minutos a horas) de transfers="inactive" (permanente, requiere
+                                        // intervención). Solo cancelar si transfers está DEFINITIVAMENTE bloqueado.
+                                        // pending NO cancela hires — esperamos al siguiente account.updated.
+                                        var transfersCapability = refreshedAccount?.Capabilities?.Transfers;
+                                        var transfersBlockedPermanently = transfersCapability == "inactive";
                                         var payoutsStillEnabled = refreshedAccount?.PayoutsEnabled == true;
                                         var realBlockingDeactivation =
                                             capability.Id != "card_payments"
-                                            || !transfersStillActive
+                                            || transfersBlockedPermanently
                                             || !payoutsStillEnabled;
 
                                         if (activeHiresCount > 0 && isCapabilityInactive && realBlockingDeactivation)
@@ -3404,7 +3409,7 @@ namespace newApi.Controllers
                                                 source: "SubscriptionController.capability.updated",
                                                 relatedEntityType: "ExpertProfile",
                                                 relatedEntityId: capabilityProfile.Id,
-                                                additionalData: new { capability.Id, capability.Status, AccountId = capabilityAccountId, ActiveHires = activeHiresCount, TransfersActive = transfersStillActive, PayoutsEnabled = payoutsStillEnabled });
+                                                additionalData: new { capability.Id, capability.Status, AccountId = capabilityAccountId, ActiveHires = activeHiresCount, TransfersCapability = transfersCapability, PayoutsEnabled = payoutsStillEnabled });
                                             await HandleApprovedAccountRejection(capabilityProfile.Id, $"capability_{capability.Id}_inactive");
                                         }
                                         else if (activeHiresCount > 0 && isCapabilityInactive && !realBlockingDeactivation)
@@ -3412,8 +3417,8 @@ namespace newApi.Controllers
                                             // card_payments latente inactivada pero transfers+payouts siguen ok.
                                             // Solo log Warning — no cancelamos hires.
                                             await _loggingService.LogWarningAsync(
-                                                message: "MUD-BK: card_payments inactive but transfers+payouts OK — hires NOT cancelled",
-                                                details: $"Capability '{capability.Id}' inactive en {capabilityAccountId}. transfers={refreshedAccount?.Capabilities?.Transfers} payouts_enabled={payoutsStillEnabled}. ExpertId={capabilityProfile.UserId}, active hires={activeHiresCount}. Servicios siguen operativos (separate-charges flow). El experto debe completar KYC card_payments en Stripe; sus hires actuales NO se cancelan.",
+                                                message: "MUD-BK/BY: capability degraded but transfers OK — hires NOT cancelled",
+                                                details: $"Capability '{capability.Id}' status={capability.Status} en {capabilityAccountId}. transfers={transfersCapability ?? "(none)"} payouts_enabled={payoutsStillEnabled}. ExpertId={capabilityProfile.UserId}, active hires={activeHiresCount}. Servicios siguen operativos. Si transfers=pending es transitorio (KYC re-eval, <24h); si transfers=active la capability afectada es latente (e.g., card_payments en US/CA/GB en separate-charges flow). NO cancelamos hires hasta que transfers pase a 'inactive' definitivo.",
                                                 userId: capabilityProfile.UserId,
                                                 source: "SubscriptionController.capability.updated.MUD-BK",
                                                 relatedEntityType: "ExpertProfile",
@@ -8281,8 +8286,23 @@ namespace newApi.Controllers
 
                 // 🛡️ MUD-BN: notificación in-app + email DEDICADA al experto. Mensaje específico
                 // con guía de acción (revisar cuenta bancaria en Stripe Dashboard).
+                // 🛡️ MUD-BX (follow-up MUD-BN): dedup contra Notifications recientes (23h).
+                // Stripe puede emitir múltiples payout.failed para reintentos del MISMO payout
+                // (cada uno con eventId distinto → TryBeginProcessingEventAsync los acepta) →
+                // ANTES el experto recibía 3+ emails idénticos. Patrón espejo de MUD-BO/D3.
                 if (expertUserId.HasValue)
                 {
+                    var dedupCutoff = DateTime.UtcNow.AddHours(-23);
+                    var alreadyNotified = await _context.Notifications
+                        .AsNoTracking()
+                        .AnyAsync(n => n.UserId == expertUserId.Value
+                                    && n.CreatedAt >= dedupCutoff
+                                    && n.Title.StartsWith("💸 No hemos podido enviarte un pago"));
+                    if (alreadyNotified)
+                    {
+                        // Skip dup notification, pero el LogCritical al admin sí persiste (audit).
+                        goto SkipPayoutFailedNotification;
+                    }
                     var failureExplanation = TranslatePayoutFailureCode(payout.FailureCode);
                     await _loggingService.LogWarningAsync(
                         message: "💸 No hemos podido enviarte un pago",
@@ -8292,6 +8312,7 @@ namespace newApi.Controllers
                         relatedEntityType: "Payout",
                         relatedEntityId: null,
                         notifyUser: true);
+                    SkipPayoutFailedNotification:;
                 }
             }
             else if (string.Equals(eventType, "payout.canceled", StringComparison.OrdinalIgnoreCase))

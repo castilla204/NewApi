@@ -901,7 +901,8 @@ namespace newApi.Controllers
                         {
                             await _loggingService.LogInfoAsync(
                                 message: "Disputa resuelta a tu favor",
-                                details: $"La disputa del servicio #{dispute.SearchHire.Id} se resolvió a tu favor. Se procesará tu reembolso de {dispute.SearchHire.Amount:F2}€.",
+                                // 🛡️ MUD-AH: usar Currency real del hire.
+                                details: $"La disputa del servicio #{dispute.SearchHire.Id} se resolvió a tu favor. Se procesará tu reembolso de {dispute.SearchHire.Amount:F2} {(dispute.SearchHire.Currency ?? "EUR").ToUpperInvariant()}.",
                                 userId: dispute.SearchHire.ClientId,
                                 source: "DisputeController.ResolveDispute",
                                 relatedEntityType: "Dispute",
@@ -929,7 +930,8 @@ namespace newApi.Controllers
                             {
                                 await _loggingService.LogInfoAsync(
                                     message: "Disputa resuelta a tu favor",
-                                    details: $"La disputa del servicio #{dispute.SearchHire.Id} se resolvió a tu favor. Has recibido {dispute.SearchHire.Amount:F2}€.",
+                                    // 🛡️ MUD-AH: usar Currency real del hire.
+                                    details: $"La disputa del servicio #{dispute.SearchHire.Id} se resolvió a tu favor. Has recibido {dispute.SearchHire.Amount:F2} {(dispute.SearchHire.Currency ?? "EUR").ToUpperInvariant()}.",
                                     userId: dispute.SearchHire.ExpertId.Value,
                                     source: "DisputeController.ResolveDispute",
                                     relatedEntityType: "Dispute",

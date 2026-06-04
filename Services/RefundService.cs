@@ -20,12 +20,16 @@ namespace newApi.Services
         // 📜 Round 9 — A2 FIX: audit log de transiciones de estado.
         private readonly ISearchHireStatusAuditService? _statusAudit;
 
-        public StripeRefundService(AppDbContext context, SystemStatusService systemStatusService, ILoggingService loggingService, ISearchHireStatusAuditService? statusAudit = null)
+        // 🛡️ Round 28 MUD-BD: cola de pérdidas pendientes off-Stripe.
+        private readonly ClawbackQueueService? _clawbackQueue;
+
+        public StripeRefundService(AppDbContext context, SystemStatusService systemStatusService, ILoggingService loggingService, ISearchHireStatusAuditService? statusAudit = null, ClawbackQueueService? clawbackQueue = null)
         {
             _context = context;
             _systemStatusService = systemStatusService;
             _loggingService = loggingService;
             _statusAudit = statusAudit; // opcional para no romper tests existentes
+            _clawbackQueue = clawbackQueue;
         }
 
 
@@ -2093,6 +2097,18 @@ namespace newApi.Services
                                         relatedEntityId: searchHireId,
                                         additionalData: new { TransferId = existingTransfer.StripeTransferId, ClawbackAmount = clawbackAmountEur, Currency = searchHire.Currency, StripeError = balCbEx.StripeError?.Code },
                                         notifyUser: true);
+                                    // 🛡️ MUD-BD: encolar en ClawbackQueues para dashboard admin.
+                                    if (_clawbackQueue != null && searchHire.ExpertId.HasValue)
+                                    {
+                                        await _clawbackQueue.EnqueueAsync(
+                                            userId: searchHire.ExpertId.Value,
+                                            stripeAccountId: searchHire.Expert?.ExpertProfile?.StripeAccountId,
+                                            amountMajor: clawbackAmountEur,
+                                            currency: searchHire.Currency ?? "EUR",
+                                            reason: "WithdrawnBalance",
+                                            notes: $"Clawback impossible: experto retiró balance pre-clawback ({balCbEx.StripeError?.Code}). Transfer {existingTransfer.StripeTransferId}.",
+                                            searchHireId: searchHireId);
+                                    }
                                 }
                                 catch (Exception clawbackEx)
                                 {

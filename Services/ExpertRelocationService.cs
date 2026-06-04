@@ -36,15 +36,19 @@ namespace newApi.Services
         private readonly AppDbContext _context;
         private readonly ILoggingService _loggingService;
         private readonly Microsoft.Extensions.Logging.ILogger<ExpertRelocationService> _logger;
+        // 🛡️ Round 28 MUD-BD: cola de pérdidas pendientes off-Stripe.
+        private readonly ClawbackQueueService? _clawbackQueue;
 
         public ExpertRelocationService(
             AppDbContext context,
             ILoggingService loggingService,
-            Microsoft.Extensions.Logging.ILogger<ExpertRelocationService> logger)
+            Microsoft.Extensions.Logging.ILogger<ExpertRelocationService> logger,
+            ClawbackQueueService? clawbackQueue = null)
         {
             _context = context;
             _loggingService = loggingService;
             _logger = logger;
+            _clawbackQueue = clawbackQueue;
         }
 
         public class RelocationPreflightResult
@@ -304,6 +308,18 @@ namespace newApi.Services
                                 relatedEntityId: expertProfileId,
                                 additionalData: new { Amount = pending.Amount / 100m, Currency = pending.Currency.ToUpperInvariant(), StripeAccountId = acctId });
                             stripeOps.Add(new { acctId, op = "pending_balance_lost", amount = pending.Amount / 100m, currency = pending.Currency.ToUpperInvariant() });
+                            // 🛡️ MUD-BD: encolar en ClawbackQueues para que el admin tenga
+                            // un dashboard donde marcar Resolved cuando reciba/transfiera.
+                            if (_clawbackQueue != null)
+                            {
+                                await _clawbackQueue.EnqueueAsync(
+                                    userId: userId,
+                                    stripeAccountId: acctId,
+                                    amountMajor: pending.Amount / 100m,
+                                    currency: pending.Currency.ToUpperInvariant(),
+                                    reason: "PendingBalance",
+                                    notes: $"Relocation: Stripe Pending balance al cerrar cuenta. Settlement Stripe 2-7d → admin debe transferir off-Stripe al experto.");
+                            }
                         }
                     }
 
@@ -390,6 +406,17 @@ namespace newApi.Services
                                 relatedEntityId: expertProfileId,
                                 additionalData: new { Amount = pending.Amount / 100m, Currency = pending.Currency.ToUpperInvariant(), StripeAccountId = acctId });
                             stripeOps.Add(new { acctId, op = "inflight_pending_lost", amount = pending.Amount / 100m, currency = pending.Currency.ToUpperInvariant() });
+                            // 🛡️ MUD-BD: encolar también este caso (in-flight race).
+                            if (_clawbackQueue != null)
+                            {
+                                await _clawbackQueue.EnqueueAsync(
+                                    userId: userId,
+                                    stripeAccountId: acctId,
+                                    amountMajor: pending.Amount / 100m,
+                                    currency: pending.Currency.ToUpperInvariant(),
+                                    reason: "InFlightTransfer",
+                                    notes: $"Relocation: Transfer in-flight landed in Pending entre drain y Delete. Race típica ~100-500ms con webhook PI capturado. Recuperar off-Stripe igual que PendingBalance.");
+                            }
                         }
                     }
                 }

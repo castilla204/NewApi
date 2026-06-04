@@ -55,6 +55,8 @@ namespace newApi.DataLayer.Models
         public DbSet<ProcessedWebhookEvent> ProcessedWebhookEvents { get; set; }
         // 🛡️ Round 28 MUD-BB: snapshots anuales DAC7 (Directiva UE 2021/514 modelo 238).
         public DbSet<Dac7SellerSnapshot> Dac7SellerSnapshots { get; set; }
+        // 🛡️ Round 28 MUD-BD: cola de pérdidas pendientes de recuperar off-Stripe.
+        public DbSet<ClawbackQueue> ClawbackQueues { get; set; }
         // 🛡️ Round 16: códigos OTP para verificación de email en registro/reset/step-up.
         public DbSet<EmailVerificationCode> EmailVerificationCodes { get; set; }
         public DbSet<Appointment> Appointments { get; set; }

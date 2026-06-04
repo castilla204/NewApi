@@ -33,13 +33,17 @@ namespace newApi.Services
         // ✅ MEJORA: Timeout para transacciones (5 minutos)
         private static readonly TimeSpan _transactionTimeout = TimeSpan.FromMinutes(5);
 
+        // 🛡️ Round 28 MUD-BD: cola de pérdidas pendientes off-Stripe.
+        private readonly ClawbackQueueService? _clawbackQueue;
+
         public AccountDeletionService(
             AppDbContext context,
             IAccountDeletionNotificationService notificationService,
             StripeRefundService refundService,
             ILoggingService loggingService,
             SystemStatusService systemStatusService,
-            ISupabaseStorageService storage)
+            ISupabaseStorageService storage,
+            ClawbackQueueService? clawbackQueue = null)
         {
             _context = context;
             _notificationService = notificationService;
@@ -47,6 +51,7 @@ namespace newApi.Services
             _loggingService = loggingService;
             _systemStatusService = systemStatusService;
             _storage = storage;
+            _clawbackQueue = clawbackQueue;
         }
 
         /// <summary>
@@ -2415,6 +2420,17 @@ namespace newApi.Services
                                             relatedEntityType: "ExpertProfile",
                                             relatedEntityId: expertProfileId,
                                             additionalData: new { Amount = pending.Amount / 100m, Currency = pending.Currency.ToUpperInvariant(), StripeAccountId = stripeAccountIdToDelete });
+                                        // 🛡️ MUD-BD: encolar para dashboard admin.
+                                        if (_clawbackQueue != null)
+                                        {
+                                            await _clawbackQueue.EnqueueAsync(
+                                                userId: userId,
+                                                stripeAccountId: stripeAccountIdToDelete,
+                                                amountMajor: pending.Amount / 100m,
+                                                currency: pending.Currency.ToUpperInvariant(),
+                                                reason: "PendingBalance",
+                                                notes: "Account deletion (GDPR Art.17): Pending balance al cerrar. Settlement 2-7d → admin transfiere off-Stripe al ex-experto.");
+                                        }
                                     }
                                 }
 

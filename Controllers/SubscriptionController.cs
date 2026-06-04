@@ -1126,9 +1126,21 @@ namespace newApi.Controllers
                     // + service_agreement="full" explícito. Sin este bump, los expertos US que
                     // probaron en v2 (sin tax_reporting) reusarían la respuesta cacheada y se
                     // perderían la capability nueva.
+                    // 🛡️ Round 28 MUD-AE: incluir RelocatedAt.Ticks en la idempotency key.
+                    // Sin este discriminador, el segundo (o tercero, etc.) ciclo de mudanza
+                    // reusa la key `account-onboarding-v3-{userId}` con un body distinto
+                    // (Country/Capabilities cambian) → Stripe responde idempotency_error y
+                    // el experto queda atrapado 24h con "Failed to create Stripe account".
+                    // RelocatedAt cambia en cada ExpertRelocationService.ExecuteAsync, así
+                    // que da una key fresca por mudanza. Determinista para retries de red
+                    // dentro de la misma mudanza (preserva la protección anti-doble-acct).
+                    // null para usuarios que nunca se han mudado → preserva clave histórica.
+                    var relocationDiscriminator = expertProfile.RelocatedAt.HasValue
+                        ? $"-reloc{expertProfile.RelocatedAt.Value.Ticks}"
+                        : string.Empty;
                     var idempotencyKeyValue = string.IsNullOrEmpty(onboardingAttemptToken)
-                        ? $"account-onboarding-v3-{userId}"
-                        : $"account-onboarding-v3-{userId}-{onboardingAttemptToken}";
+                        ? $"account-onboarding-v3-{userId}{relocationDiscriminator}"
+                        : $"account-onboarding-v3-{userId}{relocationDiscriminator}-{onboardingAttemptToken}";
                     var accountIdempotencyOptions = new Stripe.RequestOptions
                     {
                         IdempotencyKey = idempotencyKeyValue

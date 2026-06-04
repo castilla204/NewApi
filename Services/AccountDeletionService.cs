@@ -2383,7 +2383,10 @@ namespace newApi.Services
                                                 var payoutReqOpts = new Stripe.RequestOptions
                                                 {
                                                     StripeAccount = stripeAccountIdToDelete,
-                                                    IdempotencyKey = $"acct-deletion-payout-{expertProfileId}-{avail.Currency}"
+                                                    // 🛡️ MUD-AE: incluir stripeAccountId + Amount para soportar usuarios
+                                                    // que cierran cuenta tras mudanza (acctId distinto cada vez) y retries
+                                                    // con balance ligeramente distinto.
+                                                    IdempotencyKey = $"acct-deletion-payout-{stripeAccountIdToDelete}-{avail.Currency}-{avail.Amount}"
                                                 };
                                                 var payout = await payoutSvc.CreateAsync(payoutOpts, payoutReqOpts);
                                                 await _loggingService.LogInfoAsync(

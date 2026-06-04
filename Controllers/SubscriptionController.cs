@@ -3100,6 +3100,17 @@ namespace newApi.Controllers
                                 {
                                     var capabilityProfile = await _context.ExpertProfiles
                                         .FirstOrDefaultAsync(ep => ep.StripeAccountId == capabilityAccountId);
+                                    // 🛡️ Round 28 MUD-AI (mirror MUD-M): si llegó un capability.updated
+                                    // tardío para una cuenta cerrada en una mudanza muy reciente (<15min),
+                                    // ignorarlo. Sin esto, el webhook degradaba a Restricted/Disabled la
+                                    // cuenta que el usuario acaba de cerrar voluntariamente, sobrescribiendo
+                                    // el NotRequested del flujo de mudanza.
+                                    if (capabilityProfile != null
+                                        && capabilityProfile.RelocatedAt != null
+                                        && capabilityProfile.RelocatedAt.Value > System.DateTime.UtcNow.AddMinutes(-15))
+                                    {
+                                        capabilityProfile = null; // late event para acct cerrada → drop
+                                    }
                                     if (capabilityProfile != null)
                                     {
                                         var activeStatusValues = new[]

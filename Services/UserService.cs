@@ -1867,6 +1867,33 @@ namespace newApi.Services
                     return (false, false);
                 }
 
+                // 🛡️ Round 28 MUD-AI: si está TURNING ON vacation (false → true), bloquear si hay
+                // hires activos. Sin esto: experto con 10 hires confirmados activa vacaciones,
+                // no-shows masivos en sus appointments confirmados → 10× 95/0/5 refunds + Stripe
+                // fees + reseñas negativas + soporte. El relocation preflight ya hace este check;
+                // copiar el patrón aquí.
+                if (!expertProfile.IsOnVacation)
+                {
+                    var activeHiresCount = await _context.SearchHires
+                        .Include(h => h.Status)
+                        .CountAsync(h => h.ExpertId == userId
+                                      && h.Status != null
+                                      && !h.Status.IsFinalizationStatus);
+                    if (activeHiresCount > 0)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "ToggleVacationMode blocked — active hires",
+                            details: $"UserId {userId} intentó activar vacaciones con {activeHiresCount} hires activos. Bloqueado para evitar no-shows masivos. Debe finalizar/cancelar los hires primero.",
+                            userId: userId,
+                            source: "UserService.ToggleVacationMode.ActiveHiresGuard",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: expertProfile.Id,
+                            additionalData: new { ActiveHires = activeHiresCount },
+                            notifyUser: true);
+                        return (false, expertProfile.IsOnVacation); // sigue OFF
+                    }
+                }
+
                 // Cambiar el estado de vacaciones
                 expertProfile.IsOnVacation = !expertProfile.IsOnVacation;
                 await _context.SaveChangesAsync();

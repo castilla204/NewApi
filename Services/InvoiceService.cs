@@ -137,6 +137,28 @@ namespace newApi.Services
                 ? (int)Math.Round(iva / baseSinIva * 100m, MidpointRounding.AwayFromZero)
                 : 0;
 
+            // 🛡️ Round 28 MUD-AI: símbolo de moneda dinámico para que la factura PDF
+            // muestre el valor real cobrado (£/$/CHF/etc.), no un € fijo. Antes una factura
+            // de un cliente UK por £100 aparecía como "100,00 €" — incorrecto fiscalmente.
+            var pdfCurrencyIso = string.IsNullOrEmpty(searchHire.Currency) ? "EUR" : searchHire.Currency.ToUpperInvariant();
+            var pdfCurrencySymbol = pdfCurrencyIso switch
+            {
+                "EUR" => "€",
+                "USD" => "$",
+                "GBP" => "£",
+                "CAD" => "CA$",
+                "CHF" => "CHF",
+                "SEK" => "kr",
+                "DKK" => "kr",
+                "NOK" => "kr",
+                "PLN" => "zł",
+                "HUF" => "Ft",
+                "CZK" => "Kč",
+                "BGN" => "лв",
+                "RON" => "lei",
+                _ => pdfCurrencyIso // fallback: ISO code visible
+            };
+
             // Generar PDF con QuestPDF
             var pdfBytes = Document.Create(container =>
             {
@@ -203,7 +225,7 @@ namespace newApi.Services
                                     });
 
                                     table.Cell().Element(CellStyle).Text($"Servicio: {serviceName}");
-                                    table.Cell().Element(CellStyle).AlignRight().Text($"{baseSinIva:N2} €");
+                                    table.Cell().Element(CellStyle).AlignRight().Text($"{baseSinIva:N2} {pdfCurrencySymbol}");
 
                                     table.Cell().Element(CellStyle).Text($"Categoría: {serviceCategory}");
                                     table.Cell().Element(CellStyle).AlignRight().Text("");
@@ -234,13 +256,13 @@ namespace newApi.Services
                                     });
 
                                     table.Cell().Element(CellStyle).Text("Base imponible:").FontSize(11);
-                                    table.Cell().Element(CellStyle).AlignRight().Text($"{baseSinIva:N2} €").FontSize(11);
+                                    table.Cell().Element(CellStyle).AlignRight().Text($"{baseSinIva:N2} {pdfCurrencySymbol}").FontSize(11);
 
                                     table.Cell().Element(CellStyle).Text($"IVA ({ivaPct}%):").FontSize(11);
-                                    table.Cell().Element(CellStyle).AlignRight().Text($"{iva:N2} €").FontSize(11);
+                                    table.Cell().Element(CellStyle).AlignRight().Text($"{iva:N2} {pdfCurrencySymbol}").FontSize(11);
 
                                     table.Cell().Element(CellStyle).Text("TOTAL:").Bold().FontSize(12);
-                                    table.Cell().Element(CellStyle).AlignRight().Text($"{total:N2} €").Bold().FontSize(12);
+                                    table.Cell().Element(CellStyle).AlignRight().Text($"{total:N2} {pdfCurrencySymbol}").Bold().FontSize(12);
 
                                     static IContainer CellStyle(IContainer container)
                                     {

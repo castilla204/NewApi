@@ -1904,6 +1904,16 @@ Hangfire.RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
     Hangfire.Cron.Daily(3),
     n29UtcOptions);
 
+// 🛡️ Round 28 MUD-AI (S2-P0-11 follow-up): mensual el día 1 a las 4 UTC, OSS threshold check.
+// El servicio existía desde Round 28 Sprint 2 pero NUNCA se llamaba — solo había endpoints
+// admin manuales. Sin esta línea, el state VIOLATION_THRESHOLD_EXCEEDED_NO_OSS jamás dispara
+// alerta automática → la plataforma puede cruzar €10k cross-border B2C en silencio.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.OssThresholdService>(
+    "oss-threshold-monthly",
+    service => service.EmitAlertIfNeededAsync(default),
+    Hangfire.Cron.Monthly(1, 4),
+    n29UtcOptions);
+
 // 🛡️ Round 16: cleanup diario de EmailVerificationCodes (OTPs no consumidos > 15 min).
 // Mantiene la tabla pequeña (esperamos miles/día en alta de usuarios + reset password)
 // y respeta privacidad (no se conservan hashes de códigos caducados indefinidamente).

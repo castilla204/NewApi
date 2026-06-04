@@ -123,6 +123,109 @@ namespace newApi.Controllers
             return Ok(new { year, totalSnapshots, sellersAboveThreshold = reportable });
         }
 
+        // ────────────────────────────────────────────────────────────────────
+        // 🛡️ Round 28 MUD-BD — ClawbackQueue endpoints admin
+        // ────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Lista filas Pending (sin resolver) de la cola de clawback off-Stripe.
+        /// Filtrable por status (Pending|Resolved|All) y reason.
+        /// </summary>
+        [HttpGet("clawback-queue")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> ListClawbackQueue(
+            [FromQuery] string status = "Pending",
+            [FromQuery] string? reason = null,
+            CancellationToken ct = default)
+        {
+            var q = _context.ClawbackQueues.AsNoTracking();
+            if (string.Equals(status, "Pending", StringComparison.OrdinalIgnoreCase))
+            {
+                q = q.Where(c => c.ResolvedAt == null);
+            }
+            else if (string.Equals(status, "Resolved", StringComparison.OrdinalIgnoreCase))
+            {
+                q = q.Where(c => c.ResolvedAt != null);
+            }
+            if (!string.IsNullOrEmpty(reason))
+            {
+                q = q.Where(c => c.Reason == reason);
+            }
+
+            var items = await q
+                .OrderByDescending(c => c.CreatedAt)
+                .Take(500)
+                .Select(c => new
+                {
+                    c.Id,
+                    c.UserId,
+                    c.StripeAccountId,
+                    c.SearchHireId,
+                    c.AmountMajor,
+                    c.Currency,
+                    c.Reason,
+                    c.Notes,
+                    c.CreatedAt,
+                    c.ResolvedAt,
+                    c.Resolution,
+                    c.ResolutionNotes,
+                    c.ResolvedByAdminEmail
+                })
+                .ToListAsync(ct);
+
+            // Resumen agregado por currency para dashboard "deuda platform a expertos".
+            var pendingByCurrency = await _context.ClawbackQueues
+                .AsNoTracking()
+                .Where(c => c.ResolvedAt == null)
+                .GroupBy(c => c.Currency)
+                .Select(g => new { Currency = g.Key, TotalAmount = g.Sum(c => c.AmountMajor), Count = g.Count() })
+                .ToListAsync(ct);
+
+            return Ok(new { items, pendingByCurrency, totalReturned = items.Count });
+        }
+
+        public class ResolveClawbackDto
+        {
+            public string Resolution { get; set; } = "PaidToUser"; // PaidToUser | AbsorbedAsLoss | InvalidEntry
+            public string? Notes { get; set; }
+        }
+
+        /// <summary>
+        /// Marca una fila como resuelta tras acción manual del admin (transferencia hecha,
+        /// pérdida absorbida, o entrada inválida que se descarta).
+        /// </summary>
+        [HttpPost("clawback-queue/{id:int}/resolve")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> ResolveClawback(int id, [FromBody] ResolveClawbackDto body, CancellationToken ct)
+        {
+            if (body == null || string.IsNullOrEmpty(body.Resolution))
+            {
+                return BadRequest(new { message = "Resolution requerido (PaidToUser|AbsorbedAsLoss|InvalidEntry)" });
+            }
+            var allowed = new[] { "PaidToUser", "AbsorbedAsLoss", "InvalidEntry" };
+            if (!allowed.Contains(body.Resolution))
+            {
+                return BadRequest(new { message = $"Resolution inválido. Valores permitidos: {string.Join(", ", allowed)}" });
+            }
+
+            var row = await _context.ClawbackQueues.FirstOrDefaultAsync(c => c.Id == id, ct);
+            if (row == null) return NotFound(new { message = "ClawbackQueue id no encontrado" });
+            if (row.ResolvedAt != null)
+            {
+                return BadRequest(new { message = $"Ya resuelto el {row.ResolvedAt:O} como {row.Resolution}" });
+            }
+
+            row.ResolvedAt = DateTime.UtcNow;
+            row.Resolution = body.Resolution;
+            row.ResolutionNotes = body.Notes;
+            row.ResolvedByAdminEmail = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+                                    ?? User.Identity?.Name
+                                    ?? "admin";
+            await _context.SaveChangesAsync(ct);
+
+            return Ok(new { row.Id, row.ResolvedAt, row.Resolution, row.ResolvedByAdminEmail });
+        }
+
         /// <summary>
         /// 🛡️ Round 28 S2-P0-11: snapshot del umbral OSS UE €10.000/año del año actual.
         /// Devuelve YTD por país + porcentaje del umbral + estado de compliance.

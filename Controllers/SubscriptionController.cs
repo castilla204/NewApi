@@ -66,7 +66,10 @@ namespace newApi.Controllers
         //     };
         // }
 
-        public SubscriptionController(AppDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService, IInvoiceService invoiceService, IAppointmentService appointmentService, IServiceScopeFactory serviceScopeFactory, Microsoft.Extensions.Options.IOptions<global::newApi.Configuration.PlatformFiscalProfile> fiscalProfile)
+        // 🛡️ Round 28 MUD-BF: sync DAC7 datos legales desde account.updated.
+        private readonly global::newApi.Services.Dac7DataSyncService? _dac7DataSync;
+
+        public SubscriptionController(AppDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService, IInvoiceService invoiceService, IAppointmentService appointmentService, IServiceScopeFactory serviceScopeFactory, Microsoft.Extensions.Options.IOptions<global::newApi.Configuration.PlatformFiscalProfile> fiscalProfile, global::newApi.Services.Dac7DataSyncService? dac7DataSync = null)
         {
             _context = context;
             _systemStatusService = systemStatusService;
@@ -81,6 +84,7 @@ namespace newApi.Controllers
             _appointmentService = appointmentService;
             _serviceScopeFactory = serviceScopeFactory;
             _fiscalProfile = fiscalProfile?.Value ?? new global::newApi.Configuration.PlatformFiscalProfile();
+            _dac7DataSync = dac7DataSync;
 
             // ✅ Actualizar StripeConfiguration.ApiKey dinámicamente
             // Se actualizará cada vez que se acceda a StripeSecretKey
@@ -1779,6 +1783,14 @@ namespace newApi.Controllers
                 ApplyStripeAccountState(expertProfile, accountState, account.Id);
 
                 await _context.SaveChangesAsync();
+
+                // 🛡️ Round 28 MUD-BF: sincronizar datos legales DAC7 (DOB/IBAN/Address) al
+                // snapshot del año actual. Non-blocking — si falla, el account.updated sigue.
+                if (_dac7DataSync != null)
+                {
+                    await _dac7DataSync.SyncFromAccountAsync(account, expertProfile.Id);
+                }
+
                 if (previousStatus != accountState.Status)
                 {
                     await NotifyStripeStatusTransitionAsync(

@@ -1504,6 +1504,10 @@ builder.Services.AddScoped<IStripeReconciliationService, StripeReconciliationSer
 builder.Services.AddScoped<newApi.Services.OssThresholdService>();
 // 🛡️ Round 28 MUD-BB: DAC7 modelo 238 anual (Directiva UE 2021/514).
 builder.Services.AddScoped<newApi.Services.Dac7AnnualReportService>();
+// 🛡️ Round 28 MUD-BF: sync de datos legales DAC7 desde webhook account.updated.
+builder.Services.AddScoped<newApi.Services.Dac7DataSyncService>();
+// 🛡️ Round 28 MUD-BD: cola de pérdidas pendientes off-Stripe.
+builder.Services.AddScoped<newApi.Services.ClawbackQueueService>();
 // 🛡️ Round 28 S2-P0-13: GDPR Art. 20 — exportación portable de datos del usuario.
 builder.Services.AddScoped<newApi.Services.DataPortabilityService>();
 builder.Services.AddScoped<IEmailService, EmailService>();

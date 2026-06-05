@@ -274,6 +274,32 @@ namespace newApi.Controllers
                 }
             }
 
+            // 🛡️ Round 29 — FIX-DOC-FAIL: leer también `future_requirements.errors[]`.
+            //
+            // ANTES: el bucle de arriba solo cubría `requirements.errors[]`. Stripe coloca los
+            // fallos de verificación de documento en `future_requirements.errors[]` cuando hay
+            // un `current_deadline` futuro y la cuenta todavía conserva charges/payouts (caso
+            // "Vence pronto · Suspensión de transferencias próximamente" del dashboard, p.ej.
+            // tras el test helper `file_identity_document_failure`). Resultado del bug:
+            // `requirementErrors` quedaba vacío → el gate MUD-CY (línea 454) no degradaba a
+            // ActionRequired → cuenta persistida como Approved con detail "lista para cobrar"
+            // aunque Stripe en su panel decía "Proporciona un documento de identidad".
+            // Doc oficial: https://docs.stripe.com/api/accounts/object#account_object-future_requirements-errors
+            // Schema: `Code` (enum estable), `Reason` (texto humano), `Requirement` (campo afectado).
+            if (futureRequirements.Errors != null)
+            {
+                foreach (var error in futureRequirements.Errors)
+                {
+                    var humanError = GetErrorDescription(error.Code ?? error.Reason ?? "unknown");
+                    var humanRequirement = !string.IsNullOrEmpty(error.Requirement)
+                        ? GetRequirementDescription(error.Requirement)
+                        : null;
+                    requirementErrors.Add(humanRequirement != null
+                        ? $"{humanError} ({humanRequirement})"
+                        : humanError);
+                }
+            }
+
             var disabledReason = requirements.DisabledReason ?? string.Empty;
             var futureCurrentlyDue = futureRequirements.CurrentlyDue ?? new List<string>();
             var futureEventuallyDue = futureRequirements.EventuallyDue ?? new List<string>();
@@ -293,7 +319,10 @@ namespace newApi.Controllers
                 FutureRequirementsPastDue = futurePastDue.Any(),
                 // 🔧 Round 26 ACC-UPD-7: propagar la lista de errores para que BuildStatusDetails
                 // pueda mostrarlos en ramas no-Rejected (antes solo GetRejectionMessage los usaba).
-                RequirementErrors = requirementErrors.ToArray()
+                // 🛡️ Round 29 FIX-DOC-FAIL: ahora `requirementErrors` combina current + future;
+                // Distinct evita duplicar el mismo error si Stripe lo emite en ambos buckets
+                // durante una transición (típico cuando el documento está siendo re-evaluado).
+                RequirementErrors = requirementErrors.Distinct(StringComparer.Ordinal).ToArray()
             };
 
             // 🛡️ Round 12 — D5 FIX: preferir el deadline REAL de Stripe sobre el heurístico.
@@ -367,6 +396,14 @@ namespace newApi.Controllers
                     // 🛡️ LOTE C-16: under_review es revisión MANUAL del equipo Stripe (no procesamiento
                     // automático como pending_verification). Estado separado para UX y métricas.
                     "under_review" => StripeStatus.UnderReview,
+                    // 🛡️ Round 29 — FIX-OTHER-MAP: "other" no es enum oficial pero Stripe lo emite
+                    // de forma genérica para casos no clasificables; IsPermanentRejection("other")=false
+                    // (SubscriptionController.cs:7596) indica que es resoluble. ANTES caía al
+                    // catch-all `_ => LogAndFallbackDisabled` → StripeStatus.Disabled → la UI
+                    // mostraba "Contacta soporte" y `CanRetry=false` aunque el backend SÍ permitía
+                    // restart-onboarding. Inconsistencia entre back/front. Ahora lo mapeamos a
+                    // ActionRequired (resoluble) acorde con IsPermanentRejection.
+                    "other" => StripeStatus.ActionRequired,
                     // Temporal — la plataforma pausó al experto (resoluble desde el Dashboard de la plataforma)
                     "platform_paused" => StripeStatus.Restricted,
                     // Definitivo (rejected.*) — necesita soporte; algunos sub-tipos vienen de la plataforma
@@ -434,6 +471,29 @@ namespace newApi.Controllers
             // PendingVerification) además duplicaba la rama Approved sin chequear `transfersActive`.
             // Se elimina por completo.
 
+            // 🛡️ Round 29 FIX-DOC-FAIL: deadline INMINENTE → degradar Approved a RestrictedSoon.
+            //
+            // ANTES: ninguna rama de la cascada anterior gateaba contra `requirements.current_deadline`.
+            // Si Stripe ponía un deadline (ej. "Suspensión de transferencias próximamente") pero
+            // `currently_due`/`past_due`/`pending_verification` estaban vacíos (Stripe los mueve a
+            // `pending_verification` mientras revisa el helper `file_identity_document_failure` o
+            // similar), la cuenta caía a `Approved` con `OnboardingCompleted=true` aunque Stripe ya
+            // había planificado la suspensión.
+            //
+            // Doc: «`current_deadline`: The date by which you must resolve the requirements in
+            // `currently_due` to keep the account active. … Stripe typically disables payouts on
+            // the account if we don't receive the information by the `current_deadline`.»
+            // https://docs.stripe.com/connect/handling-api-verification
+            //
+            // AHORA: si seguimos en `Approved` y Stripe ya plantó un `current_deadline`, marcamos
+            // `RestrictedSoon` para que la UI active el banner ámbar + plazo y el experto reaccione
+            // antes del vencimiento. `OnboardingCompleted` pasa a false porque hay acción pendiente.
+            if (state.Status == StripeStatus.Approved && requirements.CurrentDeadline.HasValue)
+            {
+                state.Status = StripeStatus.RestrictedSoon;
+                state.OnboardingCompleted = false;
+            }
+
             // 🛡️ MUD-CY: errors[] array influye en el state final.
             //
             // ANTES: el array `requirements.errors[]` se recolectaba en `requirementErrors`
@@ -451,9 +511,20 @@ namespace newApi.Controllers
             // `ActionRequired` para que el experto reciba la notificación y el banner
             // refleje la realidad. NO afecta a `Rejected`/`Restricted`/etc. (ya
             // bloqueantes por su propia rama).
+            //
+            // 🛡️ Round 29 FIX-DOC-FAIL: `requirementErrors` ahora combina current + future
+            // (ver bucle de futureRequirements.Errors ~líneas 280-295). Lo mismo aplica
+            // a `RequirementsDue` (que es una etapa "blanda" — sin acción urgente): si Stripe
+            // reportó errores junto a `eventually_due`, hay algo concreto que arreglar, así
+            // que escalamos a `RestrictedSoon` para que el banner pinte plazo y CTA.
             if (state.Status == StripeStatus.Approved && requirementErrors.Any())
             {
                 state.Status = StripeStatus.ActionRequired;
+                state.OnboardingCompleted = false;
+            }
+            else if (state.Status == StripeStatus.RequirementsDue && requirementErrors.Any())
+            {
+                state.Status = StripeStatus.RestrictedSoon;
                 state.OnboardingCompleted = false;
             }
 
@@ -502,7 +573,13 @@ namespace newApi.Controllers
                  state.Status == StripeStatus.Disabled ||
                  state.Status == StripeStatus.PendingVerification ||
                  // 🛡️ LOTE C-16: si Stripe revisa manualmente y hay errores, mostrarlos.
-                 state.Status == StripeStatus.UnderReview))
+                 state.Status == StripeStatus.UnderReview ||
+                 // 🛡️ Round 29 FIX-DOC-FAIL: `RestrictedSoon` y `RequirementsDue` también
+                 // pueden traer errores (typical: documento de identidad rechazado con plazo
+                 // futuro). Sin esto el experto solo veía el headline "Tu cuenta se restringirá
+                 // pronto" sin saber QUÉ tiene que arreglar.
+                 state.Status == StripeStatus.RestrictedSoon ||
+                 state.Status == StripeStatus.RequirementsDue))
             {
                 details.Add($"Errores a corregir: {string.Join("; ", state.RequirementErrors)}.");
             }
@@ -645,7 +722,17 @@ namespace newApi.Controllers
                     || string.Equals(profile.PendingStripeAccountId, account.Id, System.StringComparison.Ordinal);
 
                 if (profile.RelocatedAt != null
-                    && profile.RelocatedAt.Value > System.DateTime.UtcNow.AddMinutes(-15)
+                    // 🛡️ Round 29 — FIX-RELOC-WIN: ventana ampliada de 15 min → 4320 min (72 h).
+                    //
+                    // Stripe reintenta entrega de webhooks hasta 3 días (4320 min) con backoff
+                    // exponencial — https://docs.stripe.com/webhooks#retries — y manualmente desde
+                    // Dashboard "Resend" hasta 30 días. La ventana original de 15 min cerraba el
+                    // guard al 0,3% del retry budget oficial: webhooks del 3º/4º intento legítimos
+                    // de la cuenta VIEJA caían fuera del guard → se aplicaban sobre la cuenta NUEVA
+                    // post-mudanza pisando `NotRequested` con datos de la cuenta vieja
+                    // `rejected.other`. Explica UserId=16 observado con 9 eventos Skipped
+                    // "Expert profile not found" tras mudanza GB→CA.
+                    && profile.RelocatedAt.Value > System.DateTime.UtcNow.AddMinutes(-4320)
                     && !accountIdMatchesCurrent)
                 {
                     // Cuenta vieja (no matches current) + reloc reciente → es webhook tardío.
@@ -658,9 +745,10 @@ namespace newApi.Controllers
             {
                 var byMeta = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
                 // MUD-M (GAP-3): mismo guard para el fallback por userId metadata.
+                // 🛡️ Round 29 FIX-RELOC-WIN: 15 min → 4320 min (72h, retry oficial de Stripe).
                 if (byMeta != null
                     && byMeta.RelocatedAt != null
-                    && byMeta.RelocatedAt.Value > System.DateTime.UtcNow.AddMinutes(-15)
+                    && byMeta.RelocatedAt.Value > System.DateTime.UtcNow.AddMinutes(-4320)
                     && string.IsNullOrEmpty(byMeta.StripeAccountId))
                 {
                     return null;
@@ -4482,6 +4570,118 @@ namespace newApi.Controllers
                                     EfwCreated = efw.Created,
                                     SearchHireId = hireIdForEfw
                                 });
+                        }
+                        break;
+
+                    // 🛡️ Round 29 — FIX-REVIEW: Stripe Radar Review (review.opened / review.closed).
+                    //
+                    // Complementa radar.early_fraud_warning.created: EFW es alerta proactiva del
+                    // banco emisor (post-cobro); Review es la cola de revisión manual de Stripe
+                    // Radar (regla ML o reglas custom). Pueden coexistir o uno sin el otro.
+                    // Doc: https://docs.stripe.com/radar/reviews y https://docs.stripe.com/api/events/types
+                    //
+                    // review.opened → marcar SearchHire RequiresManualReview=true. NO bloquea el
+                    // transfer automáticamente (eso necesita guard adicional en ProcessMoneyDistribution),
+                    // pero hace visible el caso al admin antes de que se complete el servicio.
+                    //
+                    // review.closed con reason ∈ {refunded, refunded_as_fraud} → Stripe YA creó el
+                    // Refund (charge.refunded/refund.created también llegarán), pero el clawback
+                    // del transfer al experto NO se dispara desde HandleChargeRefunded (que solo
+                    // loguea). Forzamos el clawback aquí siguiendo el patrón de
+                    // HandleChargeDisputeCreated:8587. El idempotency guard de
+                    // ReverseExpertTransferForChargebackAsync (RefundService.cs:2636-2649) evita
+                    // doble reversión si llegan review.closed Y charge.dispute.created juntos.
+                    case "review.opened":
+                        {
+                            var reviewOpened = stripeEvent.Data.Object as Stripe.Review;
+                            if (reviewOpened != null)
+                            {
+                                int? rvHireId = null;
+                                int? rvClientId = null;
+                                if (!string.IsNullOrEmpty(reviewOpened.PaymentIntentId))
+                                {
+                                    var (hid, _, cid) = await FindHireForPaymentIntentAsync(reviewOpened.PaymentIntentId);
+                                    rvHireId = hid;
+                                    rvClientId = cid;
+                                    if (hid.HasValue)
+                                    {
+                                        var rvHire = await _context.SearchHires.FirstOrDefaultAsync(h => h.Id == hid.Value);
+                                        if (rvHire != null && !rvHire.RequiresManualReview)
+                                        {
+                                            rvHire.RequiresManualReview = true;
+                                            rvHire.UpdatedAt = DateTime.UtcNow;
+                                            await _context.SaveChangesAsync();
+                                        }
+                                    }
+                                }
+
+                                await _loggingService.LogCriticalAsync(
+                                    message: "🚨 STRIPE RADAR — Review opened (revisión manual abierta)",
+                                    details: $"Stripe Radar puso en revisión el charge {reviewOpened.ChargeId} (PI {reviewOpened.PaymentIntentId}, reason={reviewOpened.Reason}, openedReason={reviewOpened.OpenedReason}). ACCIÓN ADMIN: revisar en Dashboard antes de que el servicio se complete — si se aprueba como fraude, se hará refund automático y la plataforma deberá clawbackear el transfer al experto." + (rvHireId.HasValue ? $" SearchHire {rvHireId} marcado RequiresManualReview." : " (sin SearchHire asociado)"),
+                                    userId: rvClientId,
+                                    source: "SubscriptionController.HandleGeneralStripeWebhook.review.opened",
+                                    relatedEntityType: "Review",
+                                    relatedEntityId: rvHireId,
+                                    additionalData: new
+                                    {
+                                        ReviewId = reviewOpened.Id,
+                                        reviewOpened.ChargeId,
+                                        reviewOpened.PaymentIntentId,
+                                        reviewOpened.Reason,
+                                        reviewOpened.OpenedReason,
+                                        SearchHireId = rvHireId
+                                    });
+                            }
+                        }
+                        break;
+
+                    case "review.closed":
+                        {
+                            var reviewClosed = stripeEvent.Data.Object as Stripe.Review;
+                            if (reviewClosed != null)
+                            {
+                                int? rvcHireId = null;
+                                int? rvcExpertId = null;
+                                int? rvcClientId = null;
+                                if (!string.IsNullOrEmpty(reviewClosed.PaymentIntentId))
+                                {
+                                    var (hid, eid, cid) = await FindHireForPaymentIntentAsync(reviewClosed.PaymentIntentId);
+                                    rvcHireId = hid;
+                                    rvcExpertId = eid;
+                                    rvcClientId = cid;
+                                }
+
+                                // reason oficial Stripe: approved | disputed | refunded | refunded_as_fraud | canceled
+                                var closedReason = (reviewClosed.ClosedReason ?? reviewClosed.Reason ?? "").ToLowerInvariant();
+                                bool needsClawback = closedReason == "refunded" || closedReason == "refunded_as_fraud";
+
+                                await _loggingService.LogCriticalAsync(
+                                    message: $"🚨 STRIPE RADAR — Review closed ({closedReason})",
+                                    details: $"Review {reviewClosed.Id} cerrado con reason='{closedReason}' (charge {reviewClosed.ChargeId}, PI {reviewClosed.PaymentIntentId})." + (needsClawback ? " Stripe YA creó el refund al cliente. ENCOLANDO clawback del transfer al experto para evitar pérdida íntegra." : " Sin acción de dinero requerida.") + (rvcHireId.HasValue ? $" SearchHire {rvcHireId}, Expert {rvcExpertId}." : " (sin SearchHire asociado)"),
+                                    userId: rvcClientId,
+                                    source: "SubscriptionController.HandleGeneralStripeWebhook.review.closed",
+                                    relatedEntityType: "Review",
+                                    relatedEntityId: rvcHireId,
+                                    additionalData: new
+                                    {
+                                        ReviewId = reviewClosed.Id,
+                                        reviewClosed.ChargeId,
+                                        reviewClosed.PaymentIntentId,
+                                        ClosedReason = closedReason,
+                                        SearchHireId = rvcHireId,
+                                        ExpertId = rvcExpertId,
+                                        NeedsClawback = needsClawback
+                                    });
+
+                                if (needsClawback && rvcHireId.HasValue)
+                                {
+                                    // Patrón paralelo a HandleChargeDisputeCreated:8587. Idempotente:
+                                    // ReverseExpertTransferForChargebackAsync no-op si no hubo transfer
+                                    // o si ya existe TransferReversal para el StripeTransferId.
+                                    Hangfire.BackgroundJob.Enqueue<StripeRefundService>(
+                                        s => s.ReverseExpertTransferForChargebackAsync(rvcHireId.Value, $"Radar review {reviewClosed.Id} closed as {closedReason} on PI {reviewClosed.PaymentIntentId}"));
+                                }
+                            }
                         }
                         break;
 

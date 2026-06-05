@@ -4,18 +4,18 @@
 
 BEGIN;
 
--- ─── 1. Solo Coches (5), Motos (6), Inmobiliaria (3) + padre Vehículos (2) ───
+-- ─── 1. Solo Coches (5), Motos (6), Inmobiliaria (3) — sin padre Vehículos ───
 UPDATE "Categories"
 SET "Name" = 'Inmobiliaria', "IsActive" = true, "UpdatedAt" = NOW()
 WHERE "Id" = 3;
 
 UPDATE "Categories"
-SET "IsActive" = true, "UpdatedAt" = NOW()
-WHERE "Id" IN (2, 5, 6);
+SET "ParentId" = NULL, "IsActive" = true, "UpdatedAt" = NOW()
+WHERE "Id" IN (5, 6);
 
 UPDATE "Categories"
 SET "IsActive" = false, "UpdatedAt" = NOW()
-WHERE "Id" IN (1, 4, 7, 8, 9, 10, 11, 12);
+WHERE "Id" IN (1, 2, 4, 7, 8, 9, 10, 11, 12);
 
 -- Servicios fuera de las 3 categorías visibles → desactivar
 UPDATE "SearchServices"

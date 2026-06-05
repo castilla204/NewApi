@@ -5,22 +5,21 @@ BEGIN;
 INSERT INTO "Categories" ("Id", "Name", "ParentId", "IsActive", "CreatedAt", "UpdatedAt")
 VALUES
   (1, E'Electrodom\u00e9sticos', NULL, TRUE, NOW(), NOW()),
-  (2, E'Veh\u00edculos', NULL, TRUE, NOW(), NOW()),
-  (3, 'Inmuebles', NULL, TRUE, NOW(), NOW()),
-  (4, 'Servicios', NULL, TRUE, NOW(), NOW())
+  (3, 'Inmobiliaria', NULL, TRUE, NOW(), NOW()),
+  (4, 'Servicios', NULL, TRUE, NOW(), NOW()),
+  (5, 'Coches', NULL, TRUE, NOW(), NOW()),
+  (6, 'Motos', NULL, TRUE, NOW(), NOW())
 ON CONFLICT ("Id") DO NOTHING;
 
--- ========== Subcategorías ==========
+-- ========== Subcategorías (legacy / inactivas) ==========
 INSERT INTO "Categories" ("Id", "Name", "ParentId", "IsActive", "CreatedAt", "UpdatedAt")
 VALUES
-  (5, 'Coches', 2, TRUE, NOW(), NOW()),
-  (6, 'Motos', 2, TRUE, NOW(), NOW()),
-  (7, 'Furgonetas', 2, TRUE, NOW(), NOW()),
-  (8, 'Pisos', 3, TRUE, NOW(), NOW()),
-  (9, 'Casas', 3, TRUE, NOW(), NOW()),
-  (10, 'Locales', 3, TRUE, NOW(), NOW()),
-  (11, E'Electrodom\u00e9sticos grandes', 1, TRUE, NOW(), NOW()),
-  (12, E'Electrodom\u00e9sticos peque\u00f1os', 1, TRUE, NOW(), NOW())
+  (7, 'Furgonetas', NULL, FALSE, NOW(), NOW()),
+  (8, 'Pisos', 3, FALSE, NOW(), NOW()),
+  (9, 'Casas', 3, FALSE, NOW(), NOW()),
+  (10, 'Locales', 3, FALSE, NOW(), NOW()),
+  (11, E'Electrodom\u00e9sticos grandes', 1, FALSE, NOW(), NOW()),
+  (12, E'Electrodom\u00e9sticos peque\u00f1os', 1, FALSE, NOW(), NOW())
 ON CONFLICT ("Id") DO NOTHING;
 
 SELECT setval(pg_get_serial_sequence('"Categories"', 'Id'), GREATEST((SELECT MAX("Id") FROM "Categories"), 12));

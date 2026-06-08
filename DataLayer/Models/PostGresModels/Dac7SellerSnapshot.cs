@@ -23,8 +23,12 @@ namespace newApi.DataLayer.Models.PostGresModels
     {
         public int Id { get; set; }
 
-        [Required]
-        public int ExpertProfileId { get; set; }
+        // 🛡️ FIX (account-deletion 25P02): nullable + FK ON DELETE SET NULL (ver AppDbContext).
+        // Cuando un experto se borra (GDPR Art.17, hard-delete del ExpertProfile), el snapshot DEBE
+        // preservarse por obligación legal DAC7/AEAT (modelo 238). Con RESTRICT + NOT NULL eso era
+        // IMPOSIBLE (el borrado chocaba con FK 23503). Con SET NULL el snapshot SOBREVIVE con sus datos
+        // legales, ya desvinculado del experto borrado.
+        public int? ExpertProfileId { get; set; }
 
         [Required]
         public int Year { get; set; }

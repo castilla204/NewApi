@@ -105,9 +105,11 @@ namespace newApi.Services
 
             // 3) Cargar snapshots existentes para idempotencia.
             var existingSnapshots = await _context.Dac7SellerSnapshots
-                .Where(s => expertIds.Contains(s.ExpertProfileId) && s.Year == year)
+                .Where(s => s.ExpertProfileId != null && expertIds.Contains(s.ExpertProfileId.Value) && s.Year == year)
                 .ToListAsync(ct);
-            var existingByExpert = existingSnapshots.ToDictionary(s => s.ExpertProfileId);
+            // ExpertProfileId ahora es nullable (FK SET NULL al borrar al experto). El filtro de arriba
+            // ya descarta los NULL (snapshots de expertos borrados), así que .Value es seguro aquí.
+            var existingByExpert = existingSnapshots.ToDictionary(s => s.ExpertProfileId!.Value);
 
             // 4) Cargar ExpertProfiles + Users para snapshot de datos legales.
             var profiles = await _context.ExpertProfiles
@@ -244,7 +246,9 @@ namespace newApi.Services
             foreach (var s in reportable)
             {
                 var sellerXml = new XElement(ns + "Seller",
-                    new XAttribute("ExpertProfileId", s.ExpertProfileId),
+                    // ExpertProfileId nullable (SET NULL al borrar experto): si está desvinculado,
+                    // escribimos vacío en lugar de petar XAttribute con null.
+                    new XAttribute("ExpertProfileId", (object?)s.ExpertProfileId ?? string.Empty),
                     new XElement(ns + "Identification",
                         new XElement(ns + "LegalFirstName", s.LegalFirstName ?? string.Empty),
                         new XElement(ns + "LegalLastName", s.LegalLastName ?? string.Empty),

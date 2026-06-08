@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,205 +12,114 @@ namespace newApi.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AddColumn<string>(
-                name: "FiscalCountry",
-                table: "Users",
-                type: "character varying(2)",
-                maxLength: 2,
-                nullable: true);
+            // 🛡️ FIX (drift de migraciones / account-deletion 25P02):
+            //
+            //  1) IDEMPOTENTE. Esta migración NUNCA llegó a aplicarse en prod porque su CreateTable
+            //     original chocaba con objetos creados a mano fuera de migración (ExchangeRateSnapshots
+            //     y columnas de Users ya existían) → 42P07/42701 → MigrateAsync abortaba el lote en cada
+            //     arranque y dejaba el esquema incompleto (faltaban Dac7SellerSnapshots/ClawbackQueues),
+            //     lo que reventaba el borrado de cuenta con 25P02. Reescrita con ADD COLUMN/CREATE TABLE/
+            //     CREATE INDEX "IF NOT EXISTS" para que aplique limpiamente sea cual sea el estado previo.
+            //
+            //  2) Dac7SellerSnapshots.ExpertProfileId pasa a NULLABLE + FK ON DELETE SET NULL (antes
+            //     NOT NULL + RESTRICT). Decisión: al borrar (GDPR Art.17) a un experto, el snapshot DEBE
+            //     preservarse por obligación legal DAC7/AEAT, pero DESVINCULADO (ExpertProfileId=NULL),
+            //     en vez de bloquear el borrado. Ver Dac7SellerSnapshot.cs / AppDbContext.
 
-            migrationBuilder.AddColumn<DateTime>(
-                name: "FiscalCountryChangedAt",
-                table: "Users",
-                type: "timestamp with time zone",
-                nullable: true);
+            // ----- Columnas nuevas (idempotentes) -----
+            migrationBuilder.Sql(@"
+                ALTER TABLE ""Users""
+                    ADD COLUMN IF NOT EXISTS ""FiscalCountry"" character varying(2) NULL,
+                    ADD COLUMN IF NOT EXISTS ""FiscalCountryChangedAt"" timestamp with time zone NULL,
+                    ADD COLUMN IF NOT EXISTS ""PreferredCurrency"" character varying(3) NULL,
+                    ADD COLUMN IF NOT EXISTS ""PrivacyAcceptedAt"" timestamp with time zone NULL,
+                    ADD COLUMN IF NOT EXISTS ""PrivacyVersion"" character varying(64) NULL,
+                    ADD COLUMN IF NOT EXISTS ""TaxId"" character varying(50) NULL,
+                    ADD COLUMN IF NOT EXISTS ""TaxIdCountry"" character varying(2) NULL,
+                    ADD COLUMN IF NOT EXISTS ""TermsAcceptedAt"" timestamp with time zone NULL,
+                    ADD COLUMN IF NOT EXISTS ""TermsVersion"" character varying(64) NULL;
 
-            migrationBuilder.AddColumn<string>(
-                name: "PreferredCurrency",
-                table: "Users",
-                type: "character varying(3)",
-                maxLength: 3,
-                nullable: true);
+                ALTER TABLE ""SearchServices""
+                    ADD COLUMN IF NOT EXISTS ""Currency"" character varying(3) NOT NULL DEFAULT 'EUR';
 
-            migrationBuilder.AddColumn<DateTime>(
-                name: "PrivacyAcceptedAt",
-                table: "Users",
-                type: "timestamp with time zone",
-                nullable: true);
+                ALTER TABLE ""SearchHires""
+                    ADD COLUMN IF NOT EXISTS ""Currency"" character varying(3) NOT NULL DEFAULT 'EUR';
 
-            migrationBuilder.AddColumn<string>(
-                name: "PrivacyVersion",
-                table: "Users",
-                type: "character varying(64)",
-                maxLength: 64,
-                nullable: true);
+                ALTER TABLE ""Reviews""
+                    ADD COLUMN IF NOT EXISTS ""ReceivedInCountry"" character varying(2) NULL;
 
-            migrationBuilder.AddColumn<string>(
-                name: "TaxId",
-                table: "Users",
-                type: "character varying(50)",
-                maxLength: 50,
-                nullable: true);
+                ALTER TABLE ""FinancialTransactions""
+                    ADD COLUMN IF NOT EXISTS ""Currency"" character varying(3) NOT NULL DEFAULT 'EUR';
 
-            migrationBuilder.AddColumn<string>(
-                name: "TaxIdCountry",
-                table: "Users",
-                type: "character varying(2)",
-                maxLength: 2,
-                nullable: true);
+                ALTER TABLE ""ExpertProfiles""
+                    ADD COLUMN IF NOT EXISTS ""LastPayoutDate"" timestamp with time zone NULL,
+                    ADD COLUMN IF NOT EXISTS ""RelocatedAt"" timestamp with time zone NULL,
+                    ADD COLUMN IF NOT EXISTS ""RelocatedFromCountry"" character varying(2) NULL;
 
-            migrationBuilder.AddColumn<DateTime>(
-                name: "TermsAcceptedAt",
-                table: "Users",
-                type: "timestamp with time zone",
-                nullable: true);
+                ALTER TABLE ""ExpertAvailabilities""
+                    ADD COLUMN IF NOT EXISTS ""Timezone"" character varying(50) NULL;
 
-            migrationBuilder.AddColumn<string>(
-                name: "TermsVersion",
-                table: "Users",
-                type: "character varying(64)",
-                maxLength: 64,
-                nullable: true);
+                ALTER TABLE ""Appointments""
+                    ADD COLUMN IF NOT EXISTS ""ProposerTimezone"" character varying(64) NULL;
+            ");
 
-            migrationBuilder.AddColumn<string>(
-                name: "Currency",
-                table: "SearchServices",
-                type: "character varying(3)",
-                maxLength: 3,
-                nullable: false,
-                defaultValue: "EUR");
+            // ----- Dac7SellerSnapshots (ExpertProfileId NULLABLE + FK ON DELETE SET NULL) -----
+            migrationBuilder.Sql(@"
+                CREATE TABLE IF NOT EXISTS ""Dac7SellerSnapshots"" (
+                    ""Id"" integer GENERATED BY DEFAULT AS IDENTITY,
+                    ""ExpertProfileId"" integer NULL,
+                    ""Year"" integer NOT NULL,
+                    ""LegalFirstName"" character varying(200) NULL,
+                    ""LegalLastName"" character varying(200) NULL,
+                    ""DateOfBirth"" date NULL,
+                    ""TinCountry"" character varying(2) NULL,
+                    ""TinValue"" character varying(50) NULL,
+                    ""FiscalCountry"" character varying(2) NULL,
+                    ""VatNumber"" character varying(50) NULL,
+                    ""AddressLine"" character varying(300) NULL,
+                    ""AddressCity"" character varying(100) NULL,
+                    ""AddressPostalCode"" character varying(20) NULL,
+                    ""IbanLast4"" character varying(8) NULL,
+                    ""GrossSalesQ1"" numeric NOT NULL,
+                    ""GrossSalesQ2"" numeric NOT NULL,
+                    ""GrossSalesQ3"" numeric NOT NULL,
+                    ""GrossSalesQ4"" numeric NOT NULL,
+                    ""PlatformFeesQ1"" numeric NOT NULL,
+                    ""PlatformFeesQ2"" numeric NOT NULL,
+                    ""PlatformFeesQ3"" numeric NOT NULL,
+                    ""PlatformFeesQ4"" numeric NOT NULL,
+                    ""TransactionCountQ1"" integer NOT NULL,
+                    ""TransactionCountQ2"" integer NOT NULL,
+                    ""TransactionCountQ3"" integer NOT NULL,
+                    ""TransactionCountQ4"" integer NOT NULL,
+                    ""ReportingCurrency"" character varying(3) NOT NULL,
+                    ""SnapshotCreatedAt"" timestamp with time zone NOT NULL,
+                    ""ReportedToAeatAt"" timestamp with time zone NULL,
+                    ""AeatSubmissionReference"" character varying(50) NULL,
+                    CONSTRAINT ""PK_Dac7SellerSnapshots"" PRIMARY KEY (""Id""),
+                    CONSTRAINT ""FK_Dac7SellerSnapshots_ExpertProfiles_ExpertProfileId""
+                        FOREIGN KEY (""ExpertProfileId"") REFERENCES ""ExpertProfiles"" (""Id"") ON DELETE SET NULL
+                );
 
-            migrationBuilder.AddColumn<string>(
-                name: "Currency",
-                table: "SearchHires",
-                type: "character varying(3)",
-                maxLength: 3,
-                nullable: false,
-                defaultValue: "EUR");
+                CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Dac7SellerSnapshot_Expert_Year_uq""
+                    ON ""Dac7SellerSnapshots"" (""ExpertProfileId"", ""Year"");
+            ");
 
-            migrationBuilder.AddColumn<string>(
-                name: "ReceivedInCountry",
-                table: "Reviews",
-                type: "character varying(2)",
-                maxLength: 2,
-                nullable: true);
+            // ----- ExchangeRateSnapshots (ya existe en prod creada fuera de migración; IF NOT EXISTS) -----
+            migrationBuilder.Sql(@"
+                CREATE TABLE IF NOT EXISTS ""ExchangeRateSnapshots"" (
+                    ""Id"" bigint GENERATED BY DEFAULT AS IDENTITY,
+                    ""BaseCurrency"" char(3) NOT NULL,
+                    ""RatesJson"" jsonb NOT NULL,
+                    ""Source"" character varying(64) NOT NULL,
+                    ""RateDate"" date NOT NULL,
+                    ""FetchedAt"" timestamp with time zone NOT NULL,
+                    CONSTRAINT ""PK_ExchangeRateSnapshots"" PRIMARY KEY (""Id"")
+                );
 
-            migrationBuilder.AddColumn<string>(
-                name: "Currency",
-                table: "FinancialTransactions",
-                type: "character varying(3)",
-                maxLength: 3,
-                nullable: false,
-                defaultValue: "EUR");
-
-            migrationBuilder.AddColumn<DateTime>(
-                name: "LastPayoutDate",
-                table: "ExpertProfiles",
-                type: "timestamp with time zone",
-                nullable: true);
-
-            migrationBuilder.AddColumn<DateTime>(
-                name: "RelocatedAt",
-                table: "ExpertProfiles",
-                type: "timestamp with time zone",
-                nullable: true);
-
-            migrationBuilder.AddColumn<string>(
-                name: "RelocatedFromCountry",
-                table: "ExpertProfiles",
-                type: "character varying(2)",
-                maxLength: 2,
-                nullable: true);
-
-            migrationBuilder.AddColumn<string>(
-                name: "Timezone",
-                table: "ExpertAvailabilities",
-                type: "character varying(50)",
-                maxLength: 50,
-                nullable: true);
-
-            migrationBuilder.AddColumn<string>(
-                name: "ProposerTimezone",
-                table: "Appointments",
-                type: "character varying(64)",
-                maxLength: 64,
-                nullable: true);
-
-            migrationBuilder.CreateTable(
-                name: "Dac7SellerSnapshots",
-                columns: table => new
-                {
-                    Id = table.Column<int>(type: "integer", nullable: false)
-                        .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
-                    ExpertProfileId = table.Column<int>(type: "integer", nullable: false),
-                    Year = table.Column<int>(type: "integer", nullable: false),
-                    LegalFirstName = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: true),
-                    LegalLastName = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: true),
-                    DateOfBirth = table.Column<DateOnly>(type: "date", nullable: true),
-                    TinCountry = table.Column<string>(type: "character varying(2)", maxLength: 2, nullable: true),
-                    TinValue = table.Column<string>(type: "character varying(50)", maxLength: 50, nullable: true),
-                    FiscalCountry = table.Column<string>(type: "character varying(2)", maxLength: 2, nullable: true),
-                    VatNumber = table.Column<string>(type: "character varying(50)", maxLength: 50, nullable: true),
-                    AddressLine = table.Column<string>(type: "character varying(300)", maxLength: 300, nullable: true),
-                    AddressCity = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
-                    AddressPostalCode = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: true),
-                    IbanLast4 = table.Column<string>(type: "character varying(8)", maxLength: 8, nullable: true),
-                    GrossSalesQ1 = table.Column<decimal>(type: "numeric", nullable: false),
-                    GrossSalesQ2 = table.Column<decimal>(type: "numeric", nullable: false),
-                    GrossSalesQ3 = table.Column<decimal>(type: "numeric", nullable: false),
-                    GrossSalesQ4 = table.Column<decimal>(type: "numeric", nullable: false),
-                    PlatformFeesQ1 = table.Column<decimal>(type: "numeric", nullable: false),
-                    PlatformFeesQ2 = table.Column<decimal>(type: "numeric", nullable: false),
-                    PlatformFeesQ3 = table.Column<decimal>(type: "numeric", nullable: false),
-                    PlatformFeesQ4 = table.Column<decimal>(type: "numeric", nullable: false),
-                    TransactionCountQ1 = table.Column<int>(type: "integer", nullable: false),
-                    TransactionCountQ2 = table.Column<int>(type: "integer", nullable: false),
-                    TransactionCountQ3 = table.Column<int>(type: "integer", nullable: false),
-                    TransactionCountQ4 = table.Column<int>(type: "integer", nullable: false),
-                    ReportingCurrency = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: false),
-                    SnapshotCreatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
-                    ReportedToAeatAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
-                    AeatSubmissionReference = table.Column<string>(type: "character varying(50)", maxLength: 50, nullable: true)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_Dac7SellerSnapshots", x => x.Id);
-                    table.ForeignKey(
-                        name: "FK_Dac7SellerSnapshots_ExpertProfiles_ExpertProfileId",
-                        column: x => x.ExpertProfileId,
-                        principalTable: "ExpertProfiles",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "ExchangeRateSnapshots",
-                columns: table => new
-                {
-                    Id = table.Column<long>(type: "bigint", nullable: false)
-                        .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
-                    BaseCurrency = table.Column<string>(type: "char(3)", maxLength: 3, nullable: false),
-                    RatesJson = table.Column<string>(type: "jsonb", nullable: false),
-                    Source = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
-                    RateDate = table.Column<DateOnly>(type: "date", nullable: false),
-                    FetchedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_ExchangeRateSnapshots", x => x.Id);
-                });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_Dac7SellerSnapshot_Expert_Year_uq",
-                table: "Dac7SellerSnapshots",
-                columns: new[] { "ExpertProfileId", "Year" },
-                unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_ExchangeRateSnapshots_Base_Fetched",
-                table: "ExchangeRateSnapshots",
-                columns: new[] { "BaseCurrency", "FetchedAt" },
-                descending: new[] { false, true });
+                CREATE INDEX IF NOT EXISTS ""IX_ExchangeRateSnapshots_Base_Fetched""
+                    ON ""ExchangeRateSnapshots"" (""BaseCurrency"", ""FetchedAt"" DESC);
+            ");
         }
 
         /// <inheritdoc />

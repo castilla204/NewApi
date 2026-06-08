@@ -96,7 +96,12 @@ namespace newApi.DataLayer.Models
                 .HasOne(d => d.ExpertProfile)
                 .WithMany() // no navegación inversa para no contaminar ExpertProfile con un List grande
                 .HasForeignKey(d => d.ExpertProfileId)
-                .OnDelete(DeleteBehavior.Restrict); // ⚠️ NO cascade: si GDPR-borran al experto, el snapshot DEBE preservarse (obligación legal Art.17 excepción)
+                // 🛡️ FIX (account-deletion 25P02): SET NULL en vez de RESTRICT. RESTRICT + ExpertProfileId
+                // NOT NULL hacía IMPOSIBLE el hard-delete del ExpertProfile durante el borrado de cuenta
+                // (violación FK 23503 → transacción envenenada → 25P02). El snapshot DEBE preservarse
+                // igual (obligación legal Art.17 DAC7/AEAT) pero DESVINCULADO: al borrar al experto,
+                // Postgres pone ExpertProfileId=NULL y la fila SOBREVIVE con sus datos fiscales.
+                .OnDelete(DeleteBehavior.SetNull);
 
             modelBuilder.Entity<Like>()
                 .HasOne(l => l.User)

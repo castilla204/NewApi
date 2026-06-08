@@ -39,6 +39,7 @@ namespace newApi.Services
             Account? account,
             int expertProfileId,
             int? year = null,
+            bool rethrowOnDbError = false,
             CancellationToken ct = default)
         {
             if (account == null || expertProfileId <= 0) return;
@@ -125,7 +126,31 @@ namespace newApi.Services
             }
             catch (Exception ex)
             {
-                // Non-blocking — el account.updated debe procesar incluso si el sync DAC7 falla.
+                // 🛡️ FIX (account-deletion 25P02): esta función hace SaveChangesAsync sobre el
+                // _context COMPARTIDO. Si el caller tiene una transacción manual abierta con
+                // AutoSavepointsEnabled=false (AccountDeletionService), un error de BD aquí deja la
+                // transacción ABORTADA y TODO statement posterior falla con 25P02 ("siempre continúa
+                // aunque falle"). Por eso, cuando el caller lo pide (rethrowOnDbError=true), relanzamos
+                // los errores de BD para que el borrado falle de forma ATÓMICA y RUIDOSA en lugar de
+                // seguir ejecutando sobre una transacción muerta. Para los webhooks
+                // (rethrowOnDbError=false) seguimos siendo non-blocking: account.updated debe procesar
+                // aunque el sync DAC7 falle.
+                bool isDbError = ex is DbUpdateException
+                    || ex is Npgsql.PostgresException
+                    || ex.InnerException is Npgsql.PostgresException;
+
+                if (isDbError && rethrowOnDbError)
+                {
+                    await _loggingService.LogErrorAsync(
+                        message: "MUD-BF: DAC7 sync ABORTADO por error de BD (rethrow para no envenenar la transacción del caller)",
+                        details: $"ExpertProfile {expertProfileId} acct {account?.Id}: {ex.Message}. Relanzado para fallo atómico del caller.",
+                        source: "Dac7DataSyncService.SyncFromAccountAsync",
+                        relatedEntityType: "Dac7SellerSnapshot",
+                        relatedEntityId: expertProfileId);
+                    throw;
+                }
+
+                // Non-blocking — el account.updated debe procesar incluso si el sync DAC7 falla por causas no-BD.
                 await _loggingService.LogWarningAsync(
                     message: "MUD-BF: failed to sync DAC7 data from Stripe Account (non-blocking)",
                     details: $"ExpertProfile {expertProfileId} acct {account?.Id}: {ex.Message}. El snapshot DAC7 del año {targetYear} no se actualizó con los datos del webhook; admin puede completar manualmente.",

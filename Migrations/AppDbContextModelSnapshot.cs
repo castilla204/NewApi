@@ -478,7 +478,7 @@ namespace newApi.Migrations
                     b.Property<DateOnly?>("DateOfBirth")
                         .HasColumnType("date");
 
-                    b.Property<int>("ExpertProfileId")
+                    b.Property<int?>("ExpertProfileId")
                         .HasColumnType("integer");
 
                     b.Property<string>("FiscalCountry")
@@ -2845,8 +2845,7 @@ namespace newApi.Migrations
                     b.HasOne("newApi.DataLayer.Models.PostGresModels.ExpertProfile", "ExpertProfile")
                         .WithMany()
                         .HasForeignKey("ExpertProfileId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("ExpertProfile");
                 });

@@ -2756,6 +2756,46 @@ lifetime.ApplicationStarted.Register(() =>
                     "[MIGRATIONS] ⚠️ Error transitorio de conectividad al migrar. " +
                     "El servicio sigue operativo y reintentará en próximo restart.");
             }
+            catch (Exception ex)
+            {
+                // 🛡️ FIX "siempre continúa aunque falle": un error NO transitorio al migrar (p.ej. DDL
+                // 42P07 duplicate_table / 42701 duplicate_column por objetos creados fuera de migración)
+                // antes caía al catch genérico de abajo, se registraba como un vago "error crítico" y el
+                // servicio seguía sirviendo con el ESQUEMA INCOMPLETO en silencio. Así estuvo días:
+                // faltaban las tablas Dac7SellerSnapshots/ClawbackQueues y el borrado de cuenta moría con
+                // 25P02. Ahora lo registramos como CRITICAL CON el SqlState para que sea diagnosticable.
+                var sqlState = (ex as Npgsql.PostgresException)?.SqlState
+                    ?? (ex.InnerException as Npgsql.PostgresException)?.SqlState
+                    ?? "n/a";
+                migLogger.LogCritical(ex,
+                    "[MIGRATIONS] ❌ FALLO NO TRANSITORIO aplicando migraciones (SqlState={SqlState}). " +
+                    "El esquema puede estar INCOMPLETO. Revisar y aplicar a mano por conexión directa (no el pooler).",
+                    sqlState);
+            }
+
+            // 🛡️ FIX: verificación post-migración SIEMPRE. Aunque MigrateAsync falle a mitad, dejamos
+            // constancia EXACTA de qué migraciones siguen pendientes — en vez de "continuar en silencio".
+            try
+            {
+                var stillPending = (await db.Database.GetPendingMigrationsAsync()).ToList();
+                if (stillPending.Count > 0)
+                {
+                    migLogger.LogCritical(
+                        "[MIGRATIONS] ❌ QUEDAN {Count} MIGRACIÓN(ES) SIN APLICAR: {Pending}. " +
+                        "El esquema NO coincide con el modelo y puede romper funcionalidades " +
+                        "(p.ej. borrado de cuenta → faltan tablas → 25P02). Aplicarlas cuanto antes.",
+                        stillPending.Count, string.Join(", ", stillPending));
+                }
+                else
+                {
+                    migLogger.LogInformation("[MIGRATIONS] ✅ Verificación: 0 migraciones pendientes.");
+                }
+            }
+            catch (Exception checkEx)
+            {
+                migLogger.LogError(checkEx,
+                    "[MIGRATIONS] No se pudo verificar migraciones pendientes tras MigrateAsync");
+            }
         }
         catch (Exception ex)
         {

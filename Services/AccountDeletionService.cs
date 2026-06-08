@@ -58,6 +58,45 @@ namespace newApi.Services
             _dac7DataSync = dac7DataSync;
         }
 
+        // 🛡️ FIX (estado roto Stripe/BD): "Bolsa" de efectos externos IRREVERSIBLES que ANTES se
+        // ejecutaban DENTRO de la transacción de borrado. Si la tx hacía rollback (p.ej. por 25P02
+        // tardío), Stripe.Account.Delete o las purgas de Supabase Storage YA habían ocurrido y NO se
+        // podían deshacer → estado roto (cuenta Stripe destruida + User vivo en BD, o ficheros borrados
+        // + filas que aún los referencian). Ahora se RECOLECTAN durante la tx y se EJECUTAN solo
+        // después del CommitAsync (ver ExecutePostCommitExternalWorkAsync). Si el commit falla, nada
+        // externo se tocó: la BD queda consistente y se puede reintentar limpiamente.
+        private sealed class PostCommitExternalWork
+        {
+            public int UserId { get; init; }
+            public int? ExpertProfileId { get; set; }
+
+            // Cuenta Stripe activa (experto onboarded). Se borra (o se hace Reject como fallback) post-commit.
+            public string? StripeAccountIdToDelete { get; set; }
+            // Payouts finales agregados antes del Delete. Cada uno con su Stripe IdempotencyKey, así que
+            // retries (manuales o automáticos) NO doble-pagan.
+            public List<PendingPayout> FinalPayouts { get; } = new();
+            // Snapshot del balance leído ANTES del cierre — para incluir en el log Critical si falla post-commit.
+            public string BalanceSnapshot { get; set; } = string.Empty;
+
+            // Cuenta Stripe pendiente (onboarding abandonado). N4+N14.
+            public string? PendingStripeAccountIdToDelete { get; set; }
+
+            // Purgas de Supabase Storage (avatares, ficheros, imágenes). Se invoca TryDeleteStorageObjectsAsync
+            // post-commit, que es idempotente y best-effort (404 = ok, fallo = log Critical con paths).
+            public List<StorageDelete> StorageDeletes { get; } = new();
+
+            public bool HasWork =>
+                !string.IsNullOrEmpty(StripeAccountIdToDelete)
+                || !string.IsNullOrEmpty(PendingStripeAccountIdToDelete)
+                || FinalPayouts.Count > 0
+                || StorageDeletes.Count > 0;
+        }
+
+        private sealed record PendingPayout(long AmountMinor, string Currency);
+
+        private sealed record StorageDelete(string Bucket, IReadOnlyList<string> Paths, string SourceTag);
+
+
         /// <summary>
         /// 🛡️ GDPR-S1 FIX: best-effort delete de objetos en Supabase Storage.
         /// NO aborta la eliminación de la cuenta si Supabase falla — la coherencia GDPR
@@ -410,6 +449,11 @@ namespace newApi.Services
             // ✅ FIX: Deshabilitar savepoints automáticos según documentación oficial de Microsoft
             _context.Database.AutoSavepointsEnabled = false;
 
+            // 🛡️ FIX (estado roto): bolsa de efectos externos recolectados durante la tx para
+            // ejecutar SOLO tras CommitAsync (Stripe Delete/Reject/Payout + purgas Storage).
+            // Si la tx falla, esto queda en null → nada externo se tocó → estado consistente.
+            PostCommitExternalWork? pendingExternalWork = null;
+
             var strategy = _context.Database.CreateExecutionStrategy();
             await strategy.ExecuteAsync(async () =>
             {
@@ -417,7 +461,7 @@ namespace newApi.Services
                 try
                 {
                     // 4. Eliminar datos del usuario (dentro de transacción)
-                    await DeleteUserDataAsync(userId, linkedCts.Token);
+                    pendingExternalWork = await DeleteUserDataAsync(userId, linkedCts.Token);
 
                     // 5. Confirmar transacción PRIMERO (antes de notificaciones)
                     // ✅ MEJORA: Las notificaciones no deberían bloquear la eliminación de la cuenta
@@ -433,7 +477,9 @@ namespace newApi.Services
                     var moneyAlreadyProcessed = disputesCreated.Any() || processingErrors.Any();
 
                     await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: Account deletion failed - concurrency conflict (money already processed)",
+                        message: moneyAlreadyProcessed
+                            ? "CRITICAL: Account deletion failed - concurrency conflict (money already processed)"
+                            : "CRITICAL: Account deletion failed - concurrency conflict (no money processed — safe to retry)",
                         details: $"Account deletion transaction for user {userId} was rolled back due to concurrency conflict. " +
                                 $"Another process modified the user data concurrently. Error: {ex.Message}. " +
                                 $"IMPORTANT: Only data deletion was rolled back. " +
@@ -519,7 +565,9 @@ namespace newApi.Services
                     }
 
                     await _loggingService.LogCriticalAsync(
-                        message: $"CRITICAL: Account deletion failed - PostgreSQL error ({pgEx.SqlState}) (money already processed)",
+                        message: moneyAlreadyProcessed
+                            ? $"CRITICAL: Account deletion failed - PostgreSQL error ({pgEx.SqlState}) (money already processed)"
+                            : $"CRITICAL: Account deletion failed - PostgreSQL error ({pgEx.SqlState}) (no money processed — safe to retry)",
                         details: $"Account deletion transaction for user {userId} was rolled back due to PostgreSQL error. " +
                                 $"SQL State: {pgEx.SqlState}, Constraint: {pgEx.ConstraintName}, " +
                                 $"Message: {pgEx.Message}. IMPORTANT: Only data deletion was rolled back. " +
@@ -580,7 +628,9 @@ namespace newApi.Services
                     var moneyAlreadyProcessed = disputesCreated.Any() || processingErrors.Any();
 
                     await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: Account deletion failed - transaction timeout (money already processed)",
+                        message: moneyAlreadyProcessed
+                            ? "CRITICAL: Account deletion failed - transaction timeout (money already processed)"
+                            : "CRITICAL: Account deletion failed - transaction timeout (no money processed — safe to retry)",
                         details: $"Account deletion transaction for user {userId} was cancelled due to timeout (5 minutes) or cancellation request. " +
                                 $"IMPORTANT: Only data deletion was rolled back. " +
                                 (moneyAlreadyProcessed
@@ -661,7 +711,9 @@ namespace newApi.Services
                     var moneyAlreadyProcessed = disputesCreated.Any() || processingErrors.Any();
 
                     await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: Account deletion transaction rolled back (money already processed)",
+                        message: moneyAlreadyProcessed
+                            ? "CRITICAL: Account deletion transaction rolled back (money already processed)"
+                            : "CRITICAL: Account deletion transaction rolled back (no money processed — safe to retry)",
                         details: $"Account deletion transaction for user {userId} was rolled back due to error. Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. " +
                                 $"IMPORTANT: Only data deletion was rolled back. " +
                                 (moneyAlreadyProcessed
@@ -707,6 +759,28 @@ namespace newApi.Services
                     throw; // Re-throw para que el controller maneje el error
                 }
             });
+
+            // 🛡️ FIX (estado roto): FASE 3 — ejecutar efectos externos IRREVERSIBLES recolectados
+            // durante la tx (Stripe Account.Delete/Reject/Payout + purgas Storage). El commit BD ya
+            // fue OK: GDPR Art.17 está satisfecho. Si algo aquí falla, logueamos Critical CON los IDs
+            // (StripeAccountId, paths) para que un admin pueda completar manualmente; NO re-lanzamos.
+            if (pendingExternalWork != null && pendingExternalWork.HasWork)
+            {
+                try
+                {
+                    await ExecutePostCommitExternalWorkAsync(pendingExternalWork, linkedCts.Token);
+                }
+                catch (Exception ex)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "POST-COMMIT: unexpected error in external-work executor (BD ya commiteada)",
+                        details: $"User {pendingExternalWork.UserId}: error inesperado en la fase post-commit. Stripe={pendingExternalWork.StripeAccountIdToDelete ?? "(none)"}, Pending={pendingExternalWork.PendingStripeAccountIdToDelete ?? "(none)"}, Storage={pendingExternalWork.StorageDeletes.Count} bolsas. Error: {ex.Message}. ACCIÓN ADMIN: completar limpieza manual.",
+                        userId: pendingExternalWork.UserId,
+                        source: "AccountDeletionService.DeleteAccountAsync.PostCommit",
+                        relatedEntityType: "User",
+                        relatedEntityId: pendingExternalWork.UserId);
+                }
+            }
 
             // 6. Enviar notificaciones DESPUÉS del commit (si fallan, no afectan la eliminación)
             // ✅ MEJORA: Notificaciones fuera de transacción para que no bloqueen la eliminación
@@ -1224,8 +1298,13 @@ namespace newApi.Services
         ///
         /// NOTA: Todo se ejecuta en la transacción global de DeleteAccountAsync para evitar problemas de nested transactions.
         /// </summary>
-        private async Task DeleteUserDataAsync(int userId, CancellationToken cancellationToken = default)
+        private async Task<PostCommitExternalWork> DeleteUserDataAsync(int userId, CancellationToken cancellationToken = default)
         {
+            // 🛡️ FIX (estado roto): la bolsa que recoge efectos externos irreversibles para ejecutar
+            // POST-COMMIT. Mira PostCommitExternalWork arriba. Se rellena durante la tx (storage paths,
+            // Stripe account IDs, payout intents) y se devuelve al caller para ejecutar tras CommitAsync.
+            var pendingExternalWork = new PostCommitExternalWork { UserId = userId };
+
             // ===== FASE 1: VALIDACIONES (dentro de transacción global) =====
             try
             {
@@ -1272,12 +1351,11 @@ namespace newApi.Services
 
                     if (attachmentObjectNames.Count > 0)
                     {
-                        await TryDeleteStorageObjectsAsync(
+                        // 🛡️ FIX (estado roto): purgar tras CommitAsync (antes era dentro de la tx).
+                        pendingExternalWork.StorageDeletes.Add(new StorageDelete(
                             _storage.FilesBucket,
-                            attachmentObjectNames,
-                            userId,
-                            "DeleteUserDataAsync.N19",
-                            cancellationToken);
+                            attachmentObjectNames.Where(o => !string.IsNullOrWhiteSpace(o)).Select(o => o!).ToList(),
+                            "DeleteUserDataAsync.N19"));
                     }
 
                     var n19AttachmentsDeleted = await _context.Database.ExecuteSqlRawAsync(
@@ -1357,12 +1435,11 @@ namespace newApi.Services
 
                     if (reviewImageObjects.Count > 0)
                     {
-                        await TryDeleteStorageObjectsAsync(
+                        // 🛡️ FIX (estado roto): purgar tras CommitAsync.
+                        pendingExternalWork.StorageDeletes.Add(new StorageDelete(
                             _storage.ImagesBucket,
-                            reviewImageObjects,
-                            userId,
-                            "DeleteUserDataAsync.ReviewImages",
-                            cancellationToken);
+                            reviewImageObjects.Where(o => !string.IsNullOrWhiteSpace(o)).Select(o => o!).ToList(),
+                            "DeleteUserDataAsync.ReviewImages"));
                     }
 
                     var reviewImagesDeleted = await _context.Database.ExecuteSqlRawAsync(
@@ -1532,12 +1609,16 @@ namespace newApi.Services
                     }
                     catch (PostgresException pgEx) when (pgEx.SqlState == "23502")
                     {
-                        // ✅ FALLBACK: Si por alguna razón la migración no se aplicó correctamente, loguear y continuar
-                        await _loggingService.LogWarningAsync(
-                            message: "ExpertId cannot be anonymized - NOT NULL constraint",
-                            details: $"Cannot anonymize ExpertId for user {userId} because the column has a NOT NULL constraint in the database. " +
-                                    $"This should not happen if the migration was applied correctly. " +
-                                    $"ACTION REQUIRED: Verify that migration 'MakeExpertIdNullableInSearchHires' was applied successfully.",
+                        // 🛡️ FIX (25P02): antes este catch logueaba y CONTINUABA. Pero AutoSavepointsEnabled=false:
+                        // tras el 23502 la tx PG queda abortada, todo statement siguiente devuelve 25P02 y el log
+                        // CRITICAL final oculta la causa raíz (la falta de migración 'MakeExpertIdNullableInSearchHires').
+                        // La columna ES nullable en prod (migración aplicada); si volviera a no serlo, hay que fallar
+                        // RUIDOSAMENTE para que el operador lo detecte, no envenenar la tx en silencio.
+                        await _loggingService.LogCriticalAsync(
+                            message: "REGRESIÓN DE ESQUEMA: ExpertId NOT NULL — borrado abortado",
+                            details: $"Cannot anonymize ExpertId for user {userId} because the column has a NOT NULL constraint. " +
+                                    $"Esto indica una REGRESIÓN: la migración 'MakeExpertIdNullableInSearchHires' debería estar aplicada. " +
+                                    $"Relanzando para abortar la tx atómicamente.",
                             userId: userId,
                             source: "AccountDeletionService.DeleteUserDataAsync",
                             relatedEntityType: "SearchHire",
@@ -1550,7 +1631,7 @@ namespace newApi.Services
                                 ActionRequired = "Verify migration MakeExpertIdNullableInSearchHires was applied"
                             }
                         );
-                        // Continuar sin fallar - ClientId ya fue anonimizado
+                        throw; // 🛡️ FIX (25P02): la tx ya está envenenada — relanzar para rollback atómico ruidoso.
                     }
 
                     var totalSearchHiresAnonymized = searchHiresAsClient + searchHiresAsExpert;
@@ -1631,12 +1712,11 @@ namespace newApi.Services
 
                     if (disputeFilePaths.Count > 0)
                     {
-                        await TryDeleteStorageObjectsAsync(
+                        // 🛡️ FIX (estado roto): purgar tras CommitAsync.
+                        pendingExternalWork.StorageDeletes.Add(new StorageDelete(
                             _storage.FilesBucket,
-                            disputeFilePaths,
-                            userId,
-                            "DeleteUserDataAsync.F1",
-                            cancellationToken);
+                            disputeFilePaths.Where(o => !string.IsNullOrWhiteSpace(o)).Select(o => o!).ToList(),
+                            "DeleteUserDataAsync.F1"));
                     }
 
                     // 🛡️ GDPR-F1 FIX (parte 2/2): borrar filas DisputeFile. Se eliminan por completo
@@ -1743,12 +1823,11 @@ namespace newApi.Services
 
                         if (deliverableObjects.Count > 0)
                         {
-                            await TryDeleteStorageObjectsAsync(
+                            // 🛡️ FIX (estado roto): purgar tras CommitAsync.
+                            pendingExternalWork.StorageDeletes.Add(new StorageDelete(
                                 _storage.FilesBucket,
-                                deliverableObjects,
-                                userId,
-                                "DeleteUserDataAsync.R4",
-                                cancellationToken);
+                                deliverableObjects.Where(o => !string.IsNullOrWhiteSpace(o)).Select(o => o!).ToList(),
+                                "DeleteUserDataAsync.R4"));
                         }
 
                         // 🛡️ GDPR-R4 FIX (parte 2/2): borrar filas SearchHireDeliverable
@@ -1801,23 +1880,19 @@ namespace newApi.Services
                     }
                     catch (Exception r3Ex)
                     {
-                        // C1: no abortar — webhook events son auditoría no crítica
-                        // ⚠️ NOTA POSTGRESQL: si esta operación falla dentro de la tx global,
-                        // la tx queda en estado "aborted" y las siguientes operaciones también
-                        // fallarán hasta el rollback. PERO el catch externo grande hará el
-                        // rollback y la captura habrá quedado en logs separados. Por eso es
-                        // mejor que R3 vaya al FINAL de la fase de anonimización (ya está):
-                        // si falla, todavía perdemos el resto de Fase 2/3/4. Limitación de
-                        // PgBouncer sin savepoints.
+                        // 🛡️ FIX (25P02): este catch era "teatro defensivo". El comentario original admitía que
+                        // tras el fallo la tx queda envenenada y el commit fallaría igual; tragarse la excepción
+                        // sólo oscurecía la causa raíz en logs (aparecía el 25P02 derivado, no el error real de R3).
+                        // Logueamos la causa REAL y relanzamos. Si en el futuro queremos que R3 sea "best effort
+                        // de verdad", hay que MOVERLO fuera de la tx (post-commit en su propia tx), no tragarlo aquí.
                         await _loggingService.LogCriticalAsync(
-                            message: "GDPR-R3 + C1: Failed to anonymize webhook events (non-critical)",
-                            details: $"User {userId}: ProcessedWebhookEvents anonymization falló: {r3Ex.Message}. ACCIÓN ADMIN: ejecutar manualmente UPDATE ProcessedWebhookEvents SET UserId=NULL,EventData=NULL WHERE UserId={userId}. NOTA: por limitación de PgBouncer sin savepoints, esta excepción puede haber abortado la tx global — verificar si el usuario realmente quedó eliminado.",
+                            message: "GDPR-R3: Failed to anonymize webhook events — aborting deletion atomically",
+                            details: $"User {userId}: ProcessedWebhookEvents anonymization falló: {r3Ex.Message}. La tx se aborta limpiamente. ACCIÓN ADMIN: investigar la causa raíz (no es esperable que esta op falle) y reintentar.",
                             userId: null,
-                            source: "AccountDeletionService.DeleteUserDataAsync.R3.C1",
+                            source: "AccountDeletionService.DeleteUserDataAsync.R3",
                             relatedEntityType: "ProcessedWebhookEvent",
                             relatedEntityId: null);
-                        // NO throw — pero PostgreSQL ya marcó la tx como abortada. Continuamos
-                        // (las siguientes ops fallarán y el catch externo hará rollback).
+                        throw;
                     }
                 }
                 catch (DbUpdateConcurrencyException ex)
@@ -1942,6 +2017,9 @@ namespace newApi.Services
 
                 if (expertProfileId > 0)
                 {
+                    // 🛡️ FIX (estado roto): registrar ExpertProfileId en el bag para los logs Critical
+                    // del ejecutor post-commit (necesarios si Stripe/Storage fallan post-tx).
+                    pendingExternalWork.ExpertProfileId = expertProfileId;
                     // Obtener IDs de servicios directamente con SQL usando conexión directa
                     using (var command = connection.CreateCommand())
                     {
@@ -2093,19 +2171,15 @@ namespace newApi.Services
                             }
                             catch (DbUpdateException dbEx) when (dbEx.InnerException is PostgresException pgEx && pgEx.SqlState == "23502")
                             {
-                                // ✅ ERROR: ExpertProfileId tiene restricción NOT NULL en BD (falta migración)
-                                // FALLBACK: Solo desactivar servicios sin anonimizar
-                                var servicesArrayFallback = string.Join(",", servicesToAnonymize);  // Sin {}
-                                var sqlFallback = @"UPDATE ""SearchServices""
-                                      SET ""IsActive"" = false
-                                      WHERE ""Id"" = ANY(ARRAY[" + servicesArrayFallback + @"]::integer[])";
-                                var deactivatedCount = await _context.Database.ExecuteSqlRawAsync(sqlFallback, cancellationToken);
-
-                                await _loggingService.LogWarningAsync(
-                                    message: "SearchServices deactivated instead of anonymized",
-                                    details: $"{deactivatedCount} SearchService(s) were deactivated instead of anonymized because ExpertProfileId has a NOT NULL constraint. " +
-                                            $"Service IDs: {string.Join(", ", servicesToAnonymize)}. " +
-                                            $"ACTION REQUIRED: Apply migration 'MakeExpertProfileIdNullableInSearchServices' to enable full anonymization.",
+                                // 🛡️ FIX (25P02 — CRÍTICO): el fallback antiguo ejecutaba OTRO UPDATE dentro
+                                // de este catch. Pero la tx PG ya estaba ABORTADA por el 23502, así que ese 2º
+                                // UPDATE lanzaba 25P02, que ESCAPABA del filtro (SqlState != "23502") y caía
+                                // como genérico al catch externo, ocultando la causa raíz. Y el LogWarning
+                                // prometido nunca se emitía. La columna ES nullable en prod (migración aplicada);
+                                // si volvió a no serlo, es REGRESIÓN — abortar ruidosamente.
+                                await _loggingService.LogCriticalAsync(
+                                    message: "REGRESIÓN DE ESQUEMA: SearchServices.ExpertProfileId NOT NULL — borrado abortado",
+                                    details: $"User {userId}, SearchServices {string.Join(",", servicesToAnonymize)}: la migración 'MakeExpertProfileIdNullableInSearchServices' debería estar aplicada. Relanzando para rollback atómico (antes este catch envenenaba la tx silenciosamente).",
                                     userId: userId,
                                     source: "AccountDeletionService.DeleteUserDataAsync",
                                     relatedEntityType: "SearchService",
@@ -2113,10 +2187,12 @@ namespace newApi.Services
                                     additionalData: new
                                     {
                                         DeletedUserId = userId,
-                                        DeactivatedServiceIds = servicesToAnonymize,
+                                        ServiceIds = servicesToAnonymize,
+                                        SqlState = pgEx.SqlState,
                                         ActionRequired = "Apply migration MakeExpertProfileIdNullableInSearchServices"
                                     }
                                 );
+                                throw;
                             }
                         }
 
@@ -2178,12 +2254,11 @@ namespace newApi.Services
 
                                 if (ssImagePaths.Count > 0)
                                 {
-                                    await TryDeleteStorageObjectsAsync(
+                                    // 🛡️ FIX (estado roto): purgar tras CommitAsync.
+                                    pendingExternalWork.StorageDeletes.Add(new StorageDelete(
                                         _storage.ImagesBucket,
-                                        ssImagePaths,
-                                        userId,
-                                        "DeleteUserDataAsync.SearchServiceImages",
-                                        cancellationToken);
+                                        ssImagePaths.Where(o => !string.IsNullOrWhiteSpace(o)).Select(o => o!).ToList(),
+                                        "DeleteUserDataAsync.SearchServiceImages"));
                                 }
 
                                 // Eliminar imágenes primero (FK constraint)
@@ -2256,11 +2331,19 @@ namespace newApi.Services
                                 }
                                 catch (DbUpdateException dbEx) when (dbEx.InnerException is PostgresException pgEx && pgEx.SqlState == "23502")
                                 {
-                                    // Si falla, solo desactivar
-                                    var sqlDeactivate = @"UPDATE ""SearchServices""
-                                          SET ""IsActive"" = false
-                                          WHERE ""Id"" = ANY(ARRAY[" + servicesArray + @"]::integer[])";
-                                    await _context.Database.ExecuteSqlRawAsync(sqlDeactivate, cancellationToken);
+                                    // 🛡️ FIX (25P02 — CRÍTICO, clon del catch arriba en este mismo fichero):
+                                    // el fallback "sqlDeactivate" ejecutaba sobre la tx ya abortada → 25P02
+                                    // escapando el filtro. Relanzar tras log critical (la columna ES nullable
+                                    // en prod, regresión de esquema = fallar ruidosamente).
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "REGRESIÓN DE ESQUEMA: SearchServices.ExpertProfileId NOT NULL (rama all-services-have-hires) — borrado abortado",
+                                        details: $"User {userId}: ver gemelo arriba. Aplicar 'MakeExpertProfileIdNullableInSearchServices'.",
+                                        userId: userId,
+                                        source: "AccountDeletionService.DeleteUserDataAsync",
+                                        relatedEntityType: "SearchService",
+                                        relatedEntityId: null,
+                                        additionalData: new { DeletedUserId = userId, SqlState = pgEx.SqlState });
+                                    throw;
                                 }
                             }
                         }
@@ -2314,13 +2397,19 @@ namespace newApi.Services
                         }
                         catch (Exception readEx)
                         {
-                            await _loggingService.LogWarningAsync(
-                                message: "N4: failed to read StripeAccountId/PendingStripeAccountId before delete",
-                                details: $"ExpertProfile {expertProfileId} (User {userId}): no se pudo leer IDs Stripe antes del delete; la cuenta Stripe podría quedar zombi. Error: {readEx.Message}",
+                            // 🛡️ FIX (25P02 + cuenta Stripe zombi): antes el log era Warning y se continuaba
+                            // con stripeAccountIdToDelete=null → el bloque N4 se saltaba entero y la cuenta
+                            // Stripe quedaba viva (justo lo que N4 quiere evitar). Además, si readEx era una
+                            // PostgresException, la tx ya estaba envenenada y el siguiente UPDATE petaba con
+                            // 25P02 ocultando la causa. Subimos a Critical y relanzamos para rollback ruidoso.
+                            await _loggingService.LogCriticalAsync(
+                                message: "N4: failed to read StripeAccountId/PendingStripeAccountId before delete — aborting",
+                                details: $"ExpertProfile {expertProfileId} (User {userId}): no se pudo leer IDs Stripe antes del delete. Abortando para no dejar cuenta Stripe zombi. Error: {readEx.Message}",
                                 userId: userId,
                                 source: "AccountDeletionService.DeleteUserDataAsync.N4Read",
                                 relatedEntityType: "ExpertProfile",
                                 relatedEntityId: expertProfileId);
+                            throw;
                         }
 
                         if (!string.IsNullOrEmpty(stripeAccountIdToDelete))
@@ -2341,13 +2430,20 @@ namespace newApi.Services
                             }
                             catch (Exception nullEx)
                             {
-                                await _loggingService.LogWarningAsync(
-                                    message: "R5-F4: failed to null StripeAccountId before Stripe delete",
-                                    details: $"ExpertProfile {expertProfileId}: continuando con Stripe.Delete pese a error nulling: {nullEx.Message}",
+                                // 🛡️ FIX (25P02 + estado roto Stripe/BD): el catch antiguo CONTINUABA con el
+                                // Stripe.Delete de más abajo. Pero el comentario R5-F4 (arriba) dice que el
+                                // ORDEN importa: nullear PRIMERO en BD, borrar Stripe DESPUÉS. Si tragamos el
+                                // fallo del nulleo y seguimos: Stripe.Delete corre (irreversible), pero la tx
+                                // hace rollback → cuenta Stripe BORRADA + BD CON StripeAccountId VIVO. Exacto
+                                // escenario que R5-F4 intenta evitar. Abortar atómicamente ANTES de Stripe.
+                                await _loggingService.LogCriticalAsync(
+                                    message: "R5-F4: failed to null StripeAccountId before Stripe delete — aborting",
+                                    details: $"ExpertProfile {expertProfileId}: abortado para preservar invariante R5-F4 (no se puede dejar Stripe borrado + BD viva). Error: {nullEx.Message}",
                                     userId: userId,
                                     source: "AccountDeletionService.DeleteUserDataAsync.R5F4",
                                     relatedEntityType: "ExpertProfile",
                                     relatedEntityId: expertProfileId);
+                                throw;
                             }
 
                             // 🛡️ Round 28 — N4-balance: ANTES de Delete, leer balance per-currency y drenar.
@@ -2432,16 +2528,26 @@ namespace newApi.Services
                             // segundo GetAsync.
                             if (_dac7DataSync != null && preCheckAcct != null)
                             {
-                                try { await _dac7DataSync.SyncFromAccountAsync(preCheckAcct, expertProfileId); }
+                                // 🛡️ FIX (25P02): rethrowOnDbError=true → si el sync DAC7 falla por un
+                                // error de BD, relanza para ABORTAR el borrado de forma atómica AQUÍ,
+                                // ANTES del Stripe.Account.Delete irreversible de más abajo. Antes este
+                                // catch se lo tragaba ("non-blocking") y el borrado seguía sobre una
+                                // transacción ya abortada → 25P02 en la lectura del avatar (línea ~2709)
+                                // y, peor, la cuenta Stripe acababa destruida en un borrado que después
+                                // hacía rollback. Los fallos NO-BD (Stripe/parseo) los relanza igual aquí,
+                                // lo cual es correcto: si no podemos snapshotear DAC7 con seguridad, no
+                                // seguimos hacia el borrado irreversible.
+                                try { await _dac7DataSync.SyncFromAccountAsync(preCheckAcct, expertProfileId, rethrowOnDbError: true); }
                                 catch (Exception dac7FinalEx)
                                 {
-                                    await _loggingService.LogWarningAsync(
-                                        message: "MUD-CH: final DAC7 sync pre-delete failed (non-blocking)",
-                                        details: $"ExpertProfile {expertProfileId} acct {stripeAccountIdToDelete}: {dac7FinalEx.Message}. Snapshot puede quedar con datos del último account.updated webhook en lugar del estado más reciente. Admin debería verificar manualmente antes del modelo 238 anual.",
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "MUD-CH: final DAC7 sync pre-delete FAILED — aborting account deletion atomically",
+                                        details: $"ExpertProfile {expertProfileId} acct {stripeAccountIdToDelete}: {dac7FinalEx.Message}. La transacción de borrado se aborta (rollback) ANTES de cualquier borrado irreversible en Stripe. Verificar BD/esquema y reintentar.",
                                         userId: userId,
                                         source: "AccountDeletionService.MUD-CH",
                                         relatedEntityType: "Dac7SellerSnapshot",
                                         relatedEntityId: expertProfileId);
+                                    throw;
                                 }
                             }
 
@@ -2494,51 +2600,11 @@ namespace newApi.Services
                                         {
                                             hadBalance = true;
                                             balancesSnapshot.Append($"available={avail.Amount / 100m:F2} {avail.Currency.ToUpperInvariant()}; ");
-                                            try
-                                            {
-                                                var payoutSvc = new Stripe.PayoutService();
-                                                var payoutOpts = new Stripe.PayoutCreateOptions
-                                                {
-                                                    Amount = avail.Amount,
-                                                    Currency = avail.Currency,
-                                                    Metadata = new Dictionary<string, string>
-                                                    {
-                                                        { "reason", "account_deletion_final_payout" },
-                                                        { "userId", userId.ToString() },
-                                                        { "expertProfileId", expertProfileId.ToString() }
-                                                    }
-                                                };
-                                                var payoutReqOpts = new Stripe.RequestOptions
-                                                {
-                                                    StripeAccount = stripeAccountIdToDelete,
-                                                    // 🛡️ MUD-AE: incluir stripeAccountId + Amount para soportar usuarios
-                                                    // que cierran cuenta tras mudanza (acctId distinto cada vez) y retries
-                                                    // con balance ligeramente distinto.
-                                                    IdempotencyKey = $"acct-deletion-payout-{stripeAccountIdToDelete}-{avail.Currency}-{avail.Amount}"
-                                                };
-                                                var payout = await payoutSvc.CreateAsync(payoutOpts, payoutReqOpts);
-                                                await _loggingService.LogInfoAsync(
-                                                    message: "N4-balance: final payout created before account deletion",
-                                                    details: $"ExpertProfile {expertProfileId} acct {stripeAccountIdToDelete}: payout {payout.Id} de {avail.Amount / 100m:F2} {avail.Currency.ToUpperInvariant()} a bank_account del experto.",
-                                                    userId: userId,
-                                                    source: "AccountDeletionService.N4Balance.Payout",
-                                                    relatedEntityType: "ExpertProfile",
-                                                    relatedEntityId: expertProfileId,
-                                                    additionalData: new { PayoutId = payout.Id, Amount = avail.Amount / 100m, Currency = avail.Currency.ToUpperInvariant() });
-                                            }
-                                            catch (Stripe.StripeException payoutEx)
-                                            {
-                                                // Payout falló (sin bank_account / capability disabled / etc.) — log critical pero
-                                                // continuamos. El balance quedará para reverso automático al platform vía Reject.
-                                                await _loggingService.LogCriticalAsync(
-                                                    message: "CRITICAL N4-balance: payout failed before account deletion — balance will be reversed to platform",
-                                                    details: $"ExpertProfile {expertProfileId} acct {stripeAccountIdToDelete}: payout de {avail.Amount / 100m:F2} {avail.Currency.ToUpperInvariant()} FALLÓ: {payoutEx.StripeError?.Code} - {payoutEx.Message}. El balance quedará en Stripe — al hacer Reject, Stripe lo reverte al balance de la plataforma. ACCIÓN ADMIN: identificar destinatario humano y devolver manualmente.",
-                                                    userId: userId,
-                                                    source: "AccountDeletionService.N4Balance.PayoutFailed",
-                                                    relatedEntityType: "ExpertProfile",
-                                                    relatedEntityId: expertProfileId,
-                                                    additionalData: new { Amount = avail.Amount / 100m, Currency = avail.Currency.ToUpperInvariant(), PayoutError = payoutEx.StripeError?.Code, payoutEx.Message });
-                                            }
+                                            // 🛡️ FIX (estado roto): el PayoutCreate IRREVERSIBLE se aplaza a post-commit.
+                                            // Antes corría DENTRO de la tx: si la tx hacía rollback después, el payout ya
+                                            // había salido y la BD volvía a un estado donde StripeAccountId aún existía.
+                                            // Anotamos amount+currency; el IdempotencyKey se construye igual post-commit.
+                                            pendingExternalWork.FinalPayouts.Add(new PendingPayout(avail.Amount, avail.Currency));
                                         }
                                     }
                                 }
@@ -2548,94 +2614,21 @@ namespace newApi.Services
                                 // Best-effort: no abortar GDPR delete por fallo en balance read.
                                 await _loggingService.LogWarningAsync(
                                     message: "N4-balance: failed to read balance before Stripe.Account.Delete (continuing)",
-                                    details: $"ExpertProfile {expertProfileId} acct {stripeAccountIdToDelete}: no se pudo leer balance per-currency: {balEx.Message}. Procedemos con Delete; si hay balance Stripe lo rechazará y caeremos a Reject fallback.",
+                                    details: $"ExpertProfile {expertProfileId} acct {stripeAccountIdToDelete}: no se pudo leer balance per-currency: {balEx.Message}. Procedemos con Delete post-commit; si hay balance Stripe lo rechazará y caeremos a Reject fallback.",
                                     userId: userId,
                                     source: "AccountDeletionService.N4Balance.ReadFailed",
                                     relatedEntityType: "ExpertProfile",
                                     relatedEntityId: expertProfileId);
                             }
 
-                            try
-                            {
-                                var stripeAccountService = new Stripe.AccountService();
-                                await stripeAccountService.DeleteAsync(stripeAccountIdToDelete);
-                                await _loggingService.LogInfoAsync(
-                                    message: "N4: Stripe Connect account deleted",
-                                    details: $"Cuenta Stripe Connect {stripeAccountIdToDelete} eliminada para User {userId} antes del delete del ExpertProfile {expertProfileId}. {(hadBalance ? $"Balance pre-Delete: {balancesSnapshot}" : "Sin balance pendiente.")}",
-                                    userId: userId,
-                                    source: "AccountDeletionService.DeleteUserDataAsync.N4Delete",
-                                    relatedEntityType: "ExpertProfile",
-                                    relatedEntityId: expertProfileId);
-                            }
-                            catch (Stripe.StripeException stripeEx) when (stripeEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
-                            {
-                                // Cuenta ya no existe en Stripe → es lo que queremos, no error.
-                                await _loggingService.LogInfoAsync(
-                                    message: "N4: Stripe account already gone (404)",
-                                    details: $"Stripe account {stripeAccountIdToDelete} ya no existe en Stripe — continuando con delete local.",
-                                    userId: userId,
-                                    source: "AccountDeletionService.DeleteUserDataAsync.N4Delete",
-                                    relatedEntityType: "ExpertProfile",
-                                    relatedEntityId: expertProfileId);
-                            }
-                            catch (Stripe.StripeException stripeEx)
-                            {
-                                // 🛡️ Round 28 — N4-fallback: Delete rechazado (probablemente balance>0 o capability
-                                // activa). Intentamos Account.Reject(reason:"other") — Stripe acepta Reject incluso
-                                // con balance pendiente y se encarga de reversar automáticamente al platform.
-                                var rejectSucceeded = false;
-                                try
-                                {
-                                    var stripeAccountServiceReject = new Stripe.AccountService();
-                                    var rejectOpts = new Stripe.AccountRejectOptions { Reason = "other" };
-                                    await stripeAccountServiceReject.RejectAsync(stripeAccountIdToDelete, rejectOpts);
-                                    rejectSucceeded = true;
-                                    await _loggingService.LogCriticalAsync(
-                                        message: "N4-fallback: Stripe account REJECTED (Delete failed — balance will be reversed to platform)",
-                                        details: $"User {userId} ExpertProfile {expertProfileId}: Stripe Delete falló ({stripeEx.StripeError?.Code}: {stripeEx.Message}). Account.Reject(other) ejecutado OK — Stripe reverte balance pendiente al platform automáticamente. Snapshot balance pre-cierre: {(balancesSnapshot.Length > 0 ? balancesSnapshot.ToString() : "(no leído)")}. ACCIÓN ADMIN: identificar dueño del balance y reconciliar.",
-                                        userId: userId,
-                                        source: "AccountDeletionService.DeleteUserDataAsync.N4Reject",
-                                        relatedEntityType: "ExpertProfile",
-                                        relatedEntityId: expertProfileId,
-                                        additionalData: new { StripeAccountId = stripeAccountIdToDelete, DeleteError = stripeEx.StripeError?.Code, BalanceSnapshot = balancesSnapshot.ToString() });
-                                }
-                                catch (Exception rejectEx)
-                                {
-                                    // Reject también falló — la cuenta queda viva en Stripe Dashboard y el dinero atascado.
-                                    await _loggingService.LogCriticalAsync(
-                                        message: "CRITICAL N4: BOTH Delete AND Reject failed — zombie Stripe account",
-                                        details: $"User {userId} ExpertProfile {expertProfileId}: Stripe Delete falló y Reject también ({rejectEx.Message}). La cuenta {stripeAccountIdToDelete} queda activa en Stripe; el balance se mantiene. URGENTE: limpieza manual en Stripe Dashboard. Balance pre-cierre: {balancesSnapshot}",
-                                        userId: userId,
-                                        source: "AccountDeletionService.DeleteUserDataAsync.N4DeleteRejectFailed",
-                                        relatedEntityType: "ExpertProfile",
-                                        relatedEntityId: expertProfileId,
-                                        additionalData: new { StripeAccountId = stripeAccountIdToDelete, DeleteError = stripeEx.Message, RejectError = rejectEx.Message, BalanceSnapshot = balancesSnapshot.ToString() });
-                                }
-
-                                if (!rejectSucceeded)
-                                {
-                                    // Si Reject también falló, mantenemos el log critical anterior. El delete local del
-                                    // User sigue (GDPR Art 17 prevalece sobre el zombi de Stripe).
-                                    await _loggingService.LogCriticalAsync(
-                                        message: "CRITICAL N4: Failed to delete Stripe Connect account (delete local continúa)",
-                                        details: $"User {userId} ExpertProfile {expertProfileId}: Stripe account {stripeAccountIdToDelete} NO se pudo borrar ({(int?)stripeEx.HttpStatusCode}: {stripeEx.StripeError?.Code}: {stripeEx.Message}). ACCIÓN ADMIN: revisar saldo + capability + borrar manualmente en Stripe Dashboard. El delete local del User SÍ continúa para no bloquear GDPR Art 17.",
-                                        userId: userId,
-                                        source: "AccountDeletionService.DeleteUserDataAsync.N4Delete",
-                                        relatedEntityType: "ExpertProfile",
-                                        relatedEntityId: expertProfileId,
-                                        additionalData: new { StripeAccountId = stripeAccountIdToDelete, stripeEx.StripeError?.Code, stripeEx.HttpStatusCode, stripeEx.Message });
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                await _loggingService.LogCriticalAsync(
-                                    message: "CRITICAL N4: Unexpected error deleting Stripe account",
-                                    details: $"User {userId} ExpertProfile {expertProfileId}: error inesperado borrando Stripe account {stripeAccountIdToDelete}: {ex.Message}",
-                                    userId: userId,
-                                    source: "AccountDeletionService.DeleteUserDataAsync.N4Delete",
-                                    relatedEntityType: "ExpertProfile",
-                                    relatedEntityId: expertProfileId);
-                            }
+                            // 🛡️ FIX (estado roto): el Stripe.Account.Delete (+ Reject fallback) IRREVERSIBLE
+                            // se aplaza a post-commit. Antes corrían DENTRO de la tx: cualquier fallo posterior
+                            // hacía rollback de la BD pero la cuenta Stripe ya estaba destruida → estado
+                            // inconsistente. Ahora solo anotamos. El bloque ejecutor (ExecutePostCommit...)
+                            // replica las mismas garantías: 404 = ok, fallo → Reject(other) → si Reject también
+                            // falla, log Critical con IDs para limpieza manual en Stripe Dashboard.
+                            pendingExternalWork.StripeAccountIdToDelete = stripeAccountIdToDelete;
+                            pendingExternalWork.BalanceSnapshot = hadBalance ? balancesSnapshot.ToString() : "(sin balance pendiente)";
                         }
 
                         // 🛡️ Round 13 — N4+N14 FIX: borrar también PendingStripeAccountId si es
@@ -2654,52 +2647,23 @@ namespace newApi.Services
                             }
                             catch (Exception nullEx)
                             {
-                                await _loggingService.LogWarningAsync(
-                                    message: "N4+N14: failed to null PendingStripeAccountId before Stripe delete",
-                                    details: $"ExpertProfile {expertProfileId}: continuando con Stripe.Delete pese a error nulling: {nullEx.Message}",
+                                // 🛡️ FIX (25P02 + estado roto Stripe/BD): gemelo simétrico del catch R5-F4 de
+                                // StripeAccountId. Misma garantía: nullear PRIMERO en BD, borrar Stripe DESPUÉS;
+                                // si tragamos este fallo, dejamos cuenta Stripe pending borrada + BD viva al rollback.
+                                await _loggingService.LogCriticalAsync(
+                                    message: "N4+N14: failed to null PendingStripeAccountId before Stripe delete — aborting",
+                                    details: $"ExpertProfile {expertProfileId}: abortado para preservar el invariante de orden. Error: {nullEx.Message}",
                                     userId: userId,
                                     source: "AccountDeletionService.DeleteUserDataAsync.N4N14",
                                     relatedEntityType: "ExpertProfile",
                                     relatedEntityId: expertProfileId);
+                                throw;
                             }
 
-                            try
-                            {
-                                var stripeAccountService = new Stripe.AccountService();
-                                await stripeAccountService.DeleteAsync(pendingStripeAccountIdToDelete);
-                                await _loggingService.LogInfoAsync(
-                                    message: "N4+N14: Pending Stripe Connect account deleted",
-                                    details: $"Cuenta Stripe Connect PENDIENTE {pendingStripeAccountIdToDelete} (onboarding abandonado) eliminada para User {userId}.",
-                                    userId: userId,
-                                    source: "AccountDeletionService.DeleteUserDataAsync.N4N14Delete",
-                                    relatedEntityType: "ExpertProfile",
-                                    relatedEntityId: expertProfileId);
-                            }
-                            catch (Stripe.StripeException stripeEx) when (stripeEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
-                            {
-                                // Ya no existe — perfecto.
-                                await _loggingService.LogInfoAsync(
-                                    message: "N4+N14: Pending Stripe account already gone (404)",
-                                    details: $"Pending Stripe account {pendingStripeAccountIdToDelete} ya no existe — OK.",
-                                    userId: userId,
-                                    source: "AccountDeletionService.DeleteUserDataAsync.N4N14Delete",
-                                    relatedEntityType: "ExpertProfile",
-                                    relatedEntityId: expertProfileId);
-                            }
-                            catch (Exception stripeEx)
-                            {
-                                // Cuentas pending típicamente no tienen balance (no se hicieron transfers),
-                                // así que cualquier error es probablemente capability/state. Log critical
-                                // pero NO abortar el delete (GDPR Art 17 prevalece).
-                                await _loggingService.LogCriticalAsync(
-                                    message: "CRITICAL N4+N14: Failed to delete pending Stripe account",
-                                    details: $"User {userId} ExpertProfile {expertProfileId}: pending account {pendingStripeAccountIdToDelete} NO se pudo borrar: {stripeEx.Message}. ACCIÓN ADMIN: revisar y borrar manualmente en Stripe Dashboard.",
-                                    userId: userId,
-                                    source: "AccountDeletionService.DeleteUserDataAsync.N4N14Delete",
-                                    relatedEntityType: "ExpertProfile",
-                                    relatedEntityId: expertProfileId,
-                                    additionalData: new { PendingStripeAccountId = pendingStripeAccountIdToDelete, Error = stripeEx.Message });
-                            }
+                            // 🛡️ FIX (estado roto): el Stripe.Account.Delete del PendingStripeAccount también
+                            // se aplaza a post-commit. Mismo motivo: irreversible y NO debe ocurrir si la tx
+                            // hace rollback. Las cuentas pending típicamente no tienen balance.
+                            pendingExternalWork.PendingStripeAccountIdToDelete = pendingStripeAccountIdToDelete;
                         }
 
                         // 🛡️ GDPR-S1.c FIX: purgar avatar del experto en Supabase Storage ANTES de
@@ -2715,12 +2679,11 @@ namespace newApi.Services
 
                         if (!string.IsNullOrWhiteSpace(avatarObjectName))
                         {
-                            await TryDeleteStorageObjectsAsync(
+                            // 🛡️ FIX (estado roto): purgar tras CommitAsync.
+                            pendingExternalWork.StorageDeletes.Add(new StorageDelete(
                                 _storage.ImagesBucket,
-                                new[] { avatarObjectName },
-                                userId,
-                                "DeleteUserDataAsync.ExpertAvatar",
-                                cancellationToken);
+                                new List<string> { avatarObjectName },
+                                "DeleteUserDataAsync.ExpertAvatar"));
                         }
 
                         // ✅ Eliminar perfil de experto (no depende de servicios, FK es nullable)
@@ -3011,6 +2974,224 @@ namespace newApi.Services
                     }
                 );
                 throw; // Re-throw para que la transacción global haga rollback
+            }
+
+            // 🛡️ FIX (estado roto Stripe/BD): devolver la bolsa de efectos externos para que
+            // DeleteAccountAsync los ejecute SOLO tras CommitAsync — así si la tx hace rollback
+            // nada externo se tocó. Ver PostCommitExternalWork / ExecutePostCommitExternalWorkAsync.
+            return pendingExternalWork;
+        }
+
+        /// <summary>
+        /// 🛡️ FIX (estado roto): ejecutor de los efectos externos IRREVERSIBLES recolectados durante
+        /// la tx de borrado. Se llama desde DeleteAccountAsync SOLO si el CommitAsync fue OK.
+        ///
+        /// Orden (importa por webhooks reentrantes — Stripe.Account.Delete dispara
+        /// account.application.deauthorized; queremos que el handler no encuentre al ExpertProfile,
+        /// que ya está borrado de la BD a estas alturas):
+        ///   1) Storage purges (idempotentes, best-effort vía TryDeleteStorageObjectsAsync).
+        ///   2) PendingStripeAccount delete (suele no tener balance).
+        ///   3) Final payouts sobre la cuenta principal (con IdempotencyKey).
+        ///   4) Main Stripe.Account.Delete; si falla → Reject(other) como fallback.
+        ///
+        /// Cada paso con su try/catch propio: si algo falla, log Critical con TODOS los IDs y
+        /// continuamos al siguiente. El delete local del User YA ESTÁ commiteado (GDPR Art.17
+        /// satisfecho); un fallo aquí no debe revertirlo.
+        /// </summary>
+        private async Task ExecutePostCommitExternalWorkAsync(PostCommitExternalWork work, CancellationToken cancellationToken)
+        {
+            // ----- 1) Storage purges -----
+            foreach (var item in work.StorageDeletes)
+            {
+                try
+                {
+                    await TryDeleteStorageObjectsAsync(
+                        item.Bucket,
+                        item.Paths,
+                        work.UserId,
+                        item.SourceTag,
+                        cancellationToken);
+                }
+                catch (Exception storageEx)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: $"POST-COMMIT: storage purge failed ({item.SourceTag}) — manual cleanup needed",
+                        details: $"User {work.UserId} bucket {item.Bucket}: {item.Paths.Count} archivo(s). Paths: {string.Join(", ", item.Paths.Take(20))}. Error: {storageEx.Message}.",
+                        userId: work.UserId,
+                        source: $"AccountDeletionService.PostCommit.Storage.{item.SourceTag}",
+                        relatedEntityType: "SupabaseStorage",
+                        relatedEntityId: work.ExpertProfileId);
+                }
+            }
+
+            // ----- 2) PendingStripeAccount delete -----
+            if (!string.IsNullOrEmpty(work.PendingStripeAccountIdToDelete))
+            {
+                try
+                {
+                    var svc = new Stripe.AccountService();
+                    await svc.DeleteAsync(work.PendingStripeAccountIdToDelete, cancellationToken: cancellationToken);
+                    await _loggingService.LogInfoAsync(
+                        message: "POST-COMMIT N4+N14: Pending Stripe Connect account deleted",
+                        details: $"Cuenta Stripe Connect PENDIENTE {work.PendingStripeAccountIdToDelete} eliminada para User {work.UserId} tras CommitAsync.",
+                        userId: work.UserId,
+                        source: "AccountDeletionService.PostCommit.N4N14Delete",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: work.ExpertProfileId);
+                }
+                catch (Stripe.StripeException stripeEx) when (stripeEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "POST-COMMIT N4+N14: Pending Stripe account already gone (404) — OK",
+                        details: $"Pending Stripe account {work.PendingStripeAccountIdToDelete} ya no existe.",
+                        userId: work.UserId,
+                        source: "AccountDeletionService.PostCommit.N4N14Delete",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: work.ExpertProfileId);
+                }
+                catch (Exception stripeEx)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL POST-COMMIT N4+N14: Failed to delete pending Stripe account",
+                        details: $"User {work.UserId} ExpertProfile {work.ExpertProfileId}: pending acct {work.PendingStripeAccountIdToDelete} NO se pudo borrar: {stripeEx.Message}. ACCIÓN ADMIN: revisar y borrar manualmente en Stripe Dashboard.",
+                        userId: work.UserId,
+                        source: "AccountDeletionService.PostCommit.N4N14Delete",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: work.ExpertProfileId,
+                        additionalData: new { PendingStripeAccountId = work.PendingStripeAccountIdToDelete, Error = stripeEx.Message });
+                }
+            }
+
+            // ----- 3) Final payouts on main Stripe account -----
+            if (!string.IsNullOrEmpty(work.StripeAccountIdToDelete) && work.FinalPayouts.Count > 0)
+            {
+                foreach (var p in work.FinalPayouts)
+                {
+                    try
+                    {
+                        var payoutSvc = new Stripe.PayoutService();
+                        var payoutOpts = new Stripe.PayoutCreateOptions
+                        {
+                            Amount = p.AmountMinor,
+                            Currency = p.Currency,
+                            Metadata = new Dictionary<string, string>
+                            {
+                                { "reason", "account_deletion_final_payout" },
+                                { "userId", work.UserId.ToString() },
+                                { "expertProfileId", (work.ExpertProfileId ?? 0).ToString() }
+                            }
+                        };
+                        var payoutReqOpts = new Stripe.RequestOptions
+                        {
+                            StripeAccount = work.StripeAccountIdToDelete,
+                            // 🛡️ MUD-AE preservado: clave idempotente determinista — un retry post-commit
+                            // (manual o futuro Hangfire) NO doble-paga: Stripe dedupica por esta clave.
+                            IdempotencyKey = $"acct-deletion-payout-{work.StripeAccountIdToDelete}-{p.Currency}-{p.AmountMinor}"
+                        };
+                        var payout = await payoutSvc.CreateAsync(payoutOpts, payoutReqOpts, cancellationToken);
+                        await _loggingService.LogInfoAsync(
+                            message: "POST-COMMIT N4-balance: final payout created before account deletion",
+                            details: $"ExpertProfile {work.ExpertProfileId} acct {work.StripeAccountIdToDelete}: payout {payout.Id} de {p.AmountMinor / 100m:F2} {p.Currency.ToUpperInvariant()}.",
+                            userId: work.UserId,
+                            source: "AccountDeletionService.PostCommit.N4Payout",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: work.ExpertProfileId,
+                            additionalData: new { PayoutId = payout.Id, Amount = p.AmountMinor / 100m, Currency = p.Currency.ToUpperInvariant() });
+                    }
+                    catch (Stripe.StripeException payoutEx)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL POST-COMMIT N4-balance: payout failed — balance will be reversed to platform via Reject",
+                            details: $"ExpertProfile {work.ExpertProfileId} acct {work.StripeAccountIdToDelete}: payout de {p.AmountMinor / 100m:F2} {p.Currency.ToUpperInvariant()} FALLÓ: {payoutEx.StripeError?.Code} - {payoutEx.Message}. ACCIÓN ADMIN: identificar destinatario humano y devolver manualmente.",
+                            userId: work.UserId,
+                            source: "AccountDeletionService.PostCommit.N4PayoutFailed",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: work.ExpertProfileId,
+                            additionalData: new { Amount = p.AmountMinor / 100m, Currency = p.Currency.ToUpperInvariant(), PayoutError = payoutEx.StripeError?.Code, payoutEx.Message });
+                    }
+                }
+            }
+
+            // ----- 4) Main Stripe.Account.Delete (+ Reject fallback) -----
+            if (!string.IsNullOrEmpty(work.StripeAccountIdToDelete))
+            {
+                var stripeAccountIdToDelete = work.StripeAccountIdToDelete;
+                var balanceSnapshot = work.BalanceSnapshot;
+                try
+                {
+                    var svc = new Stripe.AccountService();
+                    await svc.DeleteAsync(stripeAccountIdToDelete, cancellationToken: cancellationToken);
+                    await _loggingService.LogInfoAsync(
+                        message: "POST-COMMIT N4: Stripe Connect account deleted",
+                        details: $"Cuenta Stripe Connect {stripeAccountIdToDelete} eliminada para User {work.UserId} tras commit BD. Balance pre-Delete: {balanceSnapshot}",
+                        userId: work.UserId,
+                        source: "AccountDeletionService.PostCommit.N4Delete",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: work.ExpertProfileId);
+                }
+                catch (Stripe.StripeException stripeEx) when (stripeEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "POST-COMMIT N4: Stripe account already gone (404) — OK",
+                        details: $"Stripe account {stripeAccountIdToDelete} ya no existe en Stripe.",
+                        userId: work.UserId,
+                        source: "AccountDeletionService.PostCommit.N4Delete",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: work.ExpertProfileId);
+                }
+                catch (Stripe.StripeException stripeEx)
+                {
+                    // Fallback: Reject(other) — Stripe acepta Reject incluso con balance pendiente.
+                    var rejectSucceeded = false;
+                    try
+                    {
+                        var svcReject = new Stripe.AccountService();
+                        var rejectOpts = new Stripe.AccountRejectOptions { Reason = "other" };
+                        await svcReject.RejectAsync(stripeAccountIdToDelete, rejectOpts, cancellationToken: cancellationToken);
+                        rejectSucceeded = true;
+                        await _loggingService.LogCriticalAsync(
+                            message: "POST-COMMIT N4-fallback: Stripe account REJECTED (Delete failed — balance will be reversed to platform)",
+                            details: $"User {work.UserId} ExpertProfile {work.ExpertProfileId}: Stripe Delete falló ({stripeEx.StripeError?.Code}: {stripeEx.Message}). Account.Reject(other) ejecutado OK. Balance pre-cierre: {balanceSnapshot}. ACCIÓN ADMIN: identificar dueño del balance y reconciliar.",
+                            userId: work.UserId,
+                            source: "AccountDeletionService.PostCommit.N4Reject",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: work.ExpertProfileId,
+                            additionalData: new { StripeAccountId = stripeAccountIdToDelete, DeleteError = stripeEx.StripeError?.Code, BalanceSnapshot = balanceSnapshot });
+                    }
+                    catch (Exception rejectEx)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL POST-COMMIT N4: BOTH Delete AND Reject failed — zombie Stripe account",
+                            details: $"User {work.UserId} ExpertProfile {work.ExpertProfileId}: Stripe Delete falló y Reject también ({rejectEx.Message}). Cuenta {stripeAccountIdToDelete} queda viva. Balance: {balanceSnapshot}. URGENTE: limpieza manual en Stripe Dashboard.",
+                            userId: work.UserId,
+                            source: "AccountDeletionService.PostCommit.N4DeleteRejectFailed",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: work.ExpertProfileId,
+                            additionalData: new { StripeAccountId = stripeAccountIdToDelete, DeleteError = stripeEx.Message, RejectError = rejectEx.Message, BalanceSnapshot = balanceSnapshot });
+                    }
+
+                    if (!rejectSucceeded)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL POST-COMMIT N4: Failed to delete Stripe Connect account (delete local ya commiteado)",
+                            details: $"User {work.UserId} ExpertProfile {work.ExpertProfileId}: Stripe account {stripeAccountIdToDelete} NO se pudo borrar ({(int?)stripeEx.HttpStatusCode}: {stripeEx.StripeError?.Code}: {stripeEx.Message}). ACCIÓN ADMIN: revisar saldo + capability + borrar manualmente en Stripe Dashboard. La BD local YA está commiteada (GDPR Art.17 OK).",
+                            userId: work.UserId,
+                            source: "AccountDeletionService.PostCommit.N4Delete",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: work.ExpertProfileId,
+                            additionalData: new { StripeAccountId = stripeAccountIdToDelete, stripeEx.StripeError?.Code, stripeEx.HttpStatusCode, stripeEx.Message });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL POST-COMMIT N4: Unexpected error deleting Stripe account",
+                        details: $"User {work.UserId} ExpertProfile {work.ExpertProfileId}: error inesperado borrando Stripe account {stripeAccountIdToDelete}: {ex.Message}",
+                        userId: work.UserId,
+                        source: "AccountDeletionService.PostCommit.N4Delete",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: work.ExpertProfileId);
+                }
             }
         }
 

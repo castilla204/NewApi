@@ -69,8 +69,8 @@ public class SupportChatService : ISupportChatService
         {
             model = Model,
             messages,
-            max_tokens = 600,
-            temperature = 0.3,
+            max_tokens = 800,
+            temperature = 0.25,
         };
 
         var client = _httpClientFactory.CreateClient("openai");

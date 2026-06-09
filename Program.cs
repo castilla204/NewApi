@@ -974,6 +974,28 @@ builder.Services.AddRateLimiter(options =>
             });
     });
 
+    // 1b. Chatbot de soporte (público): 25 mensajes / 5 min por IP
+    options.AddPolicy("support-chat", httpContext =>
+    {
+        var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        if (IsDevelopmentIp(remoteIp))
+        {
+            return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter(remoteIp);
+        }
+
+        return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: remoteIp,
+            factory: partition => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 25,
+                Window = TimeSpan.FromMinutes(5),
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                QueueLimit = 0
+            });
+    });
+
     // 2. Política para API general: Sin límites para localhost, 200 requests por minuto para otros IPs
     options.AddPolicy("api", httpContext =>
     {
@@ -1579,7 +1601,13 @@ builder.Services.AddScoped<SearchServiceService>();
 builder.Services.AddScoped<SearchHireService>();
 
 builder.Services.AddHttpClient();
+builder.Services.AddHttpClient("openai", c =>
+{
+    c.BaseAddress = new Uri("https://api.openai.com/");
+    c.Timeout = TimeSpan.FromSeconds(45);
+});
 builder.Services.AddHttpClient("Supabase"); // HttpClient nombrado para Supabase Realtime
+builder.Services.AddScoped<ISupportChatService, SupportChatService>();
 
 // Add Health Checks
 builder.Services.AddHealthChecks();

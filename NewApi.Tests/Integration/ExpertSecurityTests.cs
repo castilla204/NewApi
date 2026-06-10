@@ -285,17 +285,29 @@ public class ExpertSecurityTests : IntegrationTestBase
         // Nota de severidad: explotación directa vía API está mitigada porque el onboarding
         // genera el acct server-side con Stripe SDK (SubscriptionController.cs ~1372, sin body de cliente);
         // esto es un hueco de defensa-en-profundidad / integridad, no un IDOR explotable end-to-end hoy.
-        var act = async () =>
-            await new ExpertProfileBuilder(userB.Id).WithStripeAccountId(sharedAcct).Approved().PersistAsync(db);
-
-        await act.Should().NotThrowAsync(
-            "// VULN: sin UNIQUE en StripeAccountId la BD acepta dos perfiles con el mismo acct");
+        await new ExpertProfileBuilder(userB.Id).WithStripeAccountId(sharedAcct).Approved().PersistAsync(db);
 
         await using var verify = NewDbContext();
         var dupes = await verify.ExpertProfiles.CountAsync(p => p.StripeAccountId == sharedAcct);
         dupes.Should().Be(2,
             "// VULN documentada: dos ExpertProfiles comparten StripeAccountId. " +
             "Recomendación: índice único filtrado sobre StripeAccountId (WHERE StripeAccountId IS NOT NULL).");
+
+        // Confirmación determinista contra el catálogo: NO existe índice UNIQUE sobre StripeAccountId.
+#pragma warning disable EF1002 // SQL literal fijo, sin input de usuario
+        var uniqueIdxCount = await verify.Database
+            .SqlQueryRaw<long>(@"
+                SELECT COUNT(*)::bigint AS ""Value""
+                FROM pg_indexes
+                WHERE schemaname = 'public'
+                  AND tablename = 'ExpertProfiles'
+                  AND indexdef ILIKE '%UNIQUE%'
+                  AND indexdef ILIKE '%(""StripeAccountId"")%'")
+            .ToListAsync();
+#pragma warning restore EF1002
+        uniqueIdxCount.FirstOrDefault().Should().Be(0,
+            "// VULN: no hay índice único sobre StripeAccountId — la unicidad del payout-account " +
+            "no está protegida a nivel de datos");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

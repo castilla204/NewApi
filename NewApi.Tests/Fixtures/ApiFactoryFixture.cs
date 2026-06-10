@@ -7,6 +7,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
+using NewApi.Tests.StripeMocks;
+using Stripe;
 using Testcontainers.PostgreSql;
 
 namespace NewApi.Tests.Fixtures;
@@ -49,6 +51,20 @@ public sealed class ApiFactoryFixture : IAsyncLifetime
     private const string TestMfaKey =
         "TEST-ONLY-mfa-encryption-key-0123456789-ABCDEFGHIJKLMNOP";
 
+    /// <summary>Secret del endpoint Connect (POST /api/subscription/webhook).</summary>
+    public const string WebhookSecret = "whsec_test_connect_secret";
+
+    /// <summary>Secret del endpoint general (POST /api/subscription/webhook-general).</summary>
+    public const string GeneralWebhookSecret = "whsec_test_general_secret";
+
+    private const string TestStripeKey = "sk_test_fake_key_for_local_stub";
+
+    /// <summary>
+    /// Stub de la API de Stripe al que apunta StripeConfiguration.ApiBase. El backend
+    /// real ejecuta sus capturas/transfers/refunds contra él (patrón stripe-mock).
+    /// </summary>
+    public FakeStripeServer FakeStripe { get; } = new();
+
     public async Task InitializeAsync()
     {
         await _container.StartAsync();
@@ -59,7 +75,7 @@ public sealed class ApiFactoryFixture : IAsyncLifetime
         {
             await db.Database.EnsureCreatedAsync();
             var seedPath = Path.Combine(AppContext.BaseDirectory, "Resources", "SEED_ESTADOS_COMPLETO.sql");
-            var seedSql = await File.ReadAllTextAsync(seedPath);
+            var seedSql = await System.IO.File.ReadAllTextAsync(seedPath);
             await db.Database.ExecuteSqlRawAsync(seedSql);
         }
 
@@ -85,12 +101,30 @@ public sealed class ApiFactoryFixture : IAsyncLifetime
                         ["Jwt:Key"] = TestJwtKey,
                         ["Secrets:jwt-key"] = TestJwtKey,
                         ["Secrets:mfa-encryption-key"] = TestMfaKey,
+                        // Stripe determinista: el background task de Program.cs:1654-1664
+                        // solo SOBREESCRIBE estos valores si las env vars traen algo —
+                        // aquí no las hay, así que estos in-memory mandan (y pisan al
+                        // appsettings.Development.json local).
+                        ["Stripe:SecretKey"] = TestStripeKey,
+                        ["Stripe:WebhookSecret"] = WebhookSecret,
+                        ["Stripe:GeneralWebhookSecret"] = GeneralWebhookSecret,
                     });
                 });
             });
 
         // CreateClient fuerza el boot completo de Program.cs (lazy hasta aquí).
         Client = Factory.CreateClient();
+
+        // Stub de Stripe: fijamos el cliente GLOBAL de Stripe.net con apiBase → fake.
+        // El backend solo toca StripeConfiguration.ApiKey (Program.cs:1667) y con el
+        // MISMO valor (viene de nuestra config in-memory), así que el setter no resetea
+        // el cliente. Todas las llamadas `new PaymentIntentService()` del código de
+        // producción usan este cliente global → van al stub.
+        FakeStripe.Start();
+        StripeConfiguration.ApiKey = TestStripeKey;
+        StripeConfiguration.StripeClient = new StripeClient(
+            apiKey: TestStripeKey,
+            apiBase: FakeStripe.BaseUrl);
     }
 
     public AppDbContext CreateDbContext()
@@ -155,6 +189,7 @@ public sealed class ApiFactoryFixture : IAsyncLifetime
         Client?.Dispose();
         if (Factory is not null)
             await Factory.DisposeAsync();
+        FakeStripe.Dispose();
         await _container.DisposeAsync();
     }
 }

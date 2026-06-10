@@ -34,12 +34,17 @@ public static class StripeEventBuilder
             created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
             type = "checkout.session.completed",
             livemode = false,
+            // EventConverter (Stripe.net v50, línea 57) exige 'request' presente:
+            // accede a jsonObject["request"].Type sin null-check → NRE si falta.
+            request = new { id = (string?)null, idempotency_key = (string?)null },
+            pending_webhooks = 1,
             data = new
             {
                 @object = new
                 {
                     id = sessionId,
                     @object = "checkout.session",
+                    mode = "payment", // el handler exige session.Mode == "payment" (SubscriptionController.cs:4314)
                     payment_intent = paymentIntentId,
                     payment_status = "paid",
                     status = "complete",
@@ -70,6 +75,8 @@ public static class StripeEventBuilder
             type = "account.updated",
             livemode = false,
             account = accountId,
+            request = new { id = (string?)null, idempotency_key = (string?)null },
+            pending_webhooks = 1,
             data = new
             {
                 @object = new
@@ -115,6 +122,8 @@ public static class StripeEventBuilder
             type = "account.updated",
             livemode = false,
             account = accountId,
+            request = new { id = (string?)null, idempotency_key = (string?)null },
+            pending_webhooks = 1,
             data = new
             {
                 @object = new

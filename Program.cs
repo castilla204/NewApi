@@ -3050,3 +3050,8 @@ AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
 // Según documentación de Render.com: "Bind your host to 0.0.0.0"
 // El servidor debe estar escuchando lo más rápido posible
 app.Run();
+
+// ✅ TESTING: clase parcial requerida por WebApplicationFactory<Program> para que
+// NewApi.Tests pueda arrancar el backend REAL (pipeline HTTP completo) en integracion.
+// No cambia nada en runtime de produccion.
+public partial class Program { }

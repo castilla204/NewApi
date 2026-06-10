@@ -244,6 +244,9 @@ public static partial class MarketplaceFlowSimulator
             // NO recargamos hire — el code real llama _refundService con el searchHireId.
             await db.SaveChangesAsync();
             await ProcessMoneyDistributionAsync(db, hire, "appointment_cancelled_by_expert_rejection");
+            // El estado de rechazo mapea a SearchHire.cancelled → reflejarlo en el hire.
+            await FinalizeHireViaMappingAsync(db, hire, targetStatus.StatusValue);
+            await db.SaveChangesAsync();
         }
         else
         {

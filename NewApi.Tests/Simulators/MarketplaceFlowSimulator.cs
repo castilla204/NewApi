@@ -210,6 +210,9 @@ public static partial class MarketplaceFlowSimulator
             s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_cancelled_by_client_second");
         appt.StatusId = secondStatus.Id;
         appt.UpdatedAt = DateTime.UtcNow;
+        // El código real mapea la 2ª cancelación a SearchHire.cancelled (StatusMapping activo,
+        // aplicado en CancelAppointmentAsync). Reflejarlo para fidelidad del hire status.
+        await FinalizeHireViaMappingAsync(db, hire, secondStatus.StatusValue);
         await db.SaveChangesAsync();
         return "appointment_cancelled_by_client_second";
     }
@@ -243,6 +246,7 @@ public static partial class MarketplaceFlowSimulator
             s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_cancelled_by_expert_second");
         appt.StatusId = secondStatus.Id;
         appt.UpdatedAt = DateTime.UtcNow;
+        await FinalizeHireViaMappingAsync(db, hire, secondStatus.StatusValue);
         await db.SaveChangesAsync();
         return "appointment_cancelled_by_expert_second";
     }
@@ -518,6 +522,43 @@ public static partial class MarketplaceFlowSimulator
             t.ExpiredAt = DateTime.UtcNow;
             t.HangfireJobId = null;
         }
+    }
+
+    /// <summary>
+    /// Mapea un AppointmentStatus terminal a su SearchHireStatus destino y actualiza
+    /// hire.StatusId. Espejo FIEL de SystemStatusService.GetDefaultMapping (switch hardcoded,
+    /// SystemStatusService.cs:476-503) + CancelAppointmentAsync (AppointmentService.cs:2736-2766).
+    ///
+    /// CLAVE: las cancelaciones/rechazo terminales (appointment_cancelled_by_*_second,
+    /// appointment_cancelled_by_expert_rejection) NO tienen fila en StatusMappings — el código
+    /// real las resuelve por el switch por defecto, todas → cancelled. Las 1ª cancelaciones
+    /// devuelven null (no cambian el hire, sigue 'pending', permite reagendar).
+    /// </summary>
+    internal static async Task FinalizeHireViaMappingAsync(
+        AppDbContext db, SearchHire hire, string appointmentStatusValue)
+    {
+        // Réplica de GetDefaultMapping para los terminales que producen las cancelaciones/rechazo.
+        string? targetHireStatusValue = appointmentStatusValue switch
+        {
+            "appointment_cancelled_by_client_second" => "cancelled",
+            "appointment_cancelled_by_expert_second" => "cancelled",
+            "appointment_cancelled_by_expert_rejection" => "cancelled",
+            "appointment_cancelled_by_no_report" => "cancelled",
+            "appointment_completed" => "completed",
+            "appointment_completed_without_client_approval" => "completed",
+            // 1ª cancelaciones → null: el hire NO cambia (sigue pending, reagendable).
+            _ => null,
+        };
+
+        if (targetHireStatusValue is null) return;
+
+        var targetId = await db.SystemStatuses
+            .Where(s => s.StatusType == "SearchHireStatus" && s.StatusValue == targetHireStatusValue)
+            .Select(s => s.Id)
+            .FirstAsync();
+
+        hire.StatusId = targetId;
+        hire.UpdatedAt = DateTime.UtcNow;
     }
 
     /// <summary>

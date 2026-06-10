@@ -188,6 +188,10 @@ public static partial class MarketplaceFlowSimulator
         var appt = await db.Appointments.SingleAsync(a => a.SearchHireId == hire.Id)
             ?? throw new InvalidOperationException("Cancel requiere Appointment");
 
+        // El código real expira TODOS los timers activos al cancelar — sin esto, una
+        // re-propuesta posterior chocaría con IX_AppointmentTimers_Appt_Type_Active.
+        await ExpireAllActiveTimersAsync(db, appt.Id);
+
         appt.ClientCancellationCount++;
 
         if (appt.ClientCancellationCount == 1)
@@ -218,6 +222,10 @@ public static partial class MarketplaceFlowSimulator
             throw new UnauthorizedAccessException();
 
         var appt = await db.Appointments.SingleAsync(a => a.SearchHireId == hire.Id);
+
+        // Igual que CancelByClient: expira todos los timers activos antes de cancelar.
+        await ExpireAllActiveTimersAsync(db, appt.Id);
+
         appt.ExpertCancellationCount++;
 
         if (appt.ExpertCancellationCount == 1)
@@ -400,10 +408,34 @@ public static partial class MarketplaceFlowSimulator
             .OrderBy(s => s.StatusType == "AppointmentStatus" ? 0 : 1)
             .FirstAsync();
 
-        var config = await db.StatusConfigurations.SingleAsync(c =>
+        var config = await db.StatusConfigurations.SingleOrDefaultAsync(c =>
             c.StatusId == status.Id &&
             c.CategoryId == null &&
             c.ServiceTypeCategoryId == null);
+
+        // 🛡️ Fallback fiel a RefundService.cs:226-286: si el AppointmentStatus NO
+        // tiene config propia (p.ej. appointment_cancelled_by_expert_rejection), se
+        // resuelve vía el StatusMapping ACTIVO a su SearchHireStatus destino y se usa
+        // la config de ESE estado final. Para la 2ª rechazo del experto:
+        //   appointment_cancelled_by_expert_rejection → cancelled → 100/0/0.
+        if (config is null && status.StatusType == "AppointmentStatus")
+        {
+            var mappedConfig = await (
+                from m in db.StatusMappings
+                join sc in db.StatusConfigurations
+                    on m.TargetStatusId equals sc.StatusId
+                where m.SourceStatusId == status.Id
+                      && m.IsActive
+                      && sc.CategoryId == null
+                      && sc.ServiceTypeCategoryId == null
+                select sc).FirstOrDefaultAsync();
+            config = mappedConfig;
+        }
+
+        if (config is null)
+            throw new InvalidOperationException(
+                $"No hay StatusConfiguration (ni directa ni vía mapping activo) para '{statusValue}'. " +
+                "El código real loguea CRITICAL y aborta (RefundService.cs:305-312).");
 
         // baseAmount = BaseAmount si existe (con tax separado) o Amount completo (legacy fallback)
         var baseAmount = hire.BaseAmount ?? hire.Amount;
@@ -479,6 +511,26 @@ public static partial class MarketplaceFlowSimulator
             .Where(t => t.AppointmentId == appointment.Id &&
                         t.TimerType == timerType &&
                         !t.IsExpired)
+            .ToListAsync();
+        foreach (var t in open)
+        {
+            t.IsExpired = true;
+            t.ExpiredAt = DateTime.UtcNow;
+            t.HangfireJobId = null;
+        }
+    }
+
+    /// <summary>
+    /// Expira TODOS los timers activos de un appointment (cualquier TimerType).
+    /// Espejo de AppointmentService.CancelAppointmentAsync, que limpia todos los
+    /// timers activos en cada cancelación para no violar el índice único parcial
+    /// IX_AppointmentTimers_Appt_Type_Active (máx 1 timer activo por tipo) cuando
+    /// el cliente vuelve a proponer y se crea un nuevo timer del mismo tipo.
+    /// </summary>
+    private static async Task ExpireAllActiveTimersAsync(AppDbContext db, int appointmentId)
+    {
+        var open = await db.AppointmentTimers
+            .Where(t => t.AppointmentId == appointmentId && !t.IsExpired)
             .ToListAsync();
         foreach (var t in open)
         {

@@ -30,6 +30,17 @@ namespace newApi.DataLayer.Models.PostGresModels
         public int FailedLoginAttempts { get; set; } = 0;
         public DateTime? LockedUntil { get; set; }
         public UserRole Role { get; set; }
+
+        /// <summary>
+        /// Saldo en favor del usuario (legacy). La columna existe en la BD de producción
+        /// con valor 0 para todos los usuarios; protegida por
+        /// <c>CK_Users_Balance_NonNegative</c> declarado en
+        /// <see cref="newApi.DataLayer.Models.AppDbContext.OnModelCreating"/>.
+        /// La propiedad se reintrodujo aquí para que el modelo C# refleje el esquema
+        /// real y <c>EnsureCreatedAsync</c> funcione en bases de datos nuevas (tests).
+        /// </summary>
+        public decimal Balance { get; set; } = 0m;
+
         // ✅ SOFT DELETE: Para permitir recuperación y cumplimiento legal
         public bool IsDeleted { get; set; } = false;
         public DateTime? DeletedAt { get; set; }

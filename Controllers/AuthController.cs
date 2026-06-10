@@ -789,11 +789,21 @@ namespace newApi.Controllers
                         }
                         else
                         {
+                            // 🛡️ La columna Users.GoogleId/AppleId del esquema legacy es NOT NULL +
+                            // UNIQUE aunque el modelo C# las declare nullable (deriva de
+                            // migraciones). Para usuarios email-only, tokenizamos con un GUID
+                            // prefijado — mismo patrón que AccountDeletionService al soft-delete.
+                            // El prefijo "email:" no colisiona con `sub` reales de Google/Apple
+                            // (siempre numéricos / hex), así que el lookup OAuth por GoogleId
+                            // sigue funcionando.
+                            var emailOnlyPlaceholder = $"email:{Guid.NewGuid():N}";
                             user = new User
                             {
                                 Name = pending.Name,
                                 Email = pending.Email,
                                 Password = pending.PasswordHash,
+                                GoogleId = emailOnlyPlaceholder,
+                                AppleId = emailOnlyPlaceholder,
                                 PasswordChangedAt = DateTime.UtcNow,
                                 EmailVerified = true,
                                 EmailVerifiedAt = DateTime.UtcNow,

@@ -43,7 +43,7 @@ namespace NewApi.Tests.Simulators;
 ///   - Schedulear Hangfire jobs: el campo HangfireJobId queda informativo.
 ///   - Validar firmas de webhook: los tests confían en que la firma es válida.
 /// </summary>
-public static class MarketplaceFlowSimulator
+public static partial class MarketplaceFlowSimulator
 {
     // ─────────────────────────────────────────────────────────────────────────
     // STEP 1 · Webhook checkout.session.completed crea hire(pending) + FT ServicePayment

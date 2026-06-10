@@ -24,7 +24,7 @@ namespace NewApi.Tests.Integration;
 ///   SEC-03  Gating creación de servicio   → MITIGADA  (SearchServiceController.cs:653)
 ///   SEC-04  Privilege escalation become   → MITIGADA  (UserService.cs:946 / :369-387)
 ///   SEC-05  Usuario bloqueado/borrado     → MITIGADA  (UserService.cs:360-363)
-///   SEC-06  StripeAccountId no único      → CONFIRMADA (AppDbContext.cs sin HasIndex.IsUnique en ExpertProfile.StripeAccountId)
+///   SEC-06  StripeAccountId único         → FIX APLICADO (índice UNIQUE filtrado en AppDbContext.cs + migración 20260610172018)
 ///   SEC-07  Un experto = un ExpertProfile → MITIGADA  (AppDbContext.cs:287-290, FK 1:1)
 ///   SEC-08  Vacation mode ownership       → MITIGADA  (UserService.cs:1862-1863)
 /// </summary>
@@ -261,14 +261,14 @@ public class ExpertSecurityTests : IntegrationTestBase
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // SEC-06 · StripeAccountId único — ¿pueden dos expertos compartir el mismo
-    // acct (robo de payouts)?  HALLAZGO: NO existe unique index sobre
-    // ExpertProfile.StripeAccountId en AppDbContext.  El test documenta la
-    // realidad (la BD acepta el duplicado).
+    // SEC-06 · StripeAccountId único — dos expertos NO pueden compartir el mismo
+    // acct (robo de payouts).  FIX aplicado: índice ÚNICO filtrado sobre
+    // ExpertProfile.StripeAccountId (AppDbContext.cs + migración
+    // 20260610172018_AddUniqueIndexExpertProfileStripeAccountId).
     // ─────────────────────────────────────────────────────────────────────────
 
-    [Fact(DisplayName = "SEC-06 · VULN(defensa-en-profundidad): no hay UNIQUE en ExpertProfile.StripeAccountId — duplicado se persiste")]
-    public async Task Sec06_stripe_account_id_is_not_unique_in_db()
+    [Fact(DisplayName = "SEC-06 · Defensa: índice UNIQUE filtrado sobre ExpertProfile.StripeAccountId impide compartir cuenta de payout")]
+    public async Task Sec06_stripe_account_id_is_unique_in_db()
     {
         await using var db = NewDbContext();
 
@@ -279,23 +279,21 @@ public class ExpertSecurityTests : IntegrationTestBase
 
         await new ExpertProfileBuilder(userA.Id).WithStripeAccountId(sharedAcct).Approved().PersistAsync(db);
 
-        // VULN: la BD NO tiene constraint UNIQUE en ExpertProfile.StripeAccountId
-        // (AppDbContext.cs configura ExpertProfile sin HasIndex(...).IsUnique() sobre StripeAccountId).
-        // Por eso un segundo perfil con el MISMO acct se persiste sin error.
-        // Nota de severidad: explotación directa vía API está mitigada porque el onboarding
-        // genera el acct server-side con Stripe SDK (SubscriptionController.cs ~1372, sin body de cliente);
-        // esto es un hueco de defensa-en-profundidad / integridad, no un IDOR explotable end-to-end hoy.
-        await new ExpertProfileBuilder(userB.Id).WithStripeAccountId(sharedAcct).Approved().PersistAsync(db);
+        // El índice único filtrado (WHERE StripeAccountId IS NOT NULL) RECHAZA un
+        // segundo perfil con el MISMO acct → DbUpdateException. Esto cierra el hueco
+        // de defensa-en-profundidad: aunque hoy el acct se genera server-side (no es
+        // inyectable por el cliente), un bug de vinculación ya no puede enviar los
+        // payouts de un experto a la cuenta de otro.
+        await using var db2 = NewDbContext();
+        var dupAct = async () =>
+            await new ExpertProfileBuilder(userB.Id).WithStripeAccountId(sharedAcct).Approved().PersistAsync(db2);
 
-        await using var verify = NewDbContext();
-        var dupes = await verify.ExpertProfiles.CountAsync(p => p.StripeAccountId == sharedAcct);
-        dupes.Should().Be(2,
-            "// VULN documentada: dos ExpertProfiles comparten StripeAccountId. " +
-            "Recomendación: índice único filtrado sobre StripeAccountId (WHERE StripeAccountId IS NOT NULL).");
+        await dupAct.Should().ThrowAsync<DbUpdateException>(
+            "el índice único IX_ExpertProfiles_StripeAccountId impide que dos expertos compartan cuenta de payout");
 
-        // Confirmación determinista contra el catálogo: NO existe índice UNIQUE sobre StripeAccountId.
+        // Confirmación determinista contra el catálogo: el índice UNIQUE existe físicamente.
 #pragma warning disable EF1002 // SQL literal fijo, sin input de usuario
-        var uniqueIdxCount = await verify.Database
+        var uniqueIdxCount = await db.Database
             .SqlQueryRaw<long>(@"
                 SELECT COUNT(*)::bigint AS ""Value""
                 FROM pg_indexes
@@ -305,9 +303,13 @@ public class ExpertSecurityTests : IntegrationTestBase
                   AND indexdef ILIKE '%(""StripeAccountId"")%'")
             .ToListAsync();
 #pragma warning restore EF1002
-        uniqueIdxCount.FirstOrDefault().Should().Be(0,
-            "// VULN: no hay índice único sobre StripeAccountId — la unicidad del payout-account " +
-            "no está protegida a nivel de datos");
+        uniqueIdxCount.FirstOrDefault().Should().BeGreaterThan(0,
+            "debe existir un índice único sobre StripeAccountId que proteja la unicidad del payout-account");
+
+        // Solo se persistió 1 perfil con ese acct (el de A); el de B fue rechazado.
+        await using var verify = NewDbContext();
+        var dupes = await verify.ExpertProfiles.CountAsync(p => p.StripeAccountId == sharedAcct);
+        dupes.Should().Be(1, "el duplicado fue rechazado por el índice único");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

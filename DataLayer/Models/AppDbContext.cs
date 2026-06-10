@@ -291,6 +291,18 @@ namespace newApi.DataLayer.Models
                 .IsRequired(false) // ✅ Opcional para evitar warning con query filter de User
                 .OnDelete(DeleteBehavior.Cascade);
 
+            // 🛡️ SEGURIDAD (defensa en profundidad): índice ÚNICO filtrado sobre
+            // StripeAccountId. Garantiza a nivel de datos que dos ExpertProfiles NO
+            // puedan compartir la misma cuenta de payout de Stripe. Hoy la cuenta la
+            // genera Stripe server-side (no es inyectable por el cliente), pero sin este
+            // constraint un bug de vinculación podría enviar los payouts de un experto a
+            // la cuenta de otro. Filtrado a NOT NULL: los expertos sin onboarding
+            // (StripeAccountId=null) no colisionan entre sí.
+            modelBuilder.Entity<ExpertProfile>()
+                .HasIndex(ep => ep.StripeAccountId)
+                .IsUnique()
+                .HasFilter("\"StripeAccountId\" IS NOT NULL");
+
             modelBuilder.Entity<SearchService>()
                 .HasOne(ss => ss.ExpertProfile)
                 .WithMany(ep => ep.SearchServices)

@@ -99,6 +99,10 @@ namespace newApi.Services
         private const int MaxIssuesPerEmailPerWindow = 5;  // Máx 5 envíos OTP por email+purpose
         private const int IssueRateLimitWindowSeconds = 600; // En ventana de 10 min
         private const int ResendCooldownSeconds = 30;       // Mín 30s entre reenvíos
+        // Ventana de "replay benigno": si el MISMO código correcto llega de nuevo pocos
+        // segundos después de consumirse (doble submit, doble tap, autofill que dispara
+        // dos veces), lo tratamos como éxito duplicado en lugar de "código ya utilizado".
+        private static readonly TimeSpan ReplayGraceWindow = TimeSpan.FromSeconds(60);
 
         public EmailVerificationService(
             AppDbContext db,
@@ -209,8 +213,26 @@ namespace newApi.Services
 
             if (entity.ConsumedAt.HasValue)
             {
+                // Replay benigno: el frontend puede enviar el mismo código dos veces casi a la vez
+                // (auto-submit + click, autofill del teclado, retry de red). Si el código es el
+                // CORRECTO y el consumo fue hace segundos, devolvemos éxito idempotente en lugar
+                // del falso "ya utilizado" que confundía al usuario.
+                var sinceConsumed = DateTime.UtcNow - entity.ConsumedAt.Value;
+                var replayHash = HashCode(code.Trim(), entity.Salt);
+                if (sinceConsumed <= ReplayGraceWindow &&
+                    CryptographicOperations.FixedTimeEquals(replayHash, entity.CodeHash))
+                {
+                    _logger.LogInformation("Verify: replay benigno de token consumido hace {Secs}s (id={Id}, ip={Ip})",
+                        (int)sinceConsumed.TotalSeconds, entity.Id, verifyIp);
+                    return new EmailVerificationVerifyResult(
+                        Success: true,
+                        Email: entity.Email,
+                        Purpose: entity.Purpose,
+                        UserId: entity.UserId);
+                }
+
                 _logger.LogWarning("Verify: token ya consumido (id={Id}, ip={Ip})", entity.Id, verifyIp);
-                return new EmailVerificationVerifyResult(false, ErrorMessage: "Este código ya ha sido utilizado.");
+                return new EmailVerificationVerifyResult(false, ErrorMessage: "Este código ya ha sido utilizado. Pulsa \"Reenviar código\" para recibir uno nuevo.");
             }
 
             if (entity.ExpiresAt < DateTime.UtcNow)
@@ -241,10 +263,22 @@ namespace newApi.Services
                         : "Has agotado los intentos. Solicita un código nuevo.");
             }
 
-            // ─── Éxito: marcar consumido ──────────────────────────────────────────────
-            entity.ConsumedAt = DateTime.UtcNow;
-            entity.VerifyIp = verifyIp;
-            await _db.SaveChangesAsync(ct);
+            // ─── Éxito: marcar consumido de forma ATÓMICA ────────────────────────────
+            // UPDATE condicional (WHERE ConsumedAt IS NULL): si dos requests con el código
+            // correcto llegan exactamente a la vez, solo una "gana" el consumo. La perdedora
+            // también devuelve éxito (mismo código correcto → resultado idempotente).
+            var consumedAt = DateTime.UtcNow;
+            var won = await _db.EmailVerificationCodes
+                .Where(c => c.Id == entity.Id && c.ConsumedAt == null)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(c => c.ConsumedAt, consumedAt)
+                    .SetProperty(c => c.VerifyIp, verifyIp), ct);
+
+            if (won == 0)
+            {
+                _logger.LogInformation("Verify: consumo concurrente detectado, tratado como replay benigno (id={Id}, ip={Ip})",
+                    entity.Id, verifyIp);
+            }
 
             return new EmailVerificationVerifyResult(
                 Success: true,
@@ -364,11 +398,13 @@ namespace newApi.Services
         [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 300)]
         public async Task<int> CleanupExpiredCodesAsync()
         {
-            // Borra todas las filas con ConsumedAt=null AND CreatedAt < ahora - 15min.
+            // Borra todas las filas (consumidas o no) con CreatedAt < ahora - 15min.
             // Buffer de 5 min sobre el TTL para asegurar que ningún flujo en vuelo se rompa.
+            // Las consumidas también se borran (antes quedaban para siempre): el replay
+            // benigno solo necesita ~60s de vida tras el consumo, muy por debajo del cutoff.
             var cutoff = DateTime.UtcNow.AddMinutes(-15);
             var deleted = await _db.EmailVerificationCodes
-                .Where(c => c.ConsumedAt == null && c.CreatedAt < cutoff)
+                .Where(c => c.CreatedAt < cutoff)
                 .ExecuteDeleteAsync();
             _logger.LogInformation("[OTP-CLEANUP] Borrados {Count} OTPs expirados (cutoff={Cutoff})", deleted, cutoff);
             return deleted;

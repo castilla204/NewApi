@@ -675,105 +675,181 @@ namespace newApi.Controllers
             if (request == null || string.IsNullOrEmpty(request.VerificationToken) || string.IsNullOrEmpty(request.Code))
                 return BadRequest(new { message = "Datos inválidos." });
 
-            var verify = await _emailVerifier.VerifyAsync(
-                request.VerificationToken,
-                request.Code,
-                GetClientIpAddress());
-
-            if (!verify.Success)
+            // 🛡️ FIX falso "código ya utilizado": transacción alrededor de verify + creación de
+            // cuenta. Si CUALQUIER paso posterior al consumo del OTP falla, el consumo se
+            // revierte y el usuario puede reintentar con el MISMO código (antes el código
+            // quedaba "quemado" y el reintento devolvía "este código ya se ha utilizado").
+            // EnableRetryOnFailure está activo → la transacción manual exige ExecutionStrategy.
+            var strategy = _context.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync<IActionResult>(async () =>
             {
-                return BadRequest(new
+                _context.Database.AutoSavepointsEnabled = false;
+                await using var tx = await _context.Database.BeginTransactionAsync();
+
+                var verify = await _emailVerifier.VerifyAsync(
+                    request.VerificationToken,
+                    request.Code,
+                    GetClientIpAddress());
+
+                if (!verify.Success)
                 {
-                    code = "verification_failed",
-                    message = verify.ErrorMessage ?? "Código inválido.",
-                    attemptsRemaining = verify.AttemptsRemaining
-                });
-            }
-
-            // ─── Recuperar datos del registro pendiente ─────────────────────────────
-            var cacheKey = $"reg:{request.VerificationToken}";
-            if (!_registrationCache.TryGetValue<PendingRegistration>(cacheKey, out var pending) || pending == null)
-            {
-                // No hay registro pendiente — puede ser que el OTP fuera para password reset / step-up.
-                // En ese caso devolvemos el email verificado y dejamos al frontend decidir qué hacer.
-                return Ok(new { verifiedEmail = verify.Email, requiresProfile = false });
-            }
-            _registrationCache.Remove(cacheKey);
-
-            // ─── Crear o actualizar User ─────────────────────────────────────────────
-            // Si existe usuario con ese email (caso OAuth-only añadiendo password):
-            var preExistingUser = await _context.Users
-                .IgnoreQueryFilters()
-                .FirstOrDefaultAsync(u => u.Email.ToLower() == pending.Email);
-
-            // Capturamos AHORA si era una vinculación (user OAuth sin password) — más abajo
-            // mutamos user.Password y perderíamos el estado original. El frontend usa este flag
-            // para mostrar "Contraseña vinculada" vs "Cuenta creada".
-            bool wasLinked = preExistingUser != null && string.IsNullOrEmpty(preExistingUser.Password);
-
-            var user = preExistingUser;
-            if (user != null)
-            {
-                if (user.IsBlocked) return Unauthorized(new { code = "account_blocked", message = "Cuenta bloqueada." });
-                if (user.IsDeleted) return Unauthorized(new { code = "account_deleted", message = "Cuenta eliminada." });
-                // Solo añadimos password si NO tenía ya uno (no sobrescribir password ajeno).
-                if (string.IsNullOrEmpty(user.Password))
-                {
-                    user.Password = pending.PasswordHash;
-                    user.PasswordChangedAt = DateTime.UtcNow;
+                    // Commit para persistir el contador de intentos fallidos (anti brute-force).
+                    await tx.CommitAsync();
+                    return BadRequest(new
+                    {
+                        code = "verification_failed",
+                        message = verify.ErrorMessage ?? "Código inválido.",
+                        attemptsRemaining = verify.AttemptsRemaining
+                    });
                 }
-                user.EmailVerified = true;
-                user.EmailVerifiedAt = DateTime.UtcNow;
-            }
-            else
-            {
-                user = new User
+
+                // ─── Recuperar datos del registro pendiente ─────────────────────────────
+                // "Reclamamos" la entrada de la cache (get + remove) para que una request
+                // duplicada no cree el usuario dos veces; si algo falla después, la
+                // reponemos en el catch para que el reintento del usuario funcione.
+                var cacheKey = $"reg:{request.VerificationToken}";
+                PendingRegistration? pending = null;
+                if (_registrationCache.TryGetValue<PendingRegistration>(cacheKey, out var cachedPending) && cachedPending != null)
                 {
-                    Name = pending.Name,
-                    Email = pending.Email,
-                    Password = pending.PasswordHash,
-                    PasswordChangedAt = DateTime.UtcNow,
-                    EmailVerified = true,
-                    EmailVerifiedAt = DateTime.UtcNow,
-                    CreatedAt = DateTime.UtcNow,
-                    Role = UserRole.Client,
-                };
-                _context.Users.Add(user);
-                await _context.SaveChangesAsync();
+                    pending = cachedPending;
+                    _registrationCache.Remove(cacheKey);
+                }
 
-                _context.UserSettings.Add(new UserSetting
+                try
                 {
-                    UserId = user.Id,
-                    IsWhatsAppEnabled = true,
-                    IsEmailEnabled = true,
-                    Theme = "light",
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow
-                });
-            }
-            await _context.SaveChangesAsync();
+                    User? user;
+                    bool wasLinked = false;
 
-            // ─── Emitir tokens (login automático) ──────────────────────────────────
-            var accessToken = _userService.GenerateJwtToken(user);
-            var refreshToken = await _userService.GenerateRefreshTokenAsync(user.Id, GetClientIpAddress());
+                    if (pending == null)
+                    {
+                        if (verify.Purpose != EmailVerificationPurpose.EmailVerification)
+                        {
+                            // OTP de otro flujo (p.ej. password reset enviado al endpoint equivocado).
+                            // Rollback: NO consumimos el código, sigue siendo válido para su flujo real.
+                            await tx.RollbackAsync();
+                            return Ok(new { verifiedEmail = verify.Email, requiresProfile = false });
+                        }
 
-            await _logging.LogInfoAsync(
-                message: "Registro email/password completado",
-                details: $"User {user.Id} ({user.Email}) verificó email y se registró.",
-                userId: user.Id,
-                source: "AuthController.VerifyEmail");
+                        // Sin registro pendiente: o el OTP venía del flujo "login con email sin
+                        // verificar" (nunca hubo pending), o el stash de registro caducó / el
+                        // servidor se reinició entre register y verify-email.
+                        user = verify.UserId.HasValue
+                            ? await _context.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == verify.UserId.Value)
+                            : await _context.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Email.ToLower() == verify.Email!.ToLower());
 
-            return Ok(new
-            {
-                token = $"{accessToken}|{refreshToken}",
-                accountAction = wasLinked ? "password_linked" : "account_created",
-                user = new
+                        if (user == null)
+                        {
+                            // Verificó el código pero ya no tenemos sus datos de registro → no
+                            // podemos crear la cuenta. Error claro y accionable (antes se devolvía
+                            // un falso éxito y la cuenta nunca llegaba a crearse).
+                            await tx.RollbackAsync();
+                            return BadRequest(new
+                            {
+                                code = "registration_expired",
+                                message = "Tu sesión de registro ha caducado. Vuelve a empezar el registro para recibir un código nuevo."
+                            });
+                        }
+
+                        if (user.IsBlocked) { await tx.RollbackAsync(); return Unauthorized(new { code = "account_blocked", message = "Cuenta bloqueada." }); }
+                        if (user.IsDeleted) { await tx.RollbackAsync(); return Unauthorized(new { code = "account_deleted", message = "Cuenta eliminada." }); }
+
+                        // 🛡️ FIX bucle "verifica tu email": este caso (login-password con email sin
+                        // verificar) consumía el código pero NUNCA marcaba EmailVerified → el usuario
+                        // quedaba en bucle infinito pidiendo códigos. Ahora marcamos y logueamos.
+                        user.EmailVerified = true;
+                        user.EmailVerifiedAt = DateTime.UtcNow;
+                        await _context.SaveChangesAsync();
+                    }
+                    else
+                    {
+                        // ─── Crear o actualizar User (flujo registro) ───────────────────────
+                        // Si existe usuario con ese email (caso OAuth-only añadiendo password):
+                        var preExistingUser = await _context.Users
+                            .IgnoreQueryFilters()
+                            .FirstOrDefaultAsync(u => u.Email.ToLower() == pending.Email);
+
+                        // Capturamos AHORA si era una vinculación (user OAuth sin password) — más abajo
+                        // mutamos user.Password y perderíamos el estado original. El frontend usa este flag
+                        // para mostrar "Contraseña vinculada" vs "Cuenta creada".
+                        wasLinked = preExistingUser != null && string.IsNullOrEmpty(preExistingUser.Password);
+
+                        user = preExistingUser;
+                        if (user != null)
+                        {
+                            if (user.IsBlocked) { await tx.RollbackAsync(); return Unauthorized(new { code = "account_blocked", message = "Cuenta bloqueada." }); }
+                            if (user.IsDeleted) { await tx.RollbackAsync(); return Unauthorized(new { code = "account_deleted", message = "Cuenta eliminada." }); }
+                            // Solo añadimos password si NO tenía ya uno (no sobrescribir password ajeno).
+                            if (string.IsNullOrEmpty(user.Password))
+                            {
+                                user.Password = pending.PasswordHash;
+                                user.PasswordChangedAt = DateTime.UtcNow;
+                            }
+                            user.EmailVerified = true;
+                            user.EmailVerifiedAt = DateTime.UtcNow;
+                        }
+                        else
+                        {
+                            user = new User
+                            {
+                                Name = pending.Name,
+                                Email = pending.Email,
+                                Password = pending.PasswordHash,
+                                PasswordChangedAt = DateTime.UtcNow,
+                                EmailVerified = true,
+                                EmailVerifiedAt = DateTime.UtcNow,
+                                CreatedAt = DateTime.UtcNow,
+                                Role = UserRole.Client,
+                            };
+                            _context.Users.Add(user);
+                            await _context.SaveChangesAsync();
+
+                            _context.UserSettings.Add(new UserSetting
+                            {
+                                UserId = user.Id,
+                                IsWhatsAppEnabled = true,
+                                IsEmailEnabled = true,
+                                Theme = "light",
+                                CreatedAt = DateTime.UtcNow,
+                                UpdatedAt = DateTime.UtcNow
+                            });
+                        }
+                        await _context.SaveChangesAsync();
+                    }
+
+                    // ─── Emitir tokens (login automático) ──────────────────────────────────
+                    var accessToken = _userService.GenerateJwtToken(user);
+                    var refreshToken = await _userService.GenerateRefreshTokenAsync(user.Id, GetClientIpAddress());
+
+                    await tx.CommitAsync();
+
+                    // Logging FUERA de la transacción: un fallo del log no debe revertir el registro.
+                    await _logging.LogInfoAsync(
+                        message: "Registro email/password completado",
+                        details: $"User {user.Id} ({user.Email}) verificó email y se registró.",
+                        userId: user.Id,
+                        source: "AuthController.VerifyEmail");
+
+                    return Ok(new
+                    {
+                        token = $"{accessToken}|{refreshToken}",
+                        accountAction = wasLinked ? "password_linked" : (pending == null ? "email_verified" : "account_created"),
+                        user = new
+                        {
+                            id = user.Id,
+                            name = user.Name,
+                            email = user.Email,
+                            role = user.Role.ToString(),
+                            emailVerified = user.EmailVerified,
+                        }
+                    });
+                }
+                catch
                 {
-                    id = user.Id,
-                    name = user.Name,
-                    email = user.Email,
-                    role = user.Role.ToString(),
-                    emailVerified = user.EmailVerified,
+                    // Reponer el registro pendiente para que el reintento (con el mismo código,
+                    // cuyo consumo también se revierte con el rollback) pueda completarse.
+                    if (pending != null)
+                        _registrationCache.Set(cacheKey, pending, TimeSpan.FromMinutes(15));
+                    throw;
                 }
             });
         }
@@ -985,56 +1061,82 @@ namespace newApi.Controllers
             if (!_passwordHasher.ValidatePolicy(request.NewPassword, out var reason))
                 return BadRequest(new { code = "weak_password", message = reason });
 
-            var verify = await _emailVerifier.VerifyAsync(
-                request.VerificationToken,
-                request.Code,
-                GetClientIpAddress());
-
-            if (!verify.Success || verify.Purpose != EmailVerificationPurpose.PasswordReset)
+            // 🛡️ FIX falso "código ya utilizado": transacción alrededor de verify + cambio de
+            // password. Si algo falla tras consumir el OTP, el consumo se revierte y el usuario
+            // puede reintentar con el mismo código. ExecutionStrategy por EnableRetryOnFailure.
+            var strategy = _context.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync<IActionResult>(async () =>
             {
-                return BadRequest(new
+                _context.Database.AutoSavepointsEnabled = false;
+                await using var tx = await _context.Database.BeginTransactionAsync();
+
+                var verify = await _emailVerifier.VerifyAsync(
+                    request.VerificationToken,
+                    request.Code,
+                    GetClientIpAddress());
+
+                if (!verify.Success || verify.Purpose != EmailVerificationPurpose.PasswordReset)
                 {
-                    code = "verification_failed",
-                    message = verify.ErrorMessage ?? "Código inválido.",
-                    attemptsRemaining = verify.AttemptsRemaining
+                    if (!verify.Success)
+                    {
+                        // Commit para persistir el contador de intentos fallidos (anti brute-force).
+                        await tx.CommitAsync();
+                    }
+                    else
+                    {
+                        // Código correcto pero de OTRO flujo (p.ej. verificación de registro enviada
+                        // aquí por error): rollback para no quemar el código de su flujo real.
+                        await tx.RollbackAsync();
+                    }
+                    return BadRequest(new
+                    {
+                        code = "verification_failed",
+                        message = verify.ErrorMessage ?? "Código inválido.",
+                        attemptsRemaining = verify.AttemptsRemaining
+                    });
+                }
+
+                var user = await _context.Users
+                    .IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(u => u.Email.ToLower() == verify.Email!.ToLower());
+
+                if (user == null || user.IsDeleted || user.IsBlocked)
+                {
+                    // No revelar — al usuario "honesto" no le pasa, al atacante no le damos info.
+                    await tx.CommitAsync();
+                    return Unauthorized(new { code = "verification_failed", message = "No se pudo completar la operación." });
+                }
+
+                // Asignación unconditional: si user.Password era null (OAuth-only) ahora pasa a tener
+                // hash → el usuario podrá iniciar sesión también con email+password. Si ya tenía hash
+                // previo, simplemente lo sobrescribimos (flujo de reset clásico).
+                user.Password = _passwordHasher.Hash(request.NewPassword);
+                user.PasswordChangedAt = DateTime.UtcNow;
+                user.FailedLoginAttempts = 0;
+                user.LockedUntil = null;
+                await _context.SaveChangesAsync();
+
+                // Revocar TODOS los refresh tokens activos del usuario — buena práctica tras cambio de password.
+                await RevokeAllUserTokensAsync(user.Id, "password_reset");
+
+                // Emitir tokens nuevos (login automático).
+                var accessToken = _userService.GenerateJwtToken(user);
+                var refreshToken = await _userService.GenerateRefreshTokenAsync(user.Id, GetClientIpAddress());
+
+                await tx.CommitAsync();
+
+                // Logging FUERA de la transacción: un fallo del log no debe revertir el reset.
+                await _logging.LogInfoAsync(
+                    message: "Password reset completado",
+                    details: $"User {user.Id} ({user.Email}) restableció su password",
+                    userId: user.Id,
+                    source: "AuthController.ResetPassword");
+
+                return Ok(new
+                {
+                    token = $"{accessToken}|{refreshToken}",
+                    user = new { id = user.Id, name = user.Name, email = user.Email, role = user.Role.ToString() }
                 });
-            }
-
-            var user = await _context.Users
-                .IgnoreQueryFilters()
-                .FirstOrDefaultAsync(u => u.Email.ToLower() == verify.Email!.ToLower());
-
-            if (user == null || user.IsDeleted || user.IsBlocked)
-            {
-                // No revelar — al usuario "honesto" no le pasa, al atacante no le damos info.
-                return Unauthorized(new { code = "verification_failed", message = "No se pudo completar la operación." });
-            }
-
-            // Asignación unconditional: si user.Password era null (OAuth-only) ahora pasa a tener
-            // hash → el usuario podrá iniciar sesión también con email+password. Si ya tenía hash
-            // previo, simplemente lo sobrescribimos (flujo de reset clásico).
-            user.Password = _passwordHasher.Hash(request.NewPassword);
-            user.PasswordChangedAt = DateTime.UtcNow;
-            user.FailedLoginAttempts = 0;
-            user.LockedUntil = null;
-            await _context.SaveChangesAsync();
-
-            // Revocar TODOS los refresh tokens activos del usuario — buena práctica tras cambio de password.
-            await RevokeAllUserTokensAsync(user.Id, "password_reset");
-
-            await _logging.LogInfoAsync(
-                message: "Password reset completado",
-                details: $"User {user.Id} ({user.Email}) restableció su password",
-                userId: user.Id,
-                source: "AuthController.ResetPassword");
-
-            // Emitir tokens nuevos (login automático).
-            var accessToken = _userService.GenerateJwtToken(user);
-            var refreshToken = await _userService.GenerateRefreshTokenAsync(user.Id, GetClientIpAddress());
-            return Ok(new
-            {
-                token = $"{accessToken}|{refreshToken}",
-                user = new { id = user.Id, name = user.Name, email = user.Email, role = user.Role.ToString() }
             });
         }
 

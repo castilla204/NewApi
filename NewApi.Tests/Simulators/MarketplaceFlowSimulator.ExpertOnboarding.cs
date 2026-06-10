@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using newApi.Common;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
 
@@ -41,13 +42,41 @@ public static partial class MarketplaceFlowSimulator
     // STEP 0 · become-expert → ExpertProfile(NotRequested, OnboardingCompleted=false)
     // ─────────────────────────────────────────────────────────────────────────
     /// <summary>
+    /// Excepción que el simulador lanza cuando el país auto-detectado del experto NO
+    /// está en la whitelist <see cref="SupportedConnectCountries"/>. Replica el efecto
+    /// observable del gate de UserService.BecomeExpert (UserService.cs:853): el
+    /// ExpertProfile NUNCA se crea (se evita el "zombie expert") y el caller recibe el
+    /// errorCode <c>CountryNotSupported</c>.
+    /// </summary>
+    public sealed class CountryNotSupportedException : InvalidOperationException
+    {
+        public string ErrorCode => "CountryNotSupported";
+        public string? CountryCode { get; }
+        public CountryNotSupportedException(string? countryCode)
+            : base($"CountryNotSupported: país '{countryCode ?? "<null>"}' no soportado por Stripe Connect") =>
+            CountryCode = countryCode;
+    }
+
+    /// <summary>
     /// Replica el efecto de UserController.BecomeExpert → UserService.BecomeExpert:
     /// crea el ExpertProfile inicial sin tocar Stripe. StripeStatus=NotRequested,
     /// OnboardingCompleted=false, StripeAccountId=null.
     /// El User debe existir; el caller decide si además lo promociona a UserRole.Expert.
+    ///
+    /// <paramref name="countryCode"/> imita el país que Mapbox auto-detecta a partir de las
+    /// coordenadas (UserService.cs:748-852). Se valida contra
+    /// <see cref="SupportedConnectCountries.IsSupported"/> (gate de UserService.cs:853):
+    /// si no está soportado se lanza <see cref="CountryNotSupportedException"/> y el profile
+    /// NO se crea, igual que el backend real. El país soportado queda persistido en
+    /// <see cref="ExpertProfile.Country"/> (lo que luego determina las capabilities Stripe).
     /// </summary>
-    public static async Task<ExpertProfile> BecomeExpertAsync(AppDbContext db, int userId)
+    public static async Task<ExpertProfile> BecomeExpertAsync(
+        AppDbContext db, int userId, string countryCode = "ES")
     {
+        // Gate de país (UserService.cs:853) — antes de crear nada, como el backend real.
+        if (!SupportedConnectCountries.IsSupported(countryCode))
+            throw new CountryNotSupportedException(countryCode);
+
         var existing = await db.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
         if (existing != null)
             throw new InvalidOperationException(
@@ -61,6 +90,7 @@ public static partial class MarketplaceFlowSimulator
             Description = "Test expert profile (become-expert)",
             Latitude = "40.4168",
             Longitude = "-3.7038",
+            Country = countryCode.Trim(),
             StripeAccountId = null,
             PendingStripeAccountId = null,
             StripeStatus = StripeStatus.NotRequested,

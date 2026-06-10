@@ -428,4 +428,390 @@ public class HttpHireFlowTests
             d.SearchHireId == hireId.Value && d.ReporterId == mk.ClientId);
         dispute.Should().NotBeNull("la disputa debe persistirse con el reporter correcto");
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Helpers de cadena (reducen repetición en HF-11..17)
+    // ─────────────────────────────────────────────────────────────────────────
+    private int StripeCalls(string entry) => _api.FakeStripe.Requests.Count(r => r == entry);
+
+    private async Task ProposeOkAsync(Marketplace mk, int hireId, int days, string time)
+    {
+        var jwt = _api.MintJwtFor(mk.ClientId, mk.ClientEmail);
+        var r = await _api.Client.SendAsync(AuthedJson(
+            HttpMethod.Post, $"/api/Appointment/propose/{hireId}",
+            new
+            {
+                proposedDate = DateTime.UtcNow.Date.AddDays(days),
+                proposedTime = time,
+                location = "Calle de Prueba, Madrid",
+                timezone = "Europe/Madrid",
+            }, jwt));
+        var body = await r.Content.ReadAsStringAsync();
+        r.StatusCode.Should().Be(HttpStatusCode.OK, $"propose debe aceptarse. Body: {body}");
+    }
+
+    private async Task ConfirmOkAsync(Marketplace mk, int apptId)
+    {
+        var jwt = _api.MintJwtFor(mk.ExpertUserId, mk.ExpertEmail, role: "Expert");
+        var r = await _api.Client.SendAsync(AuthedJson(
+            HttpMethod.Post, "/api/Appointment/confirm", new { appointmentId = apptId, notes = "ok" }, jwt));
+        var body = await r.Content.ReadAsStringAsync();
+        r.StatusCode.Should().Be(HttpStatusCode.OK, $"confirm debe aceptarse. Body: {body}");
+    }
+
+    private async Task<HttpResponseMessage> CancelAsync(Marketplace mk, int apptId, bool byExpert, string reason)
+    {
+        var jwt = byExpert
+            ? _api.MintJwtFor(mk.ExpertUserId, mk.ExpertEmail, role: "Expert")
+            : _api.MintJwtFor(mk.ClientId, mk.ClientEmail);
+        return await _api.Client.SendAsync(AuthedJson(
+            HttpMethod.Post, "/api/Appointment/cancel", new { appointmentId = apptId, reason }, jwt));
+    }
+
+    private async Task<HttpResponseMessage> RejectAsync(Marketplace mk, int apptId, string reason)
+    {
+        var jwt = _api.MintJwtFor(mk.ExpertUserId, mk.ExpertEmail, role: "Expert");
+        return await _api.Client.SendAsync(AuthedJson(
+            HttpMethod.Post, "/api/Appointment/reject", new { appointmentId = apptId, reason }, jwt));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-11 · propose → reject(1º) → repropose → reject(2º) → hire cancelled + refund 100%
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-11 · 2º rechazo del experto por API real → cancelled_by_expert_rejection + refund")]
+    public async Task Second_rejection_finalizes_with_full_refund()
+    {
+        var mk = await SeedMarketplaceAsync("hf11");
+        var (_, hireId) = await PostCheckoutWebhookAsync(
+            mk, "evt_hf11_" + Guid.NewGuid().ToString("N"), "cs_hf11",
+            "pi_hf11_" + Guid.NewGuid().ToString("N")[..10]);
+        hireId.Should().NotBeNull();
+
+        await ProposeOkAsync(mk, hireId!.Value, days: 4, time: "09:30:00");
+        var (apptId, _) = await AppointmentOfAsync(hireId.Value);
+        (await RejectAsync(mk, apptId, "No puedo ese día")).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await AppointmentOfAsync(hireId.Value)).Status.Should().Be("appointment_rejected");
+
+        // El cliente re-propone (válido desde appointment_rejected)
+        await ProposeOkAsync(mk, hireId.Value, days: 6, time: "12:00:00");
+        (await AppointmentOfAsync(hireId.Value)).Status.Should().Be("appointment_proposed");
+
+        var refundsBefore = StripeCalls("POST /v1/refunds");
+        var reject2 = await RejectAsync(mk, apptId, "Tampoco puedo, lo siento");
+        var body = await reject2.Content.ReadAsStringAsync();
+        reject2.StatusCode.Should().Be(HttpStatusCode.OK, $"el 2º reject debe aceptarse. Body: {body}");
+
+        (await AppointmentOfAsync(hireId.Value)).Status.Should().Be("appointment_cancelled_by_expert_rejection");
+        (await HireStatusAsync(hireId.Value)).Should().Be("cancelled",
+            "el 2º rechazo del experto finaliza el hire (AppointmentService.cs:1918)");
+        StripeCalls("POST /v1/refunds").Should().BeGreaterThan(refundsBefore,
+            "el split 100/0/0 reembolsa al cliente vía Stripe (inline en la request)");
+
+        await using var db = _api.CreateDbContext();
+        var appt = await db.Appointments.SingleAsync(a => a.Id == apptId);
+        appt.RejectionCount.Should().Be(2);
+        appt.ExpertCancellationCount.Should().Be(1, "el 2º rechazo incrementa el contador del experto");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-12 · 2ª cancelación del EXPERTO → cancelled_by_expert_second + refund al cliente
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-12 · 2ª cancelación del experto por API real → expert_second + refund")]
+    public async Task Second_expert_cancellation_finalizes_with_refund()
+    {
+        var mk = await SeedMarketplaceAsync("hf12");
+        var (_, hireId) = await PostCheckoutWebhookAsync(
+            mk, "evt_hf12_" + Guid.NewGuid().ToString("N"), "cs_hf12",
+            "pi_hf12_" + Guid.NewGuid().ToString("N")[..10]);
+        hireId.Should().NotBeNull();
+
+        // 1ª ronda: propose → confirm → cancel experto (NO finaliza)
+        await ProposeOkAsync(mk, hireId!.Value, days: 4, time: "10:00:00");
+        var (apptId, _) = await AppointmentOfAsync(hireId.Value);
+        await ConfirmOkAsync(mk, apptId);
+        (await CancelAsync(mk, apptId, byExpert: true, "Imprevisto del experto"))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        (await AppointmentOfAsync(hireId.Value)).Status.Should().Be("appointment_cancelled_by_expert");
+        (await HireStatusAsync(hireId.Value)).Should().Be("pending");
+
+        // 2ª ronda: re-propose → confirm → cancel experto otra vez (finaliza)
+        await ProposeOkAsync(mk, hireId.Value, days: 8, time: "17:00:00");
+        await ConfirmOkAsync(mk, apptId);
+
+        var refundsBefore = StripeCalls("POST /v1/refunds");
+        var cancel2 = await CancelAsync(mk, apptId, byExpert: true, "Segundo imprevisto");
+        var body = await cancel2.Content.ReadAsStringAsync();
+        cancel2.StatusCode.Should().Be(HttpStatusCode.OK, $"la 2ª cancelación debe aceptarse. Body: {body}");
+
+        (await AppointmentOfAsync(hireId.Value)).Status.Should().Be("appointment_cancelled_by_expert_second");
+        (await HireStatusAsync(hireId.Value)).Should().Be("cancelled");
+        StripeCalls("POST /v1/refunds").Should().BeGreaterThan(refundsBefore,
+            "la 2ª cancelación del experto reembolsa al cliente vía Stripe");
+
+        await using var db = _api.CreateDbContext();
+        var appt = await db.Appointments.SingleAsync(a => a.Id == apptId);
+        appt.ExpertCancellationCount.Should().Be(2);
+        appt.ClientCancellationCount.Should().Be(0, "los contadores son independientes por parte");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-13 · 2ª cancelación del CLIENTE → client_second + transfer 95% al experto
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-13 · 2ª cancelación del cliente por API real → client_second + transfer al experto")]
+    public async Task Second_client_cancellation_finalizes_with_expert_payout()
+    {
+        var mk = await SeedMarketplaceAsync("hf13");
+        var (_, hireId) = await PostCheckoutWebhookAsync(
+            mk, "evt_hf13_" + Guid.NewGuid().ToString("N"), "cs_hf13",
+            "pi_hf13_" + Guid.NewGuid().ToString("N")[..10]);
+        hireId.Should().NotBeNull();
+
+        await ProposeOkAsync(mk, hireId!.Value, days: 4, time: "10:00:00");
+        var (apptId, _) = await AppointmentOfAsync(hireId.Value);
+        await ConfirmOkAsync(mk, apptId);
+        (await CancelAsync(mk, apptId, byExpert: false, "Cambio de planes"))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        (await HireStatusAsync(hireId.Value)).Should().Be("pending");
+
+        await ProposeOkAsync(mk, hireId.Value, days: 9, time: "13:00:00");
+        await ConfirmOkAsync(mk, apptId);
+
+        var transfersBefore = StripeCalls("POST /v1/transfers");
+        var cancel2 = await CancelAsync(mk, apptId, byExpert: false, "Cancelo definitivamente");
+        var body = await cancel2.Content.ReadAsStringAsync();
+        cancel2.StatusCode.Should().Be(HttpStatusCode.OK, $"la 2ª cancelación debe aceptarse. Body: {body}");
+
+        (await AppointmentOfAsync(hireId.Value)).Status.Should().Be("appointment_cancelled_by_client_second");
+        (await HireStatusAsync(hireId.Value)).Should().Be("cancelled");
+        StripeCalls("POST /v1/transfers").Should().BeGreaterThan(transfersBefore,
+            "el split 0/95/5 paga al experto (penalización al cliente) vía Stripe");
+
+        await using var db = _api.CreateDbContext();
+        var appt = await db.Appointments.SingleAsync(a => a.Id == apptId);
+        appt.ClientCancellationCount.Should().Be(2);
+        appt.ExpertCancellationCount.Should().Be(0);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-14/15 · disputa por HTTP + resolución por ADMIN (ambos sentidos)
+    // ─────────────────────────────────────────────────────────────────────────
+    private async Task<(Marketplace Mk, int HireId, int DisputeId)> SetupDisputedHireAsync(string slug)
+    {
+        var mk = await SeedMarketplaceAsync(slug);
+        var (_, hireId) = await PostCheckoutWebhookAsync(
+            mk, $"evt_{slug}_" + Guid.NewGuid().ToString("N"), $"cs_{slug}",
+            $"pi_{slug}_" + Guid.NewGuid().ToString("N")[..10]);
+        hireId.Should().NotBeNull();
+
+        await using (var db = _api.CreateDbContext())
+        {
+            var awaiting = await db.SystemStatuses.SingleAsync(s =>
+                s.StatusType == "SearchHireStatus" && s.StatusValue == "awaiting_client_decision");
+            var hire = await db.SearchHires.SingleAsync(h => h.Id == hireId);
+            hire.StatusId = awaiting.Id;
+            await db.SaveChangesAsync();
+        }
+
+        var jwt = _api.MintJwtFor(mk.ClientId, mk.ClientEmail);
+        using var form = new MultipartFormDataContent
+        {
+            { new StringContent(hireId!.Value.ToString()), "SearchHireId" },
+            { new StringContent("El servicio no se realizó correctamente"), "Reason" },
+        };
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/Dispute/dispute-service") { Content = form };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+        (await _api.Client.SendAsync(request)).IsSuccessStatusCode.Should().BeTrue();
+
+        await using var verify = _api.CreateDbContext();
+        var disputeId = await verify.Disputes
+            .Where(d => d.SearchHireId == hireId.Value).Select(d => d.Id).SingleAsync();
+        return (mk, hireId.Value, disputeId);
+    }
+
+    private async Task<HttpResponseMessage> AdminResolveAsync(int disputeId, string action)
+    {
+        int adminId;
+        var adminEmail = $"admin-{Guid.NewGuid():N}@test.dev";
+        await using (var db = _api.CreateDbContext())
+            adminId = (await new UserBuilder(adminEmail).AsClient().Verified().PersistAsync(db)).Id;
+
+        var adminJwt = _api.MintJwtFor(adminId, adminEmail, name: "Admin Test", role: "Admin");
+        return await _api.Client.SendAsync(AuthedJson(
+            HttpMethod.Put, $"/api/Dispute/{disputeId}/resolve",
+            new { action, resolutionComments = "Resuelto tras revisar las evidencias" }, adminJwt));
+    }
+
+    [Fact(DisplayName = "HF-14 · disputa + resolución admin pro-CLIENTE → dispute_resolved_client + refund")]
+    public async Task Dispute_resolved_for_client_via_http()
+    {
+        var (mk, hireId, disputeId) = await SetupDisputedHireAsync("hf14");
+        (await HireStatusAsync(hireId)).Should().Be("disputed", "abrir la disputa marca el hire como disputed");
+
+        var resolve = await AdminResolveAsync(disputeId, "refund_client");
+        var body = await resolve.Content.ReadAsStringAsync();
+        resolve.StatusCode.Should().Be(HttpStatusCode.OK, $"el admin debe poder resolver. Body: {body}");
+
+        (await HireStatusAsync(hireId)).Should().Be("dispute_resolved_client");
+
+        // ⚠️ CONTRATO REAL (no intuición): el dinero de las disputas NO se mueve inline.
+        // RefundService abre BeginTransactionAsync manual (RefundService.cs:74) que choca
+        // con NpgsqlRetryingExecutionStrategy (Program.cs:1267) → el intento inline falla
+        // SIEMPRE y el controller (FRENTE 6, DisputeController) programa
+        // RetryMoneyDistributionJobAsync(+2min) en Hangfire, marca Resolved y devuelve 200.
+        // Por eso aquí se asierta el retry programado, no la llamada Stripe inline.
+        await using var db = _api.CreateDbContext();
+        var dispute = await db.Disputes.SingleAsync(d => d.Id == disputeId);
+        dispute.Status.Should().Be("Resolved");
+
+        var retryJobs = await CountScheduledMoneyRetriesAsync(db);
+        retryJobs.Should().BeGreaterThan(0,
+            "el dinero de la disputa debe quedar encolado en Hangfire (RetryMoneyDistributionJobAsync)");
+    }
+
+    /// <summary>Jobs Hangfire programados que apuntan a RetryMoneyDistributionJobAsync.</summary>
+    private static async Task<int> CountScheduledMoneyRetriesAsync(AppDbContext db)
+    {
+        await using var cmd = db.Database.GetDbConnection().CreateCommand();
+        cmd.CommandText =
+            "SELECT count(*)::int FROM hangfire.job WHERE invocationdata::text LIKE '%RetryMoneyDistributionJobAsync%'";
+        if (cmd.Connection!.State != System.Data.ConnectionState.Open)
+            await cmd.Connection.OpenAsync();
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync());
+    }
+
+    [Fact(DisplayName = "HF-15 · disputa + resolución admin pro-EXPERTO → dispute_resolved_expert + transfer")]
+    public async Task Dispute_resolved_for_expert_via_http()
+    {
+        var (mk, hireId, disputeId) = await SetupDisputedHireAsync("hf15");
+
+        var retriesBefore = await CountRetriesAsync();
+        var resolve = await AdminResolveAsync(disputeId, "pay_expert");
+        var body = await resolve.Content.ReadAsStringAsync();
+        resolve.StatusCode.Should().Be(HttpStatusCode.OK, $"el admin debe poder resolver. Body: {body}");
+
+        (await HireStatusAsync(hireId)).Should().Be("dispute_resolved_expert");
+
+        await using var db = _api.CreateDbContext();
+        (await db.Disputes.SingleAsync(d => d.Id == disputeId)).Status.Should().Be("Resolved");
+
+        // Mismo contrato que HF-14: el payout viaja vía RetryMoneyDistributionJobAsync (+2min).
+        (await CountScheduledMoneyRetriesAsync(db)).Should().BeGreaterThan(retriesBefore,
+            "el pago al experto debe quedar encolado en Hangfire");
+    }
+
+    private async Task<int> CountRetriesAsync()
+    {
+        await using var db = _api.CreateDbContext();
+        return await CountScheduledMoneyRetriesAsync(db);
+    }
+
+    [Fact(DisplayName = "HF-15b · resolver disputa SIN rol admin → rechazado")]
+    public async Task Dispute_resolution_requires_admin_role()
+    {
+        var (mk, hireId, disputeId) = await SetupDisputedHireAsync("hf15b");
+
+        // El CLIENTE (no admin) intenta resolver su propia disputa a su favor
+        var clientJwt = _api.MintJwtFor(mk.ClientId, mk.ClientEmail);
+        var resolve = await _api.Client.SendAsync(AuthedJson(
+            HttpMethod.Put, $"/api/Dispute/{disputeId}/resolve",
+            new { action = "refund_client", resolutionComments = "yo me lo apruebo" }, clientJwt));
+
+        resolve.IsSuccessStatusCode.Should().BeFalse("solo un admin puede resolver disputas");
+        (await HireStatusAsync(hireId)).Should().Be("disputed", "la disputa debe seguir abierta");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-16 · contadores SEPARADOS: cancel cliente(1ª) + cancel experto(1ª) NO finalizan;
+    //          la 2ª del MISMO lado (cliente) sí
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-16 · cancelaciones intercaladas cliente/experto: solo la 2ª del mismo lado finaliza")]
+    public async Task Interleaved_cancellations_have_separate_counters()
+    {
+        var mk = await SeedMarketplaceAsync("hf16");
+        var (_, hireId) = await PostCheckoutWebhookAsync(
+            mk, "evt_hf16_" + Guid.NewGuid().ToString("N"), "cs_hf16",
+            "pi_hf16_" + Guid.NewGuid().ToString("N")[..10]);
+        hireId.Should().NotBeNull();
+
+        // Ronda 1: cancela el CLIENTE (1ª suya)
+        await ProposeOkAsync(mk, hireId!.Value, days: 3, time: "09:00:00");
+        var (apptId, _) = await AppointmentOfAsync(hireId.Value);
+        await ConfirmOkAsync(mk, apptId);
+        (await CancelAsync(mk, apptId, byExpert: false, "1ª del cliente")).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await HireStatusAsync(hireId.Value)).Should().Be("pending");
+
+        // Ronda 2: cancela el EXPERTO (1ª suya — el hire sigue vivo)
+        await ProposeOkAsync(mk, hireId.Value, days: 5, time: "11:00:00");
+        await ConfirmOkAsync(mk, apptId);
+        (await CancelAsync(mk, apptId, byExpert: true, "1ª del experto")).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await HireStatusAsync(hireId.Value)).Should().Be("pending",
+            "1+1 cancelaciones de partes DISTINTAS no finalizan (contadores separados)");
+
+        // Ronda 3: el CLIENTE cancela su 2ª → finaliza
+        await ProposeOkAsync(mk, hireId.Value, days: 7, time: "15:00:00");
+        await ConfirmOkAsync(mk, apptId);
+        (await CancelAsync(mk, apptId, byExpert: false, "2ª del cliente")).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await AppointmentOfAsync(hireId.Value)).Status.Should().Be("appointment_cancelled_by_client_second");
+        (await HireStatusAsync(hireId.Value)).Should().Be("cancelled");
+
+        await using var db = _api.CreateDbContext();
+        var appt = await db.Appointments.SingleAsync(a => a.Id == apptId);
+        appt.ClientCancellationCount.Should().Be(2);
+        appt.ExpertCancellationCount.Should().Be(1);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-17 · flujo de informe por HTTP: confirm → [timer→awaiting_report vía BD] →
+    //          submit-report → awaiting_client_decision → complete-service → completed
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-17 · submit-report + aprobación del cliente por API real → completed")]
+    public async Task Report_flow_via_http()
+    {
+        var mk = await SeedMarketplaceAsync("hf17");
+        var (_, hireId) = await PostCheckoutWebhookAsync(
+            mk, "evt_hf17_" + Guid.NewGuid().ToString("N"), "cs_hf17",
+            "pi_hf17_" + Guid.NewGuid().ToString("N")[..10]);
+        hireId.Should().NotBeNull();
+
+        await ProposeOkAsync(mk, hireId!.Value, days: 2, time: "10:00:00");
+        var (apptId, _) = await AppointmentOfAsync(hireId.Value);
+        await ConfirmOkAsync(mk, apptId);
+
+        // confirmed → awaiting_report es transición de TIMER Hangfire (cita+3h), no
+        // user-driven: la reproducimos en BD (igual que harían los 10 min del watchdog).
+        await using (var db = _api.CreateDbContext())
+        {
+            var awaitingReport = await db.SystemStatuses.SingleAsync(s =>
+                s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_awaiting_report");
+            var appt = await db.Appointments.SingleAsync(a => a.Id == apptId);
+            appt.StatusId = awaitingReport.Id;
+            await db.SaveChangesAsync();
+        }
+
+        // El experto envía el informe por la API real
+        var expertJwt = _api.MintJwtFor(mk.ExpertUserId, mk.ExpertEmail, role: "Expert");
+        var report = await _api.Client.SendAsync(AuthedJson(
+            HttpMethod.Post, $"/api/Appointment/submit-report/{apptId}",
+            new { notes = "Inspección completada: estructura en buen estado." }, expertJwt));
+        var reportBody = await report.Content.ReadAsStringAsync();
+        report.StatusCode.Should().Be(HttpStatusCode.OK, $"submit-report debe aceptarse. Body: {reportBody}");
+
+        (await AppointmentOfAsync(hireId.Value)).Status.Should().Be("appointment_report_sent");
+        (await HireStatusAsync(hireId.Value)).Should().Be("awaiting_client_decision",
+            "el informe enviado pasa el hire a decisión del cliente (24h)");
+
+        // El cliente aprueba → completed + payout
+        var transfersBefore = StripeCalls("POST /v1/transfers");
+        var clientJwt = _api.MintJwtFor(mk.ClientId, mk.ClientEmail);
+        var complete = await _api.Client.SendAsync(AuthedJson(
+            HttpMethod.Post, "/api/SearchHire/complete-service",
+            new { searchHireId = hireId.Value, clientApproved = true }, clientJwt));
+        complete.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await HireStatusAsync(hireId.Value)).Should().Be("completed");
+        (await AppointmentOfAsync(hireId.Value)).Status.Should().Be("appointment_completed");
+        StripeCalls("POST /v1/transfers").Should().BeGreaterThan(transfersBefore,
+            "la aprobación dispara el payout 95% al experto");
+    }
 }

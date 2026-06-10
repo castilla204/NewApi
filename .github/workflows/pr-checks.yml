@@ -1,0 +1,100 @@
+# PR Checks — Backend (.NET 10)
+#
+# Diseñado para minimizar minutos GitHub Actions (free tier).
+# - Solo en pull_request (NO en push a main → no se duplican minutos)
+# - Filtro `paths` para no correr si solo cambian .md o YAML irrelevante
+# - concurrency cancel-in-progress: pushes nuevos matan runs antiguos
+# - Sin matrix, single job sequential
+# - Cache NuGet por hash de csproj
+#
+# Coste estimado: ~3-4 min por PR. 40 PR/mes × 3 pushes = 120 runs ≈ 360 min/mes.
+# Plan Free: 2000 min/mes para repos privados.
+
+name: PR Checks (Backend)
+
+on:
+  pull_request:
+    branches: [ main, develop, master ]
+    paths:
+      - 'newApi.csproj'
+      - 'newApi.sln'
+      - '**/*.cs'
+      - '**/appsettings*.json'
+      - 'NewApi.Tests/**'
+      - '.github/workflows/pr-checks.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: pr-checks-be-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+jobs:
+  test:
+    name: Build + Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore newApi.sln
+
+      - name: Build (Release, no restore)
+        run: dotnet build newApi.sln --no-restore --configuration Release
+
+      - name: Unit tests
+        # Filtramos a Unit/* para que Integration/* (Testcontainers + Postgres) no se
+        # ejecute aquí. Ese bloque se moverá a un job/workflow distinto cuando esté
+        # listo (necesita Docker activo).
+        run: |
+          dotnet test newApi.sln \
+            --no-build \
+            --configuration Release \
+            --filter "FullyQualifiedName~NewApi.Tests.Unit" \
+            --logger "trx;LogFileName=unit.trx" \
+            --results-directory ./TestResults
+
+      - name: Integration tests (Testcontainers Postgres)
+        # GitHub Actions Ubuntu runners traen Docker preinstalado y arrancado.
+        # En local fallarán si Docker Desktop no corre, que es la intención.
+        run: |
+          dotnet test newApi.sln \
+            --no-build \
+            --configuration Release \
+            --filter "FullyQualifiedName~NewApi.Tests.Integration" \
+            --logger "trx;LogFileName=integration.trx" \
+            --results-directory ./TestResults
+
+      - name: Publish test results
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: .NET Tests
+          path: TestResults/*.trx
+          reporter: dotnet-trx
+          fail-on-error: false

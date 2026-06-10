@@ -331,4 +331,64 @@ public class WebhookSecurityTests : IntegrationTestBase
                 "la reentrega del mismo EventId no añade filas");
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WHS-09 · GUARD anti-throttle del re-fetch live de account.updated.
+    //
+    // Auditoría reportó como "Media": account.updated hace un re-fetch live a la
+    // Stripe API (SubscriptionController.cs:3114) en cada evento, sin throttle por
+    // cuenta → posible amplificación de carga. Tras verificar el FLUJO REAL la
+    // severidad es BAJA y el throttle NO debe implementarse:
+    //
+    //   (a) Severidad real = BAJA. La idempotencia atómica
+    //       (TryBeginProcessingEventAsync, cs:2858) corta los evt_id DUPLICADOS
+    //       ANTES de llegar al re-fetch (devuelve "Event already processed",
+    //       cs:2860). Solo eventos DISTINTOS válidos llegan al re-fetch, y SOLO
+    //       Stripe puede generarlos (firma HMAC verificada, cs:2796). Un atacante
+    //       necesitaría N payloads firmados distintos, cada uno usable una sola vez
+    //       (idempotencia) y dentro de la ventana de 5 min → impráctico. La carga
+    //       realista es la ráfaga LEGÍTIMA de onboarding (Stripe emite varios
+    //       account.updated mientras el experto rellena el KYC).
+    //
+    //   (b) El re-fetch es LOAD-BEARING para DOS cosas críticas — throttlearlo
+    //       causaría más daño que el hallazgo:
+    //       1. MUD-BT (cs:3103-3125): Stripe NO garantiza orden de entrega de
+    //          webhooks. El re-fetch live obtiene SIEMPRE el estado actual, evitando
+    //          aplicar un evento VIEJO sobre la BD ya actualizada (drift permanente).
+    //       2. MUD-BH (cs:3163-3175): el re-fetch alimenta el sync DAC7 de datos
+    //          fiscales (DOB/IBAN/Address → modelo 238 AEAT). Stripe envía
+    //          account.updated cada vez que cambian esos datos SIN cambiar
+    //          StripeStatus. Saltar el re-fetch dejaría datos fiscales obsoletos →
+    //          riesgo de multa AEAT (~€300/seller).
+    //
+    //   (c) El [DisableRateLimiting] de ambos endpoints webhook (cs:2699, 4087) es
+    //       intencional: un 429 haría que Stripe reintente/encole y en ráfaga (todas
+    //       las entregas comparten la IP del proxy de Render) se perderían eventos.
+    //
+    // Este test es un GUARD: si alguien (humano o IA) intenta "optimizar" quitando
+    // el sync DAC7 del flujo de webhooks, este contrato falla y obliga a reconsiderar.
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "WHS-09 · GUARD: el sync fiscal DAC7 (que depende del re-fetch live) sigue cableado — no throttlear account.updated")]
+    public void Dac7_sync_contract_exists_so_account_updated_refetch_stays_unconditional()
+    {
+        // El re-fetch live de account.updated NO es solo para status: alimenta el
+        // sync DAC7 (MUD-BH). Verificamos que el contrato Dac7DataSyncService
+        // .SyncFromAccountAsync(Account, int, ...) sigue existiendo. Si desaparece
+        // o cambia de firma, alguien tocó el flujo fiscal y debe revisar el handler
+        // account.updated antes de añadir cualquier throttle al re-fetch.
+        var dac7Type = typeof(newApi.Services.Dac7DataSyncService);
+        var syncMethod = dac7Type.GetMethod("SyncFromAccountAsync");
+
+        syncMethod.Should().NotBeNull(
+            "Dac7DataSyncService.SyncFromAccountAsync debe existir — es lo que el re-fetch live " +
+            "de account.updated invoca con el liveAccount (SubscriptionController.cs:3165). " +
+            "Si se elimina, el re-fetch deja de tener su 2ª razón de ser y un throttle ingenuo " +
+            "rompería el sync fiscal DAC7 (modelo 238 AEAT).");
+
+        var firstParam = syncMethod!.GetParameters().FirstOrDefault();
+        firstParam.Should().NotBeNull();
+        firstParam!.ParameterType.Name.Should().Be("Account",
+            "el sync DAC7 recibe el objeto Account de Stripe (el liveAccount re-fetcheado), " +
+            "no un id — confirma que depende de datos frescos de la API, no del payload del webhook");
+    }
 }

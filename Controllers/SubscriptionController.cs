@@ -2987,6 +2987,15 @@ namespace newApi.Controllers
                         }
 
                         var deauthReason = $"Stripe desconectó la cuenta (application={deauthorizedApp?.Id ?? "n/a"})";
+                        // ⚠️ NOTA AUDITORÍA SEGURIDAD (no es un bug — los hires activos SÍ se gestionan):
+                        // Una auditoría puede marcar "deauthorization no encola clawback de hires en vuelo".
+                        // FALSO: HandleAccountDeauthorization (definido ~L10313) escanea los SearchHires
+                        // activos del experto (Pending/AwaitingClientDecision/Disputed/TransferFailed) y para
+                        // cada uno: si la cita aún NO se prestó → refund íntegro al cliente vía
+                        // ProcessMoneyDistributionAsync(Cancelled 100/0/0); si ya se prestó o hay Dispute
+                        // activa → RequiresManualReview=true + LogCritical al admin + notifica al cliente.
+                        // No queda dinero en limbo. (El ClawbackQueue es para otro escenario: pending balance
+                        // en Stripe que el experto ya retiró, gestionado en disputes/chargebacks.)
                         await HandleAccountDeauthorization(deauthorizedExpertProfile.UserId, deauthReason);
 
                         if (previousStatus != deauthorizedState.Status)
@@ -3108,6 +3117,20 @@ namespace newApi.Controllers
                                 // es Approved → drift permanente (capability.updated YA hace re-fetch).
                                 // Fix: re-fetch live state SIEMPRE en account.updated. Si Stripe API
                                 // falla, fallback al payload del evento (al menos no es peor que antes).
+                                //
+                                // ⚠️ NOTA AUDITORÍA SEGURIDAD (no es un bug — NO throttlear este re-fetch):
+                                // Una auditoría puede marcar esto como "re-fetch sin throttle por cuenta →
+                                // amplificación de carga". Severidad real BAJA y el throttle NO debe añadirse:
+                                //   (1) Los evt_id DUPLICADOS se cortan ANTES de llegar aquí, en
+                                //       TryBeginProcessingEventAsync (idempotencia atómica, ~L2858) → no hay
+                                //       replay-amplification. Solo eventos DISTINTOS válidos (firma HMAC
+                                //       verificada en ConstructEvent) llegan al re-fetch, y solo Stripe puede
+                                //       generarlos. La carga realista es la ráfaga LEGÍTIMA de onboarding.
+                                //   (2) Este re-fetch es LOAD-BEARING para el sync fiscal DAC7 (MUD-BH, abajo
+                                //       ~L3163): Stripe envía account.updated cuando cambian DOB/IBAN/Address
+                                //       SIN cambiar StripeStatus. Saltar el re-fetch dejaría datos fiscales
+                                //       obsoletos → riesgo de multa AEAT (~€300/seller, modelo 238).
+                                // Guard de regresión: NewApi.Tests/Integration/WebhookSecurityTests.cs · WHS-09.
                                 Account liveAccount = account;
                                 try
                                 {

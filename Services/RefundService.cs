@@ -2505,6 +2505,8 @@ namespace newApi.Services
             var currentHire = await _context.SearchHires
                 .AsNoTracking()
                 .Include(sh => sh.Status)
+                .Include(sh => sh.Appointment)
+                    .ThenInclude(a => a.Status)
                 .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
             if (currentHire == null)
             {
@@ -2517,12 +2519,22 @@ namespace newApi.Services
                     relatedEntityId: searchHireId);
                 return; // no throw → no reintento (es irreparable)
             }
+            // 🛡️ R16b FIX (2026-06-11): statusValue puede ser un AppointmentStatus (las
+            // cancelaciones por timer encolan p.ej. "appointment_cancelled_by_client_no_proposal"
+            // mientras el HIRE ya quedó en "cancelled" vía mapping). Comparar SOLO contra el
+            // hire hacía que TODOS los reintentos de dinero de timers fueran no-op silenciosos
+            // ("Succeeded" sin mover dinero — caso real: hire 16 en prod, job hangfire #5156,
+            // 100€ sin mover). Aceptar también el match contra el estado del Appointment.
             var actualStatus = currentHire.Status?.StatusValue;
-            if (!string.Equals(actualStatus, statusValue, StringComparison.OrdinalIgnoreCase))
+            var appointmentStatus = currentHire.Appointment?.Status?.StatusValue;
+            var statusStillMatches =
+                string.Equals(actualStatus, statusValue, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(appointmentStatus, statusValue, StringComparison.OrdinalIgnoreCase);
+            if (!statusStillMatches)
             {
                 await _loggingService.LogWarningAsync(
                     message: "R16: RetryMoneyDistribution skipped — estado cambió entre enqueue y ejecución",
-                    details: $"SearchHire {searchHireId}: statusValue del enqueue='{statusValue}', estado actual='{actualStatus}'. Otro flow ya completó la transición; este reintento es no-op.",
+                    details: $"SearchHire {searchHireId}: statusValue del enqueue='{statusValue}', estado actual hire='{actualStatus}', appointment='{appointmentStatus}'. Otro flow ya completó la transición; este reintento es no-op.",
                     userId: initiatedByUserId,
                     source: "StripeRefundService.RetryMoneyDistributionJobAsync.R16",
                     relatedEntityType: "SearchHire",

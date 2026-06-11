@@ -106,12 +106,17 @@ namespace newApi.Controllers
         {
             try
             {
-                // 🛡️ SEC-MAJ-5: priorizar cookie sobre body. Si vienen ambos y difieren, la cookie gana
-                // (el cliente legacy puede tener un valor obsoleto en body de un refresh anterior).
-                var incomingRefresh = HttpContext.Request.Cookies["refresh_token"];
+                // 🛡️ R29 FIX (fiabilidad): priorizar BODY sobre cookie — inversión deliberada de
+                // SEC-MAJ-5. Los logins (Google/Apple/password) NO setean la cookie; solo este
+                // endpoint y mfa/verify. Una cookie vieja de una sesión anterior (ya rotada o
+                // revocada) ganaba al refresh vivo que el cliente envía en el body → caía en
+                // reuse-detection → se revocaban TODAS las sesiones y el usuario quedaba en un
+                // bucle de re-login. El body es el canal que todos los clientes actuales
+                // mantienen al día; la cookie queda como fallback para cuando ningún body llega.
+                var incomingRefresh = request?.RefreshToken;
                 if (string.IsNullOrEmpty(incomingRefresh))
                 {
-                    incomingRefresh = request?.RefreshToken;
+                    incomingRefresh = HttpContext.Request.Cookies["refresh_token"];
                 }
                 if (string.IsNullOrEmpty(incomingRefresh))
                 {
@@ -157,6 +162,36 @@ namespace newApi.Controllers
 
                 if (storedToken.IsRevoked)
                 {
+                    // 🛡️ R29 FIX (fiabilidad): ventana de gracia para rotación concurrente.
+                    // Dos pestañas (o un retry tras timeout donde el server SÍ procesó el primer
+                    // intento) refrescan con el mismo token: el segundo llega con el token recién
+                    // rotado. Antes se trataba como ataque y se revocaban TODAS las sesiones del
+                    // usuario — incluida la recién creada y las de otros dispositivos. Ahora, si
+                    // la rotación fue hace <60s y el reemplazo sigue activo, respondemos
+                    // idempotentemente con el token de reemplazo: ambos clientes convergen a la
+                    // misma cadena. Un token revocado SIN reemplazo (logout, bloqueo) o fuera de
+                    // la ventana sigue tratándose como reuse → revocación total.
+                    if (!string.IsNullOrEmpty(storedToken.ReplacedByToken) &&
+                        storedToken.RevokedAt.HasValue &&
+                        DateTime.UtcNow - storedToken.RevokedAt.Value < TimeSpan.FromSeconds(60))
+                    {
+                        var replacement = await _context.RefreshTokens
+                            .FirstOrDefaultAsync(rt => rt.Token == storedToken.ReplacedByToken && rt.UserId == storedToken.UserId);
+
+                        if (replacement != null && replacement.IsActive)
+                        {
+                            var graceAccessToken = GenerateJwtToken(storedToken.User);
+                            SetRefreshTokenCookie(replacement.Token, replacement.ExpiresAt);
+                            return Ok(new RefreshTokenResponseDto
+                            {
+                                AccessToken = graceAccessToken,
+                                RefreshToken = replacement.Token,
+                                AccessTokenExpiresAt = DateTime.UtcNow.AddHours(24),
+                                RefreshTokenExpiresAt = replacement.ExpiresAt
+                            });
+                        }
+                    }
+
                     // ✅ SEGURIDAD: Token ya usado (posible ataque) - revocar todos los tokens del usuario
                     await RevokeAllUserTokensAsync(storedToken.UserId, "Token reuse detected");
                     return Unauthorized(new { message = "Token revoked. All sessions have been terminated for security." });
@@ -235,11 +270,12 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user" });
                 }
 
-                // 🛡️ SEC-MAJ-5: leer refresh de cookie primero, body como fallback legacy.
-                var incomingRefresh = HttpContext.Request.Cookies["refresh_token"];
+                // 🛡️ R29 FIX: body primero, cookie como fallback — mismo orden que refresh-token
+                // (la cookie puede ser de una sesión anterior y revocaría el token equivocado).
+                var incomingRefresh = request?.RefreshToken;
                 if (string.IsNullOrEmpty(incomingRefresh))
                 {
-                    incomingRefresh = request?.RefreshToken;
+                    incomingRefresh = HttpContext.Request.Cookies["refresh_token"];
                 }
 
                 if (!string.IsNullOrEmpty(incomingRefresh))
@@ -344,8 +380,13 @@ namespace newApi.Controllers
 
         private async Task RevokeAllUserTokensAsync(int userId, string reason)
         {
+            // 🛡️ R29 FIX: IsActive es una propiedad computada NO mapeada — EF no puede
+            // traducirla a SQL y esta query lanzaba InvalidOperationException SIEMPRE.
+            // Consecuencia en prod: la detección de reuse devolvía 500 (y no revocaba nada),
+            // y el frontend, ante un error no-401 del refresh, hacía logout() → sesión zombi.
+            // Misma forma traducible que usa UserService.cs:119.
             var userTokens = await _context.RefreshTokens
-                .Where(rt => rt.UserId == userId && rt.IsActive)
+                .Where(rt => rt.UserId == userId && !rt.IsRevoked && rt.ExpiresAt > DateTime.UtcNow)
                 .ToListAsync();
 
             foreach (var token in userTokens)

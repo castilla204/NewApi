@@ -882,4 +882,72 @@ public class HttpHireFlowTests
             ft.TransactionType != "ServicePayment");
         moneyFts.Should().BeGreaterThan(0, "la distribución debe registrar la FT del dinero movido");
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-19 · FIX TX-6: refund falla tras el transfer → NO auto-reversal; el retry
+    //          completa SOLO el refund y cada parte cobra exactamente una vez
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-19 · refund falla → transfer se conserva (sin reversal) y el retry converge (TX-6)")]
+    public async Task Refund_failure_keeps_transfer_and_retry_converges()
+    {
+        var mk = await SeedMarketplaceAsync("hf19");
+        var (_, hireId) = await PostCheckoutWebhookAsync(
+            mk, "evt_hf19_" + Guid.NewGuid().ToString("N"), "cs_hf19",
+            "pi_hf19_" + Guid.NewGuid().ToString("N")[..10]);
+        hireId.Should().NotBeNull();
+
+        var reversalsBefore = _api.FakeStripe.Requests.Count(r => r.Contains("/reversals"));
+        var transfersBefore = StripeCalls("POST /v1/transfers");
+
+        // INTENTO 1: el split 90/8/2 — el transfer del 8% sale bien, el refund del 90%
+        // falla persistentemente. OJO: Stripe.net reintenta los 500 por su cuenta
+        // (MaxNetworkRetries) ADEMÁS del bucle de 3 intentos del RefundService —
+        // inyectamos fallos de sobra para agotar todas las capas.
+        _api.FakeStripe.RefundFailuresRemaining = 20;
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<newApi.Services.StripeRefundService>();
+            var ok = await svc.ProcessMoneyDistributionAsync(
+                hireId!.Value, "dispute_resolved_client", "test TX-6 intento 1", null, updateState: false);
+            ok.Should().BeFalse("el refund falló — la distribución queda pendiente de retry");
+        }
+
+        StripeCalls("POST /v1/transfers").Should().BeGreaterThan(transfersBefore,
+            "el transfer del 8% al experto se ejecutó antes del fallo del refund");
+        _api.FakeStripe.Requests.Count(r => r.Contains("/reversals")).Should().Be(reversalsBefore,
+            "FIX TX-6: NO debe auto-reversarse el transfer cuando falla el refund (el retry lo completa)");
+
+        await using (var db = _api.CreateDbContext())
+        {
+            var hire = await db.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId);
+            hire.RequiresManualReview.Should().BeTrue("el fallo debe quedar marcado para visibilidad admin");
+            hire.RefundFailedAt.Should().NotBeNull("RefundFailedAt alimenta el digest diario P3-1");
+        }
+
+        // INTENTO 2 (= retry de Hangfire): el refund ya no falla → debe completar SOLO lo
+        // que falta y dejar el dinero correcto: cliente 90%, experto 8% (una sola vez).
+        _api.FakeStripe.RefundFailuresRemaining = 0; // limpiar fallos sobrantes
+        var refundsBefore = StripeCalls("POST /v1/refunds");
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<newApi.Services.StripeRefundService>();
+            var ok = await svc.ProcessMoneyDistributionAsync(
+                hireId.Value, "dispute_resolved_client", "test TX-6 retry", null, updateState: false);
+            ok.Should().BeTrue("con el refund ya operativo el retry debe converger");
+        }
+
+        StripeCalls("POST /v1/refunds").Should().BeGreaterThan(refundsBefore,
+            "el retry ejecuta el refund del 90% pendiente");
+        _api.FakeStripe.Requests.Count(r => r.Contains("/reversals")).Should().Be(reversalsBefore,
+            "tampoco en el retry debe haber reversal alguna");
+
+        await using (var verify = _api.CreateDbContext())
+        {
+            var fts = await verify.FinancialTransactions
+                .Where(ft => ft.RelatedEntityType == "SearchHire" && ft.RelatedEntityId == hireId)
+                .ToListAsync();
+            fts.Count(ft => ft.TransactionType == "Refund").Should().Be(1, "un único refund del 90%");
+            fts.Count(ft => ft.TransactionType == "Payout").Should().Be(1, "un único payout del 8% — el experto cobra exactamente una vez");
+        }
+    }
 }

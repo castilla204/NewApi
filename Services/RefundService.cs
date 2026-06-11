@@ -1103,9 +1103,23 @@ namespace newApi.Services
                     // MODIFICACI├ôN: Declarar variables fuera del try para acceso en catch blocks
                     string createdTransferId = null;
                     string createdRefundId = null;
-                    
+
                     try
                     {
+                        // 🛡️ FIX TX-7 (2026-06-11): serializar TODA la fase de dinero por hire.
+                        // El lock de Fase 1 vive en una micro-tx que se commitea ANTES de llegar
+                        // aquí cuando el caller NO trae transacción exterior (ResolveDispute,
+                        // RetryMoneyDistributionJobAsync): los guards existingRefund/existingTransfer
+                        // y las llamadas Stripe corrían SIN lock → dos distribuciones concurrentes
+                        // del MISMO hire con statusValue distinto (retry viejo + resolución nueva)
+                        // pasaban ambas los guards (check-then-act) y, al usar claves de idempotencia
+                        // distintas, AMBAS movían dinero (hasta ~193% del hire). Tomar el advisory
+                        // lock DENTRO de esta transacción lo ata hasta el commit (que incluye las
+                        // FTs), así el segundo flujo espera y sus guards ven las FTs ya commiteadas.
+                        // Reentrante: los callers con tx exterior (complete-service, cancel) ya lo
+                        // tienen de Fase 1 — re-tomarlo en la misma sesión es no-op acumulativo.
+                        await _context.Database.ExecuteSqlInterpolatedAsync(
+                            $"SELECT pg_advisory_xact_lock({(long)searchHireId})");
                         // ✅ CRÍTICO: Verificar si el dinero ya fue procesado (prevenir duplicados)
                         var existingRefund = await _context.FinancialTransactions
                             .FirstOrDefaultAsync(ft => ft.RelatedEntityType == "SearchHire" &&

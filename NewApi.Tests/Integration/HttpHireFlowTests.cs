@@ -950,4 +950,56 @@ public class HttpHireFlowTests
             fts.Count(ft => ft.TransactionType == "Payout").Should().Be(1, "un único payout del 8% — el experto cobra exactamente una vez");
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-20 · FIX TX-7: dos distribuciones CONCURRENTES del mismo hire con estados
+    //          distintos → el advisory lock de la fase de dinero serializa y el
+    //          dinero total que sale NUNCA supera lo que entró
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-20 · distribuciones concurrentes (completed vs dispute) → dinero conservado (TX-7)")]
+    public async Task Concurrent_distributions_conserve_money()
+    {
+        var mk = await SeedMarketplaceAsync("hf20");
+        var (_, hireId) = await PostCheckoutWebhookAsync(
+            mk, "evt_hf20_" + Guid.NewGuid().ToString("N"), "cs_hf20",
+            "pi_hf20_" + Guid.NewGuid().ToString("N")[..10]);
+        hireId.Should().NotBeNull();
+
+        // Dos flujos reales que ANTES de TX-7 podían cruzarse sin lock: el payout de un
+        // 'completed' (95% experto) y la resolución de disputa pro-cliente (90/8/2).
+        // Cada tarea usa su propio scope/DbContext (conexiones distintas, como en prod).
+        async Task<bool> RunAsync(string statusValue)
+        {
+            using var scope = _api.Factory.Services.CreateScope();
+            var svc = scope.ServiceProvider.GetRequiredService<newApi.Services.StripeRefundService>();
+            return await svc.ProcessMoneyDistributionAsync(
+                hireId!.Value, statusValue, $"test TX-7 {statusValue}", null, updateState: false);
+        }
+
+        var tasks = new[]
+        {
+            Task.Run(() => RunAsync("completed")),
+            Task.Run(() => RunAsync("dispute_resolved_client")),
+        };
+        await Task.WhenAll(tasks);
+
+        // INVARIANTE DE CONSERVACIÓN: lo que sale (refunds + payouts − reversals) no
+        // puede superar lo que entró (110€), con tolerancia de redondeo.
+        await using var db = _api.CreateDbContext();
+        var fts = await db.FinancialTransactions
+            .Where(ft => ft.RelatedEntityType == "SearchHire" && ft.RelatedEntityId == hireId)
+            .ToListAsync();
+
+        var refunds = fts.Where(f => f.TransactionType == "Refund").Sum(f => Math.Abs(f.Amount));
+        var payouts = fts.Where(f => f.TransactionType == "Payout").Sum(f => Math.Abs(f.Amount));
+        var reversals = fts.Where(f => f.TransactionType == "TransferReversal").Sum(f => Math.Abs(f.Amount));
+        var outflow = refunds + payouts - reversals;
+
+        outflow.Should().BeLessThanOrEqualTo(110m + 0.02m,
+            $"el dinero debe conservarse aunque dos flujos compitan. Refunds={refunds} Payouts={payouts} Reversals={reversals} (FTs: {string.Join(", ", fts.Select(f => f.TransactionType + "=" + f.Amount))})");
+
+        // Y nunca puede haber DOS payouts vivos (el guard existingTransfer + el lock lo impiden)
+        fts.Count(f => f.TransactionType == "Payout").Should().BeLessThanOrEqualTo(1,
+            "el experto no puede cobrar dos veces por el mismo hire");
+    }
 }

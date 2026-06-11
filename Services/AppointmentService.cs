@@ -3345,6 +3345,105 @@ namespace newApi.Services
                         _context.ChangeTracker.Clear();
                     }
                 }
+
+                // 🔒 BARRIDO CLAIM-THEN-CRASH (A-v, FIX TX-10 2026-06-11): el claim atómico de
+                // ProcessAppointmentTimerAsync marca IsExpired=true ANTES de ejecutar el handler;
+                // si el proceso muere en DURO (deploy/OOM/kill) entre el claim y el final, el
+                // catch que re-abre el timer nunca corre → timer expirado SIN transición NI
+                // dinero, y NINGÚN barrido lo recoge (el de arriba ignora expirados; A-iii solo
+                // cubre confirmed→awaiting_report). Consecuencia: cita congelada para siempre y,
+                // p.ej. en client_decision, el experto nunca cobra su 0/95/5.
+                //
+                // Este barrido detecta timers expirados hace >15min cuyo PRE-ESTADO sigue intacto
+                // (espejo EXACTO de los guards del handler: si el estado ya avanzó, el timer se
+                // expiró legítimamente por una acción de usuario) y SIN timer activo del mismo
+                // tipo (si lo hay, el flujo normal sigue vivo) → re-abre (UPDATE condicional,
+                // seguro entre réplicas) y re-procesa. Los predicados de skip del handler
+                // (hire finalizado, users bloqueados, disputa activa) se replican aquí para no
+                // generar churn re-abriendo timers que el handler volvería a saltar.
+                var staleCutoff = DateTime.UtcNow.AddMinutes(-15);
+                var proposalPreStates = new[]
+                {
+                    AppointmentStatus.AwaitingAppointment.ToStringValue(),
+                    AppointmentStatus.AppointmentRejected.ToStringValue(),
+                    AppointmentStatus.AppointmentCancelledByClient.ToStringValue(),
+                    AppointmentStatus.AppointmentCancelledByExpert.ToStringValue(),
+                };
+
+                var deadClaimed = await _context.AppointmentTimers
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(t => t.IsExpired
+                             && t.ExpiredAt != null && t.ExpiredAt < staleCutoff
+                             && t.EndTime <= DateTime.UtcNow
+                             && t.Appointment != null && t.Appointment.SearchHire != null
+                             // sin timer ACTIVO del mismo tipo (el flujo normal sigue vivo)
+                             && !_context.AppointmentTimers.Any(t2 => t2.AppointmentId == t.AppointmentId
+                                                                   && t2.TimerType == t.TimerType
+                                                                   && !t2.IsExpired)
+                             // skip-guards del handler replicados (evitar churn)
+                             && t.Appointment.SearchHire.Status != null
+                             && !t.Appointment.SearchHire.Status.IsFinalizationStatus
+                             && t.Appointment.SearchHire.Client != null && !t.Appointment.SearchHire.Client.IsBlocked
+                             && (t.Appointment.SearchHire.ExpertId == null
+                                 || (t.Appointment.SearchHire.Expert != null && !t.Appointment.SearchHire.Expert.IsBlocked))
+                             && !_context.Disputes.Any(d => d.SearchHireId == t.Appointment.SearchHireId
+                                                         && (d.Status == "Pending" || d.Status == "Resolving"))
+                             // PRE-ESTADO intacto por tipo (espejo de los guards del handler)
+                             && (
+                                 (t.TimerType == "proposal"
+                                    && t.Appointment.SearchHire.Status.StatusValue == "pending"
+                                    && proposalPreStates.Contains(t.Appointment.Status!.StatusValue))
+                                 || (t.TimerType == "response"
+                                    && t.Appointment.SearchHire.Status.StatusValue == "pending"
+                                    && t.Appointment.Status!.StatusValue == "appointment_proposed")
+                                 || (t.TimerType == "expert_report"
+                                    && t.Appointment.SearchHire.Status.StatusValue == "pending"
+                                    && t.Appointment.Status!.StatusValue == "appointment_awaiting_report")
+                                 || (t.TimerType == "client_decision"
+                                    && t.Appointment.SearchHire.Status.StatusValue == "awaiting_client_decision")
+                             ))
+                    .Select(t => new { t.Id, t.TimerType, t.AppointmentId })
+                    .ToListAsync();
+
+                foreach (var dead in deadClaimed)
+                {
+                    try
+                    {
+                        // Re-abrir condicionalmente (otra réplica pudo re-abrirlo/reclamarlo ya).
+                        var reopened = await _context.Database.ExecuteSqlInterpolatedAsync(
+                            $"UPDATE \"AppointmentTimers\" SET \"IsExpired\" = false, \"ExpiredAt\" = NULL WHERE \"Id\" = {dead.Id} AND \"IsExpired\" = true");
+                        if (reopened == 0)
+                        {
+                            continue;
+                        }
+
+                        await _loggingService.LogWarningAsync(
+                            message: "A-v: timer reclamado-y-muerto rescatado por el watchdog",
+                            details: $"Timer {dead.Id} ({dead.TimerType}, appointment {dead.AppointmentId}) estaba expirado >15min con el pre-estado intacto y sin sucesor activo — claim-then-crash. Re-abierto y re-procesado.",
+                            userId: null,
+                            source: "AppointmentService.ProcessOverdueTimersAsync.Av",
+                            relatedEntityType: "AppointmentTimer",
+                            relatedEntityId: dead.Id);
+
+                        // El handler re-reclama atómicamente y ejecuta transición + dinero (idempotente).
+                        await ProcessAppointmentTimerAsync(dead.Id);
+                    }
+                    catch (Exception exDead)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: A-v sweep failed to rescue a claimed-then-crashed timer",
+                            details: $"Timer {dead.Id} ({dead.TimerType}): {exDead.Message}",
+                            userId: null,
+                            source: "AppointmentService.ProcessOverdueTimersAsync.Av",
+                            relatedEntityType: "AppointmentTimer",
+                            relatedEntityId: dead.Id);
+                    }
+                    finally
+                    {
+                        _context.ChangeTracker.Clear();
+                    }
+                }
             }
             catch (Exception ex)
             {

@@ -1122,4 +1122,59 @@ public class HttpHireFlowTests
         sp.Should().NotBeNull();
         sp!.StripePaymentIntentId.Should().NotBeNullOrEmpty("la anonimización solo nulea UserId, no el PI");
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-24 · FIX TX-10 (barrido A-v): un timer reclamado-y-muerto (claim atómico +
+    //          crash duro antes del handler) es rescatado por el watchdog: re-abierto,
+    //          re-procesado, transición + dinero ejecutados
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-24 · timer claim-then-crash → el watchdog A-v lo rescata (transición + refund) (TX-10)")]
+    public async Task Claimed_then_crashed_timer_is_rescued_by_watchdog()
+    {
+        var mk = await SeedMarketplaceAsync("hf24");
+        var (_, hireId) = await PostCheckoutWebhookAsync(
+            mk, "evt_hf24_" + Guid.NewGuid().ToString("N"), "cs_hf24",
+            "pi_hf24_" + Guid.NewGuid().ToString("N")[..10]);
+        hireId.Should().NotBeNull();
+
+        // Cliente propone → cita en appointment_proposed con timer 'response' real (24h).
+        await ProposeOkAsync(mk, hireId!.Value, days: 4, time: "10:00:00");
+        var (apptId, status) = await AppointmentOfAsync(hireId.Value);
+        status.Should().Be("appointment_proposed");
+
+        // Simular claim-then-crash: el timer 'response' fue reclamado (IsExpired=true)
+        // hace 20 min, su EndTime ya venció, pero el handler NUNCA corrió (la cita sigue
+        // en appointment_proposed y el hire en pending). Sin A-v, esto quedaba congelado
+        // para siempre: el barrido normal ignora expirados y el catch nunca llegó a re-abrir.
+        await using (var db = _api.CreateDbContext())
+        {
+            var timer = await db.AppointmentTimers.SingleAsync(t =>
+                t.AppointmentId == apptId && t.TimerType == "response" && !t.IsExpired);
+            timer.IsExpired = true;
+            timer.ExpiredAt = DateTime.UtcNow.AddMinutes(-20);
+            timer.EndTime = DateTime.UtcNow.AddMinutes(-30);
+            await db.SaveChangesAsync();
+        }
+
+        // El watchdog REAL corre (igual que el RecurringJob cada 10 min)
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<newApi.Services.IAppointmentService>();
+            await svc.ProcessOverdueTimersAsync();
+        }
+
+        // Rescate completo: el experto no respondió → cancelled_by_expert_no_response,
+        // hire finalizado y refund 100/0/0 al cliente ejecutado contra el stub.
+        (await AppointmentOfAsync(hireId.Value)).Status.Should().Be("appointment_cancelled_by_expert_no_response",
+            "el barrido A-v debe re-abrir el timer muerto y ejecutar su transición");
+        (await HireStatusAsync(hireId.Value)).Should().Be("cancelled");
+
+        await using (var verify = _api.CreateDbContext())
+        {
+            var refund = await verify.FinancialTransactions.SingleOrDefaultAsync(ft =>
+                ft.RelatedEntityType == "SearchHire" && ft.RelatedEntityId == hireId &&
+                ft.TransactionType == "Refund");
+            refund.Should().NotBeNull("el no-response reembolsa el 100% al cliente — el dinero no puede perderse por un crash");
+        }
+    }
 }

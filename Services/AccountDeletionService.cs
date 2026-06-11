@@ -1050,6 +1050,15 @@ namespace newApi.Services
                             // Si NO se cambió, cambiarlo manualmente para evitar que el sistema quede bloqueado
                             await EnsureStateChangedAsync(searchHire.Id, "appointment_completed_without_client_approval", cancellationToken); // 🔧 FIX F1: estado existente (→Completed), evita cita zombi
 
+                            // 🛡️ FIX TX-9 (2026-06-11): encolar el retry idempotente del dinero. Es SEGURO
+                            // aunque la fase 2 anonimice después: la anonimización SOLO nulea UserId en
+                            // FinancialTransactions (retención legal 6 años conserva StripePaymentIntentId/
+                            // TransferId/Amount/TransactionType — ver DeleteUserDataAsync) y los SearchHires
+                            // persisten con ExpertId/ClientId nullable. RetryMoneyDistributionJobAsync carga
+                            // por SearchHireId + FT RelatedEntity, no por UserId.
+                            EnqueueMoneyRetryAfterDeletion(searchHire.Id, "appointment_completed_without_client_approval",
+                                "Retry expert payout after client account deletion (money pending)");
+
                             // ✅ Acumular error para log crítico final
                             processingErrors.Add((searchHire.Id, errorMessage, errorType, searchHire.Amount));
 
@@ -1143,6 +1152,10 @@ namespace newApi.Services
                             // Si NO se cambió, cambiarlo manualmente para evitar que el sistema quede bloqueado
                             await EnsureStateChangedAsync(searchHire.Id, "appointment_cancelled_by_expert_second", cancellationToken); // 🔧 FIX F1: estado existente (→Cancelled), evita cita zombi
 
+                            // 🛡️ FIX TX-9: encolar retry idempotente (ver nota en la rama del cliente).
+                            EnqueueMoneyRetryAfterDeletion(searchHire.Id, "appointment_cancelled_by_expert_second",
+                                "Retry client refund after expert account deletion (money pending)");
+
                             // ✅ Acumular error para log crítico final
                             processingErrors.Add((searchHire.Id, errorMessage, errorType, searchHire.Amount));
 
@@ -1232,6 +1245,11 @@ namespace newApi.Services
 
                     // ✅ Acumular error para log crítico final
                     processingErrors.Add((searchHire.Id, ex.Message, ex.GetType().Name, searchHire.Amount));
+
+                    // 🛡️ FIX TX-9: encolar el retry idempotente del dinero también ante excepción.
+                    EnqueueMoneyRetryAfterDeletion(searchHire.Id,
+                        isClientDeleting ? "appointment_completed_without_client_approval" : "appointment_cancelled_by_expert_second",
+                        "Retry money after account deletion (exception)");
 
                     // Continuar con siguiente contratación (no lanzar excepción, no crear disputa)
                 }
@@ -3198,6 +3216,30 @@ namespace newApi.Services
         /// <summary>
         /// Verifica y cambia el estado del SearchHire y Appointment si no se cambió durante el procesamiento de dinero
         /// </summary>
+        /// <summary>
+        /// 🛡️ FIX TX-9 (2026-06-11): encola el reintento ASÍNCRONO del dinero cuando una
+        /// finalización por borrado de cuenta no movió el dinero inline. Es SEGURO aunque
+        /// la fase 2 anonimice los datos del usuario después: la anonimización conserva los
+        /// SearchHires (ExpertId/ClientId nullable) y las FinancialTransactions con
+        /// StripePaymentIntentId/TransferId/Amount (retención legal de 6 años — solo se
+        /// nulea UserId). RetryMoneyDistributionJobAsync resuelve por SearchHireId, no por
+        /// usuario. Sin esto, el hire quedaba finalizado con el dinero ATASCADO y solo el
+        /// log crítico final como rastro (misma clase de bug que TX-8 en AppointmentService).
+        /// </summary>
+        private void EnqueueMoneyRetryAfterDeletion(int searchHireId, string statusValue, string reason)
+        {
+            try
+            {
+                BackgroundJob.Schedule<StripeRefundService>(
+                    s => s.RetryMoneyDistributionJobAsync(searchHireId, statusValue, reason, null),
+                    TimeSpan.FromMinutes(2));
+            }
+            catch
+            {
+                // best-effort: el LogCritical del caller ya alertó al admin; no romper el borrado GDPR.
+            }
+        }
+
         private async Task EnsureStateChangedAsync(int searchHireId, string appointmentStatusValue, CancellationToken cancellationToken = default)
         {
             try

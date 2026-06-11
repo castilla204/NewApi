@@ -1832,77 +1832,74 @@ namespace newApi.Services
                             }
                             catch (StripeException refundEx)
                             {
-                                // Si el refund falla y ya hicimos transfer, revertir la transferencia para mantener "todo o nada"
-                                if (!string.IsNullOrEmpty(createdTransferId))
-                                {
-                                    try
-                                    {
-                                        var reversalSvc = new TransferReversalService();
-                                        // MODIFICACI├ôN: Agregar idempotency a reversal tambi├®n
-                                        var reversalOptions = new TransferReversalCreateOptions { Amount = checked((long)Math.Round(expertAmountForStripe * 100)) }; // ✅ Revertir el monto real enviado a Stripe (base, sin tax). Round para casar con el transfer.
-                                        var reversalRequestOptions = new RequestOptions { IdempotencyKey = transferIdempotencyKey + "-reversal" };
-                                        await reversalSvc.CreateAsync(createdTransferId, reversalOptions, reversalRequestOptions);
-                                    }
-                                    catch (Exception revEx)
-                                    {
-                                        // ­ƒÜ¿ LOG CR├ìTICO: Error al revertir transferencia
-                                        await _loggingService.LogCriticalAsync(
-                                            message: "CRITICAL: Failed to reverse transfer after refund failure",
-                                            details: $"SearchHire {searchHireId} finalization failed: refund failed and transfer reversal also failed. " +
-                                                    $"EXPERT ALREADY RECEIVED {expertAmount:F2}€ - MANUAL INTERVENTION REQUIRED. " +
-                                                    $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
-                                                    $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) " +
-                                                    $"2) Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) already received {expertAmount:F2}€ - NO ACTION NEEDED " +
-                                                    $"3) Platform retains {platformAmount:F2}€. " +
-                                                    $"TransferId: {createdTransferId}, RefundError: {refundEx.Message}, ReversalError: {revEx.Message}",
-                                            userId: initiatedByUserId ?? searchHire.ClientId,
-                                            source: "StripeRefundService.ProcessMoneyDistributionAsync",
-                                            relatedEntityType: "SearchHire",
-                                            relatedEntityId: searchHireId,
-                                            additionalData: new { 
-                                                Status = statusValue,
-                                                TransferId = createdTransferId,
-                                                ClientRefundAmount = clientRefundAmount,
-                                                ExpertTransferAmount = expertAmount,
-                                                PlatformAmount = platformAmount,
-                                                ClientId = searchHire.ClientId,
-                                                ExpertId = searchHire.ExpertId,
-                                                RefundError = refundEx.Message,
-                                                ReversalError = revEx.Message
-                                            }
-                                        );
-                                    }
-                                }
-
-                                // Ô£à CORRECCI├ôN: Solo hacer rollback si creamos la transacci├│n
+                                // 🛡️ FIX TX-6 (2026-06-11): NO auto-reversar el transfer cuando falla el refund.
+                                //
+                                // El comportamiento anterior ("todo o nada": reversal del transfer + rollback)
+                                // CORROMPÍA el dinero al combinarse con el retry de Hangfire:
+                                //   1) transfer 8% al experto OK → 2) refund 90% falla → 3) reversal OK
+                                //   (experto neto 0) → 4) rollback borra la FT Payout → 5) el retry re-crea
+                                //   el transfer con la MISMA idempotency key → Stripe hace REPLAY del transfer
+                                //   ORIGINAL (que ya está revertido: NO mueve dinero) → se persiste FT Payout
+                                //   → el refund sale → RESULTADO: el experto pierde su parte en silencio y la
+                                //   contabilidad dice que cobró.
+                                //
+                                // Patrón correcto (coherente con el resto del diseño idempotente): DEJAR el
+                                // transfer hecho y que el retry (RetryMoneyDistributionJobAsync) complete SOLO
+                                // el refund — el flujo de "partial money distribution" (guard L1212) ya soporta
+                                // exactamente eso. La reversal INTENCIONAL (clawback de un transfer previo en
+                                // resoluciones de disputa) vive en su propio bloque MUD-AV y no se toca.
+                                //
+                                // ✅ CORRECCIÓN: Solo hacer rollback si creamos la transacción
                                 if (transaction != null)
                                 {
                                     await transaction.RollbackAsync();
                                 }
-                                // ­ƒÜ¿ LOG CR├ìTICO: Reembolso fall├│
+
+                                // Persistir el marcador DESPUÉS del rollback y con SQL crudo: un SaveChanges
+                                // aquí re-aplicaría TODO el change-tracker descartado (FTs incluidas) fuera
+                                // de la transacción. RefundFailedAt alimenta el digest diario P3-1.
+                                try
+                                {
+                                    await _context.Database.ExecuteSqlInterpolatedAsync(
+                                        $"UPDATE \"SearchHires\" SET \"RequiresManualReview\" = TRUE, \"RefundFailedAt\" = {DateTime.UtcNow} WHERE \"Id\" = {searchHireId}");
+                                }
+                                catch (Exception markEx)
+                                {
+                                    await _loggingService.LogWarningAsync(
+                                        message: "TX-6: no se pudo marcar RequiresManualReview tras fallo de refund",
+                                        details: $"SearchHire {searchHireId}: {markEx.Message}. El retry de Hangfire sigue en pie.",
+                                        userId: initiatedByUserId ?? searchHire.ClientId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync.TX6",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId);
+                                }
+
+                                // 🚨 LOG CRÍTICO: Reembolso falló (tras el rollback para que la fila persista)
                                 await _loggingService.LogCriticalAsync(
-                                    message: "CRITICAL: Refund failed - money distribution rolled back",
-                                    details: $"SearchHire {searchHireId} finalization failed: refund to client failed. " +
-                                            $"PENDING TRANSACTIONS TO COMPLETE MANUALLY: " +
-                                            $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) - FAILED " +
-                                            $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) - NOT PROCESSED " +
+                                    message: "CRITICAL: Refund failed - retry will complete the refund (transfer kept)",
+                                    details: $"SearchHire {searchHireId} finalization: refund to client failed. " +
+                                            $"PENDING (auto-retry via Hangfire; manual only if retries exhaust): " +
+                                            $"1) Refund {clientRefundAmount:F2}€ to Client {searchHire.ClientId} ({searchHire.Client?.Name}) - FAILED, WILL RETRY " +
+                                            $"2) Transfer {expertAmount:F2}€ to Expert {searchHire.ExpertId} ({searchHire.Expert?.Name}) - " +
+                                            $"{(string.IsNullOrEmpty(createdTransferId) ? "NOT PROCESSED" : $"DONE in Stripe ({createdTransferId}) and KEPT (TX-6: no auto-reversal); FT row will be recreated by the retry's idempotent replay")} " +
                                             $"3) Platform retains {platformAmount:F2}€. " +
                                             $"RefundError: {refundEx.Message}",
                                     userId: initiatedByUserId ?? searchHire.ClientId,
                                     source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                     relatedEntityType: "SearchHire",
                                     relatedEntityId: searchHireId,
-                                    additionalData: new { 
+                                    additionalData: new {
                                         Status = statusValue,
                                         ClientRefundAmount = clientRefundAmount,
                                         ExpertTransferAmount = expertAmount,
                                         PlatformAmount = platformAmount,
                                         ClientId = searchHire.ClientId,
                                         ExpertId = searchHire.ExpertId,
+                                        TransferKept = createdTransferId,
                                         RefundError = refundEx.Message
                                     }
                                 );
-                                
+
                                 return false;
                             }
                         }

@@ -44,6 +44,12 @@ public sealed class FakeStripeServer : IDisposable
     /// <summary>Céntimos que devuelven los PI del stub (los tests usan 110 EUR).</summary>
     public long DefaultAmountCents { get; set; } = 11000;
 
+    /// <summary>
+    /// Inyección de fallos: los próximos N POST /v1/refunds devuelven 500 (api_error).
+    /// Permite reproducir el escenario TX-6 (transfer OK + refund falla → retry).
+    /// </summary>
+    public int RefundFailuresRemaining;
+
     public void Start()
     {
         // Puerto libre: probar hasta enganchar uno (HttpListener sobre localhost no
@@ -196,6 +202,14 @@ public sealed class FakeStripeServer : IDisposable
 
         if (method == "POST" && path == "/v1/refunds")
         {
+            // Inyección de fallos (escenario TX-6): N próximos refunds devuelven 500.
+            if (Interlocked.CompareExchange(ref RefundFailuresRemaining, 0, 0) > 0)
+            {
+                Interlocked.Decrement(ref RefundFailuresRemaining);
+                return (500, """
+                    {"error":{"type":"api_error","message":"FakeStripeServer: fallo inyectado en refund (test TX-6)"}}
+                    """);
+            }
             var id = "re_fake_" + Guid.NewGuid().ToString("N")[..16];
             return (200, $$$"""
                 {"id":"{{{id}}}","object":"refund","status":"succeeded",

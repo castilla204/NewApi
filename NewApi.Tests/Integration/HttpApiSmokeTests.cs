@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using Microsoft.EntityFrameworkCore;
 using NewApi.Tests.Builders;
 using NewApi.Tests.Fixtures;
 
@@ -119,5 +120,27 @@ public class HttpApiSmokeTests
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound,
             "GetExpertProfile devuelve NotFound cuando el user no tiene ExpertProfile (UserController.cs:863-866)");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // API-07 · HF-LOCAL GUARD: el host en Development NO arranca BackgroundJobServer
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "API-07 · en Development NO se registra ningún Hangfire server (HF-LOCAL GUARD)")]
+    public async Task Development_host_does_not_register_hangfire_server()
+    {
+        // El host de tests arranca con UseEnvironment("Development") y SIN
+        // HANGFIRE_SERVER_ENABLED=1 → el guard debe impedir el BackgroundJobServer.
+        // Sin el guard, una API local conectada (por error de config) a la BD de prod
+        // se une a la cola compartida y procesa jobs reales con binario desactualizado
+        // (caso real: SearchHire 15, 2026-06-11 00:50 UTC).
+        await using var db = _api.CreateDbContext();
+        await using var cmd = db.Database.GetDbConnection().CreateCommand();
+        cmd.CommandText = "SELECT count(*)::int FROM hangfire.server";
+        if (cmd.Connection!.State != System.Data.ConnectionState.Open)
+            await cmd.Connection.OpenAsync();
+        var servers = Convert.ToInt32(await cmd.ExecuteScalarAsync());
+
+        servers.Should().Be(0,
+            "en Development el BackgroundJobServer debe quedar deshabilitado salvo opt-in HANGFIRE_SERVER_ENABLED=1");
     }
 }

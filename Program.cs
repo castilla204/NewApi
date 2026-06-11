@@ -1464,9 +1464,27 @@ if (hangfireConnectionValid)
     
     // ✅ HABILITADO: Servidor de Hangfire para procesar jobs automáticamente
     // Los jobs de timers de appointments requieren que el servidor esté activo
-    // Render PostgreSQL es estándar, habilitar servidor en todos los entornos
-    var enableHangfireServer = true; // Siempre habilitado con Render PostgreSQL
-    
+    //
+    // 🛡️ HF-LOCAL GUARD (2026-06-11): en Development NO se arranca el BackgroundJobServer
+    // salvo opt-in explícito con HANGFIRE_SERVER_ENABLED=1. Motivo (caso real en prod):
+    // appsettings.Development.json apunta a la BD de Render, así que un `dotnet run` local
+    // unía su Hangfire server a la cola de PRODUCCIÓN y ROBABA jobs reales ejecutándolos
+    // con el binario local desactualizado — el 2026-06-11 00:50 UTC una instancia local
+    // (desktop-9le35lg, pre-fixes TX-5/R16b) procesó y rompió el retry del pago del
+    // SearchHire 15 (3.445€). El CLIENTE de Hangfire (AddHangfire + dashboard +
+    // BackgroundJob.Schedule/Enqueue) sigue disponible en dev; solo se omite el PROCESADOR.
+    var hangfireServerOptIn =
+        Environment.GetEnvironmentVariable("HANGFIRE_SERVER_ENABLED") == "1";
+    var enableHangfireServer = !isDevelopment || hangfireServerOptIn;
+
+    if (isDevelopment && !enableHangfireServer)
+    {
+        hangfireLogger.LogWarning(
+            "⚠️ HF-LOCAL GUARD: Hangfire SERVER deshabilitado en Development para no procesar " +
+            "jobs de la cola compartida (posiblemente PRODUCCIÓN). Cliente y dashboard siguen " +
+            "activos. Para habilitarlo conscientemente: HANGFIRE_SERVER_ENABLED=1");
+    }
+
     if (enableHangfireServer)
     {
         builder.Services.AddHangfireServer(options =>
@@ -1827,6 +1845,22 @@ app.UseHangfireDashboard("/hangfire", new DashboardOptions
 // (frente 8) pese a que el servidor procesa jobs con normalidad.
 // (1) Filtro global: avisa (LogCritical → email al admin) cuando un job agota TODOS sus reintentos.
 //     Tiene guarda anti-bucle para no re-encolar emails si el que falla es el propio job de email.
+//
+// 🛡️ HF-LOCAL GUARD (2026-06-11): mismo guard que el BackgroundJobServer (ver arriba).
+// Los RecurringJob.AddOrUpdate escriben en el schema hangfire de la BD CONFIGURADA — con
+// appsettings.Development.json apuntando a Render, un arranque local re-escribía las
+// definiciones de cron de PRODUCCIÓN con lo que dijera el código local. En Development
+// se omite TODO el bloque salvo opt-in HANGFIRE_SERVER_ENABLED=1.
+var hangfireRegistrationsEnabled = !app.Environment.IsDevelopment()
+    || Environment.GetEnvironmentVariable("HANGFIRE_SERVER_ENABLED") == "1";
+if (!hangfireRegistrationsEnabled)
+{
+    app.Services.GetRequiredService<ILogger<Program>>().LogWarning(
+        "⚠️ HF-LOCAL GUARD: filtros y RecurringJobs de Hangfire NO registrados en Development " +
+        "(la BD configurada puede ser la de producción). Opt-in: HANGFIRE_SERVER_ENABLED=1");
+}
+else
+{
 Hangfire.GlobalJobFilters.Filters.Add(
     new newApi.Services.HangfireFailedJobNotificationFilter(
         app.Services.GetRequiredService<IServiceScopeFactory>()));
@@ -1984,6 +2018,7 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IExchangeRateService>(
     svc => svc.RefreshRatesAsync(),
     "0 6 * * *", // 06:00 UTC daily (después del ECB publish ~04:00 UTC)
     n29UtcOptions);
+} // fin HF-LOCAL GUARD (filtros + RecurringJobs)
 
 // ✅ OPTIMIZADO: Usar solo scheduled jobs para eventos específicos
 // Los recurring jobs fueron eliminados porque:

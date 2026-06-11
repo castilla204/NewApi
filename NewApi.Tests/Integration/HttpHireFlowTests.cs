@@ -1002,4 +1002,44 @@ public class HttpHireFlowTests
         fts.Count(f => f.TransactionType == "Payout").Should().BeLessThanOrEqualTo(1,
             "el experto no puede cobrar dos veces por el mismo hire");
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-21 · FIX TX-8: si el dinero de una 2ª cancelación (de usuario) falla, el hire
+    //          finaliza igual PERO se encola el retry de Hangfire (antes quedaba atascado)
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-21 · 2ª cancelación con dinero fallido → hire cancelled + retry encolado (TX-8)")]
+    public async Task Second_cancellation_money_failure_enqueues_retry()
+    {
+        var mk = await SeedMarketplaceAsync("hf21");
+        var (_, hireId) = await PostCheckoutWebhookAsync(
+            mk, "evt_hf21_" + Guid.NewGuid().ToString("N"), "cs_hf21",
+            "pi_hf21_" + Guid.NewGuid().ToString("N")[..10]);
+        hireId.Should().NotBeNull();
+
+        // 1ª cancelación del cliente (sin dinero) + repropose + confirm
+        await ProposeOkAsync(mk, hireId!.Value, days: 4, time: "10:00:00");
+        var (apptId, _) = await AppointmentOfAsync(hireId.Value);
+        await ConfirmOkAsync(mk, apptId);
+        (await CancelAsync(mk, apptId, byExpert: false, "1ª")).StatusCode.Should().Be(HttpStatusCode.OK);
+        await ProposeOkAsync(mk, hireId.Value, days: 9, time: "13:00:00");
+        await ConfirmOkAsync(mk, apptId);
+
+        int retriesBefore;
+        await using (var db0 = _api.CreateDbContext())
+            retriesBefore = await CountScheduledMoneyRetriesAsync(db0);
+
+        // 2ª cancelación del cliente (0/95/5 → transfer al experto) PERO el transfer falla:
+        // antes el hire se finalizaba con el dinero atascado y SIN retry encolado.
+        _api.FakeStripe.TransferFailuresRemaining = 20;
+        var cancel2 = await CancelAsync(mk, apptId, byExpert: false, "2ª con fallo de Stripe");
+        cancel2.StatusCode.Should().Be(HttpStatusCode.OK, "la cancelación no debe bloquear al usuario");
+        _api.FakeStripe.TransferFailuresRemaining = 0;
+
+        (await AppointmentOfAsync(hireId.Value)).Status.Should().Be("appointment_cancelled_by_client_second");
+        (await HireStatusAsync(hireId.Value)).Should().Be("cancelled", "el estado se finaliza igual");
+
+        await using var db = _api.CreateDbContext();
+        (await CountScheduledMoneyRetriesAsync(db)).Should().BeGreaterThan(retriesBefore,
+            "FIX TX-8: el dinero pendiente debe quedar encolado en Hangfire (antes se quedaba atascado sin retry)");
+    }
 }

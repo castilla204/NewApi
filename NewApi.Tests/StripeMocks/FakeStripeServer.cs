@@ -50,6 +50,12 @@ public sealed class FakeStripeServer : IDisposable
     /// </summary>
     public int RefundFailuresRemaining;
 
+    /// <summary>
+    /// Inyección de fallos: los próximos N POST /v1/transfers devuelven 500.
+    /// Reproduce el escenario TX-8 (finalización de usuario + dinero fallido → retry).
+    /// </summary>
+    public int TransferFailuresRemaining;
+
     public void Start()
     {
         // Puerto libre: probar hasta enganchar uno (HttpListener sobre localhost no
@@ -171,6 +177,13 @@ public sealed class FakeStripeServer : IDisposable
 
         if (method == "POST" && path == "/v1/transfers")
         {
+            if (Interlocked.CompareExchange(ref TransferFailuresRemaining, 0, 0) > 0)
+            {
+                Interlocked.Decrement(ref TransferFailuresRemaining);
+                return (500, """
+                    {"error":{"type":"api_error","message":"FakeStripeServer: fallo inyectado en transfer (test TX-8)"}}
+                    """);
+            }
             var id = "tr_fake_" + Guid.NewGuid().ToString("N")[..16];
             return (200, $$$"""
                 {"id":"{{{id}}}","object":"transfer","amount":{{{DefaultAmountCents}}},"currency":"eur",

@@ -2131,7 +2131,7 @@ namespace newApi.Services
 
                                 relatedEntityId: appointment.SearchHireId,
 
-                                additionalData: new { 
+                                additionalData: new {
 
                                     AppointmentId = appointment.Id,
 
@@ -2146,6 +2146,13 @@ namespace newApi.Services
                                 }
 
                             );
+
+                            // 🛡️ FIX TX-8: el 2º rechazo ya finalizó el hire pero el dinero no se movió;
+                            // encolar el reintento idempotente en vez de dejarlo a gestión manual.
+                            await EnqueueMoneyRetryAsync(appointment.SearchHireId,
+                                AppointmentStatus.AppointmentCancelledByExpertRejection.ToStringValue(),
+                                "Retry money after 2nd expert rejection (money pending)",
+                                "AppointmentService.RejectAppointmentAsync");
 
                         }
 
@@ -2207,7 +2214,11 @@ namespace newApi.Services
 
                         );
 
-                        
+                        // 🛡️ FIX TX-8: encolar el reintento del dinero también ante excepción.
+                        await EnqueueMoneyRetryAsync(appointment.SearchHireId,
+                            AppointmentStatus.AppointmentCancelledByExpertRejection.ToStringValue(),
+                            "Retry money after 2nd expert rejection (exception)",
+                            "AppointmentService.RejectAppointmentAsync");
 
                         // No lanzar la excepci├│n para no afectar el flujo principal
 
@@ -2809,11 +2820,15 @@ namespace newApi.Services
                             // ✅ ALERTA: el estado YA se guardó arriba; el flujo continúa, solo avisamos.
                             await _loggingService.LogCriticalAsync(
                                 message: "CRITICAL: Money distribution failed on appointment cancellation",
-                                details: $"SearchHire {appointment.SearchHireId} cancelled (status {statusValue}) but money distribution returned false. State was committed; money needs retry/manual handling.",
+                                details: $"SearchHire {appointment.SearchHireId} cancelled (status {statusValue}) but money distribution returned false. State was committed; retry enqueued.",
                                 userId: userId,
                                 source: "AppointmentService.CancelAppointmentAsync",
                                 relatedEntityType: "SearchHire",
                                 relatedEntityId: appointment.SearchHireId);
+                            // 🛡️ FIX TX-8: encolar el reintento (idempotente) — antes el dinero quedaba atascado.
+                            await EnqueueMoneyRetryAsync(appointment.SearchHireId, statusValue,
+                                "Retry money after 2nd cancellation (money pending)",
+                                "AppointmentService.CancelAppointmentAsync");
                         }
                     }
                     catch (Exception distEx)
@@ -2821,11 +2836,15 @@ namespace newApi.Services
                         // ✅ ALERTA: no relanzamos (el estado ya está guardado, el flujo continúa); avisamos.
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Exception during money distribution on appointment cancellation",
-                            details: $"SearchHire {appointment.SearchHireId} (status {statusValue}): {distEx.Message}. State was committed; money needs retry/manual handling.",
+                            details: $"SearchHire {appointment.SearchHireId} (status {statusValue}): {distEx.Message}. State was committed; retry enqueued.",
                             userId: userId,
                             source: "AppointmentService.CancelAppointmentAsync",
                             relatedEntityType: "SearchHire",
                             relatedEntityId: appointment.SearchHireId);
+                        // 🛡️ FIX TX-8: encolar el reintento incluso ante excepción.
+                        await EnqueueMoneyRetryAsync(appointment.SearchHireId, statusValue,
+                            "Retry money after 2nd cancellation (exception)",
+                            "AppointmentService.CancelAppointmentAsync");
                     }
 
                 }
@@ -4401,7 +4420,21 @@ namespace newApi.Services
         /// de idempotencia es por-hire, así que un doble-encolado NO duplica pagos.
         /// Best-effort: si el propio encolado falla, se avisa con Critical (ahí sí requiere intervención).
         /// </summary>
-        private async Task EnqueueTimerMoneyRetryAsync(int searchHireId, string statusValue, string reason, string timerType, int timerId)
+        private Task EnqueueTimerMoneyRetryAsync(int searchHireId, string statusValue, string reason, string timerType, int timerId)
+            => EnqueueMoneyRetryAsync(searchHireId, statusValue, reason,
+                $"AppointmentService.ProcessAppointmentTimerAsync (timer {timerId}/{timerType})");
+
+        /// <summary>
+        /// 🛡️ FIX TX-8 (2026-06-11): encola el reintento ASÍNCRONO del dinero cuando una
+        /// finalización ya cambió el estado del hire pero ProcessMoneyDistributionAsync no
+        /// movió el dinero inline (devolvió false o lanzó). Antes SOLO los timers encolaban
+        /// el retry; las finalizaciones POR USUARIO (2ª cancelación, 2º rechazo) solo
+        /// logueaban → el hire quedaba en estado terminal con el dinero ATASCADO y nada que
+        /// lo reintentara (el watchdog unreconciled-hires-detector solo alerta, no auto-fixa).
+        /// RetryMoneyDistributionJobAsync es idempotente y Hangfire lo reintenta, así que es
+        /// seguro encolarlo desde cualquier caller que ya haya finalizado el estado.
+        /// </summary>
+        private async Task EnqueueMoneyRetryAsync(int searchHireId, string statusValue, string reason, string sourceContext)
         {
             try
             {
@@ -4409,23 +4442,23 @@ namespace newApi.Services
                     s => s.RetryMoneyDistributionJobAsync(searchHireId, statusValue, reason, null),
                     TimeSpan.FromMinutes(2));
                 await _loggingService.LogInfoAsync(
-                    message: "Money distribution retry enqueued after timer",
-                    details: $"Timer {timerId} ({timerType}) finalized SearchHire {searchHireId} but money did not move inline; " +
+                    message: "Money distribution retry enqueued",
+                    details: $"{sourceContext} finalized SearchHire {searchHireId} but money did not move inline; " +
                              $"scheduled RetryMoneyDistributionJobAsync (job {jobId}, +2min) for status '{statusValue}'. " +
                              $"Idempotent + Hangfire-retried, so the user is NOT blocked.",
                     userId: null,
-                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                    source: sourceContext,
                     relatedEntityType: "SearchHire",
                     relatedEntityId: searchHireId);
             }
             catch (Exception enqueueEx)
             {
                 await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL: Failed to enqueue money distribution retry after timer",
-                    details: $"Timer {timerId} ({timerType}) finalized SearchHire {searchHireId} but money did NOT move inline AND the async retry could NOT be scheduled for status '{statusValue}'. " +
+                    message: "CRITICAL: Failed to enqueue money distribution retry",
+                    details: $"{sourceContext} finalized SearchHire {searchHireId} but money did NOT move inline AND the async retry could NOT be scheduled for status '{statusValue}'. " +
                              $"Money is NOT scheduled — MANUAL INTERVENTION REQUIRED. Error: {enqueueEx.Message}",
                     userId: null,
-                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                    source: sourceContext,
                     relatedEntityType: "SearchHire",
                     relatedEntityId: searchHireId);
             }

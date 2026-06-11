@@ -690,10 +690,35 @@ if (!isDev && string.IsNullOrEmpty(builder.Configuration["Email:SmtpHost"]))
 // Configurar la cadena de conexi�n seg�n el entorno
 // ✅ MIGRACIÓN A RENDER POSTGRESQL: Base de datos principal en Render
 // Supabase se mantiene SOLO para Realtime (chat en directo y notificaciones)
+//
+// ════════════════════════════════════════════════════════════════════════════
+// 🗺️ MATRIZ DE BASES DE DATOS POR ENTORNO (2026-06-11) — quién usa qué BD:
+//
+//   PRODUCTION (Render)  → env var ConnectionStrings__PostgresConnection
+//                          (configurada en el dashboard de Render) → BD de PROD.
+//                          appsettings.Development.json está en .gitignore: no
+//                          existe en la imagen Docker y .NET tampoco lo cargaría
+//                          fuera de Development. Imposible que prod use la local.
+//
+//   DEVELOPMENT (local)  → appsettings.Development.json → RÉPLICA LOCAL en Docker
+//                          (inspecciono-dev-db, localhost:5434, user dev). Se
+//                          refresca con: python Tools/replicate-prod-to-local.py
+//                          La de prod quedó SOLO como referencia en la clave
+//                          PostgresConnection_RENDER_PROD_BACKUP (el código NUNCA
+//                          la lee). Dev jamás debe tocar la BD de producción —
+//                          el 2026-06-11 una API local conectada a prod robó y
+//                          rompió jobs de dinero reales (SearchHire 15, 3.445€).
+//
+//   TESTS (xUnit)        → env var ConnectionStrings__PostgresConnection puesta
+//                          por ApiFactoryFixture → testcontainer efímero.
+//
+// Todo confluye en builder.Configuration["ConnectionStrings:PostgresConnection"]
+// (más abajo): AppDbContext, Hangfire y EF design-time beben de ese único punto.
+// El 🛡️ DB-ENV GUARD (tras la resolución) IMPONE esta matriz: en Development un
+// host remoto ABORTA el arranque salvo opt-out explícito ALLOW_REMOTE_DB_IN_DEV=1.
+// ════════════════════════════════════════════════════════════════════════════
 string connectionString;
 
-// ✅ HARDCODEADO: Connection string hardcodeada para producción (Render.com)
-// En desarrollo: usar appsettings.Development.json o variable de entorno
 var connectionStringSource = "Unknown";
 
 if (isDevelopment)
@@ -769,6 +794,38 @@ if (!string.IsNullOrEmpty(connectionString))
 
 
 builder.Configuration["ConnectionStrings:PostgresConnection"] = connectionString;
+
+// 🛡️ DB-ENV GUARD (2026-06-11): impone la matriz de BDs por entorno (ver arriba).
+// DEVELOPMENT + host remoto = abortar el arranque. Es la garantía dura de que el
+// desarrollo local nunca vuelve a conectarse a la BD de producción por accidente
+// (origen del incidente del 2026-06-11). Opt-out consciente: ALLOW_REMOTE_DB_IN_DEV=1.
+{
+    var guardHost = new NpgsqlConnectionStringBuilder(connectionString).Host ?? string.Empty;
+    var hostIsLocal =
+        guardHost.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+        guardHost == "127.0.0.1" || guardHost == "::1" ||
+        guardHost.Equals("host.docker.internal", StringComparison.OrdinalIgnoreCase);
+
+    if (isDevelopment && !hostIsLocal &&
+        Environment.GetEnvironmentVariable("ALLOW_REMOTE_DB_IN_DEV") != "1")
+    {
+        throw new InvalidOperationException(
+            $"🛡️ DB-ENV GUARD: entorno DEVELOPMENT pero la connection string apunta a un host REMOTO ('{guardHost}'). " +
+            "El desarrollo local usa la RÉPLICA en Docker (inspecciono-dev-db → localhost:5434; " +
+            "refrescar datos: python Tools/replicate-prod-to-local.py). " +
+            "Conectar dev a una BD remota (p.ej. la de producción) causó el incidente del 2026-06-11 " +
+            "(jobs de dinero reales procesados por un binario local). " +
+            "Si de verdad lo necesitas y entiendes el riesgo: set ALLOW_REMOTE_DB_IN_DEV=1");
+    }
+
+    if (!isDevelopment && hostIsLocal)
+    {
+        // En prod un host local es casi seguro una misconfiguración de la env var en Render.
+        configLogger.LogCritical(
+            "🛡️ DB-ENV GUARD: entorno PRODUCTION con connection string apuntando a '{GuardHost}' (host local). " +
+            "Revisa ConnectionStrings__PostgresConnection en Render — esto no puede ser la BD real.", guardHost);
+    }
+}
 
 // ✅ HANGFIRE: Configurar connection string para Render PostgreSQL
 // Render PostgreSQL es estándar, no requiere configuraciones especiales como Supabase

@@ -10461,16 +10461,36 @@ namespace newApi.Controllers
                     }
                     try
                     {
-                        await _refundService.ProcessMoneyDistributionAsync(
+                        // 🛡️ FIX TX-9 (2026-06-11): capturar el resultado — antes se ignoraba y, si el
+                        // refund inline devolvía false, el cliente recibía igualmente la notificación de
+                        // "te hemos reembolsado" SIN reembolso y nada reintentaba el dinero.
+                        var deauthRefundOk = await _refundService.ProcessMoneyDistributionAsync(
                             hire.Id,
                             SearchHireStatus.Cancelled.ToStringValue(), // 🔧 FIX #2: el granular *_account_delete NO existe en SystemStatuses -> config==null -> el reembolso al cliente quedaba BLOQUEADO. Cancelled (100/0/0) existe y reembolsa íntegro.
                             $"Stripe account deauthorized ({deauthorizationReason}); appointment not yet served.",
                             initiatedByUserId: -1,
                             updateState: true);
 
+                        if (!deauthRefundOk)
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Deauthorization refund did not move inline - retry enqueued",
+                                details: $"SearchHire {hire.Id}: refund (Cancelled 100/0/0) tras deauthorization devolvió false. Retry de Hangfire encolado (+2min, idempotente).",
+                                userId: expertId,
+                                source: "SubscriptionController.HandleAccountDeauthorization",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: hire.Id);
+                            Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                                s => s.RetryMoneyDistributionJobAsync(
+                                    hire.Id,
+                                    SearchHireStatus.Cancelled.ToStringValue(),
+                                    "Retry refund after expert deauthorization (money pending)",
+                                    null),
+                                TimeSpan.FromMinutes(2));
+                        }
                         // 🛡️ Round 11 — S-E FIX: notificar al cliente del refund.
-                        // Equivalente a lo que HandleApprovedAccountRejection ya hace.
-                        if (hire.ClientId.HasValue)
+                        // TX-9: SOLO cuando el refund realmente se movió (antes se notificaba siempre).
+                        else if (hire.ClientId.HasValue)
                         {
                             try
                             {
@@ -10490,11 +10510,23 @@ namespace newApi.Controllers
                     {
                         await _loggingService.LogCriticalAsync(
                             message: "CRITICAL: Failed to refund after deauthorization",
-                            details: $"SearchHire {hire.Id}, ExpertId {expertId}, Error: {refundEx.Message}",
+                            details: $"SearchHire {hire.Id}, ExpertId {expertId}, Error: {refundEx.Message}. Retry de Hangfire encolado.",
                             userId: expertId,
                             source: "SubscriptionController.HandleAccountDeauthorization",
                             relatedEntityType: "SearchHire",
                             relatedEntityId: hire.Id);
+                        // 🛡️ FIX TX-9: encolar el reintento también ante excepción.
+                        try
+                        {
+                            Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                                s => s.RetryMoneyDistributionJobAsync(
+                                    hire.Id,
+                                    SearchHireStatus.Cancelled.ToStringValue(),
+                                    "Retry refund after expert deauthorization (exception)",
+                                    null),
+                                TimeSpan.FromMinutes(2));
+                        }
+                        catch { /* best-effort: el LogCritical ya alertó */ }
                     }
                 }
 

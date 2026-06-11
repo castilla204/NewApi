@@ -63,6 +63,33 @@ public static class StripeEventBuilder
         return JsonSerializer.Serialize(payload, _opts);
     }
 
+    /// <summary>account.application.deauthorized — el experto desconecta su cuenta Connect.</summary>
+    public static string AccountApplicationDeauthorized(string eventId, string accountId)
+    {
+        var payload = new
+        {
+            id = eventId,
+            @object = "event",
+            api_version = "2025-09-30.clover",
+            created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            type = "account.application.deauthorized",
+            livemode = false,
+            account = accountId,
+            request = new { id = (string?)null, idempotency_key = (string?)null },
+            pending_webhooks = 1,
+            data = new
+            {
+                @object = new
+                {
+                    id = "ca_test_" + accountId,
+                    @object = "application",
+                    name = "Inspecciono",
+                },
+            },
+        };
+        return JsonSerializer.Serialize(payload, _opts);
+    }
+
     /// <summary>account.updated con Approved (charges + payouts enabled).</summary>
     public static string AccountUpdatedApproved(string eventId, string accountId)
     {

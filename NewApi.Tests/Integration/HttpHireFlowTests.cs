@@ -1042,4 +1042,84 @@ public class HttpHireFlowTests
         (await CountScheduledMoneyRetriesAsync(db)).Should().BeGreaterThan(retriesBefore,
             "FIX TX-8: el dinero pendiente debe quedar encolado en Hangfire (antes se quedaba atascado sin retry)");
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-22 · FIX TX-9 (caso A): deauthorization del experto con refund fallido →
+    //          retry encolado (antes: notificación falsa de "reembolsado" y dinero atascado)
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-22 · deauthorization con refund fallido → retry encolado (TX-9)")]
+    public async Task Deauthorization_refund_failure_enqueues_retry()
+    {
+        var mk = await SeedMarketplaceAsync("hf22");
+        var (_, hireId) = await PostCheckoutWebhookAsync(
+            mk, "evt_hf22_" + Guid.NewGuid().ToString("N"), "cs_hf22",
+            "pi_hf22_" + Guid.NewGuid().ToString("N")[..10]);
+        hireId.Should().NotBeNull();
+
+        string acctId;
+        int retriesBefore;
+        await using (var db0 = _api.CreateDbContext())
+        {
+            acctId = (await db0.ExpertProfiles.SingleAsync(ep => ep.UserId == mk.ExpertUserId)).StripeAccountId!;
+            retriesBefore = await CountScheduledMoneyRetriesAsync(db0);
+        }
+
+        // El experto desconecta su cuenta (webhook Connect FIRMADO) con el refund roto.
+        _api.FakeStripe.RefundFailuresRemaining = 20;
+        var payload = StripeEventBuilder.AccountApplicationDeauthorized(
+            "evt_hf22_deauth_" + Guid.NewGuid().ToString("N"), acctId);
+        var request = StripeWebhookSigner.BuildSignedPost(
+            "/api/subscription/webhook", payload, ApiFactoryFixture.WebhookSecret);
+        var response = await _api.Client.SendAsync(request);
+        _api.FakeStripe.RefundFailuresRemaining = 0;
+
+        var body = await response.Content.ReadAsStringAsync();
+        response.IsSuccessStatusCode.Should().BeTrue($"el webhook de deauth debe procesarse. Body: {body}");
+
+        await using var db = _api.CreateDbContext();
+        (await CountScheduledMoneyRetriesAsync(db)).Should().BeGreaterThan(retriesBefore,
+            "FIX TX-9: el refund fallido tras deauthorization debe quedar encolado (antes se notificaba 'reembolsado' sin reembolso)");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-23 · FIX TX-9 (caso B): borrado de cuenta del experto con refund fallido →
+    //          retry encolado ANTES de la anonimización (que conserva FTs/PI por ley)
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-23 · borrado de cuenta del experto con refund fallido → retry encolado (TX-9)")]
+    public async Task Account_deletion_refund_failure_enqueues_retry()
+    {
+        var mk = await SeedMarketplaceAsync("hf23");
+        var (_, hireId) = await PostCheckoutWebhookAsync(
+            mk, "evt_hf23_" + Guid.NewGuid().ToString("N"), "cs_hf23",
+            "pi_hf23_" + Guid.NewGuid().ToString("N")[..10]);
+        hireId.Should().NotBeNull();
+
+        int retriesBefore;
+        await using (var db0 = _api.CreateDbContext())
+            retriesBefore = await CountScheduledMoneyRetriesAsync(db0);
+
+        // El EXPERTO borra su cuenta con un hire pending → rama refund-al-cliente (1109).
+        _api.FakeStripe.RefundFailuresRemaining = 20;
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var deletion = scope.ServiceProvider
+                .GetRequiredService<newApi.Services.IAccountDeletionService>();
+            var result = await deletion.DeleteAccountAsync(
+                mk.ExpertUserId,
+                new newApi.DataLayer.Models.DTOs.AccountDeletionRequestDto { Reason = "test TX-9" });
+            result.Success.Should().BeTrue($"el borrado GDPR no debe bloquearse por un fallo de Stripe. Msg: {result.Message}");
+        }
+        _api.FakeStripe.RefundFailuresRemaining = 0;
+
+        await using var db = _api.CreateDbContext();
+        (await CountScheduledMoneyRetriesAsync(db)).Should().BeGreaterThan(retriesBefore,
+            "FIX TX-9: el refund fallido en el borrado debe quedar encolado (la anonimización conserva FTs/PI, el retry es viable)");
+
+        // La FT ServicePayment sobrevive a la anonimización (retención legal) → el retry tiene lo que necesita
+        var sp = await db.FinancialTransactions.SingleOrDefaultAsync(ft =>
+            ft.RelatedEntityType == "SearchHire" && ft.RelatedEntityId == hireId &&
+            ft.TransactionType == "ServicePayment");
+        sp.Should().NotBeNull();
+        sp!.StripePaymentIntentId.Should().NotBeNullOrEmpty("la anonimización solo nulea UserId, no el PI");
+    }
 }

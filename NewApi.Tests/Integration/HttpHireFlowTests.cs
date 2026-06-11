@@ -641,31 +641,33 @@ public class HttpHireFlowTests
             new { action, resolutionComments = "Resuelto tras revisar las evidencias" }, adminJwt));
     }
 
-    [Fact(DisplayName = "HF-14 · disputa + resolución admin pro-CLIENTE → dispute_resolved_client + refund")]
+    [Fact(DisplayName = "HF-14 · disputa + resolución admin pro-CLIENTE → dispute_resolved_client + refund inline")]
     public async Task Dispute_resolved_for_client_via_http()
     {
         var (mk, hireId, disputeId) = await SetupDisputedHireAsync("hf14");
         (await HireStatusAsync(hireId)).Should().Be("disputed", "abrir la disputa marca el hire como disputed");
 
+        var refundsBefore = StripeCalls("POST /v1/refunds");
+        var retriesBefore = await CountRetriesAsync();
         var resolve = await AdminResolveAsync(disputeId, "refund_client");
         var body = await resolve.Content.ReadAsStringAsync();
         resolve.StatusCode.Should().Be(HttpStatusCode.OK, $"el admin debe poder resolver. Body: {body}");
 
         (await HireStatusAsync(hireId)).Should().Be("dispute_resolved_client");
 
-        // ⚠️ CONTRATO REAL (no intuición): el dinero de las disputas NO se mueve inline.
-        // RefundService abre BeginTransactionAsync manual (RefundService.cs:74) que choca
-        // con NpgsqlRetryingExecutionStrategy (Program.cs:1267) → el intento inline falla
-        // SIEMPRE y el controller (FRENTE 6, DisputeController) programa
-        // RetryMoneyDistributionJobAsync(+2min) en Hangfire, marca Resolved y devuelve 200.
-        // Por eso aquí se asierta el retry programado, no la llamada Stripe inline.
+        // FIX TX-5 (RefundService.cs Fase 1): antes el dinero NUNCA se movía inline porque
+        // la lockTx manual chocaba con NpgsqlRetryingExecutionStrategy y TODO acababa
+        // (y moría) en el retry de Hangfire (Logs prod #4649/#5565). Tras envolver el lock
+        // en CreateExecutionStrategy, el split 90/8/2 se ejecuta DENTRO de la request.
+        StripeCalls("POST /v1/refunds").Should().BeGreaterThan(refundsBefore,
+            "el split 90/8/2 reembolsa el 90% al cliente vía Stripe INLINE (FIX TX-5)");
+
         await using var db = _api.CreateDbContext();
         var dispute = await db.Disputes.SingleAsync(d => d.Id == disputeId);
         dispute.Status.Should().Be("Resolved");
 
-        var retryJobs = await CountScheduledMoneyRetriesAsync(db);
-        retryJobs.Should().BeGreaterThan(0,
-            "el dinero de la disputa debe quedar encolado en Hangfire (RetryMoneyDistributionJobAsync)");
+        (await CountScheduledMoneyRetriesAsync(db)).Should().Be(retriesBefore,
+            "con el dinero movido inline NO debe encolarse RetryMoneyDistributionJobAsync");
     }
 
     /// <summary>Jobs Hangfire programados que apuntan a RetryMoneyDistributionJobAsync.</summary>
@@ -684,6 +686,7 @@ public class HttpHireFlowTests
     {
         var (mk, hireId, disputeId) = await SetupDisputedHireAsync("hf15");
 
+        var transfersBefore = StripeCalls("POST /v1/transfers");
         var retriesBefore = await CountRetriesAsync();
         var resolve = await AdminResolveAsync(disputeId, "pay_expert");
         var body = await resolve.Content.ReadAsStringAsync();
@@ -691,12 +694,15 @@ public class HttpHireFlowTests
 
         (await HireStatusAsync(hireId)).Should().Be("dispute_resolved_expert");
 
+        // FIX TX-5: igual que HF-14 — el payout 0/95/5 se ejecuta inline, sin retry.
+        StripeCalls("POST /v1/transfers").Should().BeGreaterThan(transfersBefore,
+            "el split 0/95/5 paga al experto vía Stripe INLINE (FIX TX-5)");
+
         await using var db = _api.CreateDbContext();
         (await db.Disputes.SingleAsync(d => d.Id == disputeId)).Status.Should().Be("Resolved");
 
-        // Mismo contrato que HF-14: el payout viaja vía RetryMoneyDistributionJobAsync (+2min).
-        (await CountScheduledMoneyRetriesAsync(db)).Should().BeGreaterThan(retriesBefore,
-            "el pago al experto debe quedar encolado en Hangfire");
+        (await CountScheduledMoneyRetriesAsync(db)).Should().Be(retriesBefore,
+            "con el dinero movido inline NO debe encolarse RetryMoneyDistributionJobAsync");
     }
 
     private async Task<int> CountRetriesAsync()

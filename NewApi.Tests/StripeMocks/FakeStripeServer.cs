@@ -172,6 +172,22 @@ public sealed class FakeStripeServer : IDisposable
                 """);
         }
 
+        if (method == "GET" && (m = Regex.Match(path, "^/v1/transfers/([^/]+)$")).Success)
+        {
+            // El RefundService verifica el transfer recién creado (GET tras el POST).
+            var id = m.Groups[1].Value;
+            return (200, $$$"""
+                {"id":"{{{id}}}","object":"transfer","amount":{{{DefaultAmountCents}}},"currency":"eur",
+                 "destination":"acct_fake","reversed":false,"amount_reversed":0}
+                """);
+        }
+
+        if (method == "GET" && (m = Regex.Match(path, "^/v1/refunds/([^/]+)$")).Success)
+        {
+            var id = m.Groups[1].Value;
+            return (200, $$$"""{"id":"{{{id}}}","object":"refund","status":"succeeded","amount":{{{DefaultAmountCents}}},"currency":"eur"}""");
+        }
+
         if (method == "POST" && (m = Regex.Match(path, "^/v1/transfers/([^/]+)/reversals$")).Success)
         {
             var id = "trr_fake_" + Guid.NewGuid().ToString("N")[..16];

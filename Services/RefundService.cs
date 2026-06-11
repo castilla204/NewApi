@@ -71,12 +71,24 @@ namespace newApi.Services
                 SearchHire? searchHire;
                 if (_context.Database.CurrentTransaction == null)
                 {
-                    using (var lockTx = await _context.Database.BeginTransactionAsync())
+                    // 🛡️ FIX TX-5 (2026-06-11): BeginTransactionAsync "pelado" es incompatible con
+                    // NpgsqlRetryingExecutionStrategy (EnableRetryOnFailure, Program.cs:1267) — EF
+                    // lanza InvalidOperationException "does not support user-initiated transactions"
+                    // en la PRIMERA operación dentro de la tx. Caía al outer catch → return false →
+                    // TODO caller SIN tx exterior fallaba: ResolveDispute inline, el propio
+                    // RetryMoneyDistributionJobAsync (reintento muerto: Logs prod #4649) y las
+                    // cancelaciones por timer del watchdog (Logs prod #5565, hire 16 con 100€
+                    // atascados). Mismo wrap CreateExecutionStrategy().ExecuteAsync que Fase 2
+                    // (L678) y Fase 3 (L2432) ya usan; el bloque es idempotente (lock + SELECT),
+                    // así que el retry de la estrategia es seguro.
+                    var lockStrategy = _context.Database.CreateExecutionStrategy();
+                    searchHire = await lockStrategy.ExecuteAsync(async () =>
                     {
+                        using var lockTx = await _context.Database.BeginTransactionAsync();
                         await _context.Database.ExecuteSqlInterpolatedAsync(
                             $"SELECT pg_advisory_xact_lock({(long)searchHireId})");
 
-                        searchHire = await _context.SearchHires
+                        var sh = await _context.SearchHires
                             .Include(sh => sh.Status)
                             .Include(sh => sh.Client)
                             .Include(sh => sh.Expert)
@@ -86,7 +98,8 @@ namespace newApi.Services
                             .FirstOrDefaultAsync(sh => sh.Id == searchHireId);
 
                         await lockTx.CommitAsync();
-                    }
+                        return sh;
+                    });
                 }
                 else
                 {

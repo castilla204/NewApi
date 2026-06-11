@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using NewApi.Tests.Builders;
 using NewApi.Tests.Fixtures;
 using NewApi.Tests.StripeMocks;
@@ -819,5 +820,66 @@ public class HttpHireFlowTests
         (await AppointmentOfAsync(hireId.Value)).Status.Should().Be("appointment_completed");
         StripeCalls("POST /v1/transfers").Should().BeGreaterThan(transfersBefore,
             "la aprobación dispara el payout 95% al experto");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-18 · RetryMoneyDistributionJobAsync con statusValue de CITA (caso hire 16 prod):
+    //          la guarda R16 no debe auto-omitir el reintento y el dinero debe moverse
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-18 · retry de dinero con AppointmentStatus (timer) → mueve el dinero (R16b)")]
+    public async Task Money_retry_with_appointment_status_executes()
+    {
+        var mk = await SeedMarketplaceAsync("hf18");
+        var (_, hireId) = await PostCheckoutWebhookAsync(
+            mk, "evt_hf18_" + Guid.NewGuid().ToString("N"), "cs_hf18",
+            "pi_hf18_" + Guid.NewGuid().ToString("N")[..10]);
+        hireId.Should().NotBeNull();
+
+        // Reproducir el estado exacto del hire 16 de prod: el watchdog canceló por
+        // no-propose → appointment en _no_proposal y hire finalizado a cancelled,
+        // con el dinero AÚN sin mover (el inline falló y se encoló el retry).
+        await using (var db = _api.CreateDbContext())
+        {
+            var apptStatus = await db.SystemStatuses.SingleAsync(s =>
+                s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_cancelled_by_client_no_proposal");
+            // El handler del webhook ya crea el Appointment (IX_Appointments_SearchHireId
+            // es único): actualizar el existente o crearlo si este flujo no lo trajo.
+            var appt = await db.Appointments.SingleOrDefaultAsync(a => a.SearchHireId == hireId!.Value);
+            if (appt is null)
+                db.Appointments.Add(new Appointment { SearchHireId = hireId!.Value, StatusId = apptStatus.Id });
+            else
+                appt.StatusId = apptStatus.Id;
+
+            var cancelled = await db.SystemStatuses.SingleAsync(s =>
+                s.StatusType == "SearchHireStatus" && s.StatusValue == "cancelled");
+            var hire = await db.SearchHires.SingleAsync(h => h.Id == hireId);
+            hire.StatusId = cancelled.Id;
+            await db.SaveChangesAsync();
+        }
+
+        // Ejecutar el job EXACTAMENTE como lo invoca Hangfire: resolviendo el servicio del DI real.
+        var moneyBefore = StripeCalls("POST /v1/transfers") + StripeCalls("POST /v1/refunds");
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var refundService = scope.ServiceProvider
+                .GetRequiredService<newApi.Services.StripeRefundService>();
+            // Antes del fix R16b esto era un no-op silencioso (hire='cancelled' !=
+            // statusValue de cita) y el dinero quedaba atascado para siempre.
+            await refundService.RetryMoneyDistributionJobAsync(
+                hireId!.Value,
+                "appointment_cancelled_by_client_no_proposal",
+                "Retry tras cancelación automática por timer (test HF-18)",
+                null);
+        }
+
+        var moneyAfter = StripeCalls("POST /v1/transfers") + StripeCalls("POST /v1/refunds");
+        moneyAfter.Should().BeGreaterThan(moneyBefore,
+            "el retry debe ejecutar la distribución del split de appointment_cancelled_by_client_no_proposal contra Stripe");
+
+        await using var verify = _api.CreateDbContext();
+        var moneyFts = await verify.FinancialTransactions.CountAsync(ft =>
+            ft.RelatedEntityType == "SearchHire" && ft.RelatedEntityId == hireId &&
+            ft.TransactionType != "ServicePayment");
+        moneyFts.Should().BeGreaterThan(0, "la distribución debe registrar la FT del dinero movido");
     }
 }

@@ -6,6 +6,7 @@ using System.Text;
 using Google.Apis.Auth;
 using Google.Cloud.Storage.V1;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Processing;
 using Twilio.Rest.Verify.V2.Service;
 using newApi.DataLayer.Models;
@@ -643,13 +644,13 @@ namespace newApi.Services
                 {
                     image.Mutate(x => x.Resize(new ResizeOptions
                     {
-                        Size = new Size(200, 200),
+                        Size = new Size(512, 512), // antes 200x200: el frontend ya recorta a 512 y el avatar se muestra hasta 80-160px @2x
                         Mode = ResizeMode.Max
                     }));
 
                     using (var outputStream = new MemoryStream())
                     {
-                        image.SaveAsJpeg(outputStream);
+                        image.SaveAsJpeg(outputStream, new JpegEncoder { Quality = 90 }); // antes default (~75)
                         outputStream.Position = 0;
                         // ✅ MIGRACIÓN: subir a Supabase Storage (bucket público de imágenes) en vez de GCS.
                         await _supabaseStorage.UploadAsync(
@@ -1696,13 +1697,13 @@ namespace newApi.Services
                         {
                             image.Mutate(x => x.Resize(new ResizeOptions
                             {
-                                Size = new Size(200, 200),
+                                Size = new Size(512, 512), // antes 200x200: el frontend ya recorta a 512 y el avatar se muestra hasta 80-160px @2x
                                 Mode = ResizeMode.Max
                             }));
 
                             using (var outputStream = new MemoryStream())
                             {
-                                image.SaveAsJpeg(outputStream);
+                                image.SaveAsJpeg(outputStream, new JpegEncoder { Quality = 90 }); // antes default (~75)
                                 outputStream.Position = 0;
                                 // ✅ MIGRACIÓN: subir a Supabase Storage (bucket público de imágenes) en vez de GCS.
                                 await _supabaseStorage.UploadAsync(

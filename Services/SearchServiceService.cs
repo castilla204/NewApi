@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Google.Cloud.Storage.V1;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Processing;
 using newApi.DataLayer;
 using newApi.DataLayer.Models;
@@ -1616,13 +1617,13 @@ namespace newApi.Services
                         {
                             image.Mutate(x => x.Resize(new ResizeOptions
                             {
-                                Size = new Size(200, 200),
+                                Size = new Size(1600, 1600), // antes 200x200: causaba fotos pixeladas al mostrarlas a 360-720px
                                 Mode = ResizeMode.Max
                             }));
 
                             using (var outputStream = new MemoryStream())
                             {
-                                image.SaveAsJpeg(outputStream);
+                                image.SaveAsJpeg(outputStream, new JpegEncoder { Quality = 88 }); // antes default (~75)
                                 outputStream.Position = 0;
                                 // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
                                 // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
@@ -2400,13 +2401,13 @@ namespace newApi.Services
                         {
                             image.Mutate(x => x.Resize(new ResizeOptions
                             {
-                                Size = new Size(200, 200),
+                                Size = new Size(1600, 1600), // antes 200x200: causaba fotos pixeladas al mostrarlas a 360-720px
                                 Mode = ResizeMode.Max
                             }));
 
                             using (var outputStream = new MemoryStream())
                             {
-                                image.SaveAsJpeg(outputStream);
+                                image.SaveAsJpeg(outputStream, new JpegEncoder { Quality = 88 }); // antes default (~75)
                                 outputStream.Position = 0;
                                 // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
                                 // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto

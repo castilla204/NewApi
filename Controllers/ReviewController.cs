@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Google.Cloud.Storage.V1;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Processing;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
@@ -132,13 +133,13 @@ namespace newApi.Controllers
                         {
                             image.Mutate(x => x.Resize(new ResizeOptions
                             {
-                                Size = new Size(200, 200),
+                                Size = new Size(1200, 1200), // antes 200x200: causaba fotos pixeladas al mostrarlas a 360-720px
                                 Mode = ResizeMode.Max
                             }));
 
                             using (var outputStream = new MemoryStream())
                             {
-                                image.SaveAsJpeg(outputStream);
+                                image.SaveAsJpeg(outputStream, new JpegEncoder { Quality = 88 }); // antes default (~75)
                                 outputStream.Position = 0;
                                 // ✅ MIGRACIÓN: subir a Supabase Storage (bucket público de imágenes) en vez de GCS.
                                 await _supabaseStorage.UploadAsync(

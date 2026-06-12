@@ -84,6 +84,10 @@ public sealed class ApiFactoryFixture : IAsyncLifetime
         Environment.SetEnvironmentVariable("JWT_KEY", TestJwtKey);
         Environment.SetEnvironmentVariable("MFA_ENCRYPTION_KEY", TestMfaKey);
         Environment.SetEnvironmentVariable("SKIP_MAPBOX_SMOKE_TEST", "1");
+        // HF-LOCAL GUARD v2 enciende el worker en Development con BD local (la del
+        // testcontainer lo es) — en tests NO queremos un worker procesando jobs de
+        // fondo (emails, timers) en paralelo a las aserciones. Kill-switch explícito.
+        Environment.SetEnvironmentVariable("HANGFIRE_SERVER_DISABLED", "1");
 
         Factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(b =>

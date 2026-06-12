@@ -147,6 +147,18 @@ namespace newApi.Controllers
                 await _context.Notifications.AddAsync(notification);
                 await _context.SaveChangesAsync();
 
+                // 🔔 NOTIF-RT: trigger en tiempo real (best-effort; payload mínimo —
+                // el contenido se lee por el endpoint autenticado).
+                try
+                {
+                    var realtime = HttpContext.RequestServices.GetService<ISupabaseRealtimeService>();
+                    if (realtime != null)
+                    {
+                        await realtime.NotifyUserNotificationAsync(notification.UserId, new { id = notification.Id, createdAt = notification.CreatedAt });
+                    }
+                }
+                catch { /* hay polling de respaldo en el frontend */ }
+
                 return Ok(notification);
             }
             catch (Exception ex)

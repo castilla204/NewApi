@@ -825,7 +825,7 @@ namespace newApi.Services
 
                 // 🔔 NOTIF-RT: trigger en tiempo real para el panel de admins (payload
                 // mínimo — el contenido se lee por la API autenticada).
-                await TryBroadcastNotificationCreatedAsync(null, notification.Id);
+                await TryBroadcastNotificationCreatedAsync(notification);
 
                 // ✅ ALERTA REAL: además del aviso in-app, enviar EMAIL a los administradores.
                 // Antes esto solo creaba la fila in-app (UserId=null) y nadie se enteraba si no
@@ -1069,7 +1069,7 @@ namespace newApi.Services
 
                 // 🔔 NOTIF-RT: trigger en tiempo real para la campana del usuario (payload
                 // mínimo — el contenido se lee por la API autenticada).
-                await TryBroadcastNotificationCreatedAsync(userId, notification.Id);
+                await TryBroadcastNotificationCreatedAsync(notification);
 
                 // ✅ Enviar email al usuario si tiene email configurado (FIRE-AND-FORGET: no bloquea la API)
                 if (!string.IsNullOrEmpty(user.Email))
@@ -1279,25 +1279,18 @@ namespace newApi.Services
         /// Obtiene el título y tipo de notificación según el nivel de log
         /// </summary>
         /// <summary>
-        /// 🔔 NOTIF-RT: difunde por Supabase Realtime que se creó una notificación
-        /// (campana reactiva). Best-effort: un fallo aquí nunca rompe el flujo — el
-        /// frontend tiene polling de respaldo. Payload mínimo (id + timestamp): el
-        /// contenido SIEMPRE se obtiene del endpoint autenticado, así que un canal
-        /// broadcast adivinable no filtra nada.
+        /// 🔔 NOTIF-RT: delega en el servicio central de notificaciones in-app
+        /// (NOTIF-CENTRAL) para difundir el trigger realtime. Best-effort.
         /// </summary>
-        private async Task TryBroadcastNotificationCreatedAsync(int? userId, Guid notificationId)
+        private async Task TryBroadcastNotificationCreatedAsync(Notification notification)
         {
             try
             {
                 using var rtScope = _serviceScopeFactory.CreateScope();
-                var realtime = rtScope.ServiceProvider.GetService<ISupabaseRealtimeService>();
-                if (realtime != null)
+                var inApp = rtScope.ServiceProvider.GetService<IInAppNotificationService>();
+                if (inApp != null)
                 {
-                    await realtime.NotifyUserNotificationAsync(userId, new
-                    {
-                        id = notificationId,
-                        createdAt = DateTime.UtcNow,
-                    });
+                    await inApp.BroadcastCreatedAsync(new[] { notification });
                 }
             }
             catch (Exception rtEx)

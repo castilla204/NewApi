@@ -15,9 +15,11 @@ namespace newApi.Services
     public class AccountDeletionNotificationService : IAccountDeletionNotificationService
     {
         private readonly AppDbContext _context;
-        public AccountDeletionNotificationService(AppDbContext context)
+        private readonly IInAppNotificationService _inAppNotifications;
+        public AccountDeletionNotificationService(AppDbContext context, IInAppNotificationService inAppNotifications)
         {
             _context = context;
+            _inAppNotifications = inAppNotifications;
         }
 
         public async Task NotifyAffectedUsersAsync(List<DisputeCreatedInfo> disputesCreated)
@@ -62,7 +64,8 @@ namespace newApi.Services
                 _context.Notifications.Add(notification);
                 await _context.SaveChangesAsync();
 
-                // Notificación guardada en base de datos
+                // 🔔 NOTIF-CENTRAL: trigger realtime post-guardado (best-effort).
+                await _inAppNotifications.BroadcastCreatedAsync(new[] { notification });
             }
             catch (Exception ex)
             {
@@ -115,7 +118,8 @@ namespace newApi.Services
                 _context.Notifications.Add(notification);
                 await _context.SaveChangesAsync();
 
-                // Notificación guardada en base de datos
+                // 🔔 NOTIF-CENTRAL: trigger realtime post-guardado (best-effort).
+                await _inAppNotifications.BroadcastCreatedAsync(new[] { notification });
             }
             catch (Exception ex)
             {

@@ -26,11 +26,11 @@ namespace newApi.Services
         /// <param name="relatedEntityId">Optional ID of the related entity.</param>
         /// <param name="additionalData">Optional additional data object to include in the log.</param>
         /// <param name="notifyUser">Whether to notify the user about this critical error.</param>
-        Task LogCriticalAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false);
-        Task LogErrorAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false);
-        Task LogWarningAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false);
-        Task LogInfoAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false);
-        Task LogDebugAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false);
+        Task LogCriticalAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false, string? userNotificationMessage = null);
+        Task LogErrorAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false, string? userNotificationMessage = null);
+        Task LogWarningAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false, string? userNotificationMessage = null);
+        Task LogInfoAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false, string? userNotificationMessage = null);
+        Task LogDebugAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false, string? userNotificationMessage = null);
         Task<LogType?> GetLogTypeAsync(string name);
         Task<LogType> CreateLogTypeAsync(string name, string? description = null, string? severityName = null, bool requiresAdminNotification = false, bool requiresEmailAlert = false, bool requiresSmsAlert = false);
         Task EmitAdminDigestAsync();
@@ -83,27 +83,27 @@ namespace newApi.Services
                 : baseUrl.TrimEnd('/');
         }
 
-        public async Task LogCriticalAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false)
+        public async Task LogCriticalAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false, string? userNotificationMessage = null)
         {
-            await LogAsync("Critical", message, details, userId, source, relatedEntityType, relatedEntityId, additionalData, notifyUser);
+            await LogAsync("Critical", message, details, userId, source, relatedEntityType, relatedEntityId, additionalData, notifyUser, userNotificationMessage);
         }
 
-        public async Task LogErrorAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false)
+        public async Task LogErrorAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false, string? userNotificationMessage = null)
         {
-            await LogAsync("Error", message, details, userId, source, relatedEntityType, relatedEntityId, additionalData, notifyUser);
+            await LogAsync("Error", message, details, userId, source, relatedEntityType, relatedEntityId, additionalData, notifyUser, userNotificationMessage);
         }
 
-        public async Task LogWarningAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false)
+        public async Task LogWarningAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false, string? userNotificationMessage = null)
         {
-            await LogAsync("Warning", message, details, userId, source, relatedEntityType, relatedEntityId, additionalData, notifyUser);
+            await LogAsync("Warning", message, details, userId, source, relatedEntityType, relatedEntityId, additionalData, notifyUser, userNotificationMessage);
         }
 
-        public async Task LogInfoAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false)
+        public async Task LogInfoAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false, string? userNotificationMessage = null)
         {
-            await LogAsync("Information", message, details, userId, source, relatedEntityType, relatedEntityId, additionalData, notifyUser);
+            await LogAsync("Information", message, details, userId, source, relatedEntityType, relatedEntityId, additionalData, notifyUser, userNotificationMessage);
         }
 
-        public async Task LogDebugAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false)
+        public async Task LogDebugAsync(string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false, string? userNotificationMessage = null)
         {
             // ✅ DEBUG: Solo loguear en aplicación, NO guardar en BD (para evitar saturar la base de datos)
             // Debug es para desarrollo/depuración, no necesita persistencia
@@ -168,13 +168,13 @@ namespace newApi.Services
                 // Creamos un scope para asegurar que el contexto no esté dispuesto
                 using var scope = _serviceScopeFactory.CreateScope();
                 var scopedContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                await ProcessUserNotificationAsync(scopedContext, userId.Value, message, details, "Debug", relatedEntityType, relatedEntityId);
+                await ProcessUserNotificationAsync(scopedContext, userId.Value, message, details, "Debug", relatedEntityType, relatedEntityId, userNotificationMessage);
             }
             
             await Task.CompletedTask;
         }
 
-        private async Task LogAsync(string logLevel, string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false)
+        private async Task LogAsync(string logLevel, string message, string? details = null, int? userId = null, string? source = null, string? relatedEntityType = null, int? relatedEntityId = null, object? additionalData = null, bool notifyUser = false, string? userNotificationMessage = null)
         {
             // ✅ TIMING: Capturar timestamp preciso al inicio (ISO 8601 con milisegundos)
             var logStartTime = DateTime.UtcNow;
@@ -463,7 +463,7 @@ namespace newApi.Services
                 // Si se solicita notificar al usuario y hay userId, crear notificación (fuera de la transacción)
                 if (notifyUser && userId.HasValue)
                 {
-                    await ProcessUserNotificationAsync(scopedContext, userId.Value, message, details, logLevel, relatedEntityType, relatedEntityId);
+                    await ProcessUserNotificationAsync(scopedContext, userId.Value, message, details, logLevel, relatedEntityType, relatedEntityId, userNotificationMessage);
                 }
             }
             catch (DbUpdateException dbEx) when (dbEx.InnerException is ObjectDisposedException)
@@ -948,10 +948,26 @@ namespace newApi.Services
         /// <summary>
         /// Crea una notificación para el usuario cuando se solicita explícitamente
         /// </summary>
-        private async Task ProcessUserNotificationAsync(AppDbContext context, int userId, string message, string? details, string logLevel, string? relatedEntityType = null, int? relatedEntityId = null)
+        private async Task ProcessUserNotificationAsync(AppDbContext context, int userId, string message, string? details, string logLevel, string? relatedEntityType = null, int? relatedEntityId = null, string? userNotificationMessage = null)
         {
             try
             {
+                // 🛡️ NOTIF-GUARD (2026-06-12): los logs CRITICAL son alertas de SISTEMA
+                // (balance de Stripe, PaymentIntentIds, "ACTION REQUIRED"...) y SOLO deben
+                // llegar a administradores (fila global UserId=null + email, que
+                // ProcessAdminNotificationAsync ya crea para todo Critical). Antes,
+                // notifyUser:true copiaba el volcado interno completo al inbox del
+                // cliente/experto (caso real: "Insufficient Stripe platform balance" con
+                // el plan de distribución y el PaymentIntentId en el panel del cliente).
+                // Si el usuario debe enterarse, el llamador pasa userNotificationMessage
+                // con un texto pensado para él — sin internals.
+                if (string.Equals(logLevel, "Critical", StringComparison.OrdinalIgnoreCase)
+                    && string.IsNullOrWhiteSpace(userNotificationMessage))
+                {
+                    Console.WriteLine($"[LOGGING SERVICE] [NOTIF-GUARD] Notificación de usuario OMITIDA para UserId={userId}: log Critical sin userNotificationMessage (los internals solo van a admins). Message='{message}'");
+                    return;
+                }
+
                 // Verificar que el usuario existe
                 var user = await context.Users.FindAsync(userId);
                 if (user == null)
@@ -959,8 +975,15 @@ namespace newApi.Services
                     return; // Usuario no encontrado, no crear notificación
                 }
 
-                // Determinar el título y tipo de notificación según el nivel de log
-                var (title, notificationType) = GetNotificationTitleAndType(logLevel);
+                // Determinar el título y tipo de notificación según el nivel de log.
+                // Con mensaje saneado para el usuario, un Critical de sistema se muestra
+                // como aviso (no como "Alerta Crítica" interna).
+                var (title, notificationType) = string.IsNullOrWhiteSpace(userNotificationMessage)
+                    ? GetNotificationTitleAndType(logLevel)
+                    : (string.Equals(logLevel, "Critical", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(logLevel, "Error", StringComparison.OrdinalIgnoreCase)
+                        ? ("⚠️ Aviso importante", "warning")
+                        : GetNotificationTitleAndType(logLevel));
 
                 // 🛡️ LOTE D · D-24 (refinado por MUD-DL) — Throttle global por (UserId, Title, Message).
                 //
@@ -973,10 +996,16 @@ namespace newApi.Services
                 // AHORA: añade el Message exacto al hash. Dos avisos con mismo Title pero distinto
                 // Message ya no chocan. Mismo Title+Message en <5min (verdadero duplicado: mismo
                 // webhook retried) sí se suprime. Granularidad correcta sin perder señales.
-                var fullMessage = message;
-                if (!string.IsNullOrEmpty(details))
+                // 🛡️ NOTIF-GUARD: si hay mensaje saneado para el usuario, se usa SOLO ese
+                // (sin message/details internos del log).
+                var fullMessage = userNotificationMessage;
+                if (string.IsNullOrWhiteSpace(fullMessage))
                 {
-                    fullMessage += $" - {details}";
+                    fullMessage = message;
+                    if (!string.IsNullOrEmpty(details))
+                    {
+                        fullMessage += $" - {details}";
+                    }
                 }
                 var throttleWindowStart = DateTime.UtcNow.AddMinutes(-5);
                 var alreadyNotified = await context.Notifications

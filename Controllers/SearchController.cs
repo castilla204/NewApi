@@ -403,7 +403,8 @@ namespace newApi.Controllers
                                 Currency = string.IsNullOrEmpty(s.SearchHire.SearchService.Currency) ? "EUR" : s.SearchHire.SearchService.Currency,
                                 ExpertLatitude = s.SearchHire.SearchService.ExpertProfile?.Latitude,
                                 ExpertLongitude = s.SearchHire.SearchService.ExpertProfile?.Longitude,
-                                LocationRange = s.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50
+                                LocationRange = s.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50,
+                                ExpertWorkRadiusKm = s.SearchHire.SearchService.ExpertProfile?.WorkRadiusKm
                         } : null
                         } : null,
                         // ✅ NUEVO: Imagen del servicio, horario y ciudad del experto
@@ -1514,7 +1515,8 @@ namespace newApi.Controllers
                             // ✅ NUEVOS CAMPOS: Información de ubicación del experto
                             ExpertLatitude = search.SearchHire.SearchService.ExpertProfile?.Latitude,
                             ExpertLongitude = search.SearchHire.SearchService.ExpertProfile?.Longitude,
-                            LocationRange = search.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50 // Rango por defecto de 50km
+                            LocationRange = search.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50, // Rango por defecto de 50km
+                            ExpertWorkRadiusKm = search.SearchHire.SearchService.ExpertProfile?.WorkRadiusKm
                         } : null,
                         // ✅ NUEVO: Información completa del estado con colores
                         StatusInfo = search.SearchHire.Status != null ? new SystemStatusDto

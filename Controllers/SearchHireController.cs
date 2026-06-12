@@ -808,7 +808,8 @@ namespace newApi.Controllers
                         Currency = string.IsNullOrEmpty(searchHire.SearchService.Currency) ? "EUR" : searchHire.SearchService.Currency,
                         ExpertLatitude = searchHire.SearchService.ExpertProfile?.Latitude,
                         ExpertLongitude = searchHire.SearchService.ExpertProfile?.Longitude,
-                        LocationRange = searchHire.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50
+                        LocationRange = searchHire.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50,
+                        ExpertWorkRadiusKm = searchHire.SearchService.ExpertProfile?.WorkRadiusKm
                     } : null,
                     StatusInfo = new SystemStatusDto
                     {
@@ -889,6 +890,7 @@ namespace newApi.Controllers
                         ExpertLatitude = searchHire.SearchService?.ExpertProfile?.Latitude,
                         ExpertLongitude = searchHire.SearchService?.ExpertProfile?.Longitude,
                         LocationRange = searchHire.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50,
+                        ExpertWorkRadiusKm = searchHire.SearchService?.ExpertProfile?.WorkRadiusKm,
                         StatusInfo = searchHire.Appointment.Status != null ? new SystemStatusDto
                         {
                             Id = searchHire.Appointment.Status.Id,

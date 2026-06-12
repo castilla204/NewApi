@@ -2037,12 +2037,10 @@ namespace newApi.Controllers
 
                 await _context.SaveChangesAsync();
 
-                // 📱 SMS-CENTRAL: al activarse la cuenta, importar el teléfono verificado por
-                // el KYC de Stripe para poder mandarle SMS sin pedirle otra verificación.
-                if (accountState.Status == StripeStatus.Approved)
-                {
-                    await TryImportExpertPhoneFromStripeAsync(expertProfile, account);
-                }
+                // 📱 SMS-CENTRAL: importar el teléfono del KYC de Stripe en cuanto exista
+                // (no solo al Approved — el phone está desde details_submitted). El método
+                // no-opea si el user ya tiene móvil verificado o el account no trae phone.
+                await TryImportExpertPhoneFromStripeAsync(expertProfile, account);
 
                 // 🛡️ Round 28 MUD-BF: sincronizar datos legales DAC7 (DOB/IBAN/Address) al
                 // snapshot del año actual. Non-blocking — si falla, el account.updated sigue.
@@ -3232,6 +3230,11 @@ namespace newApi.Controllers
                                 catch { }
 
                                 ApplyStripeAccountState(profileToUpdate, state, liveAccount.Id);
+
+                                // 📱 SMS-CENTRAL: importar el teléfono del KYC (webhook account.updated
+                                // — el sitio principal: antes solo se importaba en el sync manual).
+                                // El método guarda solo si el user no tiene ya un móvil verificado.
+                                await TryImportExpertPhoneFromStripeAsync(profileToUpdate, liveAccount);
 
                                 // ✅ LOG DIAGNÓSTICO: Guardando cambios
                                 try

@@ -997,9 +997,11 @@ public class UserController : ControllerBase
         if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
             return Unauthorized(new { message = "Invalid user identification" });
 
-        var phone = (request?.PhoneNumber ?? "").Trim();
-        if (string.IsNullOrWhiteSpace(phone) || phone.Length < 9)
-            return BadRequest(new { message = "Introduce un número de teléfono válido (con prefijo internacional, ej. +34...)." });
+        // 📱 Normalizar a E.164 — Twilio exige "+34681634037"; el usuario suele
+        // escribir "681634037" o "681 634 037" y el envío fallaba en silencio.
+        var phone = PhoneLookupService.NormalizeToE164(request?.PhoneNumber ?? "");
+        if (phone == null)
+            return BadRequest(new { message = "Introduce un número de móvil válido (ej. 681634037 o +34681634037)." });
 
         // 📱 Rechazar FIJOS antes de gastar un OTP: no recibirían el SMS.
         var lineType = await phoneLookup.GetLineTypeAsync(phone);
@@ -1024,7 +1026,9 @@ public class UserController : ControllerBase
         if (string.IsNullOrWhiteSpace(request?.PhoneNumber) || string.IsNullOrWhiteSpace(request?.Code))
             return BadRequest(new { message = "Faltan el teléfono o el código." });
 
-        var (success, _, _) = await _userService.VerifyCode(userId, request.PhoneNumber.Trim(), request.Code.Trim());
+        // Misma normalización que send-code para que coincida con user.PhoneNumber.
+        var normalizedPhone = PhoneLookupService.NormalizeToE164(request.PhoneNumber) ?? request.PhoneNumber.Trim();
+        var (success, _, _) = await _userService.VerifyCode(userId, normalizedPhone, request.Code.Trim());
         if (!success)
             return BadRequest(new { message = "Código incorrecto o caducado. Vuelve a intentarlo." });
 

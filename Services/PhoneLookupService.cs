@@ -59,6 +59,29 @@ namespace newApi.Services
             return HeuristicLineType(normalized);
         }
 
+        /// <summary>
+        /// 📱 Normaliza a E.164 (lo que exigen Twilio Verify/Messages). "681 634 037" →
+        /// "+34681634037". Devuelve null si no se puede normalizar con confianza
+        /// (el llamador pide al usuario el prefijo internacional).
+        /// </summary>
+        public static string? NormalizeToE164(string phone, string defaultCountry = "ES")
+        {
+            if (string.IsNullOrWhiteSpace(phone)) return null;
+            var trimmed = phone.Trim();
+            var digits = new string(trimmed.Where(char.IsDigit).ToArray());
+            if (trimmed.StartsWith("+"))
+                return digits.Length is >= 8 and <= 15 ? "+" + digits : null;
+            if (trimmed.StartsWith("00") && digits.Length is >= 10 and <= 17)
+                return "+" + digits[2..];
+            // Nacional España: 9 dígitos empezando por 6/7/8/9 → +34
+            if (defaultCountry == "ES" && digits.Length == 9 && digits[0] is '6' or '7' or '8' or '9')
+                return "+34" + digits;
+            // "34XXXXXXXXX" sin '+'
+            if (digits.StartsWith("34") && digits.Length == 11)
+                return "+" + digits;
+            return null;
+        }
+
         /// <summary>Heurística sin Twilio: España (+34) móvil empieza por 6/7, fijo por 8/9.</summary>
         internal static string HeuristicLineType(string phone)
         {

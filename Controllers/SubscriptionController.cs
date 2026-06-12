@@ -648,6 +648,11 @@ namespace newApi.Controllers
 
                 user.PhoneNumber = stripePhone.Trim();
                 user.PhoneVerified = true; // verificado por el KYC de Stripe Connect
+                user.PhoneVerificationSource = "stripe_kyc";
+                // 📱 Clasificar móvil/fijo: un FIJO no recibe SMS → el panel del experto
+                // lo mostrará como no válido y pedirá cargar un móvil por OTP.
+                var lookup = HttpContext.RequestServices.GetService<IPhoneLookupService>();
+                user.PhoneLineType = lookup != null ? await lookup.GetLineTypeAsync(user.PhoneNumber) : null;
                 await _context.SaveChangesAsync();
 
                 await _loggingService.LogInfoAsync(
@@ -5588,6 +5593,12 @@ namespace newApi.Controllers
                             {
                                 userToUpdate.PhoneNumber = checkoutPhone.Trim();
                                 userToUpdate.PhoneVerified = true; // verificado por Stripe Checkout
+                                userToUpdate.PhoneVerificationSource = "checkout";
+                                // 📱 Clasificar móvil/fijo (un fijo no recibirá SMS).
+                                var phoneLookup = HttpContext.RequestServices.GetService<IPhoneLookupService>();
+                                userToUpdate.PhoneLineType = phoneLookup != null
+                                    ? await phoneLookup.GetLineTypeAsync(userToUpdate.PhoneNumber)
+                                    : null;
                                 anyMutation = true;
                             }
 

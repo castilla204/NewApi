@@ -929,6 +929,83 @@ public class UserController : ControllerBase
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // 📱 SMS-CENTRAL: estado y verificación OTP del teléfono.
+    // Un FIJO no recibe SMS → smsCapable=false y el panel pide cargar un móvil
+    // y validar el código recibido (Twilio Verify).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [Authorize]
+    [HttpGet("phone-status")]
+    public async Task<IActionResult> GetPhoneStatus([FromServices] newApi.DataLayer.Models.AppDbContext db)
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            return Unauthorized(new { message = "Invalid user identification" });
+
+        var u = await db.Users.AsNoTracking()
+            .Where(x => x.Id == userId)
+            .Select(x => new { x.PhoneNumber, x.PhoneVerified, x.PhoneLineType, x.PhoneVerificationSource })
+            .FirstOrDefaultAsync();
+        if (u == null) return NotFound();
+
+        var isLandline = string.Equals(u.PhoneLineType, "landline", StringComparison.OrdinalIgnoreCase);
+        return Ok(new
+        {
+            phoneNumber = u.PhoneNumber,
+            phoneVerified = u.PhoneVerified,
+            phoneLineType = u.PhoneLineType,
+            phoneVerificationSource = u.PhoneVerificationSource,
+            // Válido para SMS = verificado, con número, y NO fijo.
+            smsCapable = u.PhoneVerified && !string.IsNullOrWhiteSpace(u.PhoneNumber) && !isLandline,
+        });
+    }
+
+    public class PhoneCodeRequestDto { public string PhoneNumber { get; set; } = string.Empty; }
+    public class PhoneVerifyRequestDto { public string PhoneNumber { get; set; } = string.Empty; public string Code { get; set; } = string.Empty; }
+
+    [Authorize]
+    [HttpPost("phone/send-code")]
+    public async Task<IActionResult> SendPhoneCode([FromBody] PhoneCodeRequestDto request, [FromServices] IPhoneLookupService phoneLookup)
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            return Unauthorized(new { message = "Invalid user identification" });
+
+        var phone = (request?.PhoneNumber ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(phone) || phone.Length < 9)
+            return BadRequest(new { message = "Introduce un número de teléfono válido (con prefijo internacional, ej. +34...)." });
+
+        // 📱 Rechazar FIJOS antes de gastar un OTP: no recibirían el SMS.
+        var lineType = await phoneLookup.GetLineTypeAsync(phone);
+        if (string.Equals(lineType, "landline", StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { message = "Ese número parece un teléfono FIJO y no puede recibir SMS. Introduce un número MÓVIL.", lineType });
+
+        var sent = await _userService.SendVerification(userId, phone);
+        if (!sent)
+            return StatusCode(503, new { message = "No se pudo enviar el código de verificación. Inténtalo de nuevo en unos minutos." });
+
+        return Ok(new { message = "Código enviado por SMS.", lineType });
+    }
+
+    [Authorize]
+    [HttpPost("phone/verify-code")]
+    public async Task<IActionResult> VerifyPhoneCode([FromBody] PhoneVerifyRequestDto request)
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            return Unauthorized(new { message = "Invalid user identification" });
+
+        if (string.IsNullOrWhiteSpace(request?.PhoneNumber) || string.IsNullOrWhiteSpace(request?.Code))
+            return BadRequest(new { message = "Faltan el teléfono o el código." });
+
+        var (success, _, _) = await _userService.VerifyCode(userId, request.PhoneNumber.Trim(), request.Code.Trim());
+        if (!success)
+            return BadRequest(new { message = "Código incorrecto o caducado. Vuelve a intentarlo." });
+
+        return Ok(new { message = "Teléfono verificado correctamente.", phoneVerified = true, phoneLineType = "mobile" });
+    }
+
     [Authorize(Roles = "Expert")]
     [HttpPost("toggle-vacation-mode")]
     public async Task<IActionResult> ToggleVacationMode()

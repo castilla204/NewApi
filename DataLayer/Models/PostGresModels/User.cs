@@ -21,6 +21,21 @@ namespace newApi.DataLayer.Models.PostGresModels
         public string? AppleId { get; set; }
         public string? PhoneNumber { get; set; }
         public bool PhoneVerified { get; set; }
+
+        /// <summary>
+        /// 📱 Tipo de línea del teléfono (Twilio Lookup): "mobile" | "landline" |
+        /// "voip" | "unknown". Un FIJO no recibe SMS → se muestra como NO válido en el
+        /// panel del experto y se le pide cargar un móvil y verificarlo por OTP.
+        /// Null = aún sin clasificar.
+        /// </summary>
+        public string? PhoneLineType { get; set; }
+
+        /// <summary>
+        /// 📱 Origen de la verificación: "stripe_kyc" (KYC del experto) | "checkout"
+        /// (pago del cliente) | "otp" (código SMS introducido por el usuario).
+        /// </summary>
+        public string? PhoneVerificationSource { get; set; }
+
         public DateTime CreatedAt { get; set; }
         public bool IsBlocked { get; set; }
         // 🛡️ Round 16: email verification + login security tracking

@@ -104,11 +104,15 @@ namespace newApi.Services
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                 var user = await db.Users
                     .Where(u => u.Id == userId)
-                    .Select(u => new { u.PhoneNumber, u.PhoneVerified })
+                    .Select(u => new { u.PhoneNumber, u.PhoneVerified, u.PhoneLineType })
                     .FirstOrDefaultAsync();
 
                 // Solo a teléfonos VERIFICADOS (Stripe KYC para expertos, checkout para clientes).
                 if (user == null || !user.PhoneVerified || string.IsNullOrWhiteSpace(user.PhoneNumber)) return;
+
+                // 📱 Un FIJO no recibe SMS: no quemar saldo de Twilio. El panel del experto
+                // ya le pide cargar un móvil y verificarlo por OTP.
+                if (string.Equals(user.PhoneLineType, "landline", StringComparison.OrdinalIgnoreCase)) return;
 
                 await _sms.SendSmsAsync(user.PhoneNumber, smsText);
             }

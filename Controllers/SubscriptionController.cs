@@ -622,6 +622,49 @@ namespace newApi.Controllers
             expertProfile.StripeFutureDueAt = state.FutureRequirementsDueAt;
         }
 
+        /// <summary>
+        /// 📱 SMS-CENTRAL: importa el teléfono YA VERIFICADO por Stripe (KYC del experto)
+        /// a User.PhoneNumber + PhoneVerified=true para poder enviarle SMS sin pedirle
+        /// otra verificación. Best-effort: solo cuando la cuenta está activa y el user
+        /// aún no tiene teléfono verificado. Prioriza individual.phone (KYC), luego
+        /// company.phone y business_profile.support_phone. No pisa un teléfono ya verificado.
+        /// </summary>
+        private async Task TryImportExpertPhoneFromStripeAsync(ExpertProfile expertProfile, Account account)
+        {
+            try
+            {
+                if (account == null) return;
+
+                var stripePhone = account.Individual?.Phone
+                    ?? account.Company?.Phone
+                    ?? account.BusinessProfile?.SupportPhone;
+                if (string.IsNullOrWhiteSpace(stripePhone)) return;
+
+                var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == expertProfile.UserId);
+                if (user == null) return;
+
+                // No tocar un teléfono ya verificado (p.ej. importado antes o verificado por OTP).
+                if (user.PhoneVerified && !string.IsNullOrWhiteSpace(user.PhoneNumber)) return;
+
+                user.PhoneNumber = stripePhone.Trim();
+                user.PhoneVerified = true; // verificado por el KYC de Stripe Connect
+                await _context.SaveChangesAsync();
+
+                await _loggingService.LogInfoAsync(
+                    message: "Teléfono del experto importado de Stripe (KYC)",
+                    details: $"UserId {user.Id}: teléfono verificado importado del Stripe Account {account.Id} para notificaciones SMS.",
+                    userId: user.Id,
+                    source: "SubscriptionController.TryImportExpertPhoneFromStripe",
+                    relatedEntityType: "User",
+                    relatedEntityId: user.Id);
+            }
+            catch (Exception ex)
+            {
+                // Best-effort: nunca romper el webhook por esto.
+                Console.WriteLine($"[SMS-CENTRAL] Import de teléfono Stripe falló (no crítico): {ex.Message}");
+            }
+        }
+
         private async Task NotifyStripeStatusTransitionAsync(ExpertProfile expertProfile, StripeStatus previousStatus, StripeAccountState state, string source)
         {
             var details = state.StatusDetails ?? GetStatusMessage(state.Status);
@@ -1989,6 +2032,13 @@ namespace newApi.Controllers
 
                 await _context.SaveChangesAsync();
 
+                // 📱 SMS-CENTRAL: al activarse la cuenta, importar el teléfono verificado por
+                // el KYC de Stripe para poder mandarle SMS sin pedirle otra verificación.
+                if (accountState.Status == StripeStatus.Approved)
+                {
+                    await TryImportExpertPhoneFromStripeAsync(expertProfile, account);
+                }
+
                 // 🛡️ Round 28 MUD-BF: sincronizar datos legales DAC7 (DOB/IBAN/Address) al
                 // snapshot del año actual. Non-blocking — si falla, el account.updated sigue.
                 if (_dac7DataSync != null)
@@ -2626,6 +2676,9 @@ namespace newApi.Controllers
                     },
                     TaxIdCollection = new SessionTaxIdCollectionOptions { Enabled = true }, // 🔧 FIX: recoge NIF/VAT -> reverse charge B2B
                     BillingAddressCollection = "required", // 🔧 FIX: direccion fiable para AutomaticTax correcto por pais
+                    // 📱 SMS-CENTRAL: recoger el teléfono del cliente en el checkout (sin fricción)
+                    // para poder avisarle por SMS de cita confirmada / informe a aprobar.
+                    PhoneNumberCollection = new SessionPhoneNumberCollectionOptions { Enabled = true },
                     Mode = "payment",
                     SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}",
                     CancelUrl = $"{domain}/cancel",
@@ -5525,6 +5578,19 @@ namespace newApi.Controllers
                             var anyMutation = false;
                             var taxIdChanged = false;
                             var fiscalCountryChanged = false;
+
+                            // 📱 SMS-CENTRAL: importar el teléfono que el cliente puso en el checkout
+                            // (phone_number_collection) para poder avisarle por SMS de cita confirmada /
+                            // informe a aprobar. No pisa un teléfono ya verificado (p.ej. por OTP).
+                            var checkoutPhone = sessionWithTax?.CustomerDetails?.Phone ?? session.CustomerDetails?.Phone;
+                            if (!string.IsNullOrWhiteSpace(checkoutPhone)
+                                && !(userToUpdate.PhoneVerified && !string.IsNullOrWhiteSpace(userToUpdate.PhoneNumber)))
+                            {
+                                userToUpdate.PhoneNumber = checkoutPhone.Trim();
+                                userToUpdate.PhoneVerified = true; // verificado por Stripe Checkout
+                                anyMutation = true;
+                            }
+
                             if (!string.IsNullOrWhiteSpace(clientVatNumber)
                                 && (string.IsNullOrWhiteSpace(userToUpdate.TaxId)
                                     || !string.Equals(userToUpdate.TaxId, clientVatNumber, System.StringComparison.OrdinalIgnoreCase)))
@@ -6155,6 +6221,10 @@ namespace newApi.Controllers
                         relatedEntityId: searchHireId, // ✅ FIX: Usar searchHireId guardado
                         notifyUser: true
                     );
+                    // 📱 SMS-CENTRAL: te han contratado → refuerzo por SMS al experto.
+                    await HttpContext.RequestServices.GetRequiredService<IInAppNotificationService>()
+                        .SendImportantSmsAsync(expertuserid,
+                            "Inspecciono: ¡tienes una nueva contratación! Revisa los detalles y contacta con el cliente desde la app.");
                 }
 
             }
@@ -6901,6 +6971,8 @@ namespace newApi.Controllers
                     },
                     TaxIdCollection = new SessionTaxIdCollectionOptions { Enabled = true }, // 🔧 FIX: recoge NIF/VAT -> reverse charge B2B
                     BillingAddressCollection = "required", // 🔧 FIX: direccion fiable para AutomaticTax correcto por pais
+                    // 📱 SMS-CENTRAL: recoger el teléfono del cliente en el checkout (sin fricción).
+                    PhoneNumberCollection = new SessionPhoneNumberCollectionOptions { Enabled = true },
                     Mode = "payment",
                     SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}&userId={userId}",
                     CancelUrl = $"{domain}/cancel",

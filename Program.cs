@@ -628,6 +628,11 @@ if (!string.IsNullOrEmpty(mapboxPublicToken))
 builder.Configuration["Twilio:AccountSid"] = GetSecretValue("twilio-account-sid", null) ?? "";
 builder.Configuration["Twilio:AuthToken"] = GetSecretValue("twilio-auth-token", null) ?? "";
 builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-verification-service-sid", null) ?? "";
+// 📱 SMS saliente: número emisor o Messaging Service SID (uno de los dos). Si ambos
+// faltan, SmsService queda en modo no-op (loguea pero no envía) — se activa solo al
+// configurar el secret, sin tocar código.
+builder.Configuration["Twilio:FromNumber"] = GetSecretValue("twilio-from-number", null) ?? "";
+builder.Configuration["Twilio:MessagingServiceSid"] = GetSecretValue("twilio-messaging-service-sid", null) ?? "";
 
 // ✅ Cargar clave de cifrado MFA desde Secret Manager (obligatoria para cifrar/descifrar secretos MFA)
 var mfaEncryptionKey = GetSecretValue("mfa-encryption-key", null) 
@@ -1675,6 +1680,7 @@ builder.Services.AddScoped<ITimezoneService, TimezoneService>(); // ✅ Servicio
 builder.Services.AddScoped<IFavoriteService, FavoriteService>(); // ✅ FAVORITOS: Gestión de servicios favoritos
 builder.Services.AddScoped<ISupabaseRealtimeService, SupabaseRealtimeService>(); // ✅ SUPABASE REALTIME: Reemplaza SignalR para chat en tiempo real
 builder.Services.AddScoped<IInAppNotificationService, InAppNotificationService>(); // 🔔 NOTIF-CENTRAL: punto único de notificaciones in-app (crear + broadcast)
+builder.Services.AddScoped<ISmsService, SmsService>(); // 📱 SMS-CENTRAL: Twilio (gated por config; no-op si faltan credenciales)
 builder.Services.AddScoped<IStripeReconciliationService, StripeReconciliationService>(); // P2-5: reconciliación diaria BD↔Stripe
 builder.Services.AddScoped<IExchangeRateService, ExchangeRateService>(); // 💱 Multi-Currency Display: FX rates con cache 24h + BD snapshot
 // 🌍 Round 23: provider chain for FX rates — primary fawazahmed (covers LATAM) + fallback Frankfurter (ECB).

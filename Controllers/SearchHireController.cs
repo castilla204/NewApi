@@ -512,6 +512,10 @@ namespace newApi.Controllers
                         relatedEntityId: searchHire.Id,
                         notifyUser: true
                     );
+                    // 📱 SMS-CENTRAL: te han contratado → refuerzo por SMS al experto.
+                    await HttpContext.RequestServices.GetRequiredService<IInAppNotificationService>()
+                        .SendImportantSmsAsync(searchHire.ExpertId.Value,
+                            "Inspecciono: ¡tienes una nueva contratación! El cliente propondrá fecha para la cita. Entra en la app para verlo.");
                 }
 
                 await _loggingService.LogInfoAsync(

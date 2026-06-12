@@ -1750,6 +1750,10 @@ namespace newApi.Controllers
                             relatedEntityId: disputeId,
                             notifyUser: true
                         );
+                        // 📱 SMS-CENTRAL: disputa con plazo de 48h para responder.
+                        await HttpContext.RequestServices.GetRequiredService<IInAppNotificationService>()
+                            .SendImportantSmsAsync(searchHire.ExpertId.Value,
+                                "Inspecciono: el cliente ha abierto una disputa sobre tu servicio. Tienes 48h para responder en la app.");
                     }
                 }
                 else if (searchHire.ExpertId == userId)
@@ -1764,6 +1768,13 @@ namespace newApi.Controllers
                         relatedEntityId: disputeId,
                         notifyUser: true
                     );
+                    // 📱 SMS-CENTRAL: aviso de disputa al cliente.
+                    if (searchHire.ClientId.HasValue)
+                    {
+                        await HttpContext.RequestServices.GetRequiredService<IInAppNotificationService>()
+                            .SendImportantSmsAsync(searchHire.ClientId.Value,
+                                "Inspecciono: el experto ha abierto una disputa sobre tu servicio. Un administrador la revisará. Revisa la app.");
+                    }
                 }
 
                 // Handle file uploads if any (outside transaction for better performance)

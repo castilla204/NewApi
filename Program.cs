@@ -1522,24 +1522,48 @@ if (hangfireConnectionValid)
     // ✅ HABILITADO: Servidor de Hangfire para procesar jobs automáticamente
     // Los jobs de timers de appointments requieren que el servidor esté activo
     //
-    // 🛡️ HF-LOCAL GUARD (2026-06-11): en Development NO se arranca el BackgroundJobServer
-    // salvo opt-in explícito con HANGFIRE_SERVER_ENABLED=1. Motivo (caso real en prod):
-    // appsettings.Development.json apunta a la BD de Render, así que un `dotnet run` local
-    // unía su Hangfire server a la cola de PRODUCCIÓN y ROBABA jobs reales ejecutándolos
-    // con el binario local desactualizado — el 2026-06-11 00:50 UTC una instancia local
-    // (desktop-9le35lg, pre-fixes TX-5/R16b) procesó y rompió el retry del pago del
-    // SearchHire 15 (3.445€). El CLIENTE de Hangfire (AddHangfire + dashboard +
-    // BackgroundJob.Schedule/Enqueue) sigue disponible en dev; solo se omite el PROCESADOR.
+    // 🛡️ HF-LOCAL GUARD v2 (2026-06-12): el peligro real nunca fue "worker en dev",
+    // sino "worker en dev CONTRA LA BD DE PRODUCCIÓN" (incidente 2026-06-11: una API
+    // local unida a la cola de prod procesó el retry del pago del SearchHire 15 con un
+    // binario desactualizado). Desde entonces el DB-ENV GUARD (arriba) ABORTA el
+    // arranque si Development apunta a un host remoto, así que con BD local los jobs
+    // son locales por construcción y no pueden mezclarse con prod.
+    //
+    // Política:
+    //   - Production            → worker ON (como siempre).
+    //   - Development + BD LOCAL → worker ON (los timers funcionan al probar en local;
+    //     la cola es la de la réplica Docker, aislada de prod).
+    //   - Development + BD REMOTA (solo posible con ALLOW_REMOTE_DB_IN_DEV=1) → worker
+    //     OFF salvo HANGFIRE_SERVER_ENABLED=1: es exactamente el escenario del incidente.
     var hangfireServerOptIn =
         Environment.GetEnvironmentVariable("HANGFIRE_SERVER_ENABLED") == "1";
-    var enableHangfireServer = !isDevelopment || hangfireServerOptIn;
+    bool hangfireDbHostIsLocal;
+    {
+        var hfGuardHost = new NpgsqlConnectionStringBuilder(connectionString).Host ?? string.Empty;
+        hangfireDbHostIsLocal =
+            hfGuardHost.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+            hfGuardHost == "127.0.0.1" || hfGuardHost == "::1" ||
+            hfGuardHost.Equals("host.docker.internal", StringComparison.OrdinalIgnoreCase);
+    }
+    // Kill-switch explícito (lo usa el harness de tests: la WebApplicationFactory corre en
+    // Development con Postgres en localhost y NO quiere un worker procesando jobs de fondo).
+    var hangfireServerForcedOff =
+        Environment.GetEnvironmentVariable("HANGFIRE_SERVER_DISABLED") == "1";
+    var enableHangfireServer =
+        !hangfireServerForcedOff && (!isDevelopment || hangfireDbHostIsLocal || hangfireServerOptIn);
 
     if (isDevelopment && !enableHangfireServer)
     {
         hangfireLogger.LogWarning(
-            "⚠️ HF-LOCAL GUARD: Hangfire SERVER deshabilitado en Development para no procesar " +
-            "jobs de la cola compartida (posiblemente PRODUCCIÓN). Cliente y dashboard siguen " +
-            "activos. Para habilitarlo conscientemente: HANGFIRE_SERVER_ENABLED=1");
+            "⚠️ HF-LOCAL GUARD: Hangfire SERVER deshabilitado — entorno Development con BD " +
+            "REMOTA (cola posiblemente de PRODUCCIÓN). Cliente y dashboard siguen activos. " +
+            "Para habilitarlo conscientemente: HANGFIRE_SERVER_ENABLED=1");
+    }
+    else if (isDevelopment && hangfireDbHostIsLocal)
+    {
+        hangfireLogger.LogInformation(
+            "✅ HF-LOCAL GUARD: worker de Hangfire ACTIVO en Development (BD local — la cola " +
+            "es la de la réplica, aislada de producción).");
     }
 
     if (enableHangfireServer)

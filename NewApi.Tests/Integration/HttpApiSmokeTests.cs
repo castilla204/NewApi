@@ -125,14 +125,15 @@ public class HttpApiSmokeTests
     // ─────────────────────────────────────────────────────────────────────────
     // API-07 · HF-LOCAL GUARD: el host en Development NO arranca BackgroundJobServer
     // ─────────────────────────────────────────────────────────────────────────
-    [Fact(DisplayName = "API-07 · en Development NO se registra ningún Hangfire server (HF-LOCAL GUARD)")]
+    [Fact(DisplayName = "API-07 · el harness de tests NO registra ningún Hangfire server (HANGFIRE_SERVER_DISABLED)")]
     public async Task Development_host_does_not_register_hangfire_server()
     {
-        // El host de tests arranca con UseEnvironment("Development") y SIN
-        // HANGFIRE_SERVER_ENABLED=1 → el guard debe impedir el BackgroundJobServer.
-        // Sin el guard, una API local conectada (por error de config) a la BD de prod
-        // se une a la cola compartida y procesa jobs reales con binario desactualizado
-        // (caso real: SearchHire 15, 2026-06-11 00:50 UTC).
+        // HF-LOCAL GUARD v2: en Development con BD local el worker SÍ arranca (los
+        // timers funcionan al probar en local; la cola es la de la réplica, aislada
+        // de prod). El harness de tests opta por apagarlo explícitamente con
+        // HANGFIRE_SERVER_DISABLED=1 (ApiFactoryFixture) para que ningún worker
+        // procese jobs de fondo en paralelo a las aserciones. Este test fija ese
+        // contrato: si el kill-switch deja de respetarse, count(hangfire.server) > 0.
         await using var db = _api.CreateDbContext();
         await using var cmd = db.Database.GetDbConnection().CreateCommand();
         cmd.CommandText = "SELECT count(*)::int FROM hangfire.server";

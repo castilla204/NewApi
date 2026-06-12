@@ -754,6 +754,7 @@ namespace newApi.Controllers
                         Reviews = new List<ReviewDto>(),
                         Latitude = expertProfile.Latitude ?? string.Empty,
                         Longitude = expertProfile.Longitude ?? string.Empty,
+                        WorkRadiusKm = expertProfile.WorkRadiusKm,
                         StripeStatus = expertProfile.StripeStatus,
                         StripeStatusDetails = expertProfile.StripeStatusDetails,
                         OnboardingCompleted = expertProfile.OnboardingCompleted,

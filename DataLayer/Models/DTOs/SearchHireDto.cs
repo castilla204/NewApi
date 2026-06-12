@@ -236,6 +236,10 @@ namespace newApi.DataLayer.Models.DTOs
         /// </summary>
         public string? City { get; set; }
         /// <summary>
+        /// Radio de trabajo del experto en km (0 = solo en su taller/punto fijo, máx 200).
+        /// </summary>
+        public int WorkRadiusKm { get; set; }
+        /// <summary>
         /// Horario de disponibilidad del experto (opcional - solo si tiene disponibilidad configurada)
         /// </summary>
         public HomepageExpertAvailabilityDto? Availability { get; set; }
@@ -262,6 +266,11 @@ namespace newApi.DataLayer.Models.DTOs
         public List<ReviewDto> Reviews { get; set; }
         public string Latitude { get; set; }
         public string Longitude { get; set; }
+
+        /// <summary>
+        /// Radio de trabajo del experto en km (0 = solo en su taller/punto fijo, máx 200).
+        /// </summary>
+        public int WorkRadiusKm { get; set; }
         public StripeStatus StripeStatus { get; set; }
         public string? StripeStatusDetails { get; set; }
         public bool OnboardingCompleted { get; set; }

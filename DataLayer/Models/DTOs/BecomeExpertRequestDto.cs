@@ -10,7 +10,13 @@ namespace newApi.ScrapperGateway.DataLayer.Models.DTOs
         public string Description { get; set; }
         public string Latitude { get; set; }
         public string Longitude { get; set; }
-        
+
+        /// <summary>
+        /// Radio de trabajo en km desde el punto fijo del experto (0 = solo en su taller, máx 200).
+        /// Opcional al registrarse: si no se envía, se usa el default (100 km).
+        /// </summary>
+        public int? WorkRadiusKm { get; set; }
+
         /// <summary>
         /// Días de la semana en los que el experto trabaja (múltiples valores permitidos en form-data)
         /// Valores permitidos: "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
@@ -34,7 +40,13 @@ namespace newApi.ScrapperGateway.DataLayer.Models.DTOs
         public string Description { get; set; }
         public string Latitude { get; set; }
         public string Longitude { get; set; }
-        
+
+        /// <summary>
+        /// Radio de trabajo en km desde el punto fijo del experto (0 = solo en su taller, máx 200).
+        /// Opcional: si no se envía, se conserva el valor actual.
+        /// </summary>
+        public int? WorkRadiusKm { get; set; }
+
         /// <summary>
         /// Días de la semana en los que el experto trabaja (múltiples valores permitidos en form-data)
         /// Valores permitidos: "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"

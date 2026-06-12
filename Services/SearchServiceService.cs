@@ -147,8 +147,11 @@ namespace newApi.Services
                         }
 
                         var distance = CalculateDistance(searchLatitude, searchLongitude, expertLat, expertLon);
-                        // ✅ Filtrar por distancia: solo servicios dentro del rango especificado
-                        return distance <= locationRange;
+                        // ✅ Filtrar por distancia: dentro del rango del cliente Y del radio de
+                        // trabajo del experto (WorkRadiusKm == 0 = solo en su taller, el cliente
+                        // se desplaza → no se excluye por distancia).
+                        return distance <= locationRange
+                            && (ss.ExpertProfile.WorkRadiusKm == 0 || distance <= ss.ExpertProfile.WorkRadiusKm);
                     })
                     .OrderBy(ss =>
                     {
@@ -379,6 +382,7 @@ namespace newApi.Services
                         RegisteredSince = firstService.ExpertProfile.CreatedAt,
                         Latitude = firstService.ExpertProfile.Latitude,
                         Longitude = firstService.ExpertProfile.Longitude,
+                        WorkRadiusKm = firstService.ExpertProfile.WorkRadiusKm,
                         // ✅ NUEVO: Precio del servicio
                         Price = firstService.Price,
                         // Round 24: currency original del precio (ISO 4217). Default 'EUR' si null.
@@ -641,7 +645,8 @@ namespace newApi.Services
                             })
                             .ToList(),
                         Latitude = ss.ExpertProfile.Latitude,
-                        Longitude = ss.ExpertProfile.Longitude
+                        Longitude = ss.ExpertProfile.Longitude,
+                        WorkRadiusKm = ss.ExpertProfile.WorkRadiusKm
                     })
                     .ToListAsync(cancellationToken);
 
@@ -716,6 +721,7 @@ namespace newApi.Services
                         ImageUrls = imageUrls,  // ✅ Mínimo 3 imágenes
                         Latitude = s.Latitude ?? string.Empty,
                         Longitude = s.Longitude ?? string.Empty,
+                        WorkRadiusKm = s.WorkRadiusKm,
                         CurrentAvailability = availabilityDto  // ✅ Horario
                     };
                 }).ToList();
@@ -1843,6 +1849,7 @@ namespace newApi.Services
                     Reviews = reviews,
                     Latitude = ss.ExpertProfile.Latitude,
                     Longitude = ss.ExpertProfile.Longitude,
+                    WorkRadiusKm = ss.ExpertProfile.WorkRadiusKm,
                     StripeStatus = ss.ExpertProfile.StripeStatus, // ✅ CORRECCIÓN: Mapear StripeStatus
                     StripeStatusDetails = ss.ExpertProfile.StripeStatusDetails, // ✅ CORRECCIÓN: Mapear StripeStatusDetails
                     OnboardingCompleted = ss.ExpertProfile.OnboardingCompleted, // ✅ CORRECCIÓN: Mapear OnboardingCompleted
@@ -1974,6 +1981,7 @@ namespace newApi.Services
                     Reviews = reviews,
                     Latitude = ss.ExpertProfile.Latitude,
                     Longitude = ss.ExpertProfile.Longitude,
+                    WorkRadiusKm = ss.ExpertProfile.WorkRadiusKm,
                     IsOnVacation = ss.ExpertProfile.IsOnVacation,
                     // ✅ FUTURE REQUIREMENTS
                     StripeFutureRequirements = ss.ExpertProfile.StripeFutureRequirements,
@@ -2809,7 +2817,8 @@ namespace newApi.Services
                     {
                         ServiceId = ss.Id,
                         Latitude = ss.ExpertProfile.Latitude,
-                        Longitude = ss.ExpertProfile.Longitude
+                        Longitude = ss.ExpertProfile.Longitude,
+                        WorkRadiusKm = ss.ExpertProfile.WorkRadiusKm
                     });
 
                 _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Query construida, ejecutando ToListAsync... (Duración construcción: {(DateTime.UtcNow - queryStartTime).TotalMilliseconds:F2}ms)");
@@ -2832,7 +2841,7 @@ namespace newApi.Services
                         }
 
                         var distance = CalculateDistance(searchLatitude, searchLongitude, expertLat, expertLng);
-                        return new { ServiceId = ss.ServiceId, Distance = distance };
+                        return new { ServiceId = ss.ServiceId, Distance = distance, WorkRadiusKm = ss.WorkRadiusKm };
                     })
                     .Where(x => x != null)
                     .OrderBy(x => x!.Distance)
@@ -2845,7 +2854,14 @@ namespace newApi.Services
                 // Esto es porque el usuario quiere ver servicios de todo el país, no solo de la capital
                 bool isCountryWideSearch = string.IsNullOrWhiteSpace(latitude) && string.IsNullOrWhiteSpace(longitude) && !string.IsNullOrWhiteSpace(countryCode);
                 
-                var servicesInRange = servicesWithDistance.Where(x => x!.Distance <= locationRange).ToList();
+                // ✅ WORK RADIUS: además del rango del cliente, respetar el radio de trabajo del
+                // experto. WorkRadiusKm == 0 significa "solo en su taller" (el cliente se desplaza),
+                // así que NO se excluye por distancia; con radio > 0 el experto solo aparece "en
+                // rango" si la distancia no supera lo que él está dispuesto a viajar.
+                var servicesInRange = servicesWithDistance
+                    .Where(x => x!.Distance <= locationRange
+                                && (x.WorkRadiusKm == 0 || x.Distance <= x.WorkRadiusKm))
+                    .ToList();
                 
                 var servicesToUse = isCountryWideSearch
                     ? servicesWithDistance // Para búsquedas por país, devolver TODOS ordenados por distancia
@@ -2921,6 +2937,7 @@ namespace newApi.Services
                         ExpertProfilePictureObjectName = ss.ExpertProfile.ProfilePictureObjectName,
                         ExpertCountry = ss.ExpertProfile.Country,
                         ExpertCity = ss.ExpertProfile.City,
+                        ExpertWorkRadiusKm = ss.ExpertProfile.WorkRadiusKm,
                         // ✅ OPTIMIZACIÓN: Simplificar cálculo de rating - evitar Any() y Average() que son lentos
                         // En lugar de calcular en SQL, usar un campo calculado o query separada
                         // Por ahora retornar 0 y se puede optimizar después
@@ -3059,6 +3076,7 @@ namespace newApi.Services
                                 : s.ExpertProfilePictureUrl ?? string.Empty,
                             Country = s.ExpertCountry,
                             City = s.ExpertCity,
+                            WorkRadiusKm = s.ExpertWorkRadiusKm,
                             Availability = availabilityDto
                         },
                         AverageRating = s.AverageRating,
@@ -3184,6 +3202,7 @@ namespace newApi.Services
                         ExpertProfilePictureObjectName = ss.ExpertProfile.ProfilePictureObjectName,
                         ExpertCountry = ss.ExpertProfile.Country,
                         ExpertCity = ss.ExpertProfile.City,
+                        ExpertWorkRadiusKm = ss.ExpertProfile.WorkRadiusKm,
                         AverageRating = ss.ExpertProfile.User.ReviewsReceived.Any()
                             ? ss.ExpertProfile.User.ReviewsReceived.Average(r => (double)r.Score)
                             : 0.0,
@@ -3282,6 +3301,7 @@ namespace newApi.Services
                                 : s.ExpertProfilePictureUrl ?? string.Empty,
                             Country = s.ExpertCountry,
                             City = s.ExpertCity,
+                            WorkRadiusKm = s.ExpertWorkRadiusKm,
                             Availability = availabilityDto
                         },
                         AverageRating = s.AverageRating,
@@ -3416,6 +3436,7 @@ namespace newApi.Services
                             ExpertProfilePictureObjectName = ss.ExpertProfile.ProfilePictureObjectName,
                             ExpertCountry = ss.ExpertProfile.Country,
                             ExpertCity = ss.ExpertProfile.City,
+                            ExpertWorkRadiusKm = ss.ExpertProfile.WorkRadiusKm,
                             AverageRating = ss.ExpertProfile.User.ReviewsReceived.Any()
                                 ? ss.ExpertProfile.User.ReviewsReceived.Average(r => (double)r.Score)
                                 : 0.0,
@@ -3489,6 +3510,7 @@ namespace newApi.Services
                                     : s.ExpertProfilePictureUrl ?? string.Empty,
                                 Country = s.ExpertCountry,
                                 City = s.ExpertCity,
+                                WorkRadiusKm = s.ExpertWorkRadiusKm,
                                 Availability = availabilityDto
                             },
                             AverageRating = s.AverageRating,

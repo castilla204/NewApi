@@ -5870,6 +5870,8 @@ namespace newApi.Services
 
                 LocationRange = appointment.SearchHire?.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50, // Rango por defecto de 50km
 
+                ExpertWorkRadiusKm = appointment.SearchHire?.SearchService?.ExpertProfile?.WorkRadiusKm,
+
                 Timers = appointment.Timers?.Select(t => new AppointmentTimerDto
 
                 {

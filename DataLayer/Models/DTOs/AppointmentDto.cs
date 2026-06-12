@@ -71,6 +71,12 @@ namespace newApi.DataLayer.Models.DTOs
         public string? ExpertLatitude { get; set; } // Coordenadas del experto al momento de la contratación
         public string? ExpertLongitude { get; set; } // Coordenadas del experto al momento de la contratación
         public int? LocationRange { get; set; } // Rango máximo permitido en km
+
+        /// <summary>
+        /// Radio de trabajo del EXPERTO en km (0 = solo en su taller/punto fijo).
+        /// Con 0, la ubicación de la cita es el punto fijo del experto.
+        /// </summary>
+        public int? ExpertWorkRadiusKm { get; set; }
         public SystemStatusDto? StatusInfo { get; set; } // ✅ NUEVO: Información completa del estado
     }
 

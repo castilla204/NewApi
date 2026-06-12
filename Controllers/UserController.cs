@@ -551,6 +551,31 @@ public class UserController : ControllerBase
         }
     }
 
+    public class BecomeExpertMinimalDto { public string Country { get; set; } = string.Empty; }
+
+    /// <summary>
+    /// 🧩 STRIPE-FIRST: alta de experto mínima — solo el país. Crea el perfil con
+    /// placeholders y Role=Expert para que el frontend lance el onboarding de Stripe
+    /// de inmediato. El perfil se completa en el panel (invisible hasta entonces).
+    /// </summary>
+    [Authorize]
+    [HttpPost("become-expert-minimal")]
+    public async Task<IActionResult> BecomeExpertMinimal([FromBody] BecomeExpertMinimalDto request)
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            return Unauthorized(new { message = "Invalid user identification" });
+
+        if (string.IsNullOrWhiteSpace(request?.Country))
+            return BadRequest(new { message = "El país es obligatorio (no se puede cambiar después en Stripe)." });
+
+        var (success, token, errorCode, errorMessage) = await _userService.BecomeExpertMinimal(userId, request.Country);
+        if (!success)
+            return BadRequest(new { message = errorMessage ?? "No se pudo completar el alta.", errorCode });
+
+        return Ok(new { message = "Alta de experto creada. Continúa con Stripe.", token });
+    }
+
     [Authorize]
     [HttpPost("become-expert")]
     [RequestSizeLimit(10 * 1024 * 1024)] // 10MB limit

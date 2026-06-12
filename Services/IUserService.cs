@@ -19,6 +19,9 @@ namespace newApi.Services
         // mapee a HTTP status + mensaje específico al cliente (en vez del fósil "Google Cloud Storage").
         Task<(bool success, string? token, User? user, ExpertProfile? expertProfile,
               string? errorCode, string? errorMessage, string? detectedCountry)> BecomeExpert(int userId, BecomeExpertRequestDto request);
+        // 🧩 STRIPE-FIRST: alta mínima (solo país) para lanzar el onboarding de Stripe
+        // de inmediato; el perfil se completa después en el panel (invisible hasta entonces).
+        Task<(bool Success, string? Token, string? ErrorCode, string? ErrorMessage)> BecomeExpertMinimal(int userId, string country);
         Task<ExpertProfileDto?> GetExpertProfile(int userId);
         Task<(bool Success, ExpertProfileDto? UpdatedProfile,
               string? errorCode, string? errorMessage, string? detectedCountry)> UpdateExpertProfile(int userId, UpdateExpertProfileRequestDto request);

@@ -92,6 +92,9 @@ namespace newApi.Services
                             // 🧩 PERFIL COMPLETO (Stripe-first): invisible hasta rellenar foto, descripción y ubicación.
                             && ss.ExpertProfile.Description != null && ss.ExpertProfile.Description != ""
                             && ss.ExpertProfile.ProfilePictureUrl != null && ss.ExpertProfile.ProfilePictureUrl != ""
+                            // 📱 OBLIGATORIO: móvil verificado (no fijo) para ser visible — los avisos van por SMS.
+                            && ss.ExpertProfile.User.PhoneVerified
+                            && (ss.ExpertProfile.User.PhoneLineType == null || ss.ExpertProfile.User.PhoneLineType != "landline")
                             && ss.ExpertProfile.Latitude != null && ss.ExpertProfile.Latitude != "") // ✅ FIX: Permitir PendingVerification
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
@@ -279,6 +282,9 @@ namespace newApi.Services
                             // 🧩 PERFIL COMPLETO (Stripe-first): invisible hasta rellenar foto, descripción y ubicación.
                             && ss.ExpertProfile.Description != null && ss.ExpertProfile.Description != ""
                             && ss.ExpertProfile.ProfilePictureUrl != null && ss.ExpertProfile.ProfilePictureUrl != ""
+                            // 📱 OBLIGATORIO: móvil verificado (no fijo) para ser visible — los avisos van por SMS.
+                            && ss.ExpertProfile.User.PhoneVerified
+                            && (ss.ExpertProfile.User.PhoneLineType == null || ss.ExpertProfile.User.PhoneLineType != "landline")
                             && ss.ExpertProfile.Latitude != null && ss.ExpertProfile.Latitude != "") // ✅ FIX: Permitir PendingVerification
                     .Where(ss => !string.IsNullOrEmpty(ss.ExpertProfile.Latitude) && !string.IsNullOrEmpty(ss.ExpertProfile.Longitude)); // ✅ MEJORA: Filtrar coordenadas vacías en SQL
 
@@ -476,6 +482,9 @@ namespace newApi.Services
                             // 🧩 PERFIL COMPLETO (Stripe-first): invisible hasta rellenar foto, descripción y ubicación.
                             && ss.ExpertProfile.Description != null && ss.ExpertProfile.Description != ""
                             && ss.ExpertProfile.ProfilePictureUrl != null && ss.ExpertProfile.ProfilePictureUrl != ""
+                            // 📱 OBLIGATORIO: móvil verificado (no fijo) para ser visible — los avisos van por SMS.
+                            && ss.ExpertProfile.User.PhoneVerified
+                            && (ss.ExpertProfile.User.PhoneLineType == null || ss.ExpertProfile.User.PhoneLineType != "landline")
                             && ss.ExpertProfile.Latitude != null && ss.ExpertProfile.Latitude != "")
                     .Where(ss => !string.IsNullOrEmpty(ss.ExpertProfile.Latitude)
                         && !string.IsNullOrEmpty(ss.ExpertProfile.Longitude));
@@ -2825,6 +2834,9 @@ namespace newApi.Services
                         // 🧩 PERFIL COMPLETO (Stripe-first): invisible hasta rellenar foto, descripción y ubicación.
                         && ss.ExpertProfile.Description != null && ss.ExpertProfile.Description != ""
                         && ss.ExpertProfile.ProfilePictureUrl != null && ss.ExpertProfile.ProfilePictureUrl != ""
+                        // 📱 OBLIGATORIO: móvil verificado (no fijo) para ser visible — los avisos van por SMS.
+                        && ss.ExpertProfile.User.PhoneVerified
+                        && (ss.ExpertProfile.User.PhoneLineType == null || ss.ExpertProfile.User.PhoneLineType != "landline")
                         && !string.IsNullOrEmpty(ss.ExpertProfile.Latitude) 
                         && !string.IsNullOrEmpty(ss.ExpertProfile.Longitude)
                         && (categoryId == null || ss.CategoryId == categoryId)  // ✅ FILTRO POR CATEGORÍA
@@ -3148,6 +3160,9 @@ namespace newApi.Services
                         // 🧩 PERFIL COMPLETO (Stripe-first): invisible hasta rellenar foto, descripción y ubicación.
                         && ss.ExpertProfile.Description != null && ss.ExpertProfile.Description != ""
                         && ss.ExpertProfile.ProfilePictureUrl != null && ss.ExpertProfile.ProfilePictureUrl != ""
+                        // 📱 OBLIGATORIO: móvil verificado (no fijo) para ser visible — los avisos van por SMS.
+                        && ss.ExpertProfile.User.PhoneVerified
+                        && (ss.ExpertProfile.User.PhoneLineType == null || ss.ExpertProfile.User.PhoneLineType != "landline")
                         && ss.ExpertProfile.Latitude != null && ss.ExpertProfile.Latitude != ""
                         && (categoryId == null || ss.CategoryId == categoryId))  // ✅ FILTRO POR CATEGORÍA
                     .Select(ss => new
@@ -3389,6 +3404,9 @@ namespace newApi.Services
                         // 🧩 PERFIL COMPLETO (Stripe-first): invisible hasta rellenar foto, descripción y ubicación.
                         && ss.ExpertProfile.Description != null && ss.ExpertProfile.Description != ""
                         && ss.ExpertProfile.ProfilePictureUrl != null && ss.ExpertProfile.ProfilePictureUrl != ""
+                        // 📱 OBLIGATORIO: móvil verificado (no fijo) para ser visible — los avisos van por SMS.
+                        && ss.ExpertProfile.User.PhoneVerified
+                        && (ss.ExpertProfile.User.PhoneLineType == null || ss.ExpertProfile.User.PhoneLineType != "landline")
                         && ss.ExpertProfile.Latitude != null && ss.ExpertProfile.Latitude != ""
                         && !string.IsNullOrEmpty(ss.ExpertProfile.Country)
                         && targetCategories.Contains(ss.Category.Name)

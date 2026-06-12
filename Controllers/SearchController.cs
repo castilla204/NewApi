@@ -539,13 +539,17 @@ namespace newApi.Controllers
                     });
                 }
 
-                // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
-                /*
-                if (!user.PhoneVerified)
+                // 📱 OBLIGATORIO (2026-06-12): móvil verificado para CONTRATAR — los avisos
+                // de citas/informes con plazos van por SMS y un fijo no los recibe.
+                if (!user.PhoneVerified || string.IsNullOrWhiteSpace(user.PhoneNumber)
+                    || string.Equals(user.PhoneLineType, "landline", StringComparison.OrdinalIgnoreCase))
                 {
-                    return StatusCode(403, new { message = "Phone verification required to create searches" });
+                    return StatusCode(403, new
+                    {
+                        message = "Necesitas un móvil verificado para contratar: te avisamos por SMS de citas e informes con plazos.",
+                        errorCode = "PHONE_VERIFICATION_REQUIRED"
+                    });
                 }
-                */
 
                 var service = await _context.SearchServices
                     .Include(ss => ss.ExpertProfile)
@@ -948,13 +952,17 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "User account is blocked" });
                 }
 
-                // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
-                /*
-                if (!user.PhoneVerified)
+                // 📱 OBLIGATORIO (2026-06-12): móvil verificado para CONTRATAR — los avisos
+                // de citas/informes con plazos van por SMS y un fijo no los recibe.
+                if (!user.PhoneVerified || string.IsNullOrWhiteSpace(user.PhoneNumber)
+                    || string.Equals(user.PhoneLineType, "landline", StringComparison.OrdinalIgnoreCase))
                 {
-                    return StatusCode(403, new { message = "Phone verification required to create searches" });
+                    return StatusCode(403, new
+                    {
+                        message = "Necesitas un móvil verificado para contratar: te avisamos por SMS de citas e informes con plazos.",
+                        errorCode = "PHONE_VERIFICATION_REQUIRED"
+                    });
                 }
-                */
 
                 var search = new Search
                 {

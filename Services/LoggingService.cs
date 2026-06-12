@@ -823,6 +823,10 @@ namespace newApi.Services
                 context.Notifications.Add(notification);
                 await context.SaveChangesAsync();
 
+                // 🔔 NOTIF-RT: trigger en tiempo real para el panel de admins (payload
+                // mínimo — el contenido se lee por la API autenticada).
+                await TryBroadcastNotificationCreatedAsync(null, notification.Id);
+
                 // ✅ ALERTA REAL: además del aviso in-app, enviar EMAIL a los administradores.
                 // Antes esto solo creaba la fila in-app (UserId=null) y nadie se enteraba si no
                 // miraba el panel. Ahora cualquier log que requiera notificación de admin (todos los
@@ -1063,6 +1067,10 @@ namespace newApi.Services
                 context.Notifications.Add(notification);
                 await context.SaveChangesAsync();
 
+                // 🔔 NOTIF-RT: trigger en tiempo real para la campana del usuario (payload
+                // mínimo — el contenido se lee por la API autenticada).
+                await TryBroadcastNotificationCreatedAsync(userId, notification.Id);
+
                 // ✅ Enviar email al usuario si tiene email configurado (FIRE-AND-FORGET: no bloquea la API)
                 if (!string.IsNullOrEmpty(user.Email))
                 {
@@ -1270,6 +1278,34 @@ namespace newApi.Services
         /// <summary>
         /// Obtiene el título y tipo de notificación según el nivel de log
         /// </summary>
+        /// <summary>
+        /// 🔔 NOTIF-RT: difunde por Supabase Realtime que se creó una notificación
+        /// (campana reactiva). Best-effort: un fallo aquí nunca rompe el flujo — el
+        /// frontend tiene polling de respaldo. Payload mínimo (id + timestamp): el
+        /// contenido SIEMPRE se obtiene del endpoint autenticado, así que un canal
+        /// broadcast adivinable no filtra nada.
+        /// </summary>
+        private async Task TryBroadcastNotificationCreatedAsync(int? userId, Guid notificationId)
+        {
+            try
+            {
+                using var rtScope = _serviceScopeFactory.CreateScope();
+                var realtime = rtScope.ServiceProvider.GetService<ISupabaseRealtimeService>();
+                if (realtime != null)
+                {
+                    await realtime.NotifyUserNotificationAsync(userId, new
+                    {
+                        id = notificationId,
+                        createdAt = DateTime.UtcNow,
+                    });
+                }
+            }
+            catch (Exception rtEx)
+            {
+                Console.WriteLine($"[LOGGING SERVICE] [NOTIF-RT] Broadcast de notificación falló (no crítico, hay polling de respaldo): {rtEx.Message}");
+            }
+        }
+
         private (string Title, string Type) GetNotificationTitleAndType(string logLevel)
         {
             return logLevel switch

@@ -31,6 +31,13 @@ namespace newApi.Services
         /// Envía notificación de usuario online/offline en conversación
         /// </summary>
         Task NotifyUserPresenceAsync(int conversationId, int userId, bool isOnline);
+
+        /// <summary>
+        /// 🔔 NOTIF-RT: difunde una notificación in-app recién creada para que el
+        /// frontend actualice campana/inbox al instante. userId null = notificación
+        /// global de administradores (canal notifications:admins).
+        /// </summary>
+        Task NotifyUserNotificationAsync(int? userId, object notificationData);
     }
 
     public class SupabaseRealtimeService : ISupabaseRealtimeService
@@ -197,6 +204,17 @@ namespace newApi.Services
             };
             
             await BroadcastToChannelAsync(channel, isOnline ? "user_joined" : "user_left", payload);
+        }
+
+        /// <inheritdoc />
+        public async Task NotifyUserNotificationAsync(int? userId, object notificationData)
+        {
+            // Canal por usuario (la campana del frontend se suscribe a su propio canal);
+            // las notificaciones globales de admins van a un canal compartido que solo
+            // los admins escuchan (el ENDPOINT sigue siendo la fuente de verdad con
+            // autorización — el broadcast solo dispara el refetch).
+            var channel = userId.HasValue ? $"notifications:user:{userId.Value}" : "notifications:admins";
+            await BroadcastToChannelAsync(channel, "new_notification", notificationData);
         }
     }
 }

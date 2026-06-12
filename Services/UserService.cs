@@ -76,6 +76,9 @@ namespace newApi.Services
                     u.Email,
                     u.PhoneNumber,
                     u.PhoneVerified,
+                    // 📱 SMS-CENTRAL: visible en el panel admin (móvil/fijo + origen).
+                    u.PhoneLineType,
+                    u.PhoneVerificationSource,
                     u.IsBlocked,
                     u.CreatedAt,
                     SearchCount = u.Searches.Count(s => s.IsActive),
@@ -151,12 +154,44 @@ namespace newApi.Services
             return true;
         }
 
-        // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
-        // Método stub para cumplir con la interfaz - ya no hace nada
-        public Task<bool> SendVerification(int userId, string phoneNumber)
+        // 📱 SMS-CENTRAL (2026-06-12): verificación OTP REACTIVADA vía Twilio Verify.
+        // Necesaria para que un usuario con FIJO (no recibe SMS) cargue un MÓVIL y lo
+        // valide con el código. Gated: si faltan credenciales o VerificationServiceSid,
+        // devuelve false (el controller lo traduce a 503 con mensaje claro).
+        public async Task<bool> SendVerification(int userId, string phoneNumber)
         {
-            // Verificación de teléfono deshabilitada
-            return Task.FromResult(false);
+            var accountSid = _configuration["Twilio:AccountSid"];
+            var authToken = _configuration["Twilio:AuthToken"];
+            var verifySid = _configuration["Twilio:VerificationServiceSid"];
+            if (string.IsNullOrWhiteSpace(accountSid) || string.IsNullOrWhiteSpace(authToken) || string.IsNullOrWhiteSpace(verifySid))
+                return false;
+
+            var user = await _context.Users.FindAsync(userId);
+            if (user == null) return false;
+
+            try
+            {
+                Twilio.TwilioClient.Init(accountSid, authToken);
+                await VerificationResource.CreateAsync(
+                    to: phoneNumber,
+                    channel: "sms",
+                    pathServiceSid: verifySid);
+
+                // Guardar el número PENDIENTE (sin marcar verificado hasta VerifyCode).
+                user.PhoneNumber = phoneNumber;
+                user.PhoneVerified = false;
+                await _context.SaveChangesAsync();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Fallo enviando código de verificación de teléfono",
+                    details: $"UserId {userId}: {ex.Message}",
+                    userId: userId,
+                    source: "UserService.SendVerification");
+                return false;
+            }
         }
         
         /*
@@ -200,12 +235,47 @@ namespace newApi.Services
         }
         */
 
-        // ✅ COMENTADO: Verificación de teléfono ya no es necesaria
-        // Método stub para cumplir con la interfaz - ya no hace nada
-        public Task<(bool success, string token, User user)> VerifyCode(int userId, string phoneNumber, string code)
+        // 📱 SMS-CENTRAL (2026-06-12): comprobación del código OTP (Twilio Verify).
+        // Éxito → PhoneVerified=true, PhoneLineType="mobile" (acaba de RECIBIR un SMS,
+        // demostración empírica de que es móvil), PhoneVerificationSource="otp".
+        public async Task<(bool success, string token, User user)> VerifyCode(int userId, string phoneNumber, string code)
         {
-            // Verificación de teléfono deshabilitada
-            return Task.FromResult<(bool, string?, User?)>((false, null, null));
+            var accountSid = _configuration["Twilio:AccountSid"];
+            var authToken = _configuration["Twilio:AuthToken"];
+            var verifySid = _configuration["Twilio:VerificationServiceSid"];
+            if (string.IsNullOrWhiteSpace(accountSid) || string.IsNullOrWhiteSpace(authToken) || string.IsNullOrWhiteSpace(verifySid))
+                return (false, null, null);
+
+            var user = await _context.Users.FindAsync(userId);
+            if (user == null || user.PhoneNumber != phoneNumber) return (false, null, null);
+
+            try
+            {
+                Twilio.TwilioClient.Init(accountSid, authToken);
+                var check = await VerificationCheckResource.CreateAsync(
+                    to: phoneNumber,
+                    code: code,
+                    pathServiceSid: verifySid);
+
+                if (check.Status != "approved") return (false, null, null);
+
+                user.PhoneVerified = true;
+                user.PhoneLineType = "mobile"; // recibió el SMS: es móvil por demostración
+                user.PhoneVerificationSource = "otp";
+                await _context.SaveChangesAsync();
+
+                var token = GenerateJwtToken(user);
+                return (true, token, user);
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Fallo comprobando código de verificación de teléfono",
+                    details: $"UserId {userId}: {ex.Message}",
+                    userId: userId,
+                    source: "UserService.VerifyCode");
+                return (false, null, null);
+            }
         }
         
         /*

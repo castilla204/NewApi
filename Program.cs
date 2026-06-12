@@ -1681,6 +1681,7 @@ builder.Services.AddScoped<IFavoriteService, FavoriteService>(); // ✅ FAVORITO
 builder.Services.AddScoped<ISupabaseRealtimeService, SupabaseRealtimeService>(); // ✅ SUPABASE REALTIME: Reemplaza SignalR para chat en tiempo real
 builder.Services.AddScoped<IInAppNotificationService, InAppNotificationService>(); // 🔔 NOTIF-CENTRAL: punto único de notificaciones in-app (crear + broadcast)
 builder.Services.AddScoped<ISmsService, SmsService>(); // 📱 SMS-CENTRAL: Twilio (gated por config; no-op si faltan credenciales)
+builder.Services.AddScoped<IPhoneLookupService, PhoneLookupService>(); // 📱 clasifica móvil/fijo (Twilio Lookup + heurística ES)
 builder.Services.AddScoped<IStripeReconciliationService, StripeReconciliationService>(); // P2-5: reconciliación diaria BD↔Stripe
 builder.Services.AddScoped<IExchangeRateService, ExchangeRateService>(); // 💱 Multi-Currency Display: FX rates con cache 24h + BD snapshot
 // 🌍 Round 23: provider chain for FX rates — primary fawazahmed (covers LATAM) + fallback Frankfurter (ECB).

@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
@@ -26,23 +27,43 @@ namespace newApi.Services
         /// <summary>Crea + guarda + difunde (scope propio; NO usar dentro de una transacción del llamador).</summary>
         Task<Notification> CreateAsync(int? userId, string title, string message, string type, string? url = null, string? imageUrl = null);
 
+        /// <summary>
+        /// 📱 Crea la notificación in-app Y, si es una acción importante (sendSms),
+        /// envía además un SMS al usuario si tiene teléfono verificado y SMS habilitado.
+        /// El SMS es best-effort (un fallo no rompe la notificación in-app).
+        /// </summary>
+        Task<Notification> CreateAsync(int? userId, string title, string message, string type, bool sendSms, string? smsText = null, string? url = null, string? imageUrl = null);
+
         /// <summary>Difunde el trigger realtime de filas YA guardadas/commiteadas (lote en una sola llamada HTTP).</summary>
         Task BroadcastCreatedAsync(IEnumerable<Notification> notifications);
+
+        /// <summary>
+        /// 📱 Envía un SMS a un usuario SOLO si tiene teléfono verificado (PhoneVerified)
+        /// y SMS habilitado. Best-effort. Para sitios que insertan la notificación en su
+        /// propia transacción y solo quieren el refuerzo por SMS tras el commit.
+        /// </summary>
+        Task SendImportantSmsAsync(int userId, string smsText);
     }
 
     public class InAppNotificationService : IInAppNotificationService
     {
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ISupabaseRealtimeService _realtime;
+        private readonly ISmsService _sms;
 
-        public InAppNotificationService(IServiceScopeFactory scopeFactory, ISupabaseRealtimeService realtime)
+        public InAppNotificationService(IServiceScopeFactory scopeFactory, ISupabaseRealtimeService realtime, ISmsService sms)
         {
             _scopeFactory = scopeFactory;
             _realtime = realtime;
+            _sms = sms;
         }
 
         /// <inheritdoc />
-        public async Task<Notification> CreateAsync(int? userId, string title, string message, string type, string? url = null, string? imageUrl = null)
+        public Task<Notification> CreateAsync(int? userId, string title, string message, string type, string? url = null, string? imageUrl = null)
+            => CreateAsync(userId, title, message, type, sendSms: false, smsText: null, url: url, imageUrl: imageUrl);
+
+        /// <inheritdoc />
+        public async Task<Notification> CreateAsync(int? userId, string title, string message, string type, bool sendSms, string? smsText = null, string? url = null, string? imageUrl = null)
         {
             var notification = new Notification
             {
@@ -63,7 +84,38 @@ namespace newApi.Services
             await db.SaveChangesAsync();
 
             await BroadcastCreatedAsync(new[] { notification });
+
+            // 📱 SMS solo para acciones importantes y a un destinatario concreto (no globales de admin).
+            if (sendSms && userId.HasValue)
+            {
+                await SendImportantSmsAsync(userId.Value, smsText ?? message);
+            }
             return notification;
+        }
+
+        /// <inheritdoc />
+        public async Task SendImportantSmsAsync(int userId, string smsText)
+        {
+            try
+            {
+                if (!_sms.IsEnabled || string.IsNullOrWhiteSpace(smsText)) return;
+
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var user = await db.Users
+                    .Where(u => u.Id == userId)
+                    .Select(u => new { u.PhoneNumber, u.PhoneVerified })
+                    .FirstOrDefaultAsync();
+
+                // Solo a teléfonos VERIFICADOS (Stripe KYC para expertos, checkout para clientes).
+                if (user == null || !user.PhoneVerified || string.IsNullOrWhiteSpace(user.PhoneNumber)) return;
+
+                await _sms.SendSmsAsync(user.PhoneNumber, smsText);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[NOTIF-CENTRAL] SMS importante falló (no crítico): {ex.Message}");
+            }
         }
 
         /// <inheritdoc />

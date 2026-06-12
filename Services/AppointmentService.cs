@@ -48,7 +48,9 @@ namespace newApi.Services
         private static DateTime _cacheLastRefresh = DateTime.MinValue;
         private static readonly TimeSpan _cacheExpiration = TimeSpan.FromMinutes(30); // Cache v├ílido por 30 minutos
 
-        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService)
+        private readonly IInAppNotificationService _inAppNotifications; // 📱 SMS-CENTRAL
+
+        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService, IInAppNotificationService inAppNotifications)
 
         {
 
@@ -63,6 +65,8 @@ namespace newApi.Services
             _stripeValidationService = stripeValidationService;
 
             _timezoneService = timezoneService;
+
+            _inAppNotifications = inAppNotifications;
 
         }
 
@@ -1087,6 +1091,10 @@ namespace newApi.Services
                             relatedEntityId: updatedAppointment.Id,
                             notifyUser: true
                         );
+                        // 📱 SMS-CENTRAL: acción importante con plazo de 24h → refuerzo por SMS.
+                        await _inAppNotifications.SendImportantSmsAsync(
+                            updatedAppointment.SearchHire.ExpertId.Value,
+                            "Inspecciono: un cliente ha propuesto una cita. Tienes 24h para aceptarla o rechazarla. Entra en la app para responder.");
                     }
                 }
 
@@ -1562,6 +1570,13 @@ namespace newApi.Services
                             relatedEntityId: updatedAppointment.Id,
                             notifyUser: true
                         );
+                        // 📱 SMS-CENTRAL: la cita quedó confirmada → avisar al cliente.
+                        if (updatedAppointment.SearchHire.ClientId.HasValue)
+                        {
+                            await _inAppNotifications.SendImportantSmsAsync(
+                                updatedAppointment.SearchHire.ClientId.Value,
+                                "Inspecciono: el experto ha confirmado tu cita. Revisa los detalles en la app.");
+                        }
                         }
 
                         // Ô£à LOG: Notificaci├│n al cliente enviada
@@ -4708,6 +4723,10 @@ namespace newApi.Services
                             relatedEntityId: appointment.Id,
                             notifyUser: true
                         );
+                        // 📱 SMS-CENTRAL: el experto debe enviar el informe en 24h o se cancela.
+                        await _inAppNotifications.SendImportantSmsAsync(
+                            searchHire.ExpertId.Value,
+                            "Inspecciono: ya puedes enviar el informe de tu cita. Tienes 24h o la cita se cancelará automáticamente. Entra en la app.");
                     }
                     
                     // Ô£à Marcar el timer de transici├│n como expirado ya que el job se ejecut├│ exitosamente
@@ -5063,6 +5082,13 @@ namespace newApi.Services
                         relatedEntityId: appointment.Id,
                         notifyUser: true
                     );
+                    // 📱 SMS-CENTRAL: el cliente debe aprobar o disputar en 24h.
+                    if (appointment.SearchHire.ClientId.HasValue)
+                    {
+                        await _inAppNotifications.SendImportantSmsAsync(
+                            appointment.SearchHire.ClientId.Value,
+                            "Inspecciono: el experto ha enviado el informe de tu servicio. Tienes 24h para aprobarlo o abrir una disputa. Entra en la app.");
+                    }
                 }
 
                 // Cargar la cita actualizada con todas las relaciones

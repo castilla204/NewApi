@@ -67,12 +67,23 @@ namespace newApi.DataLayer.Models.DTOs
         public int? ServiceTypeCategoryId { get; set; }
         public string? ServiceTypeCategoryName { get; set; }
         public bool RequiresAppointment { get; set; }
+
+        /// <summary>
+        /// 🛡️ SNAPSHOT CONTRACTUAL: precio CONTRATADO (BaseAmount del hire), no el
+        /// precio actual del servicio — el experto puede haberlo cambiado después.
+        /// </summary>
         public decimal Price { get; set; }
 
         /// <summary>
         /// Round 24: currency original del precio del servicio (ISO 4217). Default 'EUR'.
         /// </summary>
         public string Currency { get; set; } = "EUR";
+
+        /// <summary>🛡️ SNAPSHOT CONTRACTUAL: condiciones del servicio al contratar (fallback al dato vivo en hires legacy).</summary>
+        public string? Conditions { get; set; }
+
+        /// <summary>🛡️ SNAPSHOT CONTRACTUAL: duración (horas) al contratar.</summary>
+        public int? DurationInHours { get; set; }
 
         // ✅ NUEVOS CAMPOS: Información de ubicación del experto para validación de citas
         public string? ExpertLatitude { get; set; } // Coordenadas del experto al momento de la contratación

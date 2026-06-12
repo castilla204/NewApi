@@ -69,6 +69,27 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// </summary>
         public string? ExpertCountry { get; set; }
 
+        // 🛡️ SNAPSHOT CONTRACTUAL (2026-06-12): condiciones del servicio y ubicación del
+        // experto AL CONTRATAR. El experto puede editar su servicio/perfil después (para
+        // futuros clientes), pero lo contratado queda congelado: el detalle del hire
+        // muestra estos valores y la validación de la cita usa ESTAS coordenadas.
+        // Nullable: hires anteriores a la columna hacen fallback al dato vivo.
+
+        /// <summary>Condiciones del servicio al momento de contratar.</summary>
+        public string? ConditionsSnapshot { get; set; }
+
+        /// <summary>Duración (horas) del servicio al momento de contratar.</summary>
+        public int? DurationInHoursSnapshot { get; set; }
+
+        /// <summary>Latitud del experto al momento de contratar.</summary>
+        public string? ExpertLatitudeSnapshot { get; set; }
+
+        /// <summary>Longitud del experto al momento de contratar.</summary>
+        public string? ExpertLongitudeSnapshot { get; set; }
+
+        /// <summary>Radio de trabajo (km) del experto al momento de contratar (0 = solo taller).</summary>
+        public int? ExpertWorkRadiusKmSnapshot { get; set; }
+
         /// <summary>
         /// Flag operativo: el hire requiere revisión manual del admin (p.ej. cuenta de experto
         /// rechazada o desautorizada por Stripe tras prestar el servicio). NO se considera un

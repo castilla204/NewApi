@@ -5778,7 +5778,15 @@ namespace newApi.Controllers
                     ClientVatCountryCode = clientVatCountryCode,        // 🔧 FISCAL FLIP: país NIF cliente (puede ser null)
                     ClientPercentageSnapshot = clientPctSnapshot,       // 🛡️ V8 FIX: congela % contractual
                     ExpertPercentageSnapshot = expertPctSnapshot,
-                    PlatformPercentageSnapshot = platformPctSnapshot
+                    PlatformPercentageSnapshot = platformPctSnapshot,
+                    // 🛡️ SNAPSHOT CONTRACTUAL: condiciones + ubicación del experto al contratar.
+                    // El experto puede editarlas después para futuros clientes, pero este hire
+                    // queda congelado (detalle del hire + validación de cita usan el snapshot).
+                    ConditionsSnapshot = service.Conditions,
+                    DurationInHoursSnapshot = service.DurationInHours,
+                    ExpertLatitudeSnapshot = service.ExpertProfile?.Latitude,
+                    ExpertLongitudeSnapshot = service.ExpertProfile?.Longitude,
+                    ExpertWorkRadiusKmSnapshot = service.ExpertProfile?.WorkRadiusKm
                 };
                     // ✅ REMOVED: Balance verification eliminated - all payments are direct Stripe
 

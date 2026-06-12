@@ -5383,7 +5383,14 @@ namespace newApi.Services
 
                 // Parsear coordenadas del experto
 
-                if (!decimal.TryParse(hire.SearchService.ExpertProfile.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLatitude))
+                // 🛡️ SNAPSHOT CONTRACTUAL: validar contra las coordenadas del experto AL
+                // CONTRATAR (no las vivas). Si el experto mueve su pin después, las citas de
+                // hires existentes se validan contra la ubicación que el cliente vio al pagar.
+                // Fallback al perfil vivo para hires anteriores a la columna.
+                var expertLatRaw = hire.ExpertLatitudeSnapshot ?? hire.SearchService.ExpertProfile.Latitude;
+                var expertLngRaw = hire.ExpertLongitudeSnapshot ?? hire.SearchService.ExpertProfile.Longitude;
+
+                if (!decimal.TryParse(expertLatRaw, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLatitude))
 
                 {
 
@@ -5393,7 +5400,7 @@ namespace newApi.Services
 
 
 
-                if (!decimal.TryParse(hire.SearchService.ExpertProfile.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLongitude))
+                if (!decimal.TryParse(expertLngRaw, NumberStyles.Any, CultureInfo.InvariantCulture, out var expertLongitude))
 
                 {
 
@@ -5864,13 +5871,14 @@ namespace newApi.Services
 
                 // Ô£à NUEVOS CAMPOS: Informaci├│n de ubicaci├│n del experto
 
-                ExpertLatitude = appointment.SearchHire?.SearchService?.ExpertProfile?.Latitude,
+                // 🛡️ SNAPSHOT CONTRACTUAL: ubicación del experto AL CONTRATAR.
+                ExpertLatitude = appointment.SearchHire?.ExpertLatitudeSnapshot ?? appointment.SearchHire?.SearchService?.ExpertProfile?.Latitude,
 
-                ExpertLongitude = appointment.SearchHire?.SearchService?.ExpertProfile?.Longitude,
+                ExpertLongitude = appointment.SearchHire?.ExpertLongitudeSnapshot ?? appointment.SearchHire?.SearchService?.ExpertProfile?.Longitude,
 
                 LocationRange = appointment.SearchHire?.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50, // Rango por defecto de 50km
 
-                ExpertWorkRadiusKm = appointment.SearchHire?.SearchService?.ExpertProfile?.WorkRadiusKm,
+                ExpertWorkRadiusKm = appointment.SearchHire?.ExpertWorkRadiusKmSnapshot ?? appointment.SearchHire?.SearchService?.ExpertProfile?.WorkRadiusKm,
 
                 Timers = appointment.Timers?.Select(t => new AppointmentTimerDto
 

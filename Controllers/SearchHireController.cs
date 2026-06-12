@@ -213,6 +213,12 @@ namespace newApi.Controllers
                     ExpertAvailabilityId = currentAvailability?.Id, // Guardar la disponibilidad usada
                     ExpertTimezone = expertTimezone, // ✅ INTERNACIONALIZACIÓN: Snapshot del timezone del lugar de contratación
                     ExpertCountry = expertCountry, // ✅ INTERNACIONALIZACIÓN: Snapshot del país del lugar de contratación
+                    // 🛡️ SNAPSHOT CONTRACTUAL: condiciones + ubicación del experto al contratar.
+                    ConditionsSnapshot = searchService.Conditions,
+                    DurationInHoursSnapshot = searchService.DurationInHours,
+                    ExpertLatitudeSnapshot = expert.ExpertProfile?.Latitude ?? searchService.ExpertProfile?.Latitude,
+                    ExpertLongitudeSnapshot = expert.ExpertProfile?.Longitude ?? searchService.ExpertProfile?.Longitude,
+                    ExpertWorkRadiusKmSnapshot = expert.ExpertProfile?.WorkRadiusKm ?? searchService.ExpertProfile?.WorkRadiusKm,
                     Conversations = new List<Conversation>()
                 };
 
@@ -803,13 +809,17 @@ namespace newApi.Controllers
                         ServiceTypeCategoryId = searchHire.SearchService.ServiceType?.ServiceTypeCategoryId,
                         ServiceTypeCategoryName = searchHire.SearchService.ServiceType?.ServiceTypeCategory?.Name,
                         RequiresAppointment = false,
-                        Price = searchHire.SearchService.Price,
+                        // 🛡️ SNAPSHOT CONTRACTUAL: precio contratado (BaseAmount del hire), no el actual.
+                        Price = searchHire.BaseAmount ?? searchHire.SearchService.Price,
+                        Conditions = searchHire.ConditionsSnapshot ?? searchHire.SearchService.Conditions,
+                        DurationInHours = searchHire.DurationInHoursSnapshot ?? searchHire.SearchService.DurationInHours,
                         // Round 24: poblar Currency (default 'EUR' si null).
                         Currency = string.IsNullOrEmpty(searchHire.SearchService.Currency) ? "EUR" : searchHire.SearchService.Currency,
-                        ExpertLatitude = searchHire.SearchService.ExpertProfile?.Latitude,
-                        ExpertLongitude = searchHire.SearchService.ExpertProfile?.Longitude,
+                        // 🛡️ SNAPSHOT CONTRACTUAL: ubicación/radio del experto AL CONTRATAR.
+                        ExpertLatitude = searchHire.ExpertLatitudeSnapshot ?? searchHire.SearchService.ExpertProfile?.Latitude,
+                        ExpertLongitude = searchHire.ExpertLongitudeSnapshot ?? searchHire.SearchService.ExpertProfile?.Longitude,
                         LocationRange = searchHire.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50,
-                        ExpertWorkRadiusKm = searchHire.SearchService.ExpertProfile?.WorkRadiusKm
+                        ExpertWorkRadiusKm = searchHire.ExpertWorkRadiusKmSnapshot ?? searchHire.SearchService.ExpertProfile?.WorkRadiusKm
                     } : null,
                     StatusInfo = new SystemStatusDto
                     {
@@ -887,10 +897,11 @@ namespace newApi.Controllers
                         ClientName = searchHire.ClientId.HasValue && searchHire.Client != null ? searchHire.Client.Name : null,
                         ExpertName = searchHire.ExpertId.HasValue && searchHire.Expert != null ? searchHire.Expert.Name : null,
                         Amount = searchHire.Amount,
-                        ExpertLatitude = searchHire.SearchService?.ExpertProfile?.Latitude,
-                        ExpertLongitude = searchHire.SearchService?.ExpertProfile?.Longitude,
+                        // 🛡️ SNAPSHOT CONTRACTUAL: ubicación/radio del experto AL CONTRATAR.
+                        ExpertLatitude = searchHire.ExpertLatitudeSnapshot ?? searchHire.SearchService?.ExpertProfile?.Latitude,
+                        ExpertLongitude = searchHire.ExpertLongitudeSnapshot ?? searchHire.SearchService?.ExpertProfile?.Longitude,
                         LocationRange = searchHire.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50,
-                        ExpertWorkRadiusKm = searchHire.SearchService?.ExpertProfile?.WorkRadiusKm,
+                        ExpertWorkRadiusKm = searchHire.ExpertWorkRadiusKmSnapshot ?? searchHire.SearchService?.ExpertProfile?.WorkRadiusKm,
                         StatusInfo = searchHire.Appointment.Status != null ? new SystemStatusDto
                         {
                             Id = searchHire.Appointment.Status.Id,

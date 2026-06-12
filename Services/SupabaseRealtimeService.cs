@@ -85,29 +85,50 @@ namespace newApi.Services
                     }
                 };
 
-                var content = new StringContent(
-                    JsonSerializer.Serialize(message),
-                    Encoding.UTF8,
-                    "application/json"
-                );
+                var serialized = JsonSerializer.Serialize(message);
 
                 // ✅ LOG: Antes de enviar el broadcast
                 _logger.LogInformation("🔔 [SupabaseRealtime] Enviando broadcast a canal: {Channel}, evento: {Event}", channel, eventName);
                 _logger.LogInformation("🔔 [SupabaseRealtime] URL: {Url}", broadcastUrl);
-                
-                var response = await _httpClient.PostAsync(broadcastUrl, content);
-                
-                if (!response.IsSuccessStatusCode)
+
+                // ✅ RETRY: un fallo transitorio (red/5xx de Supabase) dejaba el mensaje
+                // sin entregar en directo y el receptor no lo veía hasta el polling de
+                // respaldo. Reintentamos una vez con backoff corto antes de rendirnos.
+                const int maxAttempts = 2;
+                for (var attempt = 1; attempt <= maxAttempts; attempt++)
                 {
+                    using var content = new StringContent(serialized, Encoding.UTF8, "application/json");
+                    HttpResponseMessage? response = null;
+                    try
+                    {
+                        response = await _httpClient.PostAsync(broadcastUrl, content);
+                    }
+                    catch (Exception sendEx) when (attempt < maxAttempts)
+                    {
+                        _logger.LogWarning(sendEx, "⚠️ [SupabaseRealtime] Intento {Attempt}/{Max} falló para canal {Channel}; reintentando…", attempt, maxAttempts, channel);
+                        await Task.Delay(400);
+                        continue;
+                    }
+
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var responseContent = await response.Content.ReadAsStringAsync();
+                        _logger.LogInformation("✅ [SupabaseRealtime] Broadcast enviado exitosamente a canal: {Channel}, evento: {Event}", channel, eventName);
+                        _logger.LogInformation("✅ [SupabaseRealtime] Respuesta: {Response}", responseContent);
+                        return;
+                    }
+
                     var errorContent = await response.Content.ReadAsStringAsync();
-                    _logger.LogError("❌ [SupabaseRealtime] Error broadcasting: {StatusCode} - {Error}", 
+                    if (attempt < maxAttempts && (int)response.StatusCode >= 500)
+                    {
+                        _logger.LogWarning("⚠️ [SupabaseRealtime] {StatusCode} en intento {Attempt}/{Max} para canal {Channel}; reintentando…", response.StatusCode, attempt, maxAttempts, channel);
+                        await Task.Delay(400);
+                        continue;
+                    }
+
+                    _logger.LogError("❌ [SupabaseRealtime] Error broadcasting: {StatusCode} - {Error}",
                         response.StatusCode, errorContent);
-                }
-                else
-                {
-                    var responseContent = await response.Content.ReadAsStringAsync();
-                    _logger.LogInformation("✅ [SupabaseRealtime] Broadcast enviado exitosamente a canal: {Channel}, evento: {Event}", channel, eventName);
-                    _logger.LogInformation("✅ [SupabaseRealtime] Respuesta: {Response}", responseContent);
+                    return;
                 }
             }
             catch (Exception ex)

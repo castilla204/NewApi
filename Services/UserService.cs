@@ -154,6 +154,70 @@ namespace newApi.Services
             return true;
         }
 
+        /// <summary>
+        /// 🧩 STRIPE-FIRST (2026-06-12): alta de experto MÍNIMA — solo el país (necesario
+        /// para crear la cuenta Connect, que es inmutable en país). Crea el ExpertProfile
+        /// con placeholders y Role=Expert para poder lanzar el onboarding de Stripe DE
+        /// INMEDIATO. El resto (foto, descripción, ubicación, disponibilidad) se rellena
+        /// después en el panel — y el experto NO es visible en búsquedas hasta completarlo
+        /// (gate de perfil completo en SearchServiceService).
+        /// Idempotente: si ya es experto con perfil, devuelve éxito sin tocar nada.
+        /// </summary>
+        public async Task<(bool Success, string? Token, string? ErrorCode, string? ErrorMessage)> BecomeExpertMinimal(int userId, string country)
+        {
+            var user = await _context.Users
+                .Include(u => u.ExpertProfile)
+                .FirstOrDefaultAsync(u => u.Id == userId);
+            if (user == null) return (false, null, "USER_NOT_FOUND", "Usuario no encontrado.");
+            if (user.IsBlocked) return (false, null, "USER_BLOCKED", "Tu cuenta está bloqueada.");
+
+            var normalizedCountry = (country ?? "").Trim().ToUpperInvariant();
+            if (!SupportedConnectCountries.IsSupported(normalizedCountry))
+                return (false, null, BecomeExpertErrorCodes.CountryNotSupported,
+                    "Ese país no está disponible para recibir pagos. Elige uno de los países soportados.");
+
+            // Idempotente: ya es experto con perfil → OK (puede relanzar el onboarding).
+            if (user.Role == UserRole.Expert && user.ExpertProfile != null)
+                return (true, GenerateJwtToken(user), null, null);
+
+            if (user.ExpertProfile == null)
+            {
+                _context.ExpertProfiles.Add(new ExpertProfile
+                {
+                    UserId = user.Id,
+                    // Placeholders: el gate de visibilidad exige rellenarlos en el panel.
+                    Description = string.Empty,
+                    ProfilePictureUrl = string.Empty,
+                    ProfilePictureObjectName = string.Empty,
+                    Latitude = string.Empty,
+                    Longitude = string.Empty,
+                    Timezone = "UTC", // se detecta al fijar la ubicación en el panel
+                    Country = normalizedCountry,
+                    WorkRadiusKm = 100,
+                    StripeAccountId = null,
+                    CreatedAt = DateTime.UtcNow,
+                });
+            }
+            else if (string.IsNullOrEmpty(user.ExpertProfile.Country))
+            {
+                user.ExpertProfile.Country = normalizedCountry;
+            }
+
+            user.Role = UserRole.Expert;
+            await _context.SaveChangesAsync();
+
+            await _loggingService.LogInfoAsync(
+                message: "Alta de experto mínima (Stripe-first)",
+                details: $"User {userId} se registró como experto con país {normalizedCountry}. Perfil pendiente de completar en el panel (no visible hasta entonces).",
+                userId: userId,
+                source: "UserService.BecomeExpertMinimal",
+                relatedEntityType: "User",
+                relatedEntityId: userId);
+
+            // JWT fresco con el rol Expert (el viejo token sigue diciendo Client).
+            return (true, GenerateJwtToken(user), null, null);
+        }
+
         // 📱 SMS-CENTRAL (2026-06-12): verificación OTP REACTIVADA vía Twilio Verify.
         // Necesaria para que un usuario con FIJO (no recibe SMS) cargue un MÓVIL y lo
         // valide con el código. Gated: si faltan credenciales o VerificationServiceSid,

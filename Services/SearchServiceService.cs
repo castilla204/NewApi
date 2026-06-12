@@ -88,7 +88,11 @@ namespace newApi.Services
                     .AsNoTracking() // ✅ CORRECCIÓN: Forzar consulta desde BD, evitar tracking de EF Core
                     .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId && ss.IsActive && !ss.ExpertProfile.IsOnVacation
                         && (ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted
-                            || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)) // ✅ FIX: Permitir PendingVerification
+                            || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)
+                            // 🧩 PERFIL COMPLETO (Stripe-first): invisible hasta rellenar foto, descripción y ubicación.
+                            && ss.ExpertProfile.Description != null && ss.ExpertProfile.Description != ""
+                            && ss.ExpertProfile.ProfilePictureUrl != null && ss.ExpertProfile.ProfilePictureUrl != ""
+                            && ss.ExpertProfile.Latitude != null && ss.ExpertProfile.Latitude != "") // ✅ FIX: Permitir PendingVerification
                     .Include(ss => ss.Images)
                     .Include(ss => ss.ExpertProfile)
                         .ThenInclude(ep => ep.User)
@@ -271,7 +275,11 @@ namespace newApi.Services
                     .AsNoTracking() // ✅ CORRECCIÓN: Forzar consulta desde BD, evitar tracking de EF Core
                     .Where(ss => ss.CategoryId == categoryId && ss.ServiceTypeId == serviceTypeId && ss.IsActive && !ss.ExpertProfile.IsOnVacation
                         && (ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted
-                            || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)) // ✅ FIX: Permitir PendingVerification
+                            || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)
+                            // 🧩 PERFIL COMPLETO (Stripe-first): invisible hasta rellenar foto, descripción y ubicación.
+                            && ss.ExpertProfile.Description != null && ss.ExpertProfile.Description != ""
+                            && ss.ExpertProfile.ProfilePictureUrl != null && ss.ExpertProfile.ProfilePictureUrl != ""
+                            && ss.ExpertProfile.Latitude != null && ss.ExpertProfile.Latitude != "") // ✅ FIX: Permitir PendingVerification
                     .Where(ss => !string.IsNullOrEmpty(ss.ExpertProfile.Latitude) && !string.IsNullOrEmpty(ss.ExpertProfile.Longitude)); // ✅ MEJORA: Filtrar coordenadas vacías en SQL
 
                 // ✅ OPTIMIZACIÓN: Aplicar límite temprano cuando hay bounds para reducir datos cargados
@@ -464,7 +472,11 @@ namespace newApi.Services
                         && ss.IsActive
                         && !ss.ExpertProfile.IsOnVacation
                         && (ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted
-                            || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification))
+                            || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)
+                            // 🧩 PERFIL COMPLETO (Stripe-first): invisible hasta rellenar foto, descripción y ubicación.
+                            && ss.ExpertProfile.Description != null && ss.ExpertProfile.Description != ""
+                            && ss.ExpertProfile.ProfilePictureUrl != null && ss.ExpertProfile.ProfilePictureUrl != ""
+                            && ss.ExpertProfile.Latitude != null && ss.ExpertProfile.Latitude != "")
                     .Where(ss => !string.IsNullOrEmpty(ss.ExpertProfile.Latitude)
                         && !string.IsNullOrEmpty(ss.ExpertProfile.Longitude));
 
@@ -2810,6 +2822,9 @@ namespace newApi.Services
                         && !ss.ExpertProfile.IsOnVacation
                         && (ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted
                             || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)
+                        // 🧩 PERFIL COMPLETO (Stripe-first): invisible hasta rellenar foto, descripción y ubicación.
+                        && ss.ExpertProfile.Description != null && ss.ExpertProfile.Description != ""
+                        && ss.ExpertProfile.ProfilePictureUrl != null && ss.ExpertProfile.ProfilePictureUrl != ""
                         && !string.IsNullOrEmpty(ss.ExpertProfile.Latitude) 
                         && !string.IsNullOrEmpty(ss.ExpertProfile.Longitude)
                         && (categoryId == null || ss.CategoryId == categoryId)  // ✅ FILTRO POR CATEGORÍA
@@ -3130,6 +3145,10 @@ namespace newApi.Services
                         && !ss.ExpertProfile.IsOnVacation
                         && (ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted
                             || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)
+                        // 🧩 PERFIL COMPLETO (Stripe-first): invisible hasta rellenar foto, descripción y ubicación.
+                        && ss.ExpertProfile.Description != null && ss.ExpertProfile.Description != ""
+                        && ss.ExpertProfile.ProfilePictureUrl != null && ss.ExpertProfile.ProfilePictureUrl != ""
+                        && ss.ExpertProfile.Latitude != null && ss.ExpertProfile.Latitude != ""
                         && (categoryId == null || ss.CategoryId == categoryId))  // ✅ FILTRO POR CATEGORÍA
                     .Select(ss => new
                     {
@@ -3367,6 +3386,10 @@ namespace newApi.Services
                         && !ss.ExpertProfile.IsOnVacation
                         && (ss.ExpertProfile.StripeStatus == StripeStatus.Approved && ss.ExpertProfile.OnboardingCompleted
                             || ss.ExpertProfile.StripeStatus == StripeStatus.PendingVerification)
+                        // 🧩 PERFIL COMPLETO (Stripe-first): invisible hasta rellenar foto, descripción y ubicación.
+                        && ss.ExpertProfile.Description != null && ss.ExpertProfile.Description != ""
+                        && ss.ExpertProfile.ProfilePictureUrl != null && ss.ExpertProfile.ProfilePictureUrl != ""
+                        && ss.ExpertProfile.Latitude != null && ss.ExpertProfile.Latitude != ""
                         && !string.IsNullOrEmpty(ss.ExpertProfile.Country)
                         && targetCategories.Contains(ss.Category.Name)
                         && targetCountries.Contains(ss.ExpertProfile.Country)

@@ -401,7 +401,9 @@ namespace newApi.Services
                             BaseAmount = searchHire.BaseAmount,
                             TaxAmount = searchHire.TaxAmount
                         },
-                        notifyUser: true
+                        // 🛡️ NOTIF-GUARD: detalle técnico interno (fallback de BaseAmount) —
+                        // no aporta nada al usuario; solo log/admins.
+                        notifyUser: false
                     );
                 }
 
@@ -565,7 +567,10 @@ namespace newApi.Services
                                 PlatformAmount = platformAmount,
                                 PaymentIntentId = servicePayment.StripePaymentIntentId
                             },
-                            notifyUser: true // 🛡️ FIX #6: notificar al cliente y experto que el movimiento de dinero está retenido
+                            notifyUser: true, // 🛡️ FIX #6: avisar al usuario de que el dinero está retenido
+                            // 🛡️ NOTIF-GUARD: mensaje pensado para el usuario — el volcado interno
+                            // (balance de Stripe, PaymentIntentId, ACTION REQUIRED) solo va a admins.
+                            userNotificationMessage: "El movimiento de dinero de tu servicio está tardando un poco más de lo habitual. No tienes que hacer nada: lo reintentaremos automáticamente y te avisaremos cuando se complete."
                         );
 
                         // Ô£à NO necesitamos delay - LoggingService usa su propio DbContext scoped

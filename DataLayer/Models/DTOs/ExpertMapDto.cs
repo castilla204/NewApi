@@ -42,6 +42,11 @@ namespace newApi.DataLayer.Models.DTOs
         /// Disponibilidad actual del experto
         /// </summary>
         public CurrentExpertAvailabilityDto? CurrentAvailability { get; set; }
+
+        /// <summary>
+        /// Radio de trabajo del experto en km (0 = solo en su taller/punto fijo, máx 200).
+        /// </summary>
+        public int WorkRadiusKm { get; set; }
     }
 
     public class ExpertMapResponseDto
@@ -98,6 +103,11 @@ namespace newApi.DataLayer.Models.DTOs
         public string Longitude { get; set; } = string.Empty;
         public decimal? Distance { get; set; }  // Distancia si hay ubicación del usuario
         public CurrentExpertAvailabilityDto? CurrentAvailability { get; set; }  // ✅ Horario de disponibilidad
+
+        /// <summary>
+        /// Radio de trabajo del experto en km (0 = solo en su taller/punto fijo, máx 200).
+        /// </summary>
+        public int WorkRadiusKm { get; set; }
     }
 
     public class MapSidebarResponseDto

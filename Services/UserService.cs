@@ -470,6 +470,13 @@ namespace newApi.Services
                             && !user.ExpertProfile.OnboardingCompleted
                             && string.IsNullOrEmpty(user.ExpertProfile.StripeAccountId);
 
+            // Validar radio de trabajo (0 = solo en su taller, máx 200 km)
+            if (request.WorkRadiusKm.HasValue &&
+                (request.WorkRadiusKm.Value < 0 || request.WorkRadiusKm.Value > 200))
+            {
+                return (false, null, null, null, null, null, null);
+            }
+
             if (user.Role == UserRole.Expert && !isRelocating)
             {
                 return (false, null, null, null, null, null, null);
@@ -918,6 +925,10 @@ namespace newApi.Services
                 expertProfile.StripeStatusDetails = null;
                 expertProfile.OnboardingCompleted = false;
                 expertProfile.IsOnVacation = false; // ya hay nuevo país; activable de nuevo
+                if (request.WorkRadiusKm.HasValue)
+                {
+                    expertProfile.WorkRadiusKm = request.WorkRadiusKm.Value;
+                }
                 // RelocatedFromCountry/RelocatedAt SE PRESERVAN — son histórico de auditoría.
             }
             else
@@ -933,6 +944,7 @@ namespace newApi.Services
                     Timezone = expertTimezone,
                     Country = expertCountry,
                     City = expertCity,
+                    WorkRadiusKm = request.WorkRadiusKm ?? 100,
                     StripeAccountId = null,
                     CreatedAt = DateTime.UtcNow
                 };
@@ -995,6 +1007,7 @@ namespace newApi.Services
                     Timezone = expertProfile.Timezone,
                     Country = expertProfile.Country,
                     City = expertProfile.City,
+                    WorkRadiusKm = expertProfile.WorkRadiusKm,
                     StripeAccountId = expertProfile.StripeAccountId,
                     CreatedAt = expertProfile.CreatedAt
                 });
@@ -1055,6 +1068,7 @@ namespace newApi.Services
                     Timezone = expertProfile.Timezone,
                     Country = expertProfile.Country,
                     City = expertProfile.City,
+                    WorkRadiusKm = expertProfile.WorkRadiusKm,
                     StripeAccountId = expertProfile.StripeAccountId,
                     CreatedAt = expertProfile.CreatedAt
                 });
@@ -1414,6 +1428,7 @@ namespace newApi.Services
                 Reviews = new List<ReviewDto>(), // Inicializar lista vacía para mantener compatibilidad
                 Latitude = expertProfile.Latitude,
                 Longitude = expertProfile.Longitude,
+                WorkRadiusKm = expertProfile.WorkRadiusKm,
                 StripeStatus = expertProfile.StripeStatus,
                 StripeStatusDetails = expertProfile.StripeStatusDetails,
                 OnboardingCompleted = expertProfile.OnboardingCompleted,
@@ -1462,8 +1477,19 @@ namespace newApi.Services
                     return (false, null, null, null, null);
                 }
 
+                // Validar radio de trabajo (0 = solo en su taller, máx 200 km)
+                if (request.WorkRadiusKm.HasValue &&
+                    (request.WorkRadiusKm.Value < 0 || request.WorkRadiusKm.Value > 200))
+                {
+                    return (false, null, null, null, null);
+                }
+
                 // Actualizar los campos básicos
                 expertProfile.Description = request.Description;
+                if (request.WorkRadiusKm.HasValue)
+                {
+                    expertProfile.WorkRadiusKm = request.WorkRadiusKm.Value;
+                }
                 
                 // ✅ DETECTAR TIMEZONE Y COUNTRY si cambian las coordenadas
                 var coordinatesChanged = expertProfile.Latitude != request.Latitude ||
@@ -1829,6 +1855,7 @@ namespace newApi.Services
                     Reviews = new List<ReviewDto>(), // Mantener compatibilidad
                     Latitude = expertProfile.Latitude,
                     Longitude = expertProfile.Longitude,
+                    WorkRadiusKm = expertProfile.WorkRadiusKm,
                     StripeStatus = expertProfile.StripeStatus,
                     StripeStatusDetails = expertProfile.StripeStatusDetails,
                     OnboardingCompleted = expertProfile.OnboardingCompleted,

@@ -43,7 +43,16 @@ namespace newApi.DataLayer.Models.PostGresModels
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public string Latitude { get; set; }
         public string Longitude { get; set; }
-        
+
+        /// <summary>
+        /// Radio de trabajo del experto en km desde su punto fijo (taller).
+        /// 0 = solo trabaja en su taller/punto fijo (el cliente se desplaza).
+        /// Máximo 200 km. Default 100 km (la cobertura que el frontend anunciaba
+        /// de forma fija antes de que el radio fuera configurable).
+        /// </summary>
+        [System.ComponentModel.DataAnnotations.Range(0, 200)]
+        public int WorkRadiusKm { get; set; } = 100;
+
         /// <summary>
         /// Zona horaria del experto en formato IANA (ej: "Europe/Madrid", "America/Mexico_City")
         /// Se usa para determinar el timezone de todos los servicios del experto

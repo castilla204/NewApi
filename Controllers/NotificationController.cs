@@ -133,31 +133,15 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Title and Message are required" });
                 }
 
-                var notification = new Notification
-                {
-                    Title = request.Title.Trim(),
-                    Message = request.Message.Trim(),
-                    Type = string.IsNullOrWhiteSpace(request.Type) ? "info" : request.Type.Trim(),
-                    UserId = request.UserId, // null for broadcast
-                    Url = string.IsNullOrWhiteSpace(request.Url) ? null : request.Url.Trim(),
-                    ImageUrl = string.IsNullOrWhiteSpace(request.ImageUrl) ? null : request.ImageUrl.Trim(),
-                    CreatedAt = DateTime.UtcNow
-                };
-
-                await _context.Notifications.AddAsync(notification);
-                await _context.SaveChangesAsync();
-
-                // 🔔 NOTIF-RT: trigger en tiempo real (best-effort; payload mínimo —
-                // el contenido se lee por el endpoint autenticado).
-                try
-                {
-                    var realtime = HttpContext.RequestServices.GetService<ISupabaseRealtimeService>();
-                    if (realtime != null)
-                    {
-                        await realtime.NotifyUserNotificationAsync(notification.UserId, new { id = notification.Id, createdAt = notification.CreatedAt });
-                    }
-                }
-                catch { /* hay polling de respaldo en el frontend */ }
+                // 🔔 NOTIF-CENTRAL: creación + broadcast realtime por el punto único.
+                var inApp = HttpContext.RequestServices.GetRequiredService<IInAppNotificationService>();
+                var notification = await inApp.CreateAsync(
+                    request.UserId, // null = broadcast (solo lo ven admins en el listado)
+                    request.Title.Trim(),
+                    request.Message.Trim(),
+                    string.IsNullOrWhiteSpace(request.Type) ? "info" : request.Type.Trim(),
+                    string.IsNullOrWhiteSpace(request.Url) ? null : request.Url.Trim(),
+                    string.IsNullOrWhiteSpace(request.ImageUrl) ? null : request.ImageUrl.Trim());
 
                 return Ok(notification);
             }

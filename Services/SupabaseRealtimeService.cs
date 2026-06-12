@@ -38,6 +38,13 @@ namespace newApi.Services
         /// global de administradores (canal notifications:admins).
         /// </summary>
         Task NotifyUserNotificationAsync(int? userId, object notificationData);
+
+        /// <summary>
+        /// 🔔 NOTIF-RT: difunde VARIOS eventos en UNA sola llamada HTTP a la API de
+        /// broadcast de Supabase (acepta un array de messages). Para lotes de
+        /// notificaciones (p.ej. avisos de suscripción a N usuarios).
+        /// </summary>
+        Task BroadcastBatchAsync(IReadOnlyCollection<(string Channel, string EventName, object Payload)> items);
     }
 
     public class SupabaseRealtimeService : ISupabaseRealtimeService
@@ -73,29 +80,33 @@ namespace newApi.Services
         /// <summary>
         /// Envía un broadcast usando la API REST de Supabase Realtime
         /// </summary>
-        public async Task BroadcastToChannelAsync(string channel, string eventName, object payload)
+        public Task BroadcastToChannelAsync(string channel, string eventName, object payload)
+            => BroadcastBatchAsync(new[] { (channel, eventName, payload) });
+
+        /// <inheritdoc />
+        public async Task BroadcastBatchAsync(IReadOnlyCollection<(string Channel, string EventName, object Payload)> items)
         {
+            if (items == null || items.Count == 0) return;
+            var channel = items.First().Channel;
+            var eventName = items.First().EventName;
             try
             {
                 var broadcastUrl = $"{_supabaseUrl}/realtime/v1/api/broadcast";
-                
+
                 var message = new
                 {
-                    messages = new[]
+                    messages = items.Select(i => new
                     {
-                        new
-                        {
-                            topic = channel,
-                            @event = eventName,
-                            payload = payload
-                        }
-                    }
+                        topic = i.Channel,
+                        @event = i.EventName,
+                        payload = i.Payload
+                    }).ToArray()
                 };
 
                 var serialized = JsonSerializer.Serialize(message);
 
                 // ✅ LOG: Antes de enviar el broadcast
-                _logger.LogInformation("🔔 [SupabaseRealtime] Enviando broadcast a canal: {Channel}, evento: {Event}", channel, eventName);
+                _logger.LogInformation("🔔 [SupabaseRealtime] Enviando broadcast ({Count} mensaje/s) — primero: canal {Channel}, evento {Event}", items.Count, channel, eventName);
                 _logger.LogInformation("🔔 [SupabaseRealtime] URL: {Url}", broadcastUrl);
 
                 // ✅ RETRY: un fallo transitorio (red/5xx de Supabase) dejaba el mensaje

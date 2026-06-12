@@ -12,15 +12,17 @@ namespace newApi.Services
     // TODO rename to SearchHireTimeoutService: el contenido real es ProcessAwaitingClientDecisionAsync (timeouts de 24h en SearchHires).
     public class SubscriptionService : ISubscriptionService
     {
-        private readonly AppDbContext _context; 
+        private readonly AppDbContext _context;
         private readonly StripeRefundService _refundService;
         private readonly ILoggingService _loggingService;
+        private readonly IInAppNotificationService _inAppNotifications;
 
-        public SubscriptionService(AppDbContext context, StripeRefundService refundService, ILoggingService loggingService)
+        public SubscriptionService(AppDbContext context, StripeRefundService refundService, ILoggingService loggingService, IInAppNotificationService inAppNotifications)
         {
             _context = context;
             _refundService = refundService;
             _loggingService = loggingService;
+            _inAppNotifications = inAppNotifications;
         }
 
         /// <summary>
@@ -193,9 +195,10 @@ namespace newApi.Services
                         currentSearchHire.StatusId = await GetStatusIdByValueAsync(SearchHireStatus.Completed.ToStringValue());
                         currentSearchHire.UpdatedAt = DateTime.UtcNow;
 
+                        var autoCompleteNotifications = new List<Notification>();
                         if (currentSearchHire.ExpertId.HasValue)
                         {
-                            _context.Notifications.Add(new Notification
+                            autoCompleteNotifications.Add(new Notification
                             {
                                 Id = Guid.NewGuid(),
                                 UserId = currentSearchHire.ExpertId.Value,
@@ -207,7 +210,7 @@ namespace newApi.Services
                             });
                         }
 
-                        _context.Notifications.Add(new Notification
+                        autoCompleteNotifications.Add(new Notification
                         {
                             Id = Guid.NewGuid(),
                             UserId = currentSearchHire.ClientId,
@@ -217,9 +220,14 @@ namespace newApi.Services
                             Read = false,
                             CreatedAt = DateTime.UtcNow
                         });
+                        _context.Notifications.AddRange(autoCompleteNotifications);
 
                         await _context.SaveChangesAsync();
                         await transaction.CommitAsync();
+
+                        // 🔔 NOTIF-CENTRAL: trigger realtime DESPUÉS del commit (best-effort,
+                        // lote en una sola llamada HTTP).
+                        await _inAppNotifications.BroadcastCreatedAsync(autoCompleteNotifications);
                     }
                     catch
                     {

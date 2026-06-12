@@ -31,6 +31,19 @@ namespace newApi.Controllers
     [EnableRateLimiting("payment")] // ✅ SEGURIDAD: 10 requests/minuto para operaciones de pago
     public partial class SubscriptionController : ControllerBase
     {
+        // 🔔 NOTIF-CENTRAL: helper para difundir el trigger realtime de notificaciones
+        // ya persistidas (el servicio central agrupa el lote en UNA llamada HTTP y es
+        // best-effort: el polling del frontend es la red de seguridad).
+        private async Task BroadcastInAppNotificationsAsync(IEnumerable<Notification> notifications)
+        {
+            try
+            {
+                var inApp = HttpContext.RequestServices.GetRequiredService<IInAppNotificationService>();
+                await inApp.BroadcastCreatedAsync(notifications);
+            }
+            catch { /* best-effort */ }
+        }
+
         private readonly AppDbContext _context;
         private readonly ISubscriptionService _subscriptionService;
         private readonly IConfiguration _configuration;
@@ -9534,6 +9547,8 @@ namespace newApi.Controllers
                         {
                             _context.Notifications.AddRange(notifications);
                             await _context.SaveChangesAsync();
+                            // 🔔 NOTIF-CENTRAL: trigger realtime post-guardado (best-effort, lote en una llamada).
+                            await BroadcastInAppNotificationsAsync(notifications);
                         }
                         catch (Exception notifEx)
                         {
@@ -10131,6 +10146,8 @@ namespace newApi.Controllers
                         {
                             _context.Notifications.AddRange(notifications);
                             await _context.SaveChangesAsync();
+                            // 🔔 NOTIF-CENTRAL: trigger realtime post-guardado (best-effort, lote en una llamada).
+                            await BroadcastInAppNotificationsAsync(notifications);
                         }
                         catch (Exception notifEx)
                         {
@@ -10310,6 +10327,8 @@ namespace newApi.Controllers
                 
                 _context.Notifications.Add(notification);
                 await _context.SaveChangesAsync();
+                // 🔔 NOTIF-CENTRAL: trigger realtime post-guardado (best-effort, lote en una llamada).
+                await BroadcastInAppNotificationsAsync(new[] { notification });
             }
             catch (Exception ex)
             {
@@ -10786,6 +10805,8 @@ namespace newApi.Controllers
                 
                 _context.Notifications.Add(notification);
                 await _context.SaveChangesAsync();
+                // 🔔 NOTIF-CENTRAL: trigger realtime post-guardado (best-effort, lote en una llamada).
+                await BroadcastInAppNotificationsAsync(new[] { notification });
             }
             catch (Exception ex)
             {
@@ -10832,6 +10853,8 @@ namespace newApi.Controllers
                 
                 _context.Notifications.Add(notification);
                 await _context.SaveChangesAsync();
+                // 🔔 NOTIF-CENTRAL: trigger realtime post-guardado (best-effort, lote en una llamada).
+                await BroadcastInAppNotificationsAsync(new[] { notification });
             }
             catch (Exception ex)
             {

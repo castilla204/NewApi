@@ -178,7 +178,31 @@ namespace newApi.Services
 
             // Idempotente: ya es experto con perfil → OK (puede relanzar el onboarding).
             if (user.Role == UserRole.Expert && user.ExpertProfile != null)
+            {
+                // 🧳 MUDANZA: tras mudarse, el perfil queda con Country=null y SIN cuenta
+                // Stripe. El usuario re-elige país en /become-expert pero este early-return
+                // se saltaba la escritura → expert-onboarding rebotaba con 400
+                // 'relocation_pending_country_required' en bucle infinito. Persistir el país
+                // elegido SOLO mientras no exista cuenta Stripe (creada la cuenta, el país es
+                // inmutable — cambiarlo de verdad ES la mudanza).
+                var existing = user.ExpertProfile;
+                var canChangeCountry = string.IsNullOrEmpty(existing.StripeAccountId)
+                    && string.IsNullOrEmpty(existing.PendingStripeAccountId)
+                    && existing.StripeStatus == StripeStatus.NotRequested;
+                if (canChangeCountry && !string.Equals(existing.Country, normalizedCountry, StringComparison.OrdinalIgnoreCase))
+                {
+                    existing.Country = normalizedCountry;
+                    await _context.SaveChangesAsync();
+                    await _loggingService.LogInfoAsync(
+                        message: "País del experto actualizado pre-onboarding (mudanza o corrección)",
+                        details: $"User {userId}: país del ExpertProfile fijado a {normalizedCountry} antes de crear la cuenta Stripe (sin cuenta previa, cambio seguro).",
+                        userId: userId,
+                        source: "UserService.BecomeExpertMinimal",
+                        relatedEntityType: "ExpertProfile",
+                        relatedEntityId: existing.Id);
+                }
                 return (true, GenerateJwtToken(user), null, null);
+            }
 
             if (user.ExpertProfile == null)
             {
@@ -1665,7 +1689,26 @@ namespace newApi.Services
                                     detectedCountry);
                         }
 
-                        // 🛡️ Round 28 — STRIPE_COUNTRY_LOCKED gate: si el experto tiene cuenta
+                        // 🛡️ MUD-X: SKIP Stripe country lock si está en mudanza actual.
+                        // Si RelocatedFromCountry != null && StripeAccountId == null, significa que
+                        // ExpertRelocationService.ExecuteAsync ya cerró la cuenta anterior y el experto
+                        // está en proceso de re-onboarding en el nuevo país. Permitir cambio de país
+                        // sin restricción (ya no hay Stripe Account con country fijado).
+                        bool isActivelyRelocating = expertProfile.RelocatedFromCountry != null
+                                                && string.IsNullOrEmpty(expertProfile.StripeAccountId);
+
+                        if (isActivelyRelocating)
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "UpdateExpertProfile: StripeCountryLocked skipped (relocation in progress)",
+                                details: $"UserId {userId}: RelocatedFromCountry={expertProfile.RelocatedFromCountry}, StripeAccountId=null. Está re-onboardeando tras mudanza, permitir cambio de país sin validación de Stripe (cuenta anterior ya cerrada).",
+                                userId: userId,
+                                source: "UserService.UpdateExpertProfile.RelocationInProgress",
+                                relatedEntityType: "ExpertProfile",
+                                relatedEntityId: expertProfile.Id,
+                                additionalData: new { Latitude = latitude, Longitude = longitude, DetectedCountry = detectedCountry, RelocatedFromCountry = expertProfile.RelocatedFromCountry });
+                        }
+                        // 🛡️ Round 28 — STRIPE_COUNTRY_LOCKED gate (original): si el experto tiene cuenta
                         // Stripe Connect creada (incluso si no completó onboarding), su Account.country
                         // YA está fijado en Stripe e es INMUTABLE. Permitir que expertProfile.Country
                         // diverja del Stripe Account.country crea currency_mismatch en transfers.
@@ -1673,8 +1716,8 @@ namespace newApi.Services
                         // ya tiene country fijado desde el momento de su creación (AccountCreateOptions).
                         // Un experto que creó acct US y abandonó el onboarding podía mover su pin a ES
                         // sin restricción → divergencia silenciosa. Ahora basta con que exista
-                        // StripeAccountId para activar el gate.
-                        if (!string.IsNullOrEmpty(detectedCountry)
+                        // StripeAccountId para activar el gate. PERO skip si isActivelyRelocating.
+                        else if (!string.IsNullOrEmpty(detectedCountry)
                             && !string.IsNullOrEmpty(expertProfile.StripeAccountId))
                         {
                             try

@@ -442,26 +442,59 @@ namespace newApi.Services
                 }
                 catch (StripeException delEx)
                 {
-                    try
+                    // 🛡️ MUD-X: Si Delete falla (no es 404), reintentar una vez con backoff
+                    // antes de fallar a Reject. Esto mejora el caso donde Stripe está transitoriamente
+                    // unavailable (timeout, 5xx, rate-limit). Una mudanza fallida es más grave que
+                    // una espera de 500ms adicional.
+                    bool deleteRetrySucceeded = false;
+                    if (delEx.HttpStatusCode != System.Net.HttpStatusCode.BadRequest)  // No reintentar bad requests
                     {
-                        var svc = new AccountService();
-                        await svc.RejectAsync(acctId, new AccountRejectOptions { Reason = "other" });
-                        stripeOps.Add(new { acctId, label, op = "rejected_after_delete_failed", deleteError = delEx.StripeError?.Code });
+                        try
+                        {
+                            await Task.Delay(500);
+                            var svc = new AccountService();
+                            await svc.DeleteAsync(acctId);
+                            stripeOps.Add(new { acctId, label, op = "deleted_on_retry", initialError = delEx.StripeError?.Code });
+                            deleteRetrySucceeded = true;
+                        }
+                        catch (StripeException retryEx)
+                        {
+                            // Retry también falló, continuar a Reject
+                            await _loggingService.LogWarningAsync(
+                                message: "MUD-X: Stripe account delete retry also failed, falling back to Reject",
+                                details: $"UserId {userId} acct {acctId}: Delete falló ({delEx.StripeError?.Code}), retry también falló ({retryEx.StripeError?.Code}). Intentando Reject.",
+                                userId: userId,
+                                source: "ExpertRelocationService.DeleteRetryFailed",
+                                relatedEntityType: "ExpertProfile",
+                                relatedEntityId: expertProfileId,
+                                additionalData: new { StripeAccountId = acctId, Label = label, InitialError = delEx.StripeError?.Code, RetryError = retryEx.StripeError?.Code });
+                        }
                     }
-                    catch (System.Exception rejEx)
+
+                    // Si Delete (o retry) no tuvo éxito, intentar Reject
+                    if (!deleteRetrySucceeded)
                     {
-                        // 🛡️ Round 28 MUD-N (GAP-4 fix): si AMBAS ops fallan, la cuenta queda
-                        // huérfana en Stripe y el admin debe limpiarla a mano. Log Critical
-                        // (admin alert) — antes solo iba a stripeOps en memoria.
-                        await _loggingService.LogCriticalAsync(
-                            message: "CRITICAL MUD-N: Stripe account delete AND reject both failed during relocation — orphan account in Stripe",
-                            details: $"UserId {userId} acct {acctId} (label={label}): Delete falló ({delEx.StripeError?.Code} - {delEx.Message}); Reject también falló ({rejEx.Message}). La cuenta sigue VIVA en Stripe. ACCIÓN ADMIN: limpiar manualmente desde Stripe Dashboard → Connect → Accounts.",
-                            userId: userId,
-                            source: "ExpertRelocationService.MUD-N.OrphanAccount",
-                            relatedEntityType: "ExpertProfile",
-                            relatedEntityId: expertProfileId,
-                            additionalData: new { StripeAccountId = acctId, Label = label, DeleteError = delEx.StripeError?.Code, RejectError = rejEx.Message });
-                        stripeOps.Add(new { acctId, label, op = "delete_and_reject_failed", deleteError = delEx.Message, rejectError = rejEx.Message });
+                        try
+                        {
+                            var svc = new AccountService();
+                            await svc.RejectAsync(acctId, new AccountRejectOptions { Reason = "other" });
+                            stripeOps.Add(new { acctId, label, op = "rejected_after_delete_failed", deleteError = delEx.StripeError?.Code });
+                        }
+                        catch (System.Exception rejEx)
+                        {
+                            // 🛡️ Round 28 MUD-N (GAP-4 fix): si AMBAS ops fallan, la cuenta queda
+                            // huérfana en Stripe y el admin debe limpiarla a mano. Log Critical
+                            // (admin alert) — antes solo iba a stripeOps en memoria.
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL MUD-N: Stripe account delete AND reject both failed during relocation — orphan account in Stripe",
+                                details: $"UserId {userId} acct {acctId} (label={label}): Delete falló ({delEx.StripeError?.Code} - {delEx.Message}); Reject también falló ({rejEx.Message}). La cuenta sigue VIVA en Stripe. ACCIÓN ADMIN: limpiar manualmente desde Stripe Dashboard → Connect → Accounts.",
+                                userId: userId,
+                                source: "ExpertRelocationService.MUD-N.OrphanAccount",
+                                relatedEntityType: "ExpertProfile",
+                                relatedEntityId: expertProfileId,
+                                additionalData: new { StripeAccountId = acctId, Label = label, DeleteError = delEx.StripeError?.Code, RejectError = rejEx.Message });
+                            stripeOps.Add(new { acctId, label, op = "delete_and_reject_failed", deleteError = delEx.Message, rejectError = rejEx.Message });
+                        }
                     }
                 }
                 catch (System.Exception unexpectedEx)

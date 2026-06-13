@@ -57,6 +57,17 @@
 	</ItemGroup>
 
 	<ItemGroup>
+	  <!-- 🔧 Scripts/ contiene utilidades sueltas (CreateLogTypeTable.csproj, SQL, PS1) que
+	       NUNCA deben compilar dentro de la API. Si el IDE restaura/builda ese mini-proyecto,
+	       sus obj/*.AssemblyInfo.cs generados entraban por el glob del proyecto principal y
+	       rompían el build con CS0579 (atributos de ensamblado duplicados). -->
+	  <Compile Remove="Scripts\**" />
+	  <Content Remove="Scripts\**" />
+	  <None Remove="Scripts\**" />
+	  <EmbeddedResource Remove="Scripts\**" />
+	</ItemGroup>
+
+	<ItemGroup>
 	  <!-- Excluir carpetas de respaldo/versiones antiguas -->
 	  <Compile Remove="COMMIT_0cde564a\**" />
 	  <Compile Remove="COMMIT_ANTES_CORRECCIONES\**" />

@@ -600,15 +600,19 @@ public class UserController : ControllerBase
                 return BadRequest(new { message = "User not found" });
             }
 
-            // 🛡️ Round 28 MUD-AC (GAP-1 fix): permitir re-onboarding tras mudanza.
+            // 🛡️ Round 28 MUD-AC + MUD-X (GAP-1 fix): permitir re-onboarding tras mudanza.
             // El check del UserService MUD-K nunca se alcanza porque este controller corta
             // primero. Replicamos el mismo isRelocating bypass aquí — sin esto el experto
             // mudado queda atascado en "You are already an expert" y NO puede completar
-            // el onboarding del nuevo país.
+            // el onboarding del nuevo país. MUD-X: también aceptar StripeStatus=NotRequested
+            // (por si el campo no se limpió pero el status indica no-active).
             var isRelocating = user.ExpertProfile != null
                             && user.ExpertProfile.RelocatedFromCountry != null
                             && !user.ExpertProfile.OnboardingCompleted
-                            && string.IsNullOrEmpty(user.ExpertProfile.StripeAccountId);
+                            && (string.IsNullOrEmpty(user.ExpertProfile.StripeAccountId)
+                                // (ya hay using de newApi.DataLayer.Models.PostGresModels — el
+                                // cualificador relativo "DataLayer.…" no resuelve desde este namespace)
+                                || user.ExpertProfile.StripeStatus == StripeStatus.NotRequested);
 
             if (user.Role == UserRole.Expert && !isRelocating)
             {

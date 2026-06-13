@@ -990,6 +990,73 @@ public class UserController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// 🧩 FUENTE ÚNICA DE VERDAD de visibilidad del experto. Devuelve el desglose con
+    /// EXACTAMENTE las mismas condiciones que el filtro SQL de los listados
+    /// (SearchServiceService): Stripe operativo + sin vacaciones + foto + descripción +
+    /// ubicación + móvil verificado (no fijo). El banner y el checklist del panel
+    /// consumen esto — así front y back no pueden volver a descoordinarse.
+    /// </summary>
+    [Authorize(Roles = "Expert")]
+    [HttpGet("expert-visibility")]
+    public async Task<IActionResult> GetExpertVisibility([FromServices] newApi.DataLayer.Models.AppDbContext db)
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            return Unauthorized(new { message = "Invalid user identification" });
+
+        var data = await db.ExpertProfiles.AsNoTracking()
+            .Where(ep => ep.UserId == userId)
+            .Select(ep => new
+            {
+                ep.StripeStatus,
+                ep.OnboardingCompleted,
+                ep.IsOnVacation,
+                ep.Description,
+                ep.ProfilePictureUrl,
+                ep.Latitude,
+                ep.User.PhoneVerified,
+                ep.User.PhoneNumber,
+                ep.User.PhoneLineType,
+            })
+            .FirstOrDefaultAsync();
+        if (data == null) return NotFound(new { message = "Expert profile not found" });
+
+        // ⚠️ MISMAS condiciones que el Where de SearchServiceService — si cambias una,
+        // cambia la otra.
+        var stripeOk = (data.StripeStatus == StripeStatus.Approved && data.OnboardingCompleted)
+                       || data.StripeStatus == StripeStatus.PendingVerification;
+        var hasDescription = !string.IsNullOrEmpty(data.Description);
+        var hasPhoto = !string.IsNullOrEmpty(data.ProfilePictureUrl);
+        var hasLocation = !string.IsNullOrEmpty(data.Latitude);
+        // NB: el gate SQL NO exige PhoneNumber no vacío (los expertos seed se backfillean
+        // verificados SIN número, para que jamás se envíe un SMS a un número real ajeno).
+        // En el flujo real el OTP siempre guarda el número: verified ⇒ número presente.
+        var phoneOk = data.PhoneVerified
+                      && !string.Equals(data.PhoneLineType, "landline", StringComparison.OrdinalIgnoreCase);
+        var notOnVacation = !data.IsOnVacation;
+
+        var missing = new List<string>();
+        if (!stripeOk) missing.Add("stripe");
+        if (!hasPhoto) missing.Add("photo");
+        if (!hasDescription) missing.Add("description");
+        if (!hasLocation) missing.Add("location");
+        if (!phoneOk) missing.Add("phone");
+        if (!notOnVacation) missing.Add("vacation");
+
+        return Ok(new
+        {
+            isVisible = missing.Count == 0,
+            stripeOk,
+            hasPhoto,
+            hasDescription,
+            hasLocation,
+            phoneOk,
+            notOnVacation,
+            missing,
+        });
+    }
+
     public class PhoneCodeRequestDto { public string PhoneNumber { get; set; } = string.Empty; }
     public class PhoneVerifyRequestDto { public string PhoneNumber { get; set; } = string.Empty; public string Code { get; set; } = string.Empty; }
 

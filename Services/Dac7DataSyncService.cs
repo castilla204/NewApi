@@ -45,9 +45,10 @@ namespace newApi.Services
             if (account == null || expertProfileId <= 0) return;
             int targetYear = year ?? DateTime.UtcNow.Year;
 
+            Dac7SellerSnapshot? snapshot = null;
             try
             {
-                var snapshot = await _context.Dac7SellerSnapshots
+                snapshot = await _context.Dac7SellerSnapshots
                     .FirstOrDefaultAsync(s => s.ExpertProfileId == expertProfileId && s.Year == targetYear, ct);
 
                 bool isNew = snapshot == null;
@@ -148,6 +149,19 @@ namespace newApi.Services
                         relatedEntityType: "Dac7SellerSnapshot",
                         relatedEntityId: expertProfileId);
                     throw;
+                }
+
+                // 🛡️ FIX (F07): si el SaveChanges falló y NO relanzamos, la entidad snapshot queda
+                // en estado Added en el _context COMPARTIDO y contamina SaveChanges posteriores del
+                // caller (webhook account.updated) → 500 perpetuo. DETACH la entidad fallida para no
+                // envenenar el DbContext (mismo patrón que SubscriptionController.HandleChargeRefundUpdated).
+                if (snapshot != null)
+                {
+                    var failedEntry = _context.Entry(snapshot);
+                    if (failedEntry.State == EntityState.Added)
+                    {
+                        failedEntry.State = EntityState.Detached;
+                    }
                 }
 
                 // Non-blocking — el account.updated debe procesar incluso si el sync DAC7 falla por causas no-BD.

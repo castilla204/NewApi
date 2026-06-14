@@ -20,6 +20,7 @@ namespace newApi.Services
         Task ProcessExpiringPaymentIntentsAsync();
         Task RescueOrphanedAppointmentTimersAsync(); // 🛡️ R5-F1
         Task DetectUnreconciledFinalizedHiresAsync(); // 🛡️ R5-F5
+        Task RetryTransferFailedHiresAsync(); // 🛡️ F18
         Task EscalateStaleDisputesAsync(); // 🛡️ T4
         Task NotifyUpcomingStripeDeadlinesAsync(); // 🛡️ Round 12 — D3
     }
@@ -36,19 +37,21 @@ namespace newApi.Services
         }
 
         /// <summary>
-        /// 🛡️ T4 FIX: auto-escalar disputas en estado Pending cuyo deadline de respuesta del
-        /// experto (48h) ya pasó SIN respuesta. Antes: disputa quedaba indefinida en Pending
-        /// hasta intervención manual del admin → cliente sin refund, hire bloqueado.
+        /// 🛡️ T4: detectar disputas 'Pending' cuyo plazo de respuesta del experto (48h) ya pasó SIN
+        /// respuesta. La respuesta del experto es OPCIONAL (solo para aportar pruebas si quiere); que
+        /// NO responda NO resuelve la disputa ni mueve dinero. La resolución es SIEMPRE MANUAL del
+        /// admin (DisputeController.ResolveDispute → refund_client / pay_expert).
         ///
-        /// Estrategia: flip atómico Pending→Resolving + encolar RescueStuckResolvingDisputeAsync
-        /// (que ya existe y mueve dinero a favor del cliente al 100% según el reparto configurado
-        /// para el estado de hire correspondiente). Idempotente: si el flip falla porque otro
-        /// proceso ya lo hizo (admin manual o reintento previo), se salta sin error.
+        /// Por tanto este job NO auto-resuelve nada y NO mueve dinero: solo (a) cierra disputas
+        /// huérfanas cuyo hire ya salió de 'disputed' (otro flow lo gestionó) y (b) avisa al admin UNA
+        /// sola vez de que la ventana del experto venció y la disputa está lista para su resolución
+        /// manual (dedup vía Dispute.AdminAlertedAt). NO hace flip a 'Resolving', NO encola
+        /// distribución de dinero → no hay bucle Pending↔Resolving ni reembolsos automáticos.
         ///
-        /// Batch de 50 por ejecución para no saturar Hangfire en caso de backlog.
+        /// Batch de 50 por ejecución para no saturar en caso de backlog.
         /// </summary>
         [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
-        [Hangfire.AutomaticRetry(Attempts = 0)]
+        [Hangfire.AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 0, 60, 300 })]
         public async Task EscalateStaleDisputesAsync()
         {
             List<int> staleDisputeIds;
@@ -79,50 +82,79 @@ namespace newApi.Services
 
             if (staleDisputeIds.Count == 0) return;
 
-            int escalated = 0, alreadyClaimed = 0, errors = 0;
+            int alerted = 0, orphansClosed = 0, alreadyAlerted = 0, errors = 0;
             foreach (var disputeId in staleDisputeIds)
             {
                 try
                 {
-                    // Claim atómico (mismo patrón B3/P1 que usa ResolveDispute admin)
-                    var claimed = await _context.Database.ExecuteSqlInterpolatedAsync(
-                        $"UPDATE \"Disputes\" SET \"Status\" = 'Resolving' WHERE \"Id\" = {disputeId} AND \"Status\" = 'Pending'");
+                    var info = await _context.Disputes
+                        .AsNoTracking()
+                        .Where(d => d.Id == disputeId)
+                        .Select(d => new
+                        {
+                            HireStatus = d.SearchHire.Status != null ? d.SearchHire.Status.StatusValue : null,
+                            d.AdminAlertedAt
+                        })
+                        .FirstOrDefaultAsync();
+                    if (info == null) continue;
 
-                    if (claimed == 0)
+                    // 🛡️ F27: si el hire asociado ya NO está en 'disputed' (un webhook lo movió fuera:
+                    // chargeback, resolución por otro flow, etc.), la disputa quedó huérfana. La cerramos
+                    // (Pending→Resolved) para que no se re-evalúe indefinidamente. No mueve dinero — el flow
+                    // que cambió el estado del hire ya lo gestionó.
+                    if (info.HireStatus != null && info.HireStatus != "disputed")
                     {
-                        alreadyClaimed++;
-                        continue; // otro proceso (admin o retry) ya la tomó
+                        await _context.Database.ExecuteSqlInterpolatedAsync(
+                            $"UPDATE \"Disputes\" SET \"Status\" = 'Resolved' WHERE \"Id\" = {disputeId} AND \"Status\" = 'Pending'");
+
+                        await _loggingService.LogWarningAsync(
+                            message: "T4/F27: Dispute huérfana cerrada (hire ya no está 'disputed')",
+                            details: $"Dispute {disputeId}: su SearchHire está ahora en '{info.HireStatus}' (no 'disputed'), seguramente movido por un webhook u otro flow. Cerrada Pending→Resolved. No mueve dinero — el flow que cambió el estado del hire ya lo gestionó.",
+                            userId: null,
+                            source: "PlatformMaintenanceService.EscalateStaleDisputesAsync.T4",
+                            relatedEntityType: "Dispute",
+                            relatedEntityId: disputeId);
+
+                        orphansClosed++;
+                        continue;
                     }
 
-                    await _loggingService.LogCriticalAsync(
-                        message: "T4: Dispute auto-escalada por timeout 48h del experto",
-                        details: $"Dispute {disputeId} pasó deadline ExpertResponseDeadline sin respuesta del experto → flip atómico a 'Resolving'. Encolado RescueStuckResolvingDisputeAsync para distribuir dinero a favor del cliente (mapeo por SearchHireStatus configurado). ACCIÓN ADMIN: monitorizar resolución; el experto perderá su parte por no responder en plazo.",
+                    // Ya avisado: no repetir. La disputa permanece 'Pending' esperando la resolución
+                    // MANUAL del admin (la respuesta del experto era opcional y su ausencia no la cambia).
+                    if (info.AdminAlertedAt != null)
+                    {
+                        alreadyAlerted++;
+                        continue;
+                    }
+
+                    // Aviso ÚNICO al admin: la ventana de respuesta del experto venció; la disputa está
+                    // lista para su resolución MANUAL. NO se mueve dinero ni se cambia el estado de la
+                    // disputa: sigue 'Pending' hasta que el admin la resuelva. Marcamos AdminAlertedAt de
+                    // forma atómica (solo si sigue sin avisar y 'Pending') para no volver a avisar.
+                    var marked = await _context.Database.ExecuteSqlInterpolatedAsync(
+                        $"UPDATE \"Disputes\" SET \"AdminAlertedAt\" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') WHERE \"Id\" = {disputeId} AND \"AdminAlertedAt\" IS NULL AND \"Status\" = 'Pending'");
+                    if (marked == 0)
+                    {
+                        alreadyAlerted++;
+                        continue; // otra réplica avisó primero (o ya no está Pending)
+                    }
+
+                    await _loggingService.LogWarningAsync(
+                        message: "T4: disputa lista para resolución MANUAL (venció la ventana de respuesta del experto)",
+                        details: $"Dispute {disputeId}: pasó ExpertResponseDeadline sin respuesta del experto (la respuesta es OPCIONAL). La disputa NO se resuelve automáticamente: permanece 'Pending' esperando tu resolución manual (refund_client / pay_expert) en el panel de disputas. No se ha movido dinero.",
                         userId: null,
                         source: "PlatformMaintenanceService.EscalateStaleDisputesAsync.T4",
                         relatedEntityType: "Dispute",
                         relatedEntityId: disputeId);
 
-                    // Encolar rescate inmediato (el método ya existe y es idempotente).
-                    Hangfire.BackgroundJob.Schedule<StripeRefundService>(
-                        s => s.RescueStuckResolvingDisputeAsync(disputeId),
-                        TimeSpan.FromSeconds(2));
-
-                    escalated++;
+                    alerted++;
                 }
                 catch (Exception ex)
                 {
                     errors++;
-                    // Rollback del claim para que el siguiente ciclo lo reintente
-                    try
-                    {
-                        await _context.Database.ExecuteSqlInterpolatedAsync(
-                            $"UPDATE \"Disputes\" SET \"Status\" = 'Pending' WHERE \"Id\" = {disputeId} AND \"Status\" = 'Resolving'");
-                    }
-                    catch { /* swallow — el siguiente ciclo o el rescate la limpiará */ }
-
                     await _loggingService.LogCriticalAsync(
-                        message: "T4: error escalando dispute (rollback intentado)",
-                        details: $"Dispute {disputeId}: {ex.Message}. Status revertido a Pending para reintento.",
+                        message: "T4: error procesando stale dispute",
+                        details: $"Dispute {disputeId}: {ex.Message}. Se reintentará en el próximo ciclo (no se ha movido dinero ni cambiado el estado de la disputa).",
                         userId: null,
                         source: "PlatformMaintenanceService.EscalateStaleDisputesAsync.T4",
                         relatedEntityType: "Dispute",
@@ -131,8 +163,8 @@ namespace newApi.Services
             }
 
             await _loggingService.LogInfoAsync(
-                message: $"T4: batch de stale disputes procesado ({escalated} escaladas, {alreadyClaimed} ya tomadas, {errors} errores)",
-                details: $"Total candidatas: {staleDisputeIds.Count}.",
+                message: $"T4: stale disputes procesadas ({alerted} avisadas al admin, {orphansClosed} huérfanas cerradas, {alreadyAlerted} ya avisadas, {errors} errores)",
+                details: $"Total candidatas: {staleDisputeIds.Count}. Recordatorio: las disputas se resuelven SOLO manualmente por el admin; el timeout del experto no mueve dinero.",
                 userId: null,
                 source: "PlatformMaintenanceService.EscalateStaleDisputesAsync.T4",
                 relatedEntityType: "Dispute",
@@ -180,7 +212,7 @@ namespace newApi.Services
 
         // 🛡️ W3 FIX (Round 8 A8): DisableConcurrentExecution para evitar duplicación en HPA multi-replica
         [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 1800)]
-        [Hangfire.AutomaticRetry(Attempts = 0)]
+        [Hangfire.AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 0, 60, 300 })]
         public async Task ProcessExpiringPaymentIntentsAsync()
         {
             // SearchHires con CaptureStatus="Pending" y CreatedAt > 6.5 días: el PI autorizado está
@@ -378,7 +410,12 @@ namespace newApi.Services
                 {
                     "completed",
                     "dispute_resolved_client",
-                    "dispute_resolved_expert"
+                    "dispute_resolved_expert",
+                    // 🛡️ F01/F18: hires atascados en 'transfer_failed' también deben entrar en el
+                    // digest/alerta de reconciliación — su dinero quedó sin distribuir tras un fallo
+                    // de transfer y requieren reintento (watchdog RetryTransferFailedHiresAsync) o
+                    // reconciliación manual.
+                    "transfer_failed"
                 };
 
                 var unreconciled = await _context.SearchHires
@@ -414,6 +451,82 @@ namespace newApi.Services
                     details: ex.Message,
                     userId: null,
                     source: "PlatformMaintenanceService.DetectUnreconciledFinalizedHiresAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: null);
+            }
+        }
+
+        /// <summary>
+        /// 🛡️ F18 FIX: watchdog que reintenta SearchHires atascados en 'transfer_failed'. Cuando un
+        /// transfer al experto falla (capability perdida, evento Hangfire perdido, etc.) el hire queda
+        /// en 'transfer_failed' con el dinero sin distribuir y, si nadie lo reencola, se queda zombi.
+        ///
+        /// Estrategia: para cada hire en 'transfer_failed' con UpdatedAt &gt; 5h (margen para que el
+        /// reintento inline/outbox del flow normal haya tenido su oportunidad), encolar
+        /// RetryMoneyDistributionJobAsync — que YA es idempotente y re-verifica el estado del hire
+        /// antes de mover dinero. Batch de 50 por ejecución. Cada iteración va en su try/catch para
+        /// no abortar el batch por un fallo puntual de encolado.
+        /// </summary>
+        // 🛡️ W3 FIX (Round 8 A8): DisableConcurrentExecution para evitar duplicación en HPA multi-replica
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 1200)]
+        [Hangfire.AutomaticRetry(Attempts = 0)]
+        public async Task RetryTransferFailedHiresAsync()
+        {
+            try
+            {
+                var cutoff = DateTime.UtcNow.AddHours(-5);
+                var transferFailed = await _context.SearchHires
+                    .AsNoTracking()
+                    .Include(sh => sh.Status)
+                    .Where(sh => sh.Status != null
+                              && sh.Status.StatusValue == "transfer_failed"
+                              && sh.UpdatedAt < cutoff)
+                    .OrderBy(sh => sh.UpdatedAt)
+                    .Take(50)
+                    .ToListAsync();
+
+                if (transferFailed.Count == 0) return;
+
+                foreach (var hire in transferFailed)
+                {
+                    try
+                    {
+                        Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                            s => s.RetryMoneyDistributionJobAsync(
+                                hire.Id,
+                                "transfer_failed",
+                                "Retry transfer after failure (watchdog F18)",
+                                null),
+                            TimeSpan.FromSeconds(2));
+
+                        var ageHours = (DateTime.UtcNow - (hire.UpdatedAt ?? hire.CreatedAt)).TotalHours;
+                        await _loggingService.LogWarningAsync(
+                            message: "F18: SearchHire en 'transfer_failed' reencolado por watchdog",
+                            details: $"SearchHire {hire.Id} lleva {ageHours:F1}h en 'transfer_failed'. Encolado RetryMoneyDistributionJobAsync (idempotente, re-verifica estado del hire antes de mover dinero) para reintentar la distribución/transfer al experto.",
+                            userId: hire.ClientId,
+                            source: "PlatformMaintenanceService.RetryTransferFailedHiresAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: hire.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL F18: failed to re-enqueue transfer_failed hire",
+                            details: $"SearchHire {hire.Id}: error encolando RetryMoneyDistributionJobAsync: {ex.Message}. Quedará en 'transfer_failed' hasta el próximo ciclo del watchdog.",
+                            userId: hire.ClientId,
+                            source: "PlatformMaintenanceService.RetryTransferFailedHiresAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: hire.Id);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL F18: RetryTransferFailedHiresAsync failed",
+                    details: ex.Message,
+                    userId: null,
+                    source: "PlatformMaintenanceService.RetryTransferFailedHiresAsync",
                     relatedEntityType: "SearchHire",
                     relatedEntityId: null);
             }

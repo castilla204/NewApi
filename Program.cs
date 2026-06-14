@@ -2022,6 +2022,16 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     "*/15 * * * *",
     n29UtcOptions);
 
+// 🛡️ F01/F18: watchdog de reintento para SearchHires que quedaron en transfer_failed (la
+// transferencia al experto falló y no se reintentó). Cada 15 min reintenta el reparto de
+// dinero pendiente reusando los flujos idempotentes existentes. Sin esto, un transfer_failed
+// quedaba bloqueado indefinidamente sin reintento automático.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "transfer-failed-retry-watchdog",
+    svc => svc.RetryTransferFailedHiresAsync(),
+    "*/15 * * * *",
+    n29UtcOptions);
+
 // 🛡️ R5-F5: detecta SearchHires finalizados (completed/dispute_resolved_*) hace >24h SIN
 // ninguna FinancialTransaction Refund/Payout asociada → ProcessMoneyDistribution falló o
 // nunca corrió. Log Critical para reconciliación manual (no auto-fix por seguridad).
@@ -2031,10 +2041,11 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     Hangfire.Cron.Daily(6, 0),
     n29UtcOptions);
 
-// 🛡️ T4: cada hora escala disputas Pending cuyo deadline 48h del experto ya pasó sin
-// respuesta. Flip atómico Pending→Resolving + encolar RescueStuckResolvingDisputeAsync
-// (que mueve dinero a favor del cliente). Sin esto, una disputa quedaba indefinida en
-// Pending bloqueando el dinero. AutomaticRetry=0 + DisableConcurrentExecution.
+// 🛡️ T4: cada hora revisa disputas 'Pending' cuyo deadline 48h del experto ya pasó SIN
+// respuesta. La respuesta del experto es OPCIONAL y NO resuelve la disputa: este job NO
+// auto-resuelve ni mueve dinero. Solo (a) cierra disputas huérfanas cuyo hire ya salió de
+// 'disputed' y (b) avisa al admin UNA vez (Dispute.AdminAlertedAt) de que la disputa está
+// lista para su resolución MANUAL (DisputeController.ResolveDispute). DisableConcurrentExecution.
 Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     "stale-disputes-escalator",
     svc => svc.EscalateStaleDisputesAsync(),
@@ -2884,6 +2895,15 @@ lifetime.ApplicationStarted.Register(() =>
 
                 CREATE INDEX IF NOT EXISTS ""IX_ExchangeRateSnapshots_Base_Fetched""
                 ON ""ExchangeRateSnapshots"" (""BaseCurrency"", ""FetchedAt"" DESC);
+
+                ALTER TABLE ""AppointmentTimers""
+                ADD COLUMN IF NOT EXISTS ""FailureCount"" integer NOT NULL DEFAULT 0;
+
+                ALTER TABLE ""AppointmentTimers""
+                ADD COLUMN IF NOT EXISTS ""LastFailedAt"" timestamp with time zone NULL;
+
+                ALTER TABLE ""Disputes""
+                ADD COLUMN IF NOT EXISTS ""AdminAlertedAt"" timestamp with time zone NULL;
             ");
 
             try

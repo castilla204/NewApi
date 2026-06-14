@@ -3259,7 +3259,10 @@ namespace newApi.Services
                 // bloquearía la réplica. Con 500 por iteración y watchdog cada 10 min, drenamos
                 // 3000/h — suficiente para recuperarse de cualquier picos realista.
                 var overdueTimers = await _context.AppointmentTimers
-                    .Where(t => !t.IsExpired && t.EndTime <= DateTime.UtcNow)
+                    // 🛡️ F16: excluir timers que ya superaron el máximo de reintentos del watchdog
+                    // (dead-letter). Sin esto, un timer que SIEMPRE lanza se reprocesa cada 10 min
+                    // para siempre, atascando su hire. El barrido dead-letter (abajo) los expira.
+                    .Where(t => !t.IsExpired && t.EndTime <= DateTime.UtcNow && t.FailureCount < 5)
                     .OrderBy(t => t.EndTime) // procesar más antiguos primero
                     .Take(500)
                     .Select(t => new { t.Id, t.TimerType, t.AppointmentId })
@@ -3294,6 +3297,16 @@ namespace newApi.Services
                             source: "AppointmentService.ProcessOverdueTimersAsync",
                             relatedEntityType: "AppointmentTimer",
                             relatedEntityId: timer.Id);
+
+                        // 🛡️ F16: contar el fallo (best-effort, SQL directo para no depender del
+                        // ChangeTracker que se limpia en el finally). Al alcanzar 5 el timer queda
+                        // excluido del barrido de arriba y el barrido dead-letter lo expira.
+                        try
+                        {
+                            await _context.Database.ExecuteSqlInterpolatedAsync(
+                                $"UPDATE \"AppointmentTimers\" SET \"FailureCount\" = \"FailureCount\" + 1, \"LastFailedAt\" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') WHERE \"Id\" = {timer.Id}");
+                        }
+                        catch { /* best-effort: si falla el contador, el watchdog lo reintenta luego */ }
                     }
                     finally
                     {
@@ -3453,6 +3466,56 @@ namespace newApi.Services
                             source: "AppointmentService.ProcessOverdueTimersAsync.Av",
                             relatedEntityType: "AppointmentTimer",
                             relatedEntityId: dead.Id);
+                    }
+                    finally
+                    {
+                        _context.ChangeTracker.Clear();
+                    }
+                }
+
+                // 🛡️ F16 — BARRIDO DEAD-LETTER: timers que superaron el máximo de reintentos del
+                // watchdog (FailureCount>=5) y llevan >1h sin un nuevo intento exitoso. Sin esto un
+                // timer que SIEMPRE lanza (handler roto, dato corrupto) se quedaría fuera del barrido
+                // principal (FailureCount<5) pero VIVO, dejando el hire atascado indefinidamente.
+                // Aquí lo marcamos IsExpired=true (UPDATE condicional, seguro entre réplicas) y
+                // logueamos UNA vez por timer. Aditivo y NO toca ProcessAppointmentTimerAsync.
+                var deadLetterCutoff = DateTime.UtcNow.AddHours(-1);
+                var deadLetterTimers = await _context.AppointmentTimers
+                    .Where(t => !t.IsExpired
+                             && t.FailureCount >= 5
+                             && t.LastFailedAt != null && t.LastFailedAt < deadLetterCutoff)
+                    .Select(t => new { t.Id, t.TimerType, t.AppointmentId, t.FailureCount })
+                    .ToListAsync();
+
+                foreach (var dl in deadLetterTimers)
+                {
+                    try
+                    {
+                        // Condicional: solo expira si sigue activo (otra réplica pudo hacerlo ya).
+                        var expired = await _context.Database.ExecuteSqlInterpolatedAsync(
+                            $"UPDATE \"AppointmentTimers\" SET \"IsExpired\" = true, \"ExpiredAt\" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') WHERE \"Id\" = {dl.Id} AND \"IsExpired\" = false");
+                        if (expired == 0)
+                        {
+                            continue; // ya expirado por otra réplica/flujo — no re-loguear
+                        }
+
+                        await _loggingService.LogCriticalAsync(
+                            message: "DEAD-LETTER: timer supero max reintentos",
+                            details: $"Timer {dl.Id} ({dl.TimerType}, appointment {dl.AppointmentId}) falló {dl.FailureCount} veces en el watchdog; marcado IsExpired=true para dejar de reprocesarlo. Requiere intervención manual: el hire puede haber quedado a medias.",
+                            userId: null,
+                            source: "AppointmentService.ProcessOverdueTimersAsync.DeadLetter",
+                            relatedEntityType: "AppointmentTimer",
+                            relatedEntityId: dl.Id);
+                    }
+                    catch (Exception exDl)
+                    {
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL: dead-letter sweep failed to expire a timer",
+                            details: $"Timer {dl.Id} ({dl.TimerType}): {exDl.Message}",
+                            userId: null,
+                            source: "AppointmentService.ProcessOverdueTimersAsync.DeadLetter",
+                            relatedEntityType: "AppointmentTimer",
+                            relatedEntityId: dl.Id);
                     }
                     finally
                     {

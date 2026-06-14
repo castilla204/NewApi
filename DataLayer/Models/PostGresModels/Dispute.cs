@@ -29,6 +29,11 @@
         // ID de la disputa equivalente en Stripe (charge.dispute.created). Permite enviar evidencia.
         public string? StripeDisputeId { get; set; }
 
+        // Marca de cuándo el job T4 avisó al admin de que la ventana de respuesta del experto venció y la
+        // disputa está lista para resolución MANUAL. Sirve para NO repetir el aviso cada hora. NO implica
+        // resolución automática: la disputa sigue 'Pending' hasta que el admin la resuelva a mano.
+        public DateTime? AdminAlertedAt { get; set; }
+
         // Relación con la contratación
         public virtual SearchHire SearchHire { get; set; } = null!;
         // Relación con el usuario que reporta

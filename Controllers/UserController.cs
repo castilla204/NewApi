@@ -649,6 +649,18 @@ public class UserController : ControllerBase
                 }
             }
 
+            // ✅ VALIDACIÓN: la descripción del experto debe tener entre 30 y 60 caracteres
+            if (string.IsNullOrWhiteSpace(request.Description))
+            {
+                return BadRequest(new { message = "La descripción es requerida" });
+            }
+
+            var descriptionLength = request.Description.Trim().Length;
+            if (descriptionLength < 30 || descriptionLength > 60)
+            {
+                return BadRequest(new { message = "La descripción del experto debe tener entre 30 y 60 caracteres" });
+            }
+
             // Validar Latitude y Longitude
             if (string.IsNullOrEmpty(request.Latitude) || string.IsNullOrEmpty(request.Longitude))
             {
@@ -918,6 +930,13 @@ public class UserController : ControllerBase
             if (string.IsNullOrWhiteSpace(request.Description))
             {
                 return BadRequest(new { message = "La descripción es requerida" });
+            }
+
+            // ✅ VALIDACIÓN: la descripción del experto debe tener entre 30 y 60 caracteres
+            var descriptionLength = request.Description.Trim().Length;
+            if (descriptionLength < 30 || descriptionLength > 60)
+            {
+                return BadRequest(new { message = "La descripción del experto debe tener entre 30 y 60 caracteres" });
             }
 
             if (string.IsNullOrWhiteSpace(request.Latitude) || string.IsNullOrWhiteSpace(request.Longitude))

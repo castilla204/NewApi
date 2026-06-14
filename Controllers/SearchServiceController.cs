@@ -671,6 +671,13 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "El campo Condiciones es requerido" });
                 }
 
+                // ✅ VALIDACIÓN: la descripción del servicio debe tener entre 400 y 1000 caracteres
+                var conditionsLength = request.Conditions.Trim().Length;
+                if (conditionsLength < 400 || conditionsLength > 1000)
+                {
+                    return BadRequest(new { message = "La descripción del servicio debe tener entre 400 y 1000 caracteres" });
+                }
+
                 if (request.Price <= 0)
                 {
                     return BadRequest(new { message = "El precio debe ser mayor que 0" });
@@ -908,6 +915,13 @@ namespace newApi.Controllers
                 if (string.IsNullOrWhiteSpace(request.Conditions))
                 {
                     return BadRequest(new { message = "El campo Condiciones es requerido" });
+                }
+
+                // ✅ VALIDACIÓN: la descripción del servicio debe tener entre 400 y 1000 caracteres
+                var conditionsLength = request.Conditions.Trim().Length;
+                if (conditionsLength < 400 || conditionsLength > 1000)
+                {
+                    return BadRequest(new { message = "La descripción del servicio debe tener entre 400 y 1000 caracteres" });
                 }
 
                 if (request.Price <= 0)

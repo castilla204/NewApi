@@ -14,7 +14,14 @@ namespace newApi.DataLayer.Models.PostGresModels
         public DateTime? ExpiredAt { get; set; }
         public string? Notes { get; set; }
         public string? HangfireJobId { get; set; } // ID del job de Hangfire programado para este timer
-        
+
+        // 🛡️ F16: dead-letter del watchdog. Las columnas se crean en prod via ADD COLUMN IF NOT EXISTS
+        // (Program.cs). Un timer que siempre lanza se cuenta aquí; al superar el máximo de reintentos
+        // el watchdog deja de re-procesarlo (Where FailureCount < 5) y lo marca expirado (dead-letter)
+        // para no atascar el hire re-fallando cada 10 min para siempre.
+        public int FailureCount { get; set; } = 0;
+        public DateTime? LastFailedAt { get; set; }
+
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         
         // Navigation properties

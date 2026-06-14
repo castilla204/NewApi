@@ -9170,6 +9170,33 @@ namespace newApi.Controllers
                              "Likely a Stripe Dashboard refund — reconcile the ledger and check whether the expert transfer needs reversing.",
                     source: "SubscriptionController.HandleChargeRefunded",
                     relatedEntityType: "Payment");
+
+                // 🔧 FIX F06: un refund externo/Dashboard revierte el cargo al cliente, pero si el experto YA
+                // recibió su transfer, ese dinero NO vuelve solo → doble salida. Replicamos el patrón de
+                // HandleChargeDisputeCreated: resolvemos el hire y, si existe un Payout con StripeTransferId,
+                // encolamos la reversión del transfer (idempotente; no-op si ya se revirtió o no hubo transfer).
+                var (refundHireId, _, _) = await FindHireForPaymentIntentAsync(paymentIntentId);
+                if (refundHireId.HasValue)
+                {
+                    var hadExpertTransfer = await _context.FinancialTransactions
+                        .AnyAsync(ft => ft.RelatedEntityId == refundHireId.Value
+                                     && ft.TransactionType == "Payout"
+                                     && ft.RelatedEntityType == "SearchHire"
+                                     && ft.StripeTransferId != null);
+
+                    if (hadExpertTransfer)
+                    {
+                        Hangfire.BackgroundJob.Enqueue<StripeRefundService>(
+                            s => s.ReverseExpertTransferForChargebackAsync(refundHireId.Value, $"External refund {charge.Id} on PI {paymentIntentId}"));
+
+                        await _loggingService.LogInfoAsync(
+                            message: "External refund: expert transfer reversal enqueued",
+                            details: $"Charge {charge.Id} (PI {paymentIntentId}) refunded externamente y el hire {refundHireId} tenía un Payout con StripeTransferId. Encolado ReverseExpertTransferForChargebackAsync (idempotente) para evitar doble salida de dinero.",
+                            source: "SubscriptionController.HandleChargeRefunded.F06",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: refundHireId);
+                    }
+                }
             }
         }
 
@@ -10030,6 +10057,11 @@ namespace newApi.Controllers
                             int.TryParse(paymentIntent.Metadata["userId"], out int parsedUserId)
                             ? parsedUserId : (int?)null;
 
+                // 🔧 FIX F19: flag para el caso N23 (cliente cobrado y NO reembolsado). En ese caso NO
+                // debemos marcar el hire como Cancelled (eso ocultaría que el dinero salió del cliente);
+                // se marca RequiresManualReview para que el admin reembolse/revierta a mano.
+                bool chargeCapturedNotRefunded = false;
+
                 // 🛡️ N23 FIX: Stripe usa el mismo evento payment_intent.canceled tanto para PI
                 // que expiró sin captura (caso normal con CaptureMethod=manual) como para PI
                 // que SÍ fue capturado y luego cancelado manualmente desde Dashboard (raro pero
@@ -10044,12 +10076,15 @@ namespace newApi.Controllers
                         var latestCharge = await n23ChargeSvc.GetAsync(paymentIntent.LatestChargeId);
                         if (latestCharge != null && string.Equals(latestCharge.Status, "succeeded", StringComparison.OrdinalIgnoreCase) && !latestCharge.Refunded)
                         {
+                            // 🔧 FIX F19: cliente cobrado y NO reembolsado → NO marcar Cancelled (oculta la
+                            // salida de dinero). Se marca el hire RequiresManualReview más abajo y se hace return.
+                            chargeCapturedNotRefunded = true;
                             await _loggingService.LogCriticalAsync(
                                 message: "CRITICAL N23: payment_intent.canceled con cargo CAPTURADO — refund manual requerido",
                                 details: $"PI {paymentIntent.Id} ({amount}€) llegó como canceled pero el latest charge {latestCharge.Id} está succeeded y NO refunded. " +
                                          $"El dinero SÍ se cobró al cliente. ACCIÓN ADMIN: emitir refund manual desde Stripe Dashboard " +
                                          $"(Refunds → {paymentIntent.Id}) y revertir cualquier transfer al experto si ya se hizo. " +
-                                         $"El handler sigue cancelando el hire local — la reconciliación de dinero es manual.",
+                                         $"El hire NO se cancela: se marca RequiresManualReview para no ocultar la salida de dinero — la reconciliación es manual.",
                                 userId: userId,
                                 source: "SubscriptionController.HandlePaymentIntentCanceled.N23",
                                 relatedEntityType: "PaymentIntent",
@@ -10104,6 +10139,10 @@ namespace newApi.Controllers
                 int? expertIdForNotif = null;
                 int? clientIdForNotif = null;
                 bool hireWasCancelledNow = false;
+                // 🔧 FIX F19: marca que el hire se desvió a RequiresManualReview (cliente cobrado, no
+                // reembolsado) en vez de cancelarse. Tras la transacción hacemos return sin pasar por la
+                // notificación/log de "cancelado".
+                bool hireMarkedForManualReview = false;
 
                 await strategy.ExecuteAsync(async () =>
                 {
@@ -10129,6 +10168,23 @@ namespace newApi.Controllers
                     if (!isActive)
                     {
                         await tx.CommitAsync();
+                        return;
+                    }
+
+                    // 🔧 FIX F19: el cliente fue cobrado y NO reembolsado (charge succeeded && !refunded).
+                    // Marcar Cancelled aquí ocultaría que el dinero salió del cliente y el hire quedaría
+                    // como "no pasó nada". En su lugar marcamos RequiresManualReview para que el admin
+                    // reembolse/revierta a mano, persistimos y salimos SIN cancelar.
+                    if (chargeCapturedNotRefunded)
+                    {
+                        if (!hire.RequiresManualReview)
+                        {
+                            hire.RequiresManualReview = true;
+                            hire.UpdatedAt = DateTime.UtcNow;
+                            await _context.SaveChangesAsync();
+                        }
+                        await tx.CommitAsync();
+                        hireMarkedForManualReview = true;
                         return;
                     }
 
@@ -10181,6 +10237,33 @@ namespace newApi.Controllers
                     await _context.SaveChangesAsync();
                     await tx.CommitAsync();
                 });
+
+                // 🔧 FIX F19: cliente cobrado y NO reembolsado → el hire se marcó RequiresManualReview
+                // (no Cancelled). Logueamos Critical para que el admin reembolse/revierta a mano y
+                // salimos en éxito (return normal → el webhook devuelve Ok, sin reintentos en bucle).
+                if (hireMarkedForManualReview)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL F19: payment_intent.canceled con cargo CAPTURADO — hire marcado RequiresManualReview (NO cancelado)",
+                        details: $"SearchHire {hireId}: PI {paymentIntent.Id} llegó canceled pero el cliente fue cobrado y NO reembolsado. El hire NO se ha cancelado (eso ocultaría la salida de dinero); se ha marcado RequiresManualReview=true. ACCIÓN ADMIN: emitir refund manual desde Stripe Dashboard (Refunds → {paymentIntent.Id}) y revertir cualquier transfer al experto si ya se hizo.",
+                        userId: clientIdForNotif,
+                        source: "SubscriptionController.HandlePaymentIntentCanceled.F19",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hireId,
+                        additionalData: new {
+                            metric_name = "payment_intent_canceled_hire_manual_review_total",
+                            metric_kind = "counter",
+                            event_type = "payment_intent_canceled_charge_captured_manual_review",
+                            severity = "critical",
+                            PaymentIntentId = paymentIntent.Id,
+                            SearchHireId = hireId,
+                            ExpertId = expertIdForNotif,
+                            ClientId = clientIdForNotif,
+                            CancellationReason = paymentIntent.CancellationReason,
+                            TimestampUtc = DateTime.UtcNow
+                        });
+                    return;
+                }
 
                 if (hireWasCancelledNow)
                 {

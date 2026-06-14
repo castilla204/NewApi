@@ -1082,12 +1082,23 @@ namespace newApi.Services
                                 source: "StripeRefundService.ProcessMoneyDistributionAsync",
                                 relatedEntityType: "SearchHire",
                                 relatedEntityId: searchHireId,
-                                additionalData: new { 
+                                additionalData: new {
                                     Status = statusValue,
                                     FallbackError = fallbackEx.Message
                                 }
                             );
-                            // A├║n as├¡, intentar procesar dinero (puede que el estado ya est├® correcto)
+                            // 🛡️ F24 FIX: NO continuar a Fase 3 moviendo dinero si el estado NUNCA se persistió.
+                            // Antes seguíamos a la distribución de dinero aunque el SaveChanges del fallback de estado
+                            // lanzó → dinero movido sin estado confirmado. Encolamos el reintento idempotente (sus
+                            // guards evitan doble pago) y abortamos esta ejecución para no mover dinero sin estado.
+                            Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                                s => s.RetryMoneyDistributionJobAsync(
+                                    searchHireId,
+                                    statusValue,
+                                    reason,
+                                    initiatedByUserId),
+                                TimeSpan.FromMinutes(2));
+                            return false;
                         }
                     }
                 }
@@ -1379,14 +1390,16 @@ namespace newApi.Services
                                 );
                                 // 🔧 Round 26 REFUND-DISABLED-4: marcar para revisión manual igual que la rama de currency-mismatch,
                                 // para que el dashboard admin pueda surfacear hires atascados por capability/payouts disabled.
+                                // 🛡️ F14 FIX: antes hacíamos RollbackAsync + return false → cliente NUNCA recibía su
+                                // refund porque la rama needsRefund nunca corría (transfers disabled del experto dejaba
+                                // el dinero atascado). Patrón paralelo al R14 (acct 404) y al currency-mismatch: saltar
+                                // al refund block, marcar el transfer como pendiente de revisión manual, y dejar que el
+                                // cliente reciba su reembolso. El refund NO necesita la cuenta del experto.
                                 searchHire.RequiresManualReview = true;
                                 searchHire.RefundFailedAt = DateTime.UtcNow;
+                                needsTransfer = false; // saltar al refund block
                                 await _context.SaveChangesAsync();
-                                if (transaction != null)
-                                {
-                                await transaction.RollbackAsync();
-                                }
-                                return false;
+                                goto endTransferBlock;
                             }
 
                         // 🌍 Round 9 — A5 FIX: divisa derivada del Connect account del experto.
@@ -2548,14 +2561,45 @@ namespace newApi.Services
                 string.Equals(appointmentStatus, statusValue, StringComparison.OrdinalIgnoreCase);
             if (!statusStillMatches)
             {
+                // 🛡️ F29 FIX: el cambio de estado NO garantiza que el dinero se movió. Si otro flow avanzó
+                // el estado pero murió ANTES de la distribución (o nunca la encoló), un no-op silencioso aquí
+                // deja al cliente/experto sin su dinero para siempre. Antes de skip-no-op, comprobar en
+                // FinancialTransactions que realmente exista un movimiento (Refund/Payout/TransferReversal)
+                // para este hire. Solo entonces el skip es seguro.
+                var moneyMoved = await _context.FinancialTransactions
+                    .AnyAsync(ft => ft.RelatedEntityType == "SearchHire" &&
+                                    ft.RelatedEntityId == searchHireId &&
+                                    (ft.TransactionType == "Refund" ||
+                                     ft.TransactionType == "Payout" ||
+                                     ft.TransactionType == "TransferReversal"));
+                if (moneyMoved)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "R16: RetryMoneyDistribution skipped — estado cambió entre enqueue y ejecución",
+                        details: $"SearchHire {searchHireId}: statusValue del enqueue='{statusValue}', estado actual hire='{actualStatus}', appointment='{appointmentStatus}'. Otro flow ya completó la transición Y el dinero ya se movió (FT Refund/Payout/TransferReversal presente); este reintento es no-op.",
+                        userId: initiatedByUserId,
+                        source: "StripeRefundService.RetryMoneyDistributionJobAsync.R16",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId);
+                    return; // no throw → no reintento (es benign — otro flow tomó el caso y movió el dinero)
+                }
+                // El estado cambió pero NO hay movimiento de dinero → el dinero sigue pendiente. Procesar con
+                // el statusValue del enqueue (sus guards evitan doble pago); updateState:false porque el estado
+                // ya lo gestionó otro flow. Si falla, lanzar para que Hangfire reintente.
                 await _loggingService.LogWarningAsync(
-                    message: "R16: RetryMoneyDistribution skipped — estado cambió entre enqueue y ejecución",
-                    details: $"SearchHire {searchHireId}: statusValue del enqueue='{statusValue}', estado actual hire='{actualStatus}', appointment='{appointmentStatus}'. Otro flow ya completó la transición; este reintento es no-op.",
+                    message: "F29: estado cambió entre enqueue y ejecución PERO el dinero sigue pendiente — procesando",
+                    details: $"SearchHire {searchHireId}: statusValue del enqueue='{statusValue}', estado actual hire='{actualStatus}', appointment='{appointmentStatus}'. No existe FT Refund/Payout/TransferReversal → NO es no-op: se ejecuta la distribución (updateState:false) para no dejar el dinero atascado.",
                     userId: initiatedByUserId,
                     source: "StripeRefundService.RetryMoneyDistributionJobAsync.R16",
                     relatedEntityType: "SearchHire",
                     relatedEntityId: searchHireId);
-                return; // no throw → no reintento (es benign — otro flow tomó el caso)
+                var movedOk = await ProcessMoneyDistributionAsync(searchHireId, statusValue, reason, initiatedByUserId, updateState: false);
+                if (!movedOk)
+                {
+                    throw new InvalidOperationException(
+                        $"Money distribution still pending for SearchHire {searchHireId} (status {statusValue}, state changed but no FT). Hangfire will retry.");
+                }
+                return;
             }
 
             // El estado ya fue finalizado por el llamador → updateState:false (solo mover dinero).
@@ -2614,6 +2658,13 @@ namespace newApi.Services
                 }
                 return;
             }
+
+            // NOTA: este watchdog NO auto-resuelve disputas ni mueve dinero por timeout del experto.
+            // La resolución de disputas es SIEMPRE manual del admin (DisputeController.ResolveDispute).
+            // Aquí solo se rescata el estado intermedio 'Resolving' que deja una resolución admin que
+            // murió a mitad: si el dinero ya se movió → catch-up arriba (B4); si no → reset a 'Pending'
+            // para que el admin la re-resuelva. (El job EscalateStaleDisputesAsync ya NO encola esto:
+            // solo avisa al admin de que la ventana del experto venció.)
 
             // Caso normal: el money distribution NO se completó → revertir a Pending para reintento.
             // Atómico: solo resetea si SIGUE en "Resolving" (no pisa una que ya llegó a "Resolved"/"Pending").

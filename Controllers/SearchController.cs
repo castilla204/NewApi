@@ -539,17 +539,11 @@ namespace newApi.Controllers
                     });
                 }
 
-                // 📱 OBLIGATORIO (2026-06-12): móvil verificado para CONTRATAR — los avisos
-                // de citas/informes con plazos van por SMS y un fijo no los recibe.
-                if (!user.PhoneVerified || string.IsNullOrWhiteSpace(user.PhoneNumber)
-                    || string.Equals(user.PhoneLineType, "landline", StringComparison.OrdinalIgnoreCase))
-                {
-                    return StatusCode(403, new
-                    {
-                        message = "Necesitas un móvil verificado para contratar: te avisamos por SMS de citas e informes con plazos.",
-                        errorCode = "PHONE_VERIFICATION_REQUIRED"
-                    });
-                }
+                // 📱 La verificación de móvil/SMS NO se exige al CLIENTE para contratar. Solo los
+                // EXPERTOS deben verificar su móvil (para ser visibles en el catálogo, gate en
+                // SearchServiceService + /api/User/expert-visibility). El cliente puede contratar sin
+                // móvil verificado; si tiene un móvil (capturado en checkout/perfil) recibirá los SMS,
+                // pero no es obligatorio.
 
                 var service = await _context.SearchServices
                     .Include(ss => ss.ExpertProfile)
@@ -952,17 +946,11 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "User account is blocked" });
                 }
 
-                // 📱 OBLIGATORIO (2026-06-12): móvil verificado para CONTRATAR — los avisos
-                // de citas/informes con plazos van por SMS y un fijo no los recibe.
-                if (!user.PhoneVerified || string.IsNullOrWhiteSpace(user.PhoneNumber)
-                    || string.Equals(user.PhoneLineType, "landline", StringComparison.OrdinalIgnoreCase))
-                {
-                    return StatusCode(403, new
-                    {
-                        message = "Necesitas un móvil verificado para contratar: te avisamos por SMS de citas e informes con plazos.",
-                        errorCode = "PHONE_VERIFICATION_REQUIRED"
-                    });
-                }
+                // 📱 La verificación de móvil/SMS NO se exige al CLIENTE para contratar. Solo los
+                // EXPERTOS deben verificar su móvil (para ser visibles en el catálogo, gate en
+                // SearchServiceService + /api/User/expert-visibility). El cliente puede contratar sin
+                // móvil verificado; si tiene un móvil (capturado en checkout/perfil) recibirá los SMS,
+                // pero no es obligatorio.
 
                 var search = new Search
                 {

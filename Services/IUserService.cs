@@ -1,4 +1,5 @@
-﻿using newApi.DataLayer.Models.DTOs;
+﻿using Microsoft.AspNetCore.Http; // 🖼️ IFormFile para SetAvatarAsync
+using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 
@@ -26,6 +27,9 @@ namespace newApi.Services
         Task<(bool Success, ExpertProfileDto? UpdatedProfile,
               string? errorCode, string? errorMessage, string? detectedCountry)> UpdateExpertProfile(int userId, UpdateExpertProfileRequestDto request);
         Task<User> GetUserAsync(int userId);
+        // 🖼️ Avatar de cuenta (unificado con la foto pública del experto).
+        Task<(bool success, string? url, string? errorCode)> SetAvatarAsync(int userId, IFormFile file);
+        Task<(bool success, string? errorCode)> RemoveAvatarAsync(int userId);
         // ✅ REMOVED: GetUserBalanceAsync method eliminated - balance system removed
     }
 }

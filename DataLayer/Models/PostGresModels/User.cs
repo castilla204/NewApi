@@ -19,6 +19,26 @@ namespace newApi.DataLayer.Models.PostGresModels
         // 🛡️ Round 16: Apple identifier (sub claim del JWT identityToken). Stable per
         // (user, team). Null si el usuario no usa Apple Sign In.
         public string? AppleId { get; set; }
+
+        /// <summary>
+        /// 🖼️ Avatar de cuenta (foto de perfil del usuario), re-hospedado en el bucket
+        /// PÚBLICO de Supabase (mismo que las fotos de experto). Se siembra automáticamente
+        /// desde la foto de Google en el primer login social si está vacío; editable desde
+        /// el panel de configuración. Null = sin foto → el frontend muestra avatar de iniciales.
+        ///
+        /// AVATAR UNIFICADO: para usuarios con rol Expert este valor se mantiene SINCRONIZADO
+        /// con <see cref="ExpertProfile.ProfilePictureUrl"/> (la foto pública del marketplace).
+        /// Toda escritura de la foto pasa por <c>UserService.SetAvatarAsync</c> /
+        /// <c>BecomeExpert</c> / <c>UpdateExpertProfile</c>, que escriben AMBOS campos a la vez.
+        /// </summary>
+        public string? ProfilePictureUrl { get; set; }
+
+        /// <summary>
+        /// 🖼️ Object path dentro del bucket de imágenes (para poder borrar el blob anterior
+        /// al reemplazar la foto y evitar leaks de almacenamiento). Espejo de
+        /// <see cref="ExpertProfile.ProfilePictureObjectName"/> cuando el usuario es experto.
+        /// </summary>
+        public string? ProfilePictureObjectName { get; set; }
         public string? PhoneNumber { get; set; }
         public bool PhoneVerified { get; set; }
 

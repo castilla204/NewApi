@@ -1420,6 +1420,9 @@ namespace newApi.Services
                         // intervención humana antes de mover dinero con conversión silenciosa.
                         var expectedCurrency = (searchHire.Currency ?? "EUR").ToLowerInvariant();
                         var accountCurrency = (expertAccount?.DefaultCurrency ?? "eur").ToLowerInvariant();
+                        // ⚠️ AUDITORÍA [M1] Medium: esta rama currency-mismatch marca RequiresManualReview pero NO setea RefundFailedAt (sus hermanas en l.~1370 y l.~1399 sí lo hacen). El goto endTransferBlock deja que el refund corra y la función retorna true → SIN excepción.
+                        // Disparo/ataque: searchHire.Currency (p.ej. chf) distinto de expertAccount.DefaultCurrency (p.ej. eur), con expertAmount>0 y experto con transfers activos. El pago del experto queda retenido y, al no setear RefundFailedAt, escapa al digest diario (LoggingService filtra RefundFailedAt!=null) y al watchdog Hangfire (solo actúa en FailedState; aquí no hay throw). Dinero del experto atascado e INVISIBLE.
+                        // Fix: añadir searchHire.RefundFailedAt = DateTime.UtcNow; junto al RequiresManualReview de abajo, para paridad con las ramas 404 y transfers-disabled.
                         if (expectedCurrency != accountCurrency)
                         {
                             await _loggingService.LogCriticalAsync(
@@ -1443,7 +1446,9 @@ namespace newApi.Services
                             // Patrón paralelo al R14 (acct 404): saltar al refund block, marcar el transfer
                             // como pendiente de revisión manual, dejar que el cliente reciba su reembolso.
                             // Sin esto, "cliente pagó CHF + experto mudó a IE EUR + cancela" = client refund stranded forever.
+                            // ✅ FIX AUDITORÍA [M1] Medium: añadido `searchHire.RefundFailedAt = DateTime.UtcNow;` (línea siguiente). Sin él, este hire con transfer del experto pendiente nunca aparecía en el Refund-failed digest (LoggingService .Where(h => h.RefundFailedAt != null)) ni lo marcaba el Hangfire filter (que solo actúa si el job entra en FailedState; este flujo hace goto y retorna true). Ahora hay paridad con las ramas 404 (l.~1370) y transfers-disabled (l.~1399).
                             searchHire.RequiresManualReview = true;
+                            searchHire.RefundFailedAt = DateTime.UtcNow;
                             needsTransfer = false; // saltar al refund block
                             await _context.SaveChangesAsync();
                             goto endTransferBlock;
@@ -1484,6 +1489,9 @@ namespace newApi.Services
                             {
                                 try
                                 {
+                                    // ⚠️ AUDITORÍA [M2] Medium: el dinero SALE de Stripe AQUÍ, pero la fila Payout no se persiste/commitea hasta ~2298/2319. El estado del hire ya se commiteó en FASE 2 (~802) como "completed".
+                                    // Disparo/ataque: crash/OOM/redeploy/timeout de Hangfire en la ventana 1487→2298 → transfer real en Stripe + fila Payout revertida + hire queda "completed" (NO "transfer_failed"). El watchdog RetryTransferFailedHiresAsync solo mira "transfer_failed" (PlatformMaintenanceService ~483) → NUNCA lo reencola = hueco contable silencioso; reintento manual con otro statusValue rompe la idempotencia → doble transfer.
+                                    // Fix: outbox/marca de intención persistida ANTES del transfer (o mover hire a estado recoverable) y ampliar el watchdog para reconciliar "completed sin fila Payout vs transfer existente en Stripe".
                                     transfer = await transferSvc.CreateAsync(transferOptions, transferRequestOptions);
                                     break;
                                 }
@@ -1824,6 +1832,9 @@ namespace newApi.Services
                                 {
                                     try
                                     {
+                                        // ⚠️ AUDITORÍA [L3] Low: refund creado en Stripe AQUÍ, pero su fila FT solo se vuelve durable en el CommitAsync (~L2319). Dual-write no atómico.
+                                        // Disparo/ataque: caller sin tx exterior (RetryMoneyDistributionJobAsync de Hangfire) → muerte del proceso (deploy/OOM/PG failover) entre el SaveChanges ~L2217 y el commit ~L2319 → rollback descarta la FT Refund aunque el refund exista en Stripe. Autorrecuperable: el retry ve existingRefund=null y reinvoca con la misma idempotency key (Stripe devuelve el refund cacheado, sin doble reembolso); StripeReconciliationService lo detecta como RefundsInStripeMissingInDb.
+                                        // Fix: patrón outbox — commitear la intención del refund en la MISMA tx ANTES de llamar a Stripe (o registrar el efecto en tabla outbox commiteada y disparar el side-effect tras commit), para que el efecto Stripe y la fila FT compartan límite de durabilidad.
                                         refund = await refundSvc.CreateAsync(refundOptions, refundRequestOptions);
                                         break;
                                     }
@@ -1991,6 +2002,9 @@ namespace newApi.Services
                             && existingTransfer != null
                             && !string.IsNullOrEmpty(existingTransfer.StripeTransferId)
                             && clawbackAmountEur >= 0.01m
+                            // ⚠️ AUDITORÍA [M4] Medium: hasChargebackNow detecta el FT "Chargeback" (escrito SIEMPRE en SubscriptionController l.8842) y omite el clawback interno asumiendo que ReverseExpertTransferForChargebackAsync revertirá el transfer; pero en la rama T9 (SubscriptionController l.8883, dispute interna activa) ese reversal NUNCA se encola → el experto se queda el transfer y, sumado al chargeback que ya devolvió 100% al cliente, hay doble salida de dinero.
+                            // Disparo/ataque: resolver refund_client una dispute interna cuyo hire recibió un chargeback Stripe mientras la dispute estaba Pending/Resolving.
+                            // Fix: condicionar el skip a que EXISTA realmente un FT "ChargebackReversal" (TransferReversal) sobre este transfer, no solo el marcador "Chargeback"; si no se revirtió, ejecutar el clawback aquí.
                             && !hasChargebackNow) // 🔁 R3 + 🛡️ FIX #9: hasChargebackNow incluye re-lectura justo antes del clawback (cierra la ventana de carrera con webhook)
                         {
                             var alreadyReversed = await _context.FinancialTransactions.AnyAsync(ft =>
@@ -2214,6 +2228,9 @@ namespace newApi.Services
                             // podía morir sin persistir. Mismo patrón que C4 (clawback).
                             try
                             {
+                                // ⚠️ AUDITORÍA [L3] Low: este SaveChanges N3 inserta la FT Refund pero NO la commitea — sigue dentro de la transacción abierta en ~L1117, que solo commitea en ~L2319.
+                                // Disparo/ataque: un crash entre este INSERT y el CommitAsync ~L2319 hace ROLLBACK de la fila; el refund de Stripe (creado en ~L1827) queda huérfano en el ledger hasta el retry o el job diario de reconciliación.
+                                // Fix: este SaveChanges adelantado NO cierra el gap real (INSERT→muerte→sin COMMIT); requiere outbox o que el side-effect Stripe se ejecute tras el commit de la fila, no antes.
                                 await _context.SaveChangesAsync();
                             }
                             // 🛡️ FIX 23505 (Round 28): absorber colisión del índice único IX_FT_StripeRefundId_uq
@@ -2291,6 +2308,9 @@ namespace newApi.Services
                             };
                             _context.FinancialTransactions.Add(expertTx);
 
+                            // ⚠️ AUDITORÍA [M2] Medium: el N3 FIX acortó el gap pero NO lo cerró: sigue habiendo ventana entre el transfer (1487) y este SaveChanges/commit (2298/2319) en la que un crash deja el transfer hecho en Stripe sin fila Payout, con el hire ya commiteado como "completed" en FASE 2.
+                            // Disparo/ataque: muerte del proceso aquí (peor en cross-currency por la lectura de BalanceTransaction intermedia) → ledger interno cree que NO se pagó al experto; reconciliación mensual descuadra; reintento manual con statusValue distinto = doble pago.
+                            // Fix: registrar la fila Payout como "pending" ANTES del CreateAsync y confirmarla después (patrón outbox), de modo que el crash deje rastro reencolable de forma idempotente.
                             // 🛡️ N3 FIX (transfer principal): SaveChanges INMEDIATO. Antes había ~368 líneas
                             // de gap entre transferSvc.CreateAsync y el SaveChanges global → riesgo idéntico.
                             try
@@ -2316,6 +2336,9 @@ namespace newApi.Services
                         // Ô£à CORRECCI├ôN: Solo hacer commit si creamos la transacci├│n
                         if (transaction != null)
                         {
+                        // ⚠️ AUDITORÍA [L3] Low: ÚNICO punto donde la fila FT Refund (Add ~L2197) se vuelve durable; está muy lejos de la creación del refund en Stripe (~L1827).
+                        // Disparo/ataque: cualquier excepción/kill del worker entre ~L2217 y esta línea → rollback de la FT; refund vivo en Stripe sin registro en BD → ledger infravalora refunds (riesgo de que el SUM-check W1 de ~L1164 no contabilice este refund hasta reconciliar). Impacto acotado a un refund por incidente, sin doble pago.
+                        // Fix: alinear el efecto Stripe con este commit (outbox / efecto post-commit) para eliminar la ventana no atómica.
                         await transaction.CommitAsync();
                         }
 
@@ -2518,15 +2541,27 @@ namespace newApi.Services
         /// reintentar es seguro (no duplica pagos). Si sigue fallando se LANZA para que Hangfire reintente;
         /// la causa ya se registró como Critical (que ahora avisa por email al admin).
         /// </summary>
-        // 🛡️ R15: DisableConcurrentExecution evita que dos jobs concurrentes (encolados desde
-        // distintos sitios, ej DisputeController + AppointmentService + SearchHireController) corran
-        // simultáneamente para el mismo hire. Sin esto ambos ven el guard idempotente pasar a la vez
-        // y pueden duplicar transfer/refund. Timeout 600s cubre cualquier ProcessMoneyDistribution
-        // legítimo (Stripe API + SaveChanges).
-        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
+        // ⚠️ AUDITORÍA [L5] Low: este comentario R15 describe MAL el alcance del lock. DisableConcurrentExecution sin
+        // override de GetResource NO bloquea "para el mismo hire": bloquea por Type+Method → lock global compartido por
+        // todos los searchHireId. La protección anti-doble-pago real son idempotencia Stripe + guards FT + R16, no este lock.
+        // 🛡️ R15: lock distribuido POR-HIRE (clave "retry-money-{searchHireId}") evita que dos jobs concurrentes
+        // (encolados desde distintos sitios, ej DisputeController + AppointmentService + SearchHireController) corran
+        // simultáneamente PARA EL MISMO hire. Sin esto ambos ven el guard idempotente pasar a la vez y pueden
+        // duplicar transfer/refund. Timeout 600s cubre cualquier ProcessMoneyDistribution legítimo (Stripe API + SaveChanges).
+        // ✅ FIX AUDITORÍA [L5] Low: antes se usaba [DisableConcurrentExecution] SIN override de GetResource, que bloquea
+        // por Type+Method ("StripeRefundService.RetryMoneyDistributionJobAsync"), NO por searchHireId → lock GLOBAL que
+        // serializaba los ~12 sitios de encolado para TODOS los hires (no solo el mismo). Eso provocaba head-of-line
+        // blocking: varios hires en 'transfer_failed' a la vez (watchdog PlatformMaintenanceService.cs:496 encola N retries
+        // en ráfaga) corrían EN SERIE; un job lento retrasaba TODOS los payouts/refunds horas (vía AutomaticRetry).
+        // Reemplazado por AcquireDistributedLock scoped al searchHireId → el lock ahora es por-hire, mejora el throughput
+        // y NO afecta la seguridad anti-doble-pago (que ya la dan idempotencia Stripe + guards FT + re-verificación R16).
         [Hangfire.AutomaticRetry(Attempts = 5, DelaysInSeconds = new[] { 120, 600, 1800, 3600, 7200 })]
         public async Task RetryMoneyDistributionJobAsync(int searchHireId, string statusValue, string reason, int? initiatedByUserId)
         {
+            // 🛡️ R15 (por-hire): lock distribuido scoped al searchHireId. Si AcquireDistributedLock lanza por timeout
+            // (600s), dejamos propagar la excepción → Hangfire reintentará vía [AutomaticRetry].
+            using (Hangfire.JobStorage.Current.GetConnection().AcquireDistributedLock($"retry-money-{searchHireId}", TimeSpan.FromSeconds(600)))
+            {
             // 🛡️ R16 FIX: re-verify state DEL HIRE en lugar de asumir statusValue del enqueue time.
             // Entre el enqueue (delay 2 min) y la ejecución el hire pudo cambiar de estado por otro
             // flow (admin re-resolvió, chargeback llegó, etc.). Si el estado actual no coincide con
@@ -2609,6 +2644,7 @@ namespace newApi.Services
                 throw new InvalidOperationException(
                     $"Money distribution still pending for SearchHire {searchHireId} (status {statusValue}). Hangfire will retry.");
             }
+            } // end using AcquireDistributedLock (lock por-hire R15)
         }
 
         /// <summary>

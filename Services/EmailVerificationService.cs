@@ -39,6 +39,8 @@ namespace newApi.Services
             int? userId,
             string? requestIp,
             bool shouldSendEmail = true,
+            string? pendingName = null,
+            string? pendingPasswordHash = null,
             CancellationToken ct = default);
 
         /// <summary>
@@ -82,7 +84,12 @@ namespace newApi.Services
         EmailVerificationPurpose? Purpose = null,
         int? UserId = null,
         int AttemptsRemaining = 0,
-        string? ErrorMessage = null);
+        string? ErrorMessage = null,
+        // Datos del registro pendiente persistidos en la fila del OTP (null salvo registro
+        // email/password). Permiten crear el User en verify-email aunque el proceso se haya
+        // reiniciado entre register y verify (antes vivían solo en MemoryCache process-local).
+        string? PendingName = null,
+        string? PendingPasswordHash = null);
 
     /// <inheritdoc />
     public class EmailVerificationService : IEmailVerificationService
@@ -121,6 +128,8 @@ namespace newApi.Services
             int? userId,
             string? requestIp,
             bool shouldSendEmail = true,
+            string? pendingName = null,
+            string? pendingPasswordHash = null,
             CancellationToken ct = default)
         {
             email = NormalizeEmail(email);
@@ -160,6 +169,10 @@ namespace newApi.Services
                 VerificationToken = token,
                 ExpiresAt = expiresAt,
                 RequestIp = requestIp,
+                // Registro pendiente durable (sólo presente en OTP de registro email/password).
+                // El hash BCrypt ya viene calculado por el caller; aquí NUNCA hay contraseña en plano.
+                PendingName = pendingName,
+                PendingPasswordHash = pendingPasswordHash,
             };
 
             // ─── Enviar email PRIMERO (si procede) ────────────────────────────────────
@@ -228,7 +241,9 @@ namespace newApi.Services
                         Success: true,
                         Email: entity.Email,
                         Purpose: entity.Purpose,
-                        UserId: entity.UserId);
+                        UserId: entity.UserId,
+                        PendingName: entity.PendingName,
+                        PendingPasswordHash: entity.PendingPasswordHash);
                 }
 
                 _logger.LogWarning("Verify: token ya consumido (id={Id}, ip={Ip})", entity.Id, verifyIp);
@@ -284,7 +299,9 @@ namespace newApi.Services
                 Success: true,
                 Email: entity.Email,
                 Purpose: entity.Purpose,
-                UserId: entity.UserId);
+                UserId: entity.UserId,
+                PendingName: entity.PendingName,
+                PendingPasswordHash: entity.PendingPasswordHash);
         }
 
         /// <inheritdoc />

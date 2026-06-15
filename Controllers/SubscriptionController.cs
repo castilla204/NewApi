@@ -277,7 +277,7 @@ namespace newApi.Controllers
                     // 🛡️ Round 28: traducir el error code a texto humano + nombre del requirement en español.
                     // Antes se concatenaba RAW: "Code: verification_document_failed, Reason: ..., Requirement: individual.verification.document"
                     // Ahora: "Documento ilegible (documento de identidad)"
-                    var humanError = GetErrorDescription(error.Code ?? error.Reason ?? "unknown");
+                    var humanError = GetErrorDescription(error.Code ?? error.Reason ?? "unknown", error.Reason);
                     var humanRequirement = !string.IsNullOrEmpty(error.Requirement)
                         ? GetRequirementDescription(error.Requirement)
                         : null;
@@ -303,7 +303,7 @@ namespace newApi.Controllers
             {
                 foreach (var error in futureRequirements.Errors)
                 {
-                    var humanError = GetErrorDescription(error.Code ?? error.Reason ?? "unknown");
+                    var humanError = GetErrorDescription(error.Code ?? error.Reason ?? "unknown", error.Reason);
                     var humanRequirement = !string.IsNullOrEmpty(error.Requirement)
                         ? GetRequirementDescription(error.Requirement)
                         : null;
@@ -381,6 +381,19 @@ namespace newApi.Controllers
                         if (requirementErrors.Any())
                         {
                             state.Status = StripeStatus.ActionRequired;
+                            state.OnboardingCompleted = false;
+                        }
+                        // 🛡️ M1 (paridad con FIX-DOC-FAIL, líneas ~504-508): este early-return
+                        // se saltaba el gate de current_deadline del flujo principal. Si Stripe
+                        // marca pending_verification con charges/payouts activos PERO ya plantó un
+                        // current_deadline (suspensión planificada mientras revisa documentos),
+                        // la cuenta quedaba Approved ocultando el plazo. Degradar a RestrictedSoon
+                        // igual que el flujo principal — solo si seguimos en Approved, para no
+                        // pisar el ActionRequired que MUD-DC fija arriba cuando hay errors[].
+                        if (state.Status == StripeStatus.Approved &&
+                            (requirements.CurrentDeadline.HasValue || futureRequirements.CurrentDeadline.HasValue))
+                        {
+                            state.Status = StripeStatus.RestrictedSoon;
                             state.OnboardingCompleted = false;
                         }
                         state.StatusDetails = BuildStatusDetails(state);
@@ -3168,7 +3181,16 @@ namespace newApi.Controllers
                         try
                         {
                             var currentPreviousStatus = profileToUpdate.StripeStatus;
-                                
+                            // 🛡️ C3: capturar el detalle previo (deadline + requisitos futuros) ANTES de
+                            // que ApplyStripeAccountState los sobrescriba. Stripe dispara account.updated por
+                            // cambios de requirements/current_deadline aunque charges_enabled/disabled_reason
+                            // no cambien → el enum derivado se mantiene (p.ej. RestrictedSoon→RestrictedSoon
+                            // con deadline más cercano) y, sin esto, el experto NO recibía aviso de que el
+                            // plazo se acortó o llegaron nuevos requisitos. Para Approved ambos campos son
+                            // null, así que esta comparación no genera falsos avisos de "cuenta aprobada".
+                            var prevFutureDueAt = profileToUpdate.StripeFutureDueAt;
+                            var prevFutureRequirements = profileToUpdate.StripeFutureRequirements;
+
                                 // ✅ LOG DIAGNÓSTICO: Evaluando estado
                                 try
                                 {
@@ -3355,7 +3377,15 @@ namespace newApi.Controllers
                                 }
                                 catch { }
                                 
-                                if (currentPreviousStatus != state.Status)
+                                // 🛡️ C3: notificar también cuando el enum NO cambió pero sí lo hizo el
+                                // detalle material (deadline más cercano o nuevos requisitos futuros).
+                                // Comparamos solo deadline + requisitos (no StripeStatusDetails) para no
+                                // disparar por cambios cosméticos del texto.
+                                var detailChanged =
+                                       prevFutureDueAt != profileToUpdate.StripeFutureDueAt
+                                    || prevFutureRequirements != profileToUpdate.StripeFutureRequirements;
+
+                                if (currentPreviousStatus != state.Status || detailChanged)
                                 {
                                     await NotifyStripeStatusTransitionAsync(
                                         profileToUpdate,
@@ -3756,6 +3786,14 @@ namespace newApi.Controllers
                                 // or a new status" — ignorar los active perdía requisitos scoped a la
                                 // capability (transfers) que nunca aparecían en el rollup account-level.
                                 bool isCapabilityInactive = string.Equals(capability.Status, "inactive", StringComparison.OrdinalIgnoreCase);
+                                // 🛡️ A5: una capability que se REACTIVA llega como capability.updated con
+                                // status="active" y SIN requirements. Stripe NO garantiza un account.updated
+                                // emparejado (eventos independientes y sin orden — docs.stripe.com/webhooks
+                                // "Event ordering"), así que si no re-evaluamos aquí el StripeStatus queda
+                                // stale en Restricted/Disabled hasta el próximo account.updated o sync manual.
+                                // El cuerpo es idempotente (re-fetch live + EvaluateStripeAccount); las ramas
+                                // destructivas de cancelación de hires siguen gateadas por isCapabilityInactive.
+                                bool isCapabilityActive = string.Equals(capability.Status, "active", StringComparison.OrdinalIgnoreCase);
                                 bool hasCapabilityRequirements =
                                     (capability.Requirements?.CurrentlyDue?.Count ?? 0) > 0 ||
                                     (capability.Requirements?.PastDue?.Count ?? 0) > 0 ||
@@ -3764,7 +3802,7 @@ namespace newApi.Controllers
                                 if (!string.IsNullOrEmpty(capabilityAccountId) &&
                                     (string.Equals(capability.Id, "card_payments", StringComparison.OrdinalIgnoreCase) ||
                                      string.Equals(capability.Id, "transfers", StringComparison.OrdinalIgnoreCase)) &&
-                                    (isCapabilityInactive || hasCapabilityRequirements))
+                                    (isCapabilityInactive || isCapabilityActive || hasCapabilityRequirements))
                                 {
                                     var capabilityProfile = await _context.ExpertProfiles
                                         .FirstOrDefaultAsync(ep => ep.StripeAccountId == capabilityAccountId);
@@ -4098,6 +4136,9 @@ namespace newApi.Controllers
                 // 🚨 LOG CRÍTICO: Error de Stripe en webhook (puede afectar dinero)
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Stripe webhook error",
+                    // ⚠️ AUDITORÍA [L1] Low: la rama no-firma de este catch (StripeException) devuelve abajo StatusCode(500, new { error = e.Message }) en endpoint [AllowAnonymous], filtrando la taxonomía cruda de Stripe.NET (Type/Code/param/Request-Id).
+                    // Disparo/ataque: sólo se alcanza tras firma HMAC válida (ConstructEvent OK); una StripeException posterior (api_connection_error, rate_limit, etc.) en un re-fetch a Stripe. El receptor del 500 es Stripe, no un atacante (la firma inválida ya cae en BadRequest 400) → explotabilidad casi nula.
+                    // Fix: en el return de 500 usar mensaje genérico ("Webhook processing error") manteniendo el 500 para el reintento de Stripe; el detalle ya queda en este LogCriticalAsync.
                     details: $"Stripe exception in webhook handler: {e.Message}, Type: {e.StripeError?.Type}, Code: {e.StripeError?.Code}",
                     source: "SubscriptionController.HandleStripeWebhook",
                     relatedEntityType: "Webhook",
@@ -4125,7 +4166,8 @@ namespace newApi.Controllers
                 // Stripe trata como permanente y NO reintenta → el evento se perdía. (La firma inválida sí
                 // devuelve 400 más arriba.) El evento quedó marcado "Failed" → TryBeginProcessingEvent lo
                 // re-reclama en la reentrega.
-                return StatusCode(500, new { error = e.Message });
+                // ✅ FIX AUDITORÍA [L1]: mensaje genérico en el 500 (el detalle crudo de Stripe ya queda en el LogCriticalAsync anterior).
+                return StatusCode(500, new { error = "Webhook processing error" });
             }
             catch (Exception e)
             {
@@ -4932,6 +4974,9 @@ namespace newApi.Controllers
                 // 🚨 LOG CRÍTICO: Error de Stripe en webhook general (puede afectar dinero)
                 await _loggingService.LogCriticalAsync(
                     message: "CRITICAL: Stripe general webhook error",
+                    // ⚠️ AUDITORÍA [L1] Low: igual que en HandleStripeWebhook, la rama no-firma devuelve abajo StatusCode(500, new { error = e.Message }) en /webhook-general [AllowAnonymous], filtrando detalle de Stripe.NET.
+                    // Disparo/ataque: requiere firma válida y una StripeException no-firma durante el handling; el 500 lo recibe Stripe, no un atacante → impacto mínimo.
+                    // Fix: mensaje genérico en el StatusCode(500) manteniendo el 500 (reintento Stripe); el detalle ya se registra en este LogCriticalAsync.
                     details: $"Stripe exception in general webhook handler: {e.Message}, Type: {e.StripeError?.Type}, Code: {e.StripeError?.Code}",
                     source: "SubscriptionController.HandleGeneralStripeWebhook",
                     relatedEntityType: "Webhook",
@@ -4959,7 +5004,8 @@ namespace newApi.Controllers
                 // Stripe trata como permanente y NO reintenta → el evento se perdía. (La firma inválida sí
                 // devuelve 400 más arriba.) El evento quedó marcado "Failed" → TryBeginProcessingEvent lo
                 // re-reclama en la reentrega.
-                return StatusCode(500, new { error = e.Message });
+                // ✅ FIX AUDITORÍA [L1]: mensaje genérico en el 500 (el detalle crudo de Stripe ya queda en el LogCriticalAsync anterior).
+                return StatusCode(500, new { error = "Webhook processing error" });
             }
             catch (Exception e)
             {
@@ -5991,6 +6037,15 @@ namespace newApi.Controllers
                     return;
                 }
 
+                // ⚠️ AUDITORÍA [L6] Low: ventana de cargo huérfano entre capture (aquí) y CommitAsync (abajo).
+                // Disparo/ataque: si el proceso muere (OOM/SIGKILL de Render en deploy o autoscale, pool BD caído)
+                //   DESPUÉS de que esta CaptureAsync cobre al cliente pero ANTES del CommitAsync, la transacción
+                //   hace rollback -> SearchHire+ServicePayment desaparecen pero el charge sigue capturado en Stripe.
+                //   El catch(commitEx) de abajo SOLO compensa si CommitAsync lanza excepción, no ante un kill duro.
+                //   Si además todos los reintentos de webhook de Stripe (~3 días) crashean (outage sostenido),
+                //   el cargo queda huérfano permanente y la reconciliación diaria NO lo detecta (ver L6 abajo).
+                // Fix: patrón outbox/idempotencia persistida ANTES de capturar (registrar intento de captura con clave
+                //   estable por PaymentIntentId, no por searchHireId regenerado), de modo que el retry recupere el commit.
                 await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHireId); // ✅ FIX: Usar searchHireId guardado
 
                 // 🛡️ Round 28 MUD-AJ + MUD-AT: marcar Captured tras éxito del capture. El
@@ -8270,7 +8325,7 @@ namespace newApi.Controllers
             // Agregar información sobre errores específicos si los hay (ya traducidos por GetErrorDescription)
             if (requirementErrorDetails.Any())
             {
-                var errorsList = string.Join("; ", requirementErrorDetails.Select(GetErrorDescription));
+                var errorsList = string.Join("; ", requirementErrorDetails.Select(e => GetErrorDescription(e)));
                 message += $" Errores específicos: {errorsList}.";
             }
 
@@ -8315,7 +8370,7 @@ namespace newApi.Controllers
 
             if (!noRequirementErrors && requirementErrorDetails.Any())
             {
-                var errorMessages = requirementErrorDetails.Select(GetErrorDescription).ToList();
+                var errorMessages = requirementErrorDetails.Select(e => GetErrorDescription(e)).ToList();
                 issues.Add($"hubo errores con documentos previos ({string.Join("; ", errorMessages)})");
             }
 
@@ -8576,10 +8631,24 @@ namespace newApi.Controllers
         /// <summary>
         /// Convierte códigos de error en descripciones amigables
         /// </summary>
-        private string GetErrorDescription(string errorDetail)
+        private string GetErrorDescription(string errorDetail, string? reason = null)
         {
             if (errorDetail.Contains("invalid_document"))
                 return "Documento inválido - El documento proporcionado no es válido o no cumple con los requisitos";
+            if (errorDetail.Contains("country_not_supported"))
+                return "País no admitido - El documento es de un país no admitido para la verificación";
+            if (errorDetail.Contains("corrupt"))
+                return "Documento dañado - El archivo del documento está dañado, vuelve a subirlo";
+            if (errorDetail.Contains("name_mismatch"))
+                return "El nombre no coincide - El nombre del documento no coincide con el de tu cuenta";
+            if (errorDetail.Contains("dob_mismatch"))
+                return "La fecha de nacimiento no coincide - No coincide con la del documento";
+            if (errorDetail.Contains("id_number_mismatch"))
+                return "El número de identificación no coincide - Revisa el número introducido";
+            if (errorDetail.Contains("address_mismatch"))
+                return "La dirección no coincide - La dirección del documento no coincide con la de tu cuenta";
+            if (errorDetail.Contains("too_many_attempts"))
+                return "Demasiados intentos - Se superó el número de intentos de verificación, contacta con soporte";
             if (errorDetail.Contains("verification_failed"))
                 return "Verificación fallida - No se pudo verificar la información proporcionada";
             if (errorDetail.Contains("invalid_address"))
@@ -8598,7 +8667,13 @@ namespace newApi.Controllers
                 return "Reverso faltante - Necesitas subir también el reverso del documento";
             if (errorDetail.Contains("selfie"))
                 return "Selfie requerido - Necesitas subir una foto tuya sosteniendo el documento";
-            
+
+            // 🛡️ B1: último recurso ANTES del genérico — usar el `reason` que Stripe ya da hecho
+            // (texto humano específico) en vez de "Error de verificación" cuando el code no matchea.
+            // Es más accionable que el genérico aunque venga en inglés.
+            if (!string.IsNullOrWhiteSpace(reason) && reason != errorDetail)
+                return reason.Trim();
+
             return "Error de verificación - Revisa la información proporcionada y vuelve a intentar";
         }
 
@@ -8612,6 +8687,14 @@ namespace newApi.Controllers
                 // de tipo "ServicePayment" para este PaymentIntent, podría haberse cobrado dinero sin
                 // crear la contratación (evento perdido). Aquí solo detectamos y avisamos la discrepancia;
                 // no creamos nada para no duplicar (la creación es responsabilidad del otro evento).
+                // ⚠️ AUDITORÍA [L6] Low: este es el único detector real del cargo huérfano (capture OK, commit muerto),
+                //   pero es webhook-driven y por tanto frágil.
+                // Disparo/ataque: si la app sigue caída durante la ventana de reintentos de payment_intent.succeeded
+                //   (~3 días), Stripe desiste y este handler nunca corre -> el orfanato pasa desapercibido (la
+                //   reconciliación diaria tampoco lo coge). La alerta CRITICAL P1 de abajo solo salta si este evento
+                //   llega a procesarse a tiempo.
+                // Fix: no depender solo del webhook; respaldar con un barrido programado de charges succeeded sin
+                //   ServicePayment (ReconcileChargesAsync) para detectar huérfanos aunque se pierdan todos los webhooks.
                 var servicePayment = await _context.FinancialTransactions
                     .FirstOrDefaultAsync(ft => ft.StripePaymentIntentId == paymentIntent.Id
                                                && ft.TransactionType == "ServicePayment");
@@ -8822,6 +8905,9 @@ namespace newApi.Controllers
                         .AnyAsync(d => d.SearchHireId == hireId.Value
                                     && (d.Status == "Pending" || d.Status == "Resolving"));
 
+                    // ✅ FIX AUDITORÍA [M4] Medium: con dispute interna Pending/Resolving antes solo se LogCritical y NO se encolaba ReverseExpertTransferForChargebackAsync (vivía solo en el else), dejando el transfer al experto sin revertir mientras el FT "Chargeback" ya quedaba escrito.
+                    // Disparo/ataque: cliente abre dispute interna + contracargo bancario sobre el mismo PI; el chargeback Stripe llega mientras la dispute interna sigue Pending/Resolving → se entra aquí. Luego el admin resuelve refund_client → ProcessMoneyDistribution omite el clawback (hasChargebackNow=true confiando en un reversal que nunca se encoló). Doble salida: cliente 100% + experto conserva ~95%.
+                    // Fix: encolamos igualmente ReverseExpertTransferForChargebackAsync (idempotente, no-op si no hubo transfer) además del LogCritical, para que la reversión se ejecute aunque haya dispute interna activa.
                     if (hasActiveInternalDispute)
                     {
                         await _loggingService.LogCriticalAsync(
@@ -8839,6 +8925,12 @@ namespace newApi.Controllers
                                 ExpertId = expertId,
                                 Reason = "T9_active_internal_dispute_skip_auto_reversal"
                             });
+
+                        // ✅ FIX [M4]: encolar IGUALMENTE la reversión del transfer (mismo enqueue que el else).
+                        // El job es idempotente / no-op si no hubo transfer, por lo que es seguro incluso con
+                        // dispute interna activa y evita que el experto conserve su pago tras el chargeback.
+                        Hangfire.BackgroundJob.Enqueue<StripeRefundService>(
+                            s => s.ReverseExpertTransferForChargebackAsync(hireId.Value, $"Chargeback {dispute.Id} on PI {dispute.PaymentIntentId}"));
                     }
                     else
                     {
@@ -9164,6 +9256,9 @@ namespace newApi.Controllers
             }
             else
             {
+                // ⚠️ AUDITORÍA [M5] Medium: refund externo (Dashboard/API/Stripe) NO inserta FinancialTransaction TransactionType="Refund" — solo loggea y encola la reversal del transfer. La invariante de conservación (HttpHireFlowTests.Concurrent_distributions_conserve_money:993-998 suma FT Refund como outflow) queda rota: el ledger sobreestima el neto cobrado de forma silenciosa y acumulativa, balance por hire irreconciliable.
+                // Disparo/ataque: emitir un refund (total o parcial) desde el Stripe Dashboard/API sin pasar por el endpoint interno → llega charge.refunded → localRefund==false → cae aquí; charge.AmountRefunded es CUMULATIVO, así que parciales sucesivos repiten esta rama y NUNCA dejan rastro contable. N hires así = sobreconteo = sum(refundedAmount).
+                // Fix: insertar FT Refund idempotente (Amount=refundedAmount o delta, Currency del ServicePayment del PI, RelatedEntityId=refundHireId) espejando ProcessGenericRefundAsync:6747 y el marcador Chargeback de HandleChargeDisputeCreated:8842, ANTES de encolar la reversal.
                 await _loggingService.LogWarningAsync(
                     message: "External refund detected (no local Refund record)",
                     details: $"Charge {charge.Id} refunded {refundedAmount}€ but no local Refund FinancialTransaction exists for PaymentIntent {paymentIntentId}. " +
@@ -9175,7 +9270,64 @@ namespace newApi.Controllers
                 // recibió su transfer, ese dinero NO vuelve solo → doble salida. Replicamos el patrón de
                 // HandleChargeDisputeCreated: resolvemos el hire y, si existe un Payout con StripeTransferId,
                 // encolamos la reversión del transfer (idempotente; no-op si ya se revirtió o no hubo transfer).
-                var (refundHireId, _, _) = await FindHireForPaymentIntentAsync(paymentIntentId);
+                // ✅ FIX AUDITORÍA [M5] Medium: aquí se resuelve el hire pero el bloque siguiente solo encolaba la reversal del transfer; faltaba registrar el outflow del reembolso al cliente como FinancialTransaction Refund (refundedAmount). El delta entre lo devuelto en Stripe y lo reflejado en el ledger nunca se cerraba.
+                // Disparo/ataque: cualquier refund originado fuera de la app sobre este PaymentIntent (incluidos los automáticos de Stripe por fraude/early-fraud-warning).
+                // Fix: tras obtener refundHireId, insertar FT Refund idempotente (por StripeRefundId y por delta cumulativo) vinculado a este hire/PI antes de los enqueue, heredando Currency del ServicePayment original.
+                var (refundHireId, _, refundClientId) = await FindHireForPaymentIntentAsync(paymentIntentId);
+
+                // ✅ FIX [M5]: registrar el outflow del reembolso externo en el ledger.
+                // charge.AmountRefunded es CUMULATIVO → calculamos el DELTA respecto a lo ya
+                // registrado como FT Refund para este PaymentIntent e insertamos solo si delta > 0.
+                // Guard de idempotencia adicional por StripeRefundId (cuando esté disponible en
+                // charge.Refunds) para no duplicar el mismo refund en reintentos del webhook.
+                if (!string.IsNullOrEmpty(paymentIntentId) && charge.AmountRefunded > 0)
+                {
+                    // Refund más reciente de Stripe (si viene expandido) → para idempotencia por id.
+                    var latestStripeRefundId = charge.Refunds?.Data?
+                        .OrderByDescending(r => r.Created)
+                        .Select(r => r.Id)
+                        .FirstOrDefault();
+
+                    var alreadyRegisteredByRefundId = !string.IsNullOrEmpty(latestStripeRefundId)
+                        && await _context.FinancialTransactions.AnyAsync(ft =>
+                            ft.TransactionType == "Refund" && ft.StripeRefundId == latestStripeRefundId);
+
+                    if (!alreadyRegisteredByRefundId)
+                    {
+                        // Total ya reflejado en el ledger como Refund para este PI (en céntimos).
+                        var alreadyRefundedCents = await _context.FinancialTransactions
+                            .Where(ft => ft.StripePaymentIntentId == paymentIntentId
+                                      && ft.TransactionType == "Refund")
+                            .SumAsync(ft => (long?)ft.AmountCents) ?? 0L;
+
+                        var deltaCents = charge.AmountRefunded - alreadyRefundedCents;
+                        if (deltaCents > 0)
+                        {
+                            // 🌍 Heredar el currency del ServicePayment original (mismo PI). Fallback "EUR".
+                            var refundCurrency = await _context.FinancialTransactions
+                                .Where(ft => ft.StripePaymentIntentId == paymentIntentId
+                                          && ft.TransactionType == "ServicePayment")
+                                .Select(ft => ft.Currency)
+                                .FirstOrDefaultAsync() ?? "EUR";
+
+                            _context.FinancialTransactions.Add(new FinancialTransaction
+                            {
+                                UserId = refundClientId,
+                                Amount = deltaCents / 100m,
+                                AmountCents = deltaCents, // 🔧 céntimos exactos del delta devuelto por Stripe
+                                Currency = refundCurrency,
+                                TransactionType = "Refund",
+                                RelatedEntityType = "SearchHire",
+                                RelatedEntityId = refundHireId ?? 0,
+                                StripePaymentIntentId = paymentIntentId,
+                                StripeRefundId = latestStripeRefundId,
+                                CreatedAt = DateTime.UtcNow
+                            });
+                            await _context.SaveChangesAsync();
+                        }
+                    }
+                }
+
                 if (refundHireId.HasValue)
                 {
                     var hadExpertTransfer = await _context.FinancialTransactions
@@ -10973,7 +11125,10 @@ namespace newApi.Controllers
                 {
                     Id = Guid.NewGuid(),
                     Title = "❌ Cuenta de Pagos Rechazada",
-                    Message = $"Tu cuenta de pagos fue rechazada por Stripe. Motivo: {rejectionReason}. Puedes intentar configurar una nueva cuenta de pagos.",
+                    // 🛡️ M4: traducir el disabled_reason crudo de Stripe ("rejected.fraud", "listed"…)
+                    // a lenguaje claro antes de mostrarlo al experto. El DTO del panel ya lo humaniza
+                    // en el front, pero esta notificación in-app se persistía con el código crudo.
+                    Message = $"Tu cuenta de pagos fue rechazada por Stripe. Motivo: {GetDisabledReasonDescription(rejectionReason)}. Puedes intentar configurar una nueva cuenta de pagos.",
                     Type = "account_rejected",
                     UserId = expertId,
                     Read = false,

@@ -765,7 +765,7 @@ namespace newApi.Controllers
                         Latitude = expertProfile.Latitude ?? string.Empty,
                         Longitude = expertProfile.Longitude ?? string.Empty,
                         WorkRadiusKm = expertProfile.WorkRadiusKm,
-                        StripeStatus = expertProfile.StripeStatus,
+                        StripeStatus = expertProfile.StripeStatus.ToString(), // 🛡️ C2: string, no entero
                         StripeStatusDetails = expertProfile.StripeStatusDetails,
                         OnboardingCompleted = expertProfile.OnboardingCompleted,
                         IsOnVacation = expertProfile.IsOnVacation,

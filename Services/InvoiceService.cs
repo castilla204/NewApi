@@ -19,10 +19,11 @@ namespace newApi.Services
         // hireId durante 6h para que Hangfire retry +60s/+300s/+600s reuse el mismo número.
         // Sin esto, cada retry consume un número correlativo nuevo → huecos en serie fiscal
         // (RD 1619/2012 art. 6.1.a) cuando IsVatRegistered=true se active.
-        // Limitación residual: cache es per-process. Cross-replica retry (raro con
-        // AutomaticRetry de Hangfire en backend único) o reinicio entre intentos puede
-        // todavía quemar un número. La defensa completa requiere persistir InvoiceNumber
-        // en SearchHires (documentado como TODO en GenerateInvoicePdfAsync).
+        // ✅ FIX AUDITORÍA [M6] (2026-06-15): RESUELTA la limitación residual. La fuente de verdad
+        // de la idempotencia es ahora la columna DURABLE SearchHire.InvoiceNumber (persistida con
+        // UPDATE ... WHERE InvoiceNumber IS NULL antes de generar/enviar). Esto cubre el caso
+        // cross-replica y el reinicio/redeploy entre reintentos. El IMemoryCache permanece SOLO
+        // como optimización opcional (evita un SELECT extra), NO como fuente de verdad.
         private readonly IMemoryCache _memoryCache;
         private static readonly TimeSpan InvoiceNumberCacheTtl = TimeSpan.FromHours(6);
 
@@ -101,13 +102,58 @@ namespace newApi.Services
             string invoiceNumber;
             if (_fiscal.IsReadyForFlip())
             {
+                // ✅ FIX AUDITORÍA [M6] (2026-06-15): la FUENTE DE VERDAD de la idempotencia es ahora
+                // la columna DURABLE SearchHire.InvoiceNumber, no IMemoryCache. Antes la única
+                // "memoria" de qué correlativo corresponde al hire era una clave de caché in-process
+                // (Program.cs AddMemoryCache, sin Redis/IDistributedCache): un redeploy/reinicio entre
+                // reintentos Hangfire (+60s/+300s/+600s) o un retry aterrizando en OTRA réplica
+                // (WorkerCount>=2, cola compartida en Postgres) encontraba la caché vacía → reejecutaba
+                // NextAsync y QUEMABA un nuevo correlativo → hueco en la serie (RD 1619/2012 art. 6.1.a).
+                // AHORA: si el hire ya tiene número persistido se reusa; si no, se reserva con NextAsync
+                // y se PERSISTE antes de generar/enviar, protegido para concurrencia (solo asigna si
+                // sigue null). El IMemoryCache queda como optimización opcional, NO como fuente de verdad.
                 var cacheKey = $"R27-InvoiceNumber-Hire-{searchHire.Id}";
-                if (!_memoryCache.TryGetValue<string>(cacheKey, out var cachedNumber) || string.IsNullOrEmpty(cachedNumber))
+
+                if (!string.IsNullOrEmpty(searchHire.InvoiceNumber))
                 {
-                    cachedNumber = await _invoiceNumberService.NextAsync(_fiscal.InvoiceSeriesPrefix);
-                    _memoryCache.Set(cacheKey, cachedNumber, InvoiceNumberCacheTtl);
+                    // Fuente de verdad durable: el número ya fue reservado y persistido para este hire.
+                    invoiceNumber = searchHire.InvoiceNumber;
+                    _memoryCache.Set(cacheKey, invoiceNumber, InvoiceNumberCacheTtl);
                 }
-                invoiceNumber = cachedNumber!;
+                else
+                {
+                    // Sin número durable todavía → reservar uno nuevo y persistirlo ANTES de generar/enviar.
+                    var reserved = await _invoiceNumberService.NextAsync(_fiscal.InvoiceSeriesPrefix);
+
+                    // Guard de concurrencia: solo asignar la columna si SIGUE null (UPDATE ... WHERE
+                    // InvoiceNumber IS NULL). Si otra ejecución concurrente ya la rellenó entre nuestro
+                    // SELECT y este UPDATE, ganamos el valor ya persistido y descartamos el nuestro para
+                    // no pisar la serie (el correlativo "reserved" recién consumido quedaría sin usar,
+                    // pero la columna durable preserva la coherencia del documento emitido por hire).
+                    var rowsAffected = await _context.SearchHires
+                        .Where(sh => sh.Id == searchHire.Id && sh.InvoiceNumber == null)
+                        .ExecuteUpdateAsync(setters => setters.SetProperty(sh => sh.InvoiceNumber, reserved));
+
+                    if (rowsAffected > 0)
+                    {
+                        // Reflejar en la entidad ya cargada (el ExecuteUpdate no actualiza el tracker).
+                        searchHire.InvoiceNumber = reserved;
+                        invoiceNumber = reserved;
+                    }
+                    else
+                    {
+                        // Carrera perdida (o ya estaba poblado): releer el valor durable y reusarlo.
+                        var persisted = await _context.SearchHires
+                            .IgnoreQueryFilters()
+                            .Where(sh => sh.Id == searchHire.Id)
+                            .Select(sh => sh.InvoiceNumber)
+                            .FirstOrDefaultAsync();
+                        invoiceNumber = !string.IsNullOrEmpty(persisted) ? persisted! : reserved;
+                        searchHire.InvoiceNumber = invoiceNumber;
+                    }
+
+                    _memoryCache.Set(cacheKey, invoiceNumber, InvoiceNumberCacheTtl);
+                }
             }
             else
             {

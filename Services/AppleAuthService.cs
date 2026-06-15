@@ -55,6 +55,15 @@ namespace newApi.Services
         private const string JwksCacheKey = "apple:jwks";
         private static readonly TimeSpan JwksCacheTtl = TimeSpan.FromHours(24);
 
+        // Anti thundering-herd: solo un refetch cache-busting concurrente a la vez.
+        private static readonly SemaphoreSlim _refetchGate = new SemaphoreSlim(1, 1);
+        // Intervalo mínimo entre refetch forzados (Apple rota claves cada ~6 meses; con
+        // un kid desconocido refrescamos como mucho una vez por ventana corta).
+        private static readonly TimeSpan MinForcedRefetchInterval = TimeSpan.FromMinutes(1);
+        private static DateTimeOffset _lastForcedRefetchUtc = DateTimeOffset.MinValue;
+        // Último JWKS bueno conocido: fallback si un fetch fresco falla con caché fría.
+        private static JsonWebKeySet? _lastKnownGoodJwks;
+
         private readonly IHttpClientFactory _httpFactory;
         private readonly IMemoryCache _cache;
         private readonly IConfiguration _config;
@@ -109,20 +118,51 @@ namespace newApi.Services
 
             // ─── Validación del JWT ────────────────────────────────────────────────────
             var handler = new JsonWebTokenHandler { MapInboundClaims = false };
-            var validationParameters = new TokenValidationParameters
-            {
-                ValidateIssuer = true,
-                ValidIssuer = AppleIssuer,
-                ValidateAudience = true,
-                ValidAudiences = audiences,
-                ValidateLifetime = true,
-                ClockSkew = TimeSpan.FromMinutes(2),
-                ValidateIssuerSigningKey = true,
-                IssuerSigningKeys = jwks.Keys,
-                ValidAlgorithms = new[] { "RS256" }, // Apple solo firma con RS256
-            };
 
-            var result = await handler.ValidateTokenAsync(identityToken, validationParameters);
+            // El kid del token nos dice qué clave de firma esperar. Si no está en el JWKS
+            // cacheado, Apple probablemente rotó sus claves → forzamos un refetch antes de
+            // validar para no romper logins durante las 24h del TTL.
+            var tokenKid = TryGetTokenKid(identityToken);
+            if (tokenKid != null && !jwks.Keys.Any(k => k.Kid == tokenKid))
+            {
+                _logger.LogInformation(
+                    "Apple validate: kid '{Kid}' no está en el JWKS cacheado; forzando refetch.", tokenKid);
+                var refreshed = await ForceRefetchJwksAsync(tokenKid, ct);
+                if (refreshed != null && refreshed.Keys.Count > 0)
+                {
+                    jwks = refreshed;
+                }
+            }
+
+            TokenValidationParameters BuildValidationParameters(JsonWebKeySet keySet) =>
+                new TokenValidationParameters
+                {
+                    ValidateIssuer = true,
+                    ValidIssuer = AppleIssuer,
+                    ValidateAudience = true,
+                    ValidAudiences = audiences,
+                    ValidateLifetime = true,
+                    ClockSkew = TimeSpan.FromMinutes(2),
+                    ValidateIssuerSigningKey = true,
+                    IssuerSigningKeys = keySet.Keys,
+                    ValidAlgorithms = new[] { "RS256" }, // Apple solo firma con RS256
+                };
+
+            var result = await handler.ValidateTokenAsync(identityToken, BuildValidationParameters(jwks));
+
+            // Si la validación falló porque no hay clave de firma para el kid (rotación de
+            // claves que el chequeo proactivo no cubrió, p.ej. kid ausente del header),
+            // forzamos UN refetch del JWKS y reintentamos UNA sola vez.
+            if (!result.IsValid && IsSigningKeyNotFound(result.Exception))
+            {
+                _logger.LogInformation(
+                    "Apple validate: sin clave de firma para el token; forzando refetch y reintentando.");
+                var refreshed = await ForceRefetchJwksAsync(tokenKid, ct);
+                if (refreshed != null && refreshed.Keys.Count > 0)
+                {
+                    result = await handler.ValidateTokenAsync(identityToken, BuildValidationParameters(refreshed));
+                }
+            }
 
             if (!result.IsValid)
             {
@@ -173,6 +213,80 @@ namespace newApi.Services
                 return cached;
             }
 
+            try
+            {
+                return await FetchAndCacheJwksAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                // Caché fría + fallo transitorio (timeout/red): si tenemos un último JWKS
+                // bueno conocido lo usamos en vez de provocar un apagón total de logins.
+                var fallback = _lastKnownGoodJwks;
+                if (fallback != null && fallback.Keys.Count > 0)
+                {
+                    _logger.LogWarning(ex,
+                        "Apple JWKS: fallo al cargar; usando último JWKS bueno conocido ({Count} claves).",
+                        fallback.Keys.Count);
+                    return fallback;
+                }
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Fuerza UN refetch del JWKS saltándose la caché y reintenta la descarga.
+        /// Protegido contra estampida: solo un refetch concurrente y, como mucho, uno por
+        /// <see cref="MinForcedRefetchInterval"/>. Si el fetch fresco falla, cae al último
+        /// JWKS bueno conocido (o al cacheado) en lugar de devolver null.
+        /// </summary>
+        private async Task<JsonWebKeySet?> ForceRefetchJwksAsync(string? expectedKid, CancellationToken ct)
+        {
+            await _refetchGate.WaitAsync(ct);
+            try
+            {
+                // Otra petición concurrente puede haber refrescado ya el JWKS: si la caché
+                // actual contiene la clave que buscamos, no volvemos a salir a la red.
+                if (_cache.TryGetValue<JsonWebKeySet>(JwksCacheKey, out var current) && current != null)
+                {
+                    var hasKid = expectedKid == null
+                        ? false
+                        : current.Keys.Any(k => k.Kid == expectedKid);
+                    if (hasKid)
+                    {
+                        return current;
+                    }
+                }
+
+                // Ventana mínima entre refetch forzados para no martillear a Apple.
+                if (DateTimeOffset.UtcNow - _lastForcedRefetchUtc < MinForcedRefetchInterval)
+                {
+                    _logger.LogInformation(
+                        "Apple JWKS: refetch forzado omitido (dentro del intervalo mínimo).");
+                    return current ?? _lastKnownGoodJwks;
+                }
+
+                _lastForcedRefetchUtc = DateTimeOffset.UtcNow;
+                try
+                {
+                    return await FetchAndCacheJwksAsync(ct);
+                }
+                catch (Exception ex)
+                {
+                    var fallback = current ?? _lastKnownGoodJwks;
+                    _logger.LogWarning(ex,
+                        "Apple JWKS: refetch forzado falló; usando JWKS previo si existe.");
+                    return fallback;
+                }
+            }
+            finally
+            {
+                _refetchGate.Release();
+            }
+        }
+
+        /// <summary>Descarga el JWKS de Apple, lo cachea y actualiza el último bueno conocido.</summary>
+        private async Task<JsonWebKeySet> FetchAndCacheJwksAsync(CancellationToken ct)
+        {
             var client = _httpFactory.CreateClient("apple-jwks");
             using var response = await client.GetAsync(JwksPath, ct);
             response.EnsureSuccessStatusCode();
@@ -180,8 +294,39 @@ namespace newApi.Services
             var jwks = new JsonWebKeySet(json);
 
             _cache.Set(JwksCacheKey, jwks, JwksCacheTtl);
+            if (jwks.Keys.Count > 0)
+            {
+                _lastKnownGoodJwks = jwks;
+            }
             _logger.LogInformation("Apple JWKS cargado y cacheado ({Count} claves).", jwks.Keys.Count);
             return jwks;
+        }
+
+        /// <summary>Lee el 'kid' del header del JWT sin validar la firma. null si no se puede parsear.</summary>
+        private static string? TryGetTokenKid(string token)
+        {
+            try
+            {
+                var jwt = new JsonWebToken(token);
+                return string.IsNullOrEmpty(jwt.Kid) ? null : jwt.Kid;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>True si el fallo de validación se debe a que no hay clave de firma para el kid.</summary>
+        private static bool IsSigningKeyNotFound(Exception? ex)
+        {
+            for (var e = ex; e != null; e = e.InnerException)
+            {
+                if (e is SecurityTokenSignatureKeyNotFoundException)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 }

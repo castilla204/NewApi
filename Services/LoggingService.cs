@@ -1448,6 +1448,8 @@ namespace newApi.Services
 
                 var failedHires = await ctx.SearchHires
                     .AsNoTracking()
+                    // ⚠️ AUDITORÍA [M1] Medium: este filtro depende EXCLUSIVAMENTE de RefundFailedAt!=null. La rama currency-mismatch de RefundService.ProcessMoneyDistributionAsync (l.~1446) marca RequiresManualReview pero NO RefundFailedAt, así que esos hires con pago de experto atascado NO salen en este digest y quedan invisibles para ops.
+                    // Fix: corregir el origen (setear RefundFailedAt en esa rama) o, defensivamente, ampliar el filtro a `(h.RefundFailedAt != null || h.RequiresManualReview)` con su propia ventana temporal.
                     .Where(h => h.RefundFailedAt != null && h.RefundFailedAt >= since)
                     .OrderByDescending(h => h.RefundFailedAt)
                     .Select(h => new

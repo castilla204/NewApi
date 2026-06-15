@@ -213,20 +213,33 @@ namespace newApi.DataLayer.Models
 
             // 🛡️ Round 16: índices para login/lookup rápido.
             // Email: el lookup principal en login-password (case-insensitive — normalizar antes a lowercase).
-            // No es UNIQUE porque conviven OAuth-only y password users + soft delete (mismo email puede reactivarse).
-            // El uniqueness lógico ya se valida en el service layer (Register/GoogleAuth/AppleAuth).
+            // Este índice de la columna cruda se MANTIENE no-único: el uniqueness real se garantiza con
+            // un índice ÚNICO FUNCIONAL sobre lower("Email") que excluye filas soft-deleted, declarado en
+            // la migración AddUniqueIndexesUserGoogleAppleEmail (raw SQL — EF HasIndex no modela lower()).
+            // Ver SQL idempotente en la migración para aplicarlo a mano en prod (historial drifted).
             modelBuilder.Entity<User>()
                 .HasIndex(u => u.Email)
                 .HasDatabaseName("IX_Users_Email");
 
+            // 🛡️ FIX integridad (race check-then-insert): GoogleId/AppleId pasan a UNIQUE PARCIAL.
+            // El service layer hacía check-then-insert SIN constraint ni transacción → dos requests
+            // OAuth concurrentes podían crear dos filas con el mismo sub. Ahora la BD lo impide y los
+            // 3 paths de inserción (Google/Apple/verify-email) absorben el 23505 y re-consultan la fila.
+            // Filtro IS NOT NULL: los placeholders email:{guid} y los anonimizados deleted-{id} son
+            // únicos por id, así que no colisionan; las filas con NULL quedan fuera del índice.
+
             // GoogleId: lookup en GoogleAuth para detectar usuario existente vía OAuth.
             modelBuilder.Entity<User>()
                 .HasIndex(u => u.GoogleId)
+                .IsUnique()
+                .HasFilter("\"GoogleId\" IS NOT NULL")
                 .HasDatabaseName("IX_Users_GoogleId");
 
             // AppleId: lookup en AppleAuth (sub claim del identityToken). Stable per (user, team).
             modelBuilder.Entity<User>()
                 .HasIndex(u => u.AppleId)
+                .IsUnique()
+                .HasFilter("\"AppleId\" IS NOT NULL")
                 .HasDatabaseName("IX_Users_AppleId");
 
             modelBuilder.Entity<Notification>()
@@ -655,6 +668,12 @@ namespace newApi.DataLayer.Models
                     .HasMaxLength(45);
                 entity.Property(e => e.VerifyIp)
                     .HasMaxLength(45);
+                // Registro pendiente durable (sólo OTP de registro email/password). Nullable.
+                // NUNCA contraseña en plano: PendingPasswordHash es el hash BCrypt.
+                entity.Property(e => e.PendingName)
+                    .HasMaxLength(200);
+                entity.Property(e => e.PendingPasswordHash)
+                    .HasMaxLength(255);
 
                 // FK opcional a User (puede emitirse OTP pre-registro sin User asociado).
                 entity.HasOne(e => e.User)

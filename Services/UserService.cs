@@ -17,6 +17,7 @@ using newApi.ScrapperGateway.DataLayer.Models.DTOs;
 using Twilio;
 using static UserController;
 using System.Globalization;
+using System.Net.Http; // 🖼️ IHttpClientFactory/HttpClient para descargar la foto de Google.
 using Microsoft.Extensions.DependencyInjection;
 using newApi.Common;
 
@@ -32,6 +33,8 @@ namespace newApi.Services
         private readonly ITimezoneService _timezoneService;
         private readonly INotificationService _notificationService;
         private readonly IServiceScopeFactory _serviceScopeFactory;
+        // 🖼️ Para descargar la foto de Google y re-hospedarla en Supabase en el primer login.
+        private readonly IHttpClientFactory _httpClientFactory;
         // 🛡️ SEC-MAJ-7 FIX: admin email check delegado a registry (env var ADMIN_EMAILS).
         private readonly IAdminEmailRegistry _adminEmails;
         private readonly string _twilioVerificationServiceSid;
@@ -47,6 +50,7 @@ namespace newApi.Services
      ITimezoneService timezoneService,
      INotificationService notificationService,
      IServiceScopeFactory serviceScopeFactory,
+     IHttpClientFactory httpClientFactory,
      IAdminEmailRegistry adminEmails)
         {
             _context = context;
@@ -57,6 +61,7 @@ namespace newApi.Services
             _timezoneService = timezoneService;
             _notificationService = notificationService;
             _serviceScopeFactory = serviceScopeFactory;
+            _httpClientFactory = httpClientFactory;
             _adminEmails = adminEmails;
             _twilioVerificationServiceSid = configuration["Twilio:VerificationServiceSid"];
             _twilioauthToken = configuration["Twilio:AuthToken"];
@@ -65,6 +70,180 @@ namespace newApi.Services
         public async Task<User> GetUserAsync(int userId)
         {
             return await _context.Users.FindAsync(userId);
+        }
+
+        // ───────────────────────── 🖼️ Avatar de cuenta ─────────────────────────
+        // Avatar UNIFICADO: el avatar de la cuenta (User) y la foto pública del experto
+        // (ExpertProfile) son la misma imagen. Toda escritura pasa por aquí para que ambos
+        // campos queden sincronizados y nunca diverjan.
+
+        private const long AvatarMaxBytes = 5 * 1024 * 1024; // 5MB, mismo límite que become-expert.
+
+        /// <summary>
+        /// Procesa un stream de imagen (resize 512 + JPEG q90), lo sube al bucket público de
+        /// Supabase bajo 'profiles/' y devuelve (url pública, objectName). NO toca la BD.
+        /// </summary>
+        private async Task<(string url, string objectName)> ProcessAndUploadAvatarAsync(Stream input)
+        {
+            var objectName = $"profiles/{Guid.NewGuid()}.jpg";
+            using (var image = await Image.LoadAsync(input))
+            {
+                image.Mutate(x => x.Resize(new ResizeOptions
+                {
+                    Size = new Size(512, 512),
+                    Mode = ResizeMode.Max
+                }));
+
+                using var outputStream = new MemoryStream();
+                await image.SaveAsJpegAsync(outputStream, new JpegEncoder { Quality = 90 });
+                outputStream.Position = 0;
+                await _supabaseStorage.UploadAsync(
+                    _supabaseStorage.ImagesBucket, objectName, outputStream, "image/jpeg");
+            }
+            var url = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
+            return (url, objectName);
+        }
+
+        /// <summary>
+        /// Aplica una nueva foto al usuario (y, si es experto, a su ExpertProfile). Borra el
+        /// blob anterior de Supabase si cambia. NO llama a SaveChanges — el caller persiste.
+        /// </summary>
+        private async Task ApplyAvatarAsync(User user, string url, string objectName)
+        {
+            var previousObject = user.ProfilePictureObjectName;
+
+            user.ProfilePictureUrl = url;
+            user.ProfilePictureObjectName = objectName;
+
+            // 🖼️ UNIFICACIÓN: el experto ve la misma foto en su perfil público.
+            if (user.ExpertProfile != null)
+            {
+                user.ExpertProfile.ProfilePictureUrl = url;
+                user.ExpertProfile.ProfilePictureObjectName = objectName;
+            }
+
+            // Borrar el blob anterior (best-effort) para no acumular basura en el bucket.
+            if (!string.IsNullOrEmpty(previousObject) && previousObject != objectName)
+            {
+                try
+                {
+                    await _supabaseStorage.DeleteAsync(_supabaseStorage.ImagesBucket, previousObject);
+                }
+                catch { /* best-effort: un blob huérfano no debe romper el cambio de foto */ }
+            }
+        }
+
+        /// <summary>
+        /// Sube/cambia el avatar de la cuenta desde el panel de configuración.
+        /// Devuelve la URL pública nueva. Valida tamaño/extensión (JPG/PNG ≤5MB).
+        /// </summary>
+        public async Task<(bool success, string? url, string? errorCode)> SetAvatarAsync(int userId, IFormFile file)
+        {
+            if (file == null || file.Length == 0)
+                return (false, null, "file_required");
+            if (file.Length > AvatarMaxBytes)
+                return (false, null, "file_too_large");
+
+            var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+            if (!new[] { ".jpg", ".jpeg", ".png" }.Contains(extension))
+                return (false, null, "invalid_extension");
+
+            var user = await _context.Users
+                .Include(u => u.ExpertProfile)
+                .FirstOrDefaultAsync(u => u.Id == userId);
+            if (user == null)
+                return (false, null, "user_not_found");
+
+            try
+            {
+                using var stream = file.OpenReadStream();
+                var (url, objectName) = await ProcessAndUploadAvatarAsync(stream);
+                await ApplyAvatarAsync(user, url, objectName);
+                await _context.SaveChangesAsync();
+                return (true, url, null);
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogErrorAsync(
+                    message: "SetAvatar failed",
+                    details: $"User {userId}: {ex.Message}",
+                    userId: userId,
+                    source: "UserService.SetAvatarAsync",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId);
+                return (false, null, "upload_failed");
+            }
+        }
+
+        /// <summary>
+        /// Quita el avatar de la cuenta. BLOQUEADO para expertos: su foto es pública y
+        /// obligatoria para ser visible — un experto solo puede REEMPLAZARLA, no borrarla.
+        /// </summary>
+        public async Task<(bool success, string? errorCode)> RemoveAvatarAsync(int userId)
+        {
+            var user = await _context.Users
+                .Include(u => u.ExpertProfile)
+                .FirstOrDefaultAsync(u => u.Id == userId);
+            if (user == null)
+                return (false, "user_not_found");
+
+            // 🖼️ El experto NO puede quedarse sin foto pública (rompería su visibilidad).
+            if (user.Role == UserRole.Expert || user.ExpertProfile != null)
+                return (false, "expert_photo_required");
+
+            var previousObject = user.ProfilePictureObjectName;
+            user.ProfilePictureUrl = null;
+            user.ProfilePictureObjectName = null;
+            await _context.SaveChangesAsync();
+
+            if (!string.IsNullOrEmpty(previousObject))
+            {
+                try { await _supabaseStorage.DeleteAsync(_supabaseStorage.ImagesBucket, previousObject); }
+                catch { /* best-effort */ }
+            }
+            return (true, null);
+        }
+
+        /// <summary>
+        /// Best-effort: descarga la foto de Google y la re-hospeda como avatar del usuario,
+        /// SOLO si el usuario aún no tiene foto. Nunca lanza — un fallo aquí jamás debe
+        /// bloquear el login. El caller debe persistir (SaveChanges) después.
+        /// </summary>
+        private async Task TrySeedAvatarFromGoogleAsync(User user, string? googlePictureUrl)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(googlePictureUrl)) return;
+                if (!string.IsNullOrEmpty(user.ProfilePictureUrl)) return; // no pisar una foto ya elegida
+                // 🖼️ Los expertos gestionan su foto (pública) por su propio flujo; no la
+                // sobrescribimos desde Google (además ExpertProfile no se carga aquí → evita
+                // desincronizar el avatar unificado).
+                if (user.Role == UserRole.Expert) return;
+
+                var client = _httpClientFactory.CreateClient();
+                client.Timeout = TimeSpan.FromSeconds(8);
+                using var response = await client.GetAsync(googlePictureUrl);
+                if (!response.IsSuccessStatusCode) return;
+
+                var contentType = response.Content.Headers.ContentType?.MediaType ?? "";
+                if (!contentType.StartsWith("image/")) return;
+                if ((response.Content.Headers.ContentLength ?? 0) > AvatarMaxBytes) return;
+
+                await using var remoteStream = await response.Content.ReadAsStreamAsync();
+                var (url, objectName) = await ProcessAndUploadAvatarAsync(remoteStream);
+                await ApplyAvatarAsync(user, url, objectName);
+            }
+            catch (Exception ex)
+            {
+                // Nunca propagar: la siembra de avatar es un extra, no parte del login.
+                await _loggingService.LogWarningAsync(
+                    message: "Google avatar seed failed (non-blocking)",
+                    details: $"User {user.Id}: {ex.Message}",
+                    userId: user.Id,
+                    source: "UserService.TrySeedAvatarFromGoogleAsync",
+                    relatedEntityType: "User",
+                    relatedEntityId: user.Id);
+            }
         }
 
         public async Task<(IEnumerable<object> users, int totalCount)> GetAllUsers(int page, int pageSize)
@@ -632,6 +811,10 @@ namespace newApi.Services
             };
             _context.RefreshTokens.Add(refreshTokenEntity);
 
+            // 🖼️ Sembrar el avatar desde la foto de Google si el usuario aún no tiene una.
+            // Best-effort: nunca lanza ni bloquea el login; se persiste en el SaveChanges de abajo.
+            await TrySeedAvatarFromGoogleAsync(user, payload.Picture);
+
             await _context.SaveChangesAsync();
 
             var accessToken = GenerateJwtToken(user);
@@ -1162,6 +1345,15 @@ namespace newApi.Services
                 _context.ExpertProfiles.Add(expertProfile);
             }
 
+            // 🖼️ AVATAR UNIFICADO: la foto pública del experto ES también el avatar de su cuenta.
+            // imageUrl/objectName contienen los valores finales (subida nueva o foto reusada en
+            // mudanza). Sincronizamos User para que panel/menú muestren la misma imagen.
+            if (!string.IsNullOrEmpty(imageUrl))
+            {
+                user.ProfilePictureUrl = imageUrl;
+                user.ProfilePictureObjectName = objectName;
+            }
+
             // 🛡️ V7 FIX: atomicidad ExpertProfile + Role en un solo SaveChanges. Antes
             // eran 2 SaveChanges separados — si el segundo fallaba, ExpertProfile quedaba en BD
             // pero User con Role=Client (inconsistente). Combinar cambios y persistir UNA vez:
@@ -1634,7 +1826,7 @@ namespace newApi.Services
                     Id = expertProfile.User.Id,
                     Name = expertProfile.User.Name,
                     Email = expertProfile.User.Email,
-                    ProfilePictureUrl = null // ✅ FIX: User no tiene ProfilePictureUrl, está en ExpertProfile
+                    ProfilePictureUrl = expertProfile.User.ProfilePictureUrl // 🖼️ avatar unificado (= foto del experto)
                 },
                 Reviews = new List<ReviewDto>(), // Inicializar lista vacía para mantener compatibilidad
                 Latitude = expertProfile.Latitude,
@@ -1960,6 +2152,13 @@ namespace newApi.Services
                         var imageUrl = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
                         expertProfile.ProfilePictureUrl = imageUrl;
                         expertProfile.ProfilePictureObjectName = objectName;
+
+                        // 🖼️ AVATAR UNIFICADO: reflejar la nueva foto en la cuenta (User).
+                        if (expertProfile.User != null)
+                        {
+                            expertProfile.User.ProfilePictureUrl = imageUrl;
+                            expertProfile.User.ProfilePictureObjectName = objectName;
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -2080,7 +2279,7 @@ namespace newApi.Services
                         Id = expertProfile.User.Id,
                         Name = expertProfile.User.Name,
                         Email = expertProfile.User.Email,
-                        ProfilePictureUrl = null // ✅ FIX: User no tiene ProfilePictureUrl, está en ExpertProfile
+                        ProfilePictureUrl = expertProfile.User.ProfilePictureUrl // 🖼️ avatar unificado (= foto del experto)
                     },
                     Reviews = new List<ReviewDto>(), // Mantener compatibilidad
                     Latitude = expertProfile.Latitude,

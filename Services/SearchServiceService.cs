@@ -995,24 +995,20 @@ namespace newApi.Services
                 var services = serviceIds.Count > 0
                     ? await _context.SearchServices
                         .AsNoTracking()
+                        // ⚡ DTO LIGERO del mapa: NO cargamos reseñas, imágenes de reseñas, ni el
+                        //    historial de hires del experto en el LISTADO del mapa. Eso solo hace falta
+                        //    al CLICAR un servicio, que re-fetchea GET /api/SearchService/{id} (detalle
+                        //    completo, con su propio Include). Aquí cargamos SOLO lo que pintan los pins
+                        //    y las tarjetas del lateral: imágenes del servicio, experto+usuario, categoría,
+                        //    tipo y deliverables. El rating / nº de reseñas / trabajos completados se
+                        //    calculan aparte con subconsultas baratas AVG/COUNT (ver más abajo), sin
+                        //    materializar esas colecciones (que antes provocaban explosión cartesiana).
+                        //    AsSplitQuery evita multiplicar filas entre Images y SelectedDeliverableTypes.
+                        .AsSplitQuery()
                         .Where(ss => serviceIds.Contains(ss.Id))
                         .Include(ss => ss.Images)
                         .Include(ss => ss.ExpertProfile)
                             .ThenInclude(ep => ep.User)
-                            .ThenInclude(u => u.ReviewsReceived)
-                                .ThenInclude(r => r.Reviewer)
-                        .Include(ss => ss.ExpertProfile)
-                            .ThenInclude(ep => ep.User)
-                            .ThenInclude(u => u.ReviewsReceived)
-                                .ThenInclude(r => r.ImagesCollection)
-                        .Include(ss => ss.ExpertProfile)
-                            .ThenInclude(ep => ep.User)
-                            .ThenInclude(u => u.ReviewsReceived)
-                                .ThenInclude(r => r.SearchHire)
-                        .Include(ss => ss.ExpertProfile)
-                            .ThenInclude(ep => ep.User)
-                            .ThenInclude(u => u.SearchHiresAsExpert)
-                                .ThenInclude(sh => sh.Status)
                         .Include(ss => ss.Category)
                         .Include(ss => ss.ServiceType)
                             .ThenInclude(st => st.ServiceTypeCategory)
@@ -1090,15 +1086,39 @@ namespace newApi.Services
                     .GroupBy(ea => ea.ExpertId)
                     .ToDictionary(g => g.Key, g => g.First());
 
+                // ⚡ DTO ligero: rating ⭐, nº de reseñas y trabajos completados que muestran las
+                //    tarjetas, SIN materializar las colecciones ReviewsReceived/SearchHiresAsExpert.
+                //    Una sola query con subconsultas AVG/COUNT correlacionadas (barato, sin cartesiano).
+                var expertUserIds = services
+                    .Where(ss => ss.ExpertProfile?.User != null)
+                    .Select(ss => ss.ExpertProfile.User.Id)
+                    .Distinct()
+                    .ToList();
+
+                var statsByUserId = expertUserIds.Count > 0
+                    ? (await _context.Users
+                        .AsNoTracking()
+                        .Where(u => expertUserIds.Contains(u.Id))
+                        .Select(u => new
+                        {
+                            u.Id,
+                            Avg = u.ReviewsReceived.Average(r => (double?)r.Score) ?? 0.0,
+                            Count = u.ReviewsReceived.Count(),
+                            Completed = u.SearchHiresAsExpert.Count(sh => sh.Status != null && sh.Status.StatusValue == "completed")
+                        })
+                        .ToListAsync(cancellationToken))
+                        .ToDictionary(x => x.Id, x => (Avg: x.Avg, Count: x.Count, Completed: x.Completed))
+                    : new Dictionary<int, (double Avg, int Count, int Completed)>();
+
                 // ✅ Validar parámetros de paginación
                 if (page < 1) page = 1;
                 if (pageSize < 1 || pageSize > 100) pageSize = 50; // Máximo 100 por página
-                
+
                 // ✅ Total count ya calculado arriba después del filtrado estricto por bounds
                 // totalCount ya está definido arriba después del filtrado en memoria (línea ~1000)
-                
-                // ✅ Mapear a SearchServiceDetailDto (información completa)
-                var mappedServices = services.Select(ss => MapToDetailDto(ss, availabilityByExpert)).ToList();
+
+                // ✅ Mapear a SearchServiceDetailDto (LIGERO: reseñas vacías + stats precalculadas)
+                var mappedServices = services.Select(ss => MapToDetailDto(ss, availabilityByExpert, statsByUserId)).ToList();
                 
                 // ✅ Aplicar paginación
                 var paginatedServices = mappedServices
@@ -1772,7 +1792,14 @@ namespace newApi.Services
             }
         }
 
-        private SearchServiceDetailDto MapToDetailDto(SearchService ss, Dictionary<int, ExpertAvailability>? availabilityByExpert = null)
+        // lightStatsByUserId (opcional): si viene, es el modo "DTO ligero del mapa" → NO se leen las
+        // colecciones de reseñas/hires (no vienen cargadas), las reseñas salen vacías y rating/nº
+        // reseñas/completados se toman de las stats precalculadas. Sin él, comportamiento normal
+        // (detalle completo) leyendo las colecciones del Include.
+        private SearchServiceDetailDto MapToDetailDto(
+            SearchService ss,
+            Dictionary<int, ExpertAvailability>? availabilityByExpert = null,
+            Dictionary<int, (double Avg, int Count, int Completed)>? lightStatsByUserId = null)
         {
             if (ss == null) return null;
 
@@ -1827,7 +1854,10 @@ namespace newApi.Services
                     Email = ss.ExpertProfile.User.Email
                 } : null;
 
-                var reviews = ss.ExpertProfile.User?.ReviewsReceived?.Select(r => new ReviewDto
+                // Modo ligero (mapa): reseñas NO cargadas → lista vacía (se cargan al clicar el detalle).
+                var reviews = lightStatsByUserId != null
+                    ? new List<ReviewDto>()
+                    : ss.ExpertProfile.User?.ReviewsReceived?.Select(r => new ReviewDto
                 {
                     Id = r.Id,
                     Score = r.Score,
@@ -1892,6 +1922,27 @@ namespace newApi.Services
 
             baseDto.Expert = expertProfileDto;
 
+            // Rating / nº reseñas / trabajos completados: de las stats precalculadas (modo ligero
+            // del mapa) o, si no vienen, calculadas desde las colecciones cargadas (detalle completo).
+            double avgRating;
+            int totalReviews;
+            int completedSearches;
+            if (lightStatsByUserId != null && ss.ExpertProfile?.User != null
+                && lightStatsByUserId.TryGetValue(ss.ExpertProfile.User.Id, out var ls))
+            {
+                avgRating = ls.Avg;
+                totalReviews = ls.Count;
+                completedSearches = ls.Completed;
+            }
+            else
+            {
+                completedSearches = ss.ExpertProfile?.User?.SearchHiresAsExpert?.Count(sh => sh.Status != null && sh.Status.StatusValue == "completed") ?? 0;
+                avgRating = ss.ExpertProfile?.User?.ReviewsReceived != null && ss.ExpertProfile.User.ReviewsReceived.Any()
+                    ? ss.ExpertProfile.User.ReviewsReceived.Average(r => r.Score)
+                    : 0;
+                totalReviews = ss.ExpertProfile?.User?.ReviewsReceived?.Count ?? 0;
+            }
+
             var detailDto = new SearchServiceDetailDto
             {
                 Id = baseDto.Id,
@@ -1911,11 +1962,9 @@ namespace newApi.Services
                 Expert = baseDto.Expert,
                 SelectedDeliverableTypes = baseDto.SelectedDeliverableTypes,
                 CategoryName = ss.Category?.Name ?? "Unknown Category",
-                CompletedSearches = ss.ExpertProfile?.User?.SearchHiresAsExpert?.Count(sh => sh.Status != null && sh.Status.StatusValue == "completed") ?? 0,
-                AverageRating = ss.ExpertProfile?.User?.ReviewsReceived != null && ss.ExpertProfile.User.ReviewsReceived.Any()
-                    ? ss.ExpertProfile.User.ReviewsReceived.Average(r => r.Score)
-                    : 0,
-                TotalReviews = ss.ExpertProfile?.User?.ReviewsReceived?.Count ?? 0 // ✅ NUEVO: Total de reseñas
+                CompletedSearches = completedSearches,
+                AverageRating = avgRating,
+                TotalReviews = totalReviews // ✅ NUEVO: Total de reseñas
             };
 
             return detailDto;

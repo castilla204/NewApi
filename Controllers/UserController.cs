@@ -451,6 +451,8 @@ public class UserController : ControllerBase
                     user.Name,
                     user.Email,
                     user.PhoneVerified,
+                    // 🖼️ Avatar (sembrado desde Google en el primer login si estaba vacío).
+                    user.ProfilePictureUrl,
                     Role = user.Role.ToString()
                 },
                 requestId = requestId
@@ -574,6 +576,64 @@ public class UserController : ControllerBase
             return BadRequest(new { message = errorMessage ?? "No se pudo completar el alta.", errorCode });
 
         return Ok(new { message = "Alta de experto creada. Continúa con Stripe.", token });
+    }
+
+    /// <summary>
+    /// 🖼️ Sube/cambia el avatar de la cuenta (foto de perfil). Para expertos, esta misma
+    /// imagen es su foto pública del marketplace (avatar unificado). Multipart, campo
+    /// 'profilePicture' (JPG/PNG ≤5MB). Devuelve la URL pública nueva.
+    /// </summary>
+    [Authorize]
+    [HttpPost("avatar")]
+    [RequestSizeLimit(6 * 1024 * 1024)] // 6MB: 5MB de imagen + margen multipart
+    public async Task<IActionResult> SetAvatar([FromForm] IFormFile profilePicture)
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            return Unauthorized(new { message = "Invalid user identification" });
+
+        var (success, url, errorCode) = await _userService.SetAvatarAsync(userId, profilePicture);
+        if (!success)
+        {
+            var message = errorCode switch
+            {
+                "file_required" => "Debes seleccionar una imagen.",
+                "file_too_large" => "La imagen no puede superar los 5MB.",
+                "invalid_extension" => "Solo se permiten imágenes JPG o PNG.",
+                "user_not_found" => "Usuario no encontrado.",
+                _ => "No se pudo actualizar la foto de perfil."
+            };
+            return BadRequest(new { message, errorCode });
+        }
+
+        return Ok(new { profilePictureUrl = url });
+    }
+
+    /// <summary>
+    /// 🖼️ Quita el avatar de la cuenta. Bloqueado para expertos (su foto pública es
+    /// obligatoria): un experto solo puede reemplazarla vía POST avatar.
+    /// </summary>
+    [Authorize]
+    [HttpDelete("avatar")]
+    public async Task<IActionResult> RemoveAvatar()
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            return Unauthorized(new { message = "Invalid user identification" });
+
+        var (success, errorCode) = await _userService.RemoveAvatarAsync(userId);
+        if (!success)
+        {
+            var message = errorCode switch
+            {
+                "expert_photo_required" => "Como experto, tu foto es pública y obligatoria: solo puedes cambiarla, no quitarla.",
+                "user_not_found" => "Usuario no encontrado.",
+                _ => "No se pudo quitar la foto de perfil."
+            };
+            return BadRequest(new { message, errorCode });
+        }
+
+        return Ok(new { profilePictureUrl = (string?)null });
     }
 
     [Authorize]

@@ -1014,6 +1014,7 @@ namespace newApi.Controllers
                             email = user.Email,
                             role = user.Role.ToString(),
                             emailVerified = user.EmailVerified,
+                            profilePictureUrl = user.ProfilePictureUrl // 🖼️ avatar de cuenta
                         }
                     });
                 }
@@ -1165,7 +1166,8 @@ namespace newApi.Controllers
                     name = user.Name,
                     email = user.Email,
                     role = user.Role.ToString(),
-                    emailVerified = user.EmailVerified
+                    emailVerified = user.EmailVerified,
+                    profilePictureUrl = user.ProfilePictureUrl // 🖼️ avatar de cuenta
                 }
             });
         }
@@ -1309,7 +1311,7 @@ namespace newApi.Controllers
                 return Ok(new
                 {
                     token = $"{accessToken}|{refreshToken}",
-                    user = new { id = user.Id, name = user.Name, email = user.Email, role = user.Role.ToString() }
+                    user = new { id = user.Id, name = user.Name, email = user.Email, role = user.Role.ToString(), profilePictureUrl = user.ProfilePictureUrl }
                 });
             });
         }
@@ -1466,7 +1468,8 @@ namespace newApi.Controllers
                     name = user.Name,
                     email = user.Email,
                     role = user.Role.ToString(),
-                    emailVerified = user.EmailVerified
+                    emailVerified = user.EmailVerified,
+                    profilePictureUrl = user.ProfilePictureUrl // 🖼️ avatar de cuenta
                 }
             });
         }

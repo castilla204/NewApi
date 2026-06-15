@@ -2934,6 +2934,27 @@ lifetime.ApplicationStarted.Register(() =>
 
                 ALTER TABLE ""Disputes""
                 ADD COLUMN IF NOT EXISTS ""AdminAlertedAt"" timestamp with time zone NULL;
+
+                -- 🖼️ Avatar de cuenta (foto de perfil unificada User/Expert). Re-hospedada en
+                -- Supabase; se siembra desde Google en el primer login social. Idempotente.
+                ALTER TABLE ""Users""
+                ADD COLUMN IF NOT EXISTS ""ProfilePictureUrl"" text NULL;
+
+                ALTER TABLE ""Users""
+                ADD COLUMN IF NOT EXISTS ""ProfilePictureObjectName"" text NULL;
+
+                -- 🖼️ AVATAR UNIFICADO: backfill del avatar de cuenta de los expertos EXISTENTES
+                -- desde su foto pública. Idempotente (no-op una vez poblado): evita que un experto
+                -- antiguo, con User.ProfilePictureUrl vacío, vea desincronizadas su foto pública y su
+                -- avatar de cuenta.
+                UPDATE ""Users"" u
+                SET ""ProfilePictureUrl"" = ep.""ProfilePictureUrl"",
+                    ""ProfilePictureObjectName"" = ep.""ProfilePictureObjectName""
+                FROM ""ExpertProfiles"" ep
+                WHERE ep.""UserId"" = u.""Id""
+                  AND (u.""ProfilePictureUrl"" IS NULL OR u.""ProfilePictureUrl"" = '')
+                  AND ep.""ProfilePictureUrl"" IS NOT NULL
+                  AND ep.""ProfilePictureUrl"" <> '';
             ");
 
             try

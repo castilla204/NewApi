@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Npgsql; // 🛡️ Fix race check-then-insert: PostgresException 23505 tipado en GoogleAuth.
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -551,18 +552,69 @@ namespace newApi.Services
                 };
 
                 _context.Users.Add(user);
-                await _context.SaveChangesAsync();
-
-                var userSettings = new UserSetting
+                try
                 {
-                    UserId = user.Id,
-                    IsWhatsAppEnabled = true,
-                    IsEmailEnabled = true,
-                    Theme = "light",
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow
-                };
-                _context.UserSettings.Add(userSettings);
+                    await _context.SaveChangesAsync();
+
+                    var userSettings = new UserSetting
+                    {
+                        UserId = user.Id,
+                        IsWhatsAppEnabled = true,
+                        IsEmailEnabled = true,
+                        Theme = "light",
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow
+                    };
+                    _context.UserSettings.Add(userSettings);
+                }
+                // 🛡️ FIX race check-then-insert: dos GoogleAuth concurrentes con el mismo `sub`
+                // (o el mismo email recién registrado por otro flujo) pasaban ambos el lookup y
+                // ambos INSERT → filas duplicadas. Ahora la BD rechaza el 2º con 23505
+                // (IX_Users_GoogleId / IX_Users_Email_lower_uq); lo absorbemos, soltamos la entidad
+                // pendiente y re-consultamos la fila YA committeada por el ganador para continuar
+                // con ella (mismo resultado que el path "usuario existente"). NO reintroducimos
+                // transacción (multiplexing PgBouncer); patrón idéntico a RefundService 23505.
+                catch (DbUpdateException dbEx) when (
+                    dbEx.InnerException is PostgresException pgEx && pgEx.SqlState == "23505")
+                {
+                    // Detach la entidad fallida: sin esto el siguiente SaveChanges reintenta el INSERT roto.
+                    _context.Entry(user).State = EntityState.Detached;
+
+                    user = await _context.Users
+                        .IgnoreQueryFilters()
+                        .FirstOrDefaultAsync(u => u.GoogleId == payload.Subject);
+
+                    if (user == null)
+                    {
+                        var emailLost = payload.Email?.Trim().ToLowerInvariant();
+                        if (!string.IsNullOrEmpty(emailLost))
+                        {
+                            user = await _context.Users
+                                .IgnoreQueryFilters()
+                                .FirstOrDefaultAsync(u => u.Email.ToLower() == emailLost);
+                        }
+                    }
+
+                    if (user == null)
+                    {
+                        // 23505 sin fila localizable → inconsistencia real, no la tragamos.
+                        await _loggingService.LogCriticalAsync(
+                            message: "GoogleAuth 23505 absorbed but no existing row found — abort",
+                            details: $"Google sub {payload.Subject} email {payload.Email}: 23505 en {pgEx.ConstraintName} pero el re-query no encuentra fila ganadora.",
+                            userId: null,
+                            source: "UserService.GoogleAuth.23505NoRow",
+                            relatedEntityType: "User",
+                            relatedEntityId: null);
+                        throw;
+                    }
+
+                    if (user.IsBlocked) return (false, null, null, "account_blocked");
+                    if (user.IsDeleted) return (false, null, null, "account_deleted");
+
+                    // La fila ganadora puede haber sido creada por email-only (sin GoogleId) — enlazamos.
+                    if (string.IsNullOrEmpty(user.GoogleId) || user.GoogleId.StartsWith("email:"))
+                        user.GoogleId = payload.Subject;
+                }
             }
             // ✅ NOTA: El código de restauración de usuarios eliminados fue removido
             // Los usuarios eliminados NO pueden restaurarse automáticamente al intentar loguearse
@@ -1588,7 +1640,7 @@ namespace newApi.Services
                 Latitude = expertProfile.Latitude,
                 Longitude = expertProfile.Longitude,
                 WorkRadiusKm = expertProfile.WorkRadiusKm,
-                StripeStatus = expertProfile.StripeStatus,
+                StripeStatus = expertProfile.StripeStatus.ToString(), // 🛡️ C2: string, no entero
                 StripeStatusDetails = expertProfile.StripeStatusDetails,
                 OnboardingCompleted = expertProfile.OnboardingCompleted,
                 IsOnVacation = expertProfile.IsOnVacation,
@@ -2034,7 +2086,7 @@ namespace newApi.Services
                     Latitude = expertProfile.Latitude,
                     Longitude = expertProfile.Longitude,
                     WorkRadiusKm = expertProfile.WorkRadiusKm,
-                    StripeStatus = expertProfile.StripeStatus,
+                    StripeStatus = expertProfile.StripeStatus.ToString(), // 🛡️ C2: string, no entero
                     StripeStatusDetails = expertProfile.StripeStatusDetails,
                     OnboardingCompleted = expertProfile.OnboardingCompleted,
                     IsOnVacation = expertProfile.IsOnVacation,

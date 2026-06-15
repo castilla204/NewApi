@@ -78,6 +78,9 @@ namespace newApi.Services
                         WHERE ""SeriesCode"" = {seriesCode} AND ""Year"" = {year};
                     ", ct);
 
+                    // ⚠️ AUDITORÍA [M6] Medium (latente): este commit QUEMA el número correlativo de forma irreversible (NextNumber+1) ANTES de que el PDF se envíe con éxito. El llamador (InvoiceService.cs:102-110) solo evita reusar este número vía IMemoryCache in-process.
+                    // Disparo/ataque: si el envío posterior falla y Hangfire reintenta tras un reinicio/redeploy o en otra réplica (caché vacía), se vuelve a entrar aquí y se quema OTRO número → el anterior queda como hueco sin documento (incumple RD 1619/2012 art. 6.1.a). Latente hoy (IsVatRegistered=false), se activa con el flip fiscal.
+                    // Fix: que el llamador persista el número reservado en SearchHire.InvoiceNumber en esta misma transacción y lo reuse en reintentos, en vez de depender de la caché de proceso.
                     await tx.CommitAsync(ct);
 
                     // 4) Componer: "INSP-2026-000001". Quita el guion final del prefijo si lo tiene.

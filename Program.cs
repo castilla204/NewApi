@@ -2032,6 +2032,18 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     "*/15 * * * *",
     n29UtcOptions);
 
+// ✅ FIX AUDITORÍA [M2]: el watchdog de arriba solo recoge hires en 'transfer_failed'. Un
+// crash entre el TransferService.CreateAsync (dinero ya movido) y el commit de la fila Payout
+// deja el hire en 'completed' con transfer real en Stripe pero SIN fila Payout → invisible al
+// watchdog y vía de doble pago si se reintenta con otro statusValue. Este job reconcilia ese
+// caso: detecta finalizados sin Payout, casa contra el transfer real de Stripe (metadata
+// searchHireId), inserta la fila Payout faltante (idempotente) o reencola la distribución.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "reconcile-completed-without-payout",
+    svc => svc.ReconcileCompletedWithoutPayoutAsync(),
+    "*/30 * * * *",
+    n29UtcOptions);
+
 // 🛡️ R5-F5: detecta SearchHires finalizados (completed/dispute_resolved_*) hace >24h SIN
 // ninguna FinancialTransaction Refund/Payout asociada → ProcessMoneyDistribution falló o
 // nunca corrió. Log Critical para reconciliación manual (no auto-fix por seguridad).
@@ -2039,6 +2051,16 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     "unreconciled-hires-detector",
     svc => svc.DetectUnreconciledFinalizedHiresAsync(),
     Hangfire.Cron.Daily(6, 0),
+    n29UtcOptions);
+
+// ✅ FIX AUDITORÍA [M3]: ClawbackQueue era write-only (ningún job la drenaba) → la deuda
+// experto↔plataforma (incl. devoluciones GDPR) envejecía indefinidamente salvo que un admin
+// mirara el dashboard. Este barrido re-alerta (Critical, agregado por divisa/motivo) la deuda
+// pendiente (ResolvedAt==null) que supera el SLA, para que ops no dependa de inspección manual.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.ClawbackQueueService>(
+    "sweep-pending-clawbacks",
+    svc => svc.SweepPendingClawbacksAsync(),
+    Hangfire.Cron.Daily(6, 30),
     n29UtcOptions);
 
 // 🛡️ T4: cada hora revisa disputas 'Pending' cuyo deadline 48h del experto ya pasó SIN
@@ -2062,6 +2084,14 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     "upcoming-stripe-deadlines-notifier",
     svc => svc.NotifyUpcomingStripeDeadlinesAsync(),
     Hangfire.Cron.Daily(9, 0),
+    n29UtcOptions);
+// 🛡️ A2: recordatorio diario a expertos con onboarding incompleto/abandonado (≥3 días sin
+// completar). El banner del panel solo avisa de forma pasiva a quien entra; este job empuja
+// email + notificación in-app a quien no vuelve. 10:00 UTC, fuera de la noche europea.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "stalled-onboarding-reminder",
+    svc => svc.NotifyStalledOnboardingExpertsAsync(),
+    Hangfire.Cron.Daily(10, 0),
     n29UtcOptions);
 // 🛡️ Round 15 — R3 FIX: descomentar el cleanup. Estaba inactivo → la tabla RefreshTokens
 // crecía sin freno (usuario activo rotando ~1 token/h × 24h × 90d = ~2.1k rows). Con cron

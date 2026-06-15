@@ -57,6 +57,15 @@ namespace newApi.Services
             try
             {
                 await ReconcileRefundsAsync(windowStart, windowEnd, report);
+                // ✅ FIX AUDITORÍA [L6] Low: la reconciliación diaria AHORA escanea charges/PaymentIntents succeeded.
+                // Disparo/ataque: tras un cargo huérfano (crash entre capture y commit en HandlePendingHireCompleted)
+                //   y agotados los ~3 días de reintentos de webhook de Stripe, esta es la última red de seguridad y era
+                //   ciega: report.ChargesUnreconciled se declaraba, sumaba y logueaba pero NUNCA se rellenaba (no había
+                //   ReconcileChargesAsync). El cliente quedaba cobrado sin contratación, recuperación solo manual.
+                // Fix aplicado: ReconcileChargesAsync(windowStart, windowEnd, report) lista charges succeeded/capturados
+                //   en la ventana y marca ChargesUnreconciled += los que no tengan FinancialTransaction 'ServicePayment'.
+                //   Solo DETECTA+ALERTA (cobro huérfano); NO inserta ServicePayment (falta contexto del hire).
+                await ReconcileChargesAsync(windowStart, windowEnd, report);
                 await ReconcileTransfersAsync(windowStart, windowEnd, report);
 
                 var totalMismatches =
@@ -219,6 +228,84 @@ namespace newApi.Services
                         $"not retrievable in Stripe.");
                 }
             }
+        }
+
+        // ✅ FIX AUDITORÍA [L6]: detecta cargos huérfanos (cliente cobrado sin contratación).
+        // Lista los Charges succeeded/capturados de la ventana y verifica que cada uno tenga su
+        // FinancialTransaction 'ServicePayment' con ese StripePaymentIntentId. Solo OBSERVA y
+        // ALERTA — coherente con la doctrina del servicio (NO muta BD): no inserta ServicePayment
+        // automáticamente porque falta el contexto del hire (RelatedEntityId, importes desglosados).
+        private async Task ReconcileChargesAsync(DateTime windowStart, DateTime windowEnd, ReconciliationReport report)
+        {
+            var chargeSvc = new Stripe.ChargeService();
+            var listOptions = new ChargeListOptions
+            {
+                Limit = StripePageSize,
+                Created = new DateRangeOptions
+                {
+                    GreaterThanOrEqual = windowStart,
+                    LessThanOrEqual = windowEnd
+                }
+            };
+
+            string? startingAfter = null;
+            int loopGuard = 0;
+
+            do
+            {
+                listOptions.StartingAfter = startingAfter;
+
+                StripeList<Charge> page;
+                try
+                {
+                    page = await chargeSvc.ListAsync(listOptions);
+                }
+                catch (StripeException ex)
+                {
+                    report.CriticalIssues.Add($"Charge list page failed: {ex.Message}");
+                    break;
+                }
+
+                foreach (var charge in page.Data)
+                {
+                    if (string.IsNullOrEmpty(charge.Id)) continue;
+
+                    // Solo cobros realmente cobrados al cliente: succeeded y capturados (no holds).
+                    if (!string.Equals(charge.Status, "succeeded", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!charge.Captured) continue;
+
+                    // Sin PaymentIntent no podemos cruzar con ServicePayment; lo señalamos como huérfano.
+                    if (string.IsNullOrEmpty(charge.PaymentIntentId))
+                    {
+                        report.ChargesUnreconciled++;
+                        report.CriticalIssues.Add(
+                            $"Charge {charge.Id} (amount {charge.Amount}) succeeded/capturado en Stripe " +
+                            $"sin PaymentIntent asociado — posible cobro huérfano.");
+                        continue;
+                    }
+
+                    var existsInDb = await _context.FinancialTransactions
+                        .AsNoTracking()
+                        .AnyAsync(ft => ft.StripePaymentIntentId == charge.PaymentIntentId
+                                        && ft.TransactionType == "ServicePayment");
+
+                    if (!existsInDb)
+                    {
+                        report.ChargesUnreconciled++;
+                        report.CriticalIssues.Add(
+                            $"Charge {charge.Id} (PI {charge.PaymentIntentId}, amount {charge.Amount}) " +
+                            $"succeeded/capturado en Stripe pero SIN ServicePayment en FinancialTransactions — " +
+                            $"posible cobro huérfano (cliente cobrado sin contratación).");
+                    }
+                }
+
+                startingAfter = page.Data.Count > 0 ? page.Data[^1].Id : null;
+                loopGuard++;
+                if (!page.HasMore || loopGuard > 100)
+                {
+                    break;
+                }
+            } while (!string.IsNullOrEmpty(startingAfter));
         }
 
         private async Task ReconcileTransfersAsync(DateTime windowStart, DateTime windowEnd, ReconciliationReport report)

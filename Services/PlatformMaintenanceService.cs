@@ -21,8 +21,10 @@ namespace newApi.Services
         Task RescueOrphanedAppointmentTimersAsync(); // 🛡️ R5-F1
         Task DetectUnreconciledFinalizedHiresAsync(); // 🛡️ R5-F5
         Task RetryTransferFailedHiresAsync(); // 🛡️ F18
+        Task ReconcileCompletedWithoutPayoutAsync(); // ✅ FIX AUDITORÍA [M2]
         Task EscalateStaleDisputesAsync(); // 🛡️ T4
         Task NotifyUpcomingStripeDeadlinesAsync(); // 🛡️ Round 12 — D3
+        Task NotifyStalledOnboardingExpertsAsync(); // 🛡️ A2 — onboarding abandonado
     }
 
     public class PlatformMaintenanceService : IPlatformMaintenanceService
@@ -479,6 +481,9 @@ namespace newApi.Services
                     .AsNoTracking()
                     .Include(sh => sh.Status)
                     .Where(sh => sh.Status != null
+                              // ✅ FIX AUDITORÍA [M2] Medium: este watchdog SOLO recupera hires en "transfer_failed". Un crash entre el transfer en Stripe (RefundService ~1495) y el commit del Payout (~2318) deja el hire en "completed" con transfer ya ejecutado y sin fila Payout → es INVISIBLE para este filtro y nunca se reencola.
+                              // Disparo/ataque: crash/redeploy durante la distribución de dinero; el estado "transfer_failed" casi nunca se alcanza (ni siquiera los catch de RefundService lo setean tras un transfer creado).
+                              // Fix APLICADO: ReconcileCompletedWithoutPayoutAsync (abajo) detecta "hire finalizado SIN fila Payout pero CON transfer en Stripe" (cotejo por metadata["searchHireId"] + StripeTransferId idempotente) e inserta el Payout faltante o reencola la distribución.
                               && sh.Status.StatusValue == "transfer_failed"
                               && sh.UpdatedAt < cutoff)
                     .OrderBy(sh => sh.UpdatedAt)
@@ -530,6 +535,255 @@ namespace newApi.Services
                     relatedEntityType: "SearchHire",
                     relatedEntityId: null);
             }
+        }
+
+        /// <summary>
+        /// ✅ FIX AUDITORÍA [M2] Medium — reconciliación del hueco no atómico transfer↔Payout.
+        ///
+        /// PROBLEMA
+        /// --------
+        /// En RefundService.ProcessMoneyDistributionAsync el dinero SALE de Stripe en
+        /// transferSvc.CreateAsync (~1495) PERO la fila FinancialTransaction "Payout" no se
+        /// commitea hasta ~2318. El estado del hire ya quedó commiteado como "completed" en
+        /// FASE 2. Si el proceso muere en esa ventana: el transfer queda real en Stripe, SIN
+        /// fila Payout, y el hire sigue "completed" (NO "transfer_failed") → es INVISIBLE para
+        /// RetryTransferFailedHiresAsync (que solo filtra "transfer_failed"). Además habilita
+        /// doble pago si alguien reintenta la distribución con otro statusValue.
+        ///
+        /// ESTRATEGIA (idempotente y conservadora)
+        /// ---------------------------------------
+        /// 1. Seleccionar SearchHires en estados de finalización, con experto, UpdatedAt &gt; 1h
+        ///    (margen para que el flow normal/outbox cierre) y dentro de los últimos 7 días, que
+        ///    NO tengan ninguna FT "Payout". Batch de 50.
+        /// 2. Por cada candidato consultar Stripe (TransferService.ListAsync filtrado por la
+        ///    cuenta del experto + ventana temporal) y casar por metadata["searchHireId"] (la
+        ///    clave la escribe RefundService ~1464).
+        ///    - Si existe transfer real y NO hay fila Payout → INSERTAR la fila Payout faltante
+        ///      replicando EXACTAMENTE el patrón de RefundService ~2296-2308. Re-chequeo por
+        ///      StripeTransferId antes de insertar (idempotente ante carreras/replays).
+        ///    - Si NO existe transfer y se esperaba pago al experto (&gt; 0) → reencolar
+        ///      RetryMoneyDistributionJobAsync (que ya es idempotente y re-verifica estado).
+        /// 3. Cada candidato en su try/catch para no abortar el batch; resumen al final.
+        /// </summary>
+        // 🛡️ W3 FIX (Round 8 A8): DisableConcurrentExecution para evitar duplicación en HPA multi-replica
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 1200)]
+        [Hangfire.AutomaticRetry(Attempts = 0)]
+        public async Task ReconcileCompletedWithoutPayoutAsync()
+        {
+            List<DataLayer.Models.PostGresModels.SearchHire> candidates;
+            try
+            {
+                var staleCutoff = DateTime.UtcNow.AddHours(-1);   // margen para que el flow normal/outbox cierre
+                var windowCutoff = DateTime.UtcNow.AddDays(-7);   // no escanear toda la historia
+                // Mismos estados de finalización que DetectUnreconciledFinalizedHiresAsync (con
+                // distribución de dinero al experto esperada).
+                var finalizationStatusValues = new[]
+                {
+                    "completed",
+                    "dispute_resolved_expert"
+                };
+
+                candidates = await _context.SearchHires
+                    .AsNoTracking()
+                    .Include(sh => sh.Status)
+                    .Include(sh => sh.Expert)
+                        .ThenInclude(u => u.ExpertProfile)
+                    .Where(sh => sh.Status != null
+                              && sh.ExpertId != null
+                              && finalizationStatusValues.Contains(sh.Status.StatusValue)
+                              && sh.UpdatedAt < staleCutoff
+                              && sh.UpdatedAt >= windowCutoff
+                              && !_context.FinancialTransactions.Any(ft =>
+                                    ft.RelatedEntityType == "SearchHire"
+                                    && ft.RelatedEntityId == sh.Id
+                                    && ft.TransactionType == "Payout"))
+                    .OrderBy(sh => sh.UpdatedAt)
+                    .Take(50)
+                    .ToListAsync();
+            }
+            catch (Exception readEx)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL M2: query de hires finalizados sin Payout falló",
+                    details: $"No se pudo leer candidatos a reconciliación. Error: {readEx.Message}. Próxima ejecución reintentará.",
+                    userId: null,
+                    source: "PlatformMaintenanceService.ReconcileCompletedWithoutPayoutAsync.M2",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: null);
+                return;
+            }
+
+            if (candidates.Count == 0) return;
+
+            int reconciled = 0, reEnqueued = 0, alreadyOk = 0, errors = 0;
+            var transferSvc = new TransferService();
+
+            foreach (var hire in candidates)
+            {
+                try
+                {
+                    var statusValue = hire.Status?.StatusValue ?? "completed";
+
+                    // Localizar el transfer real en Stripe para este hire. Stripe no permite
+                    // filtrar ListAsync por metadata arbitraria → acotamos por la cuenta destino
+                    // del experto (si la conocemos) + ventana temporal, y casamos en memoria por
+                    // metadata["searchHireId"] (clave escrita en RefundService ~1464).
+                    var expertStripeAccountId = hire.Expert?.ExpertProfile?.StripeAccountId;
+                    var listOptions = new TransferListOptions
+                    {
+                        Limit = 100,
+                        // Ventana generosa alrededor de UpdatedAt para capturar el transfer creado
+                        // justo antes del crash (incluye reintentos del flow normal).
+                        Created = new DateRangeOptions
+                        {
+                            GreaterThanOrEqual = (hire.UpdatedAt ?? hire.CreatedAt).AddHours(-24),
+                            LessThanOrEqual = DateTime.UtcNow
+                        }
+                    };
+                    if (!string.IsNullOrEmpty(expertStripeAccountId))
+                    {
+                        listOptions.Destination = expertStripeAccountId;
+                    }
+
+                    Transfer matchedTransfer = null;
+                    var hireIdStr = hire.Id.ToString();
+                    var transfers = await transferSvc.ListAsync(listOptions);
+                    foreach (var t in transfers)
+                    {
+                        if (t.Metadata != null
+                            && t.Metadata.TryGetValue("searchHireId", out var metaHireId)
+                            && metaHireId == hireIdStr)
+                        {
+                            matchedTransfer = t;
+                            break;
+                        }
+                    }
+
+                    if (matchedTransfer != null)
+                    {
+                        // RAMA A: transfer real existe pero no hay fila Payout → insertar la
+                        // fila faltante. Idempotente: re-chequear por StripeTransferId antes
+                        // de insertar (otra réplica/replay pudo insertarla ya).
+                        var existsByTransfer = await _context.FinancialTransactions
+                            .AsNoTracking()
+                            .AnyAsync(ft => ft.StripeTransferId == matchedTransfer.Id
+                                         && ft.TransactionType == "Payout");
+                        if (existsByTransfer)
+                        {
+                            alreadyOk++;
+                            continue;
+                        }
+
+                        // Recuperar el StripePaymentIntentId del ServicePayment para trazabilidad
+                        // (igual que RefundService ~2306). Best-effort: si no está, queda null.
+                        var servicePaymentPi = await _context.FinancialTransactions
+                            .AsNoTracking()
+                            .Where(ft => ft.RelatedEntityType == "SearchHire"
+                                      && ft.RelatedEntityId == hire.Id
+                                      && ft.TransactionType == "ServicePayment")
+                            .OrderByDescending(ft => ft.Id)
+                            .Select(ft => ft.StripePaymentIntentId)
+                            .FirstOrDefaultAsync();
+
+                        // Importe/divisa tomados del transfer REAL de Stripe (fuente de verdad
+                        // del dinero ya movido), no de cálculos locales.
+                        var amountDecimal = matchedTransfer.Amount / 100m;
+                        var transferCurrency = string.IsNullOrEmpty(matchedTransfer.Currency)
+                            ? (hire.Currency ?? "EUR")
+                            : matchedTransfer.Currency.ToUpperInvariant();
+
+                        // Patrón EXACTO de RefundService ~2296-2308.
+                        var expertTx = new DataLayer.Models.PostGresModels.FinancialTransaction
+                        {
+                            UserId = hire.ExpertId.Value,
+                            Amount = Math.Round(amountDecimal, 2),
+                            AmountCents = matchedTransfer.Amount,
+                            Currency = transferCurrency,
+                            TransactionType = "Payout",
+                            RelatedEntityType = "SearchHire",
+                            RelatedEntityId = hire.Id,
+                            StripeTransferId = matchedTransfer.Id,
+                            StripePaymentIntentId = servicePaymentPi,
+                            CreatedAt = matchedTransfer.Created
+                        };
+                        _context.FinancialTransactions.Add(expertTx);
+
+                        try
+                        {
+                            await _context.SaveChangesAsync();
+                        }
+                        catch (DbUpdateException)
+                        {
+                            // Carrera con otra réplica/replay que insertó el mismo Payout: la
+                            // restricción única absorbe el conflicto → idempotente, no es error.
+                            _context.Entry(expertTx).State = EntityState.Detached;
+                            alreadyOk++;
+                            continue;
+                        }
+
+                        await _loggingService.LogWarningAsync(
+                            message: "M2: fila Payout faltante reconciliada desde transfer real de Stripe",
+                            details: $"SearchHire {hire.Id} ('{statusValue}') tenía transfer {matchedTransfer.Id} ejecutado en Stripe ({amountDecimal:F2} {transferCurrency}) pero SIN fila FinancialTransaction Payout — síntoma del crash en la ventana CreateAsync↔commit (RefundService ~1495-2318). Fila Payout insertada idempotentemente. No se ha movido dinero: solo se ha reflejado en el ledger el transfer ya existente.",
+                            userId: hire.ExpertId,
+                            source: "PlatformMaintenanceService.ReconcileCompletedWithoutPayoutAsync.M2",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: hire.Id);
+                        reconciled++;
+                    }
+                    else
+                    {
+                        // RAMA B: no hay transfer en Stripe. Si se esperaba pago al experto (>0),
+                        // la distribución nunca llegó a mover dinero → reencolar el job idempotente
+                        // (re-verifica el estado del hire antes de mover dinero). Si el split
+                        // esperado al experto es 0 (todo refund/plataforma), no hay nada que pagar.
+                        var expertPct = hire.ExpertPercentageSnapshot;
+                        var expectedExpertAmount = expertPct.HasValue
+                            ? hire.Amount * (expertPct.Value / 100m)
+                            : hire.Amount; // sin snapshot, usar Amount como proxy de "se esperaba pago"
+                        if (expectedExpertAmount <= 0)
+                        {
+                            alreadyOk++;
+                            continue;
+                        }
+
+                        Hangfire.BackgroundJob.Enqueue<StripeRefundService>(
+                            s => s.RetryMoneyDistributionJobAsync(
+                                hire.Id,
+                                statusValue,
+                                "M2-reconcile",
+                                null));
+
+                        var ageHours = (DateTime.UtcNow - (hire.UpdatedAt ?? hire.CreatedAt)).TotalHours;
+                        await _loggingService.LogWarningAsync(
+                            message: "M2: hire finalizado sin Payout y SIN transfer en Stripe — distribución reencolada",
+                            details: $"SearchHire {hire.Id} ('{statusValue}') lleva {ageHours:F1}h finalizado sin fila Payout y NO se encontró transfer en Stripe (metadata searchHireId={hire.Id}). El dinero al experto nunca llegó a moverse. Encolado RetryMoneyDistributionJobAsync (idempotente, re-verifica estado del hire antes de mover dinero) para completar la distribución.",
+                            userId: hire.ExpertId,
+                            source: "PlatformMaintenanceService.ReconcileCompletedWithoutPayoutAsync.M2",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: hire.Id);
+                        reEnqueued++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    errors++;
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL M2: error reconciliando hire finalizado sin Payout",
+                        details: $"SearchHire {hire.Id}: {ex.Message}. Se reintentará en el próximo ciclo (no se ha insertado fila ni reencolado para este candidato).",
+                        userId: hire.ExpertId,
+                        source: "PlatformMaintenanceService.ReconcileCompletedWithoutPayoutAsync.M2",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hire.Id);
+                }
+            }
+
+            await _loggingService.LogInfoAsync(
+                message: $"M2: reconciliación transfer↔Payout completada ({reconciled} filas Payout insertadas, {reEnqueued} distribuciones reencoladas, {alreadyOk} ya correctos, {errors} errores)",
+                details: $"Total candidatos (finalizados sin Payout, últimos 7d, >1h): {candidates.Count}.",
+                userId: null,
+                source: "PlatformMaintenanceService.ReconcileCompletedWithoutPayoutAsync.M2",
+                relatedEntityType: "SearchHire",
+                relatedEntityId: null);
         }
 
         /// <summary>
@@ -607,7 +861,12 @@ namespace newApi.Services
                     .AsNoTracking()
                     .Where(n => n.UserId != null
                                 && n.CreatedAt >= oldestRelevant
-                                && n.Title.StartsWith("⏰ Plazo Stripe próximo"))
+                                // 🛡️ A1: la dedup buscaba por Title "⏰ Plazo Stripe próximo", pero
+                                // LogWarningAsync (sin userNotificationMessage) persiste Title genérico
+                                // "⚠️ Advertencia" → el filtro nunca matcheaba → recordatorio diario
+                                // repetido toda la ventana de 14d. El Message SÍ se persiste con el
+                                // prefijo estable de abajo (fullMessage = message + " - " + details).
+                                && n.Message.StartsWith("[Inspecciono · recordatorio] Plazo Stripe próximo"))
                     .Select(n => new { UserId = n.UserId!.Value, n.CreatedAt })
                     .ToListAsync();
                 var lastNotifByUser = recentDeadlineNotifications
@@ -701,6 +960,100 @@ namespace newApi.Services
                     details: ex.Message,
                     userId: null,
                     source: "PlatformMaintenanceService.NotifyUpcomingStripeDeadlinesAsync",
+                    relatedEntityType: "ExpertProfile",
+                    relatedEntityId: null);
+            }
+        }
+
+        /// <summary>
+        /// 🛡️ A2: recordatorio proactivo a expertos que EMPEZARON el alta pero NO la terminaron y
+        /// llevan ≥ stalledDays sin completarla. El banner del panel ya los avisa de forma pasiva,
+        /// pero quien no vuelve al panel nunca lo ve → este job empuja un email + notificación in-app.
+        /// Dedup vía Notifications.Message (no Title; ver A1: el Title persistido es genérico) para no
+        /// repetir el aviso dentro de reNotifyDays.
+        /// NOTA: la antigüedad se mide con ExpertProfile.CreatedAt (no existe UpdatedAt ni timestamp de
+        /// inicio de onboarding). En reseteos (Rejected→NotRequested, mudanza) CreatedAt NO se refresca
+        /// → la antigüedad puede sobreestimarse; aceptable (siguen siendo onboarding incompleto).
+        /// </summary>
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
+        [Hangfire.AutomaticRetry(Attempts = 0)]
+        public async Task NotifyStalledOnboardingExpertsAsync()
+        {
+            try
+            {
+                const int stalledDays = 3;       // antigüedad mínima para avisar
+                const int reNotifyDays = 7;      // no repetir el aviso dentro de 7 días
+                const string notifMessagePrefix = "[Inspecciono · recordatorio] Completa tu alta";
+                var now = DateTime.UtcNow;
+                var stalledCutoff = now.AddDays(-stalledDays);
+                var dedupCutoff = now.AddDays(-reNotifyDays);
+
+                // Dedup: expertos ya avisados en los últimos reNotifyDays (match por Message, ver A1).
+                var recentNotifs = await _context.Notifications
+                    .AsNoTracking()
+                    .Where(n => n.UserId != null
+                                && n.CreatedAt >= dedupCutoff
+                                && n.Message.StartsWith(notifMessagePrefix))
+                    .Select(n => new { UserId = n.UserId!.Value, n.CreatedAt })
+                    .ToListAsync();
+                var lastNotifByUser = recentNotifs
+                    .GroupBy(n => n.UserId)
+                    .ToDictionary(g => g.Key, g => g.Max(n => n.CreatedAt));
+
+                // Onboarding empezado y NO terminado, estancado ≥ stalledDays.
+                var candidates = await _context.ExpertProfiles
+                    .Include(ep => ep.User)
+                    .Where(ep => !ep.OnboardingCompleted
+                              && ep.CreatedAt <= stalledCutoff
+                              && (ep.StripeStatus == DataLayer.Models.PostGresModels.StripeStatus.Pending
+                                  || ep.PendingStripeAccountId != null
+                                  || ep.StripeAccountId != null)
+                              && ep.StripeStatus != DataLayer.Models.PostGresModels.StripeStatus.Rejected
+                              && ep.StripeStatus != DataLayer.Models.PostGresModels.StripeStatus.Approved
+                              && ep.User != null
+                              && !ep.User.IsDeleted)
+                    .OrderBy(ep => ep.CreatedAt)
+                    .Take(200)
+                    .ToListAsync();
+
+                var experts = candidates
+                    .Where(ep => !lastNotifByUser.TryGetValue(ep.UserId, out var last) || last < dedupCutoff)
+                    .ToList();
+
+                foreach (var ep in experts)
+                {
+                    var ageDays = (now - ep.CreatedAt).TotalDays;
+                    try
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: $"{notifMessagePrefix}: tu cuenta de pagos sigue sin terminar",
+                            details: $"Empezaste tu alta como experto hace {ageDays:F0} días pero aún no has completado el registro de tu cuenta de pagos. Mientras tanto NO apareces en búsquedas ni puedes recibir contrataciones. Entra a tu panel y termina el onboarding — solo te llevará unos minutos.",
+                            userId: ep.UserId,
+                            source: "PlatformMaintenanceService.NotifyStalledOnboardingExpertsAsync",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: ep.Id,
+                            notifyUser: true);
+                    }
+                    catch (Exception notifyEx)
+                    {
+                        try
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "A2: recordatorio onboarding falló para un experto",
+                                details: $"ExpertProfileId {ep.Id}, UserId {ep.UserId}: {notifyEx.Message}",
+                                source: "PlatformMaintenanceService.NotifyStalledOnboardingExpertsAsync");
+                        }
+                        catch { /* swallow */ }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL A2: NotifyStalledOnboardingExpertsAsync failed",
+                    details: ex.Message,
+                    userId: null,
+                    source: "PlatformMaintenanceService.NotifyStalledOnboardingExpertsAsync",
                     relatedEntityType: "ExpertProfile",
                     relatedEntityId: null);
             }

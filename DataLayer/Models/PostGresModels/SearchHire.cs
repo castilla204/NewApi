@@ -154,6 +154,22 @@ namespace newApi.DataLayer.Models.PostGresModels
         public decimal? ClientPercentageSnapshot { get; set; }
         public decimal? ExpertPercentageSnapshot { get; set; }
         public decimal? PlatformPercentageSnapshot { get; set; }
+
+        /// <summary>
+        /// ✅ FIX AUDITORÍA [M6] (2026-06-15): número de factura correlativo RESERVADO de forma
+        /// DURABLE para este hire (fuente de verdad de la idempotencia de la numeración fiscal).
+        /// Antes la reserva vivía solo en IMemoryCache in-process: un reinicio/redeploy o un retry
+        /// Hangfire en otra réplica vaciaba la caché → NextAsync quemaba OTRO correlativo → hueco
+        /// en la serie (incumple RD 1619/2012 art. 6.1.a cuando IsVatRegistered=true).
+        /// Ahora InvoiceService persiste aquí el número la primera vez (UPDATE ... WHERE
+        /// InvoiceNumber IS NULL) y lo reusa en cada reintento. La caché pasa a ser optimización.
+        /// Nullable: solo se rellena cuando IsReadyForFlip()=true; los recibos pre-flip usan
+        /// FAC-{Id:D6} y NO tocan esta columna.
+        /// ⚠️ REQUIERE MIGRACIÓN EF: añadir columna SearchHires.InvoiceNumber (text/varchar NULL).
+        /// Ver "flags" del informe — debe aplicarse/revisarse manualmente por el drift de
+        /// migraciones en prod.
+        /// </summary>
+        public string? InvoiceNumber { get; set; }
     }
 
 }

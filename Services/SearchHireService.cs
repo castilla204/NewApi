@@ -117,6 +117,14 @@ namespace newApi.Services
                 //  (b) destinos de finalización/dinero (completed, cancelled, disputed, transfer_failed,
                 //      dispute_resolved_*, cancelaciones por timer) -> deben ir por CompleteService /
                 //      resolve-dispute / timers, no por este endpoint.
+                // ✅ FIX AUDITORÍA [L4] Low: solo se valida que origen y destino sean NO finales, sin grafo origen→destino.
+                //   (resuelto más abajo con la blacklist forbiddenBackwardTransitions tras resolver targetStatus)
+                // Disparo/ataque: el experto dueño (ExpertId==userId) hace PUT /api/searchhire/{hireId}/status con {"Status":"pending"}
+                // estando el hire en 'awaiting_client_decision'. Ambos estados tienen IsFinalizationStatus=false (SEED_ESTADOS_COMPLETO.sql
+                // líneas 21-22), así que esta guarda y la de destino (targetStatus.IsFinalizationStatus) pasan → retroceso aceptado.
+                // El timer client_decision al vencer ve estado != 'awaiting_client_decision' (AppointmentService.cs ~3703-3713),
+                // marca IsExpired y retorna sin ProcessMoneyDistributionAsync → hire zombi en 'pending', fondos retenidos.
+                // Fix: añadir matriz de transiciones permitidas origen→destino y prohibir awaiting_client_decision→pending.
                 if (hire.Status != null && hire.Status.IsFinalizationStatus)
                 {
                     return (false, "No se puede cambiar el estado de un servicio ya finalizado");
@@ -128,9 +136,36 @@ namespace newApi.Services
                 {
                     return (false, $"Status '{status}' does not exist for SearchHire entities");
                 }
+                // ✅ FIX AUDITORÍA [L4] Low: segunda mitad de la guarda incompleta — solo bloquea destinos finales, no retrocesos entre no-finales.
+                // Disparo/ataque: con Status='pending' targetStatus.IsFinalizationStatus=false, así que esta comprobación NO frena el
+                // retroceso awaiting_client_decision→pending; el StatusId se sobrescribe abajo y neutraliza el auto-aprobado del timer.
+                // Fix: validar aquí (o antes de hire.StatusId=...) que la transición origen→destino esté en una whitelist hacia delante.
                 if (targetStatus.IsFinalizationStatus)
                 {
                     return (false, "Esta transición debe realizarse a través de su flujo correspondiente (finalización, disputa o cancelación)");
+                }
+
+                // ✅ FIX AUDITORÍA [L4] Low: guarda de transición origen→destino para prohibir RETROCESOS en el ciclo.
+                // Las guardas anteriores (IsFinalizationStatus origen y destino) solo cubren los estados finales;
+                // los ÚNICOS estados no finales de SearchHireStatus son, en orden de avance (SEED_ESTADOS_COMPLETO.sql líneas 21-22):
+                //   1) "pending"  →  2) "awaiting_client_decision"
+                // Sin grafo origen→destino, este endpoint admite el retroceso awaiting_client_decision→pending, dejando
+                // el hire fuera de la ventana del timer client_decision (AppointmentService ~3703-3713): el timer ve un estado
+                // != 'awaiting_client_decision', marca IsExpired y retorna SIN ProcessMoneyDistributionAsync → hire zombi con
+                // fondos retenidos y auto-aprobado neutralizado.
+                // Criterio: blacklist explícita de transiciones hacia atrás entre estados no finales. Solo se permite avanzar
+                // (o re-aplicar el mismo estado). NO toca finalizaciones (ya cubiertas arriba) ni transiciones legítimas hacia delante.
+                var forbiddenBackwardTransitions = new HashSet<(string From, string To)>
+                {
+                    // Retroceder a 'pending' tras pasar a decisión del cliente revive el hire y rompe el timer de auto-aprobado.
+                    ("awaiting_client_decision", "pending"),
+                };
+                var fromStatusValue = hire.Status?.StatusValue;
+                if (fromStatusValue != null &&
+                    fromStatusValue != status &&
+                    forbiddenBackwardTransitions.Contains((fromStatusValue, status)))
+                {
+                    return (false, $"Transición de estado no permitida: {fromStatusValue} → {status}");
                 }
 
                 // Validar archivos obligatorios cuando se cambia a "Completed"

@@ -37,7 +37,8 @@ namespace newApi.DataLayer.Models.DTOs
         public DateTime CreatedAt { get; set; }
         public string Latitude { get; set; }
         public string Longitude { get; set; }
-        public StripeStatus StripeStatus { get; set; }
+        // 🛡️ C2: string (nombre del enum), no entero. Ver nota en ExpertProfileDto.
+        public string StripeStatus { get; set; }
         public string? StripeStatusDetails { get; set; }
         public bool OnboardingCompleted { get; set; }
     }

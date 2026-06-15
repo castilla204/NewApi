@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Npgsql; // 🛡️ Fix race check-then-insert: PostgresException 23505 en Apple/verify-email.
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
@@ -160,17 +161,25 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "User account is blocked" });
                 }
 
-                if (storedToken.IsRevoked)
+                // 🛡️ R29 FIX (fiabilidad): respuesta idempotente para rotación concurrente.
+                // Dos pestañas (o un retry tras timeout donde el server SÍ procesó el primer
+                // intento) refrescan con el mismo token: el segundo llega con el token recién
+                // rotado. Antes se trataba como ataque y se revocaban TODAS las sesiones del
+                // usuario — incluida la recién creada y las de otros dispositivos. Ahora, si
+                // la rotación fue hace <60s y el reemplazo sigue activo, respondemos
+                // idempotentemente con el token de reemplazo: ambos clientes convergen a la
+                // misma cadena. Devuelve null si NO hay reemplazo vivo dentro de la ventana
+                // (logout, bloqueo, o fuera de los 60s) → el caller decide qué hacer.
+                //
+                // 🛡️ Reutilizado por el catch 23505 más abajo: el PERDEDOR de una rotación
+                // simultánea (sub-ms, ambos pasan las validaciones antes de que el ganador
+                // commitee) choca con el índice único IX_RefreshTokens_Token al insertar su
+                // nuevo token. El ganador ya dejó storedToken revocado + ReplacedByToken
+                // apuntando a SU token recién creado, así que el perdedor re-consulta y entra
+                // exactamente por esta misma ruta de gracia — mismo resultado que un retry
+                // idempotente, sin orphan token ni 500.
+                async Task<IActionResult?> TryBuildGraceResponseAsync()
                 {
-                    // 🛡️ R29 FIX (fiabilidad): ventana de gracia para rotación concurrente.
-                    // Dos pestañas (o un retry tras timeout donde el server SÍ procesó el primer
-                    // intento) refrescan con el mismo token: el segundo llega con el token recién
-                    // rotado. Antes se trataba como ataque y se revocaban TODAS las sesiones del
-                    // usuario — incluida la recién creada y las de otros dispositivos. Ahora, si
-                    // la rotación fue hace <60s y el reemplazo sigue activo, respondemos
-                    // idempotentemente con el token de reemplazo: ambos clientes convergen a la
-                    // misma cadena. Un token revocado SIN reemplazo (logout, bloqueo) o fuera de
-                    // la ventana sigue tratándose como reuse → revocación total.
                     if (!string.IsNullOrEmpty(storedToken.ReplacedByToken) &&
                         storedToken.RevokedAt.HasValue &&
                         DateTime.UtcNow - storedToken.RevokedAt.Value < TimeSpan.FromSeconds(60))
@@ -190,6 +199,18 @@ namespace newApi.Controllers
                                 RefreshTokenExpiresAt = replacement.ExpiresAt
                             });
                         }
+                    }
+                    return null;
+                }
+
+                if (storedToken.IsRevoked)
+                {
+                    // Un token revocado SIN reemplazo vivo (logout, bloqueo) o fuera de la
+                    // ventana de 60s sigue tratándose como reuse → revocación total.
+                    var graceResponse = await TryBuildGraceResponseAsync();
+                    if (graceResponse != null)
+                    {
+                        return graceResponse;
                     }
 
                     // ✅ SEGURIDAD: Token ya usado (posible ataque) - revocar todos los tokens del usuario
@@ -235,7 +256,41 @@ namespace newApi.Controllers
                 _context.RefreshTokens.Update(storedToken);
                 _context.RefreshTokens.Add(newRefreshToken);
 
-                await _context.SaveChangesAsync();
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                // 🛡️ FIX rotación concurrente (fiabilidad): dos refresh simultáneos del MISMO
+                // token (sub-ms, ambos pasan las validaciones antes de que ninguno commitee)
+                // intentan revocar el mismo parent e insertar un token nuevo cada uno. SIN
+                // transacción (deliberado: las TX en auth rompen con la multiplexación de
+                // PgBouncer), el primero que commitea gana; el segundo choca con el índice
+                // único IX_RefreshTokens_Token → DbUpdateException(23505). Antes esto subía
+                // como 500 sin manejar Y dejaba un 2º token vivo huérfano (dos reemplazos
+                // colgando de un parent, solo un ReplacedByToken persiste). Ahora el perdedor
+                // descarta sus cambios locales, re-consulta el parent (que el ganador ya dejó
+                // revocado + ReplacedByToken) y devuelve el reemplazo del ganador por la MISMA
+                // ruta de gracia idempotente — sin token huérfano, sin 500.
+                catch (DbUpdateException ex) when ((ex.InnerException as PostgresException)?.SqlState == "23505")
+                {
+                    // Descartar los cambios locales que perdieron la carrera (la revocación del
+                    // parent y el insert del token huérfano) para no contaminar el re-query.
+                    _context.Entry(newRefreshToken).State = EntityState.Detached;
+                    await _context.Entry(storedToken).ReloadAsync();
+
+                    var graceResponse = await TryBuildGraceResponseAsync();
+                    if (graceResponse != null)
+                    {
+                        return graceResponse;
+                    }
+
+                    // Timing raro: el ganador commiteó pero su ReplacedByToken aún no es
+                    // legible en el parent re-consultado. No lanzamos 500 crudo; caemos en el
+                    // comportamiento estándar de reuse (mismo que un token revocado sin
+                    // reemplazo vivo) en lugar de dejar al cliente con un error opaco.
+                    await RevokeAllUserTokensAsync(storedToken.UserId, "Concurrent rotation conflict");
+                    return Unauthorized(new { message = "Token revoked. All sessions have been terminated for security." });
+                }
 
                 // 🛡️ SEC-MAJ-5: setear cookie HttpOnly con el nuevo refresh. Frontends nuevos
                 // ignoran el body.RefreshToken; los legacy lo siguen usando hasta que actualicen.
@@ -656,18 +711,23 @@ namespace newApi.Controllers
                 // añadir password a su cuenta existente — flujo "convert OAuth to email+password".
             }
 
-            // Guardamos name + password (hash) en una blob temporal asociada al OTP. Como no tenemos
-            // tabla auxiliar, usamos la columna User pero NO la crearemos hasta verify-email. La
-            // alternativa más segura: poner el hash y nombre en el VerificationCode.RequestIp (mal),
-            // o crear una tabla "PendingRegistration". Por simplicidad: stash en memoria via cache
-            // con key=verificationToken.
+            // Guardamos name + password (hash) DURABLEMENTE en la propia fila del OTP
+            // (EmailVerificationCode.PendingName / PendingPasswordHash). El User NO se crea hasta
+            // verify-email. Antes estos datos vivían solo en _registrationCache (MemoryCache
+            // process-local): si Render reiniciaba/redesplegaba entre register y verify-email, el
+            // stash se perdía y el usuario verificaba un OTP correcto pero la cuenta nunca se creaba
+            // (caía en registration_expired). Persistir en BD lo hace sobrevivir a reinicios y
+            // funcionar multi-réplica; reusa el cleanup de 15 min ya existente. NUNCA se guarda la
+            // contraseña en plano: passwordHash es el hash BCrypt.
             var passwordHash = _passwordHasher.Hash(password);
             var issue = await _emailVerifier.IssueAsync(
                 email: email,
                 purpose: EmailVerificationPurpose.EmailVerification,
                 userId: existing?.Id,
                 requestIp: GetClientIpAddress(),
-                shouldSendEmail: shouldSendEmail);
+                shouldSendEmail: shouldSendEmail,
+                pendingName: name,
+                pendingPasswordHash: passwordHash);
 
             if (!issue.Success && shouldSendEmail)
             {
@@ -681,8 +741,10 @@ namespace newApi.Controllers
                 });
             }
 
-            // Stash en MemoryCache: { token → (name, passwordHash) }. TTL 15min (mayor que OTP TTL).
-            // Si el OTP se verifica, leemos esto para crear el User. Si caduca, se pierde.
+            // Fast-path opcional en MemoryCache (mismo TTL 15min). La fuente de verdad es la BD
+            // (columnas Pending* del OTP); esta cache solo ahorra una lectura cuando el proceso no
+            // se ha reiniciado. Si la cache se pierde (reinicio/redeploy/multi-réplica), verify-email
+            // cae al valor persistido del resultado de VerifyAsync — el registro YA no se pierde.
             _registrationCache.Set($"reg:{issue.VerificationToken}",
                 new PendingRegistration(email, name, passwordHash),
                 TimeSpan.FromMinutes(15));
@@ -745,15 +807,33 @@ namespace newApi.Controllers
                 }
 
                 // ─── Recuperar datos del registro pendiente ─────────────────────────────
-                // "Reclamamos" la entrada de la cache (get + remove) para que una request
-                // duplicada no cree el usuario dos veces; si algo falla después, la
-                // reponemos en el catch para que el reintento del usuario funcione.
+                // Fuente de verdad: las columnas Pending* persistidas en la fila del OTP, que
+                // VerifyAsync nos devuelve. Antes esto vivía SOLO en _registrationCache
+                // (process-local): un reinicio/redeploy entre register y verify-email borraba el
+                // stash y la cuenta nunca se creaba (registration_expired con OTP correcto). Ahora
+                // la BD garantiza que el dato sobrevive a reinicios y funciona multi-réplica.
+                //
+                // La cache se mantiene solo como fast-path (read-through) y se "reclama" (get +
+                // remove) para idempotencia local; si falta, usamos el valor durable del verify.
                 var cacheKey = $"reg:{request.VerificationToken}";
                 PendingRegistration? pending = null;
                 if (_registrationCache.TryGetValue<PendingRegistration>(cacheKey, out var cachedPending) && cachedPending != null)
                 {
                     pending = cachedPending;
                     _registrationCache.Remove(cacheKey);
+                }
+                // Fallback durable: si la cache no tenía el dato (reinicio/multi-réplica) pero el
+                // OTP persistió el registro pendiente, reconstruimos desde la BD. Sólo aplica a
+                // OTP de registro (EmailVerification); otros propósitos no llevan Pending*.
+                if (pending == null
+                    && verify.Purpose == EmailVerificationPurpose.EmailVerification
+                    && !string.IsNullOrEmpty(verify.PendingPasswordHash)
+                    && verify.Email != null)
+                {
+                    pending = new PendingRegistration(
+                        verify.Email,
+                        verify.PendingName ?? string.Empty,
+                        verify.PendingPasswordHash);
                 }
 
                 try
@@ -852,7 +932,50 @@ namespace newApi.Controllers
                                 Role = UserRole.Client,
                             };
                             _context.Users.Add(user);
-                            await _context.SaveChangesAsync();
+                            try
+                            {
+                                await _context.SaveChangesAsync();
+                            }
+                            // 🛡️ FIX race check-then-insert: dos verify-email concurrentes para el mismo
+                            // email pasaban ambos el lookup de arriba y ambos INSERT → filas duplicadas.
+                            // La BD ahora rechaza el 2º con 23505 (IX_Users_Email_lower_uq). Como este
+                            // bloque corre DENTRO de `tx`, el 23505 aborta la transacción: hacemos
+                            // rollback, re-consultamos la fila que ganó la carrera y emitimos tokens
+                            // para ella FUERA de la transacción (mismo resultado que un login normal).
+                            // El OTP consumido se revierte con el rollback, pero la cuenta del ganador
+                            // ya existe → el usuario queda logueado igualmente.
+                            catch (DbUpdateException dbEx) when (
+                                dbEx.InnerException is PostgresException pgEx && pgEx.SqlState == "23505")
+                            {
+                                _context.Entry(user).State = EntityState.Detached;
+                                await tx.RollbackAsync();
+
+                                var winner = await _context.Users
+                                    .IgnoreQueryFilters()
+                                    .FirstOrDefaultAsync(u => u.Email.ToLower() == pending.Email);
+
+                                if (winner == null)
+                                    return StatusCode(500, new { code = "registration_conflict", message = "No se pudo completar el registro. Inténtalo de nuevo." });
+                                if (winner.IsBlocked) return Unauthorized(new { code = "account_blocked", message = "Cuenta bloqueada." });
+                                if (winner.IsDeleted) return Unauthorized(new { code = "account_deleted", message = "Cuenta eliminada." });
+
+                                var winAccess = _userService.GenerateJwtToken(winner);
+                                var winRefresh = await _userService.GenerateRefreshTokenAsync(winner.Id, GetClientIpAddress());
+
+                                return Ok(new
+                                {
+                                    token = $"{winAccess}|{winRefresh}",
+                                    accountAction = string.IsNullOrEmpty(winner.Password) ? "password_linked" : "account_created",
+                                    user = new
+                                    {
+                                        id = winner.Id,
+                                        name = winner.Name,
+                                        email = winner.Email,
+                                        role = winner.Role.ToString(),
+                                        emailVerified = winner.EmailVerified,
+                                    }
+                                });
+                            }
 
                             _context.UserSettings.Add(new UserSetting
                             {
@@ -1268,17 +1391,66 @@ namespace newApi.Controllers
                     Role = UserRole.Client,
                 };
                 _context.Users.Add(user);
-                await _context.SaveChangesAsync();
-
-                _context.UserSettings.Add(new UserSetting
+                try
                 {
-                    UserId = user.Id,
-                    IsWhatsAppEnabled = true,
-                    IsEmailEnabled = true,
-                    Theme = "light",
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow
-                });
+                    await _context.SaveChangesAsync();
+
+                    _context.UserSettings.Add(new UserSetting
+                    {
+                        UserId = user.Id,
+                        IsWhatsAppEnabled = true,
+                        IsEmailEnabled = true,
+                        Theme = "light",
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow
+                    });
+                }
+                // 🛡️ FIX race check-then-insert: dos apple-auth concurrentes con el mismo `sub`
+                // (o el email recién creado por otro flujo) pasaban ambos el lookup y ambos INSERT
+                // → filas duplicadas. La BD ahora rechaza el 2º con 23505 (IX_Users_AppleId /
+                // IX_Users_Email_lower_uq); lo absorbemos, soltamos la entidad pendiente y
+                // re-consultamos la fila ganadora para continuar con ella. Sin transacción
+                // (multiplexing PgBouncer). Conserva el guard account_has_password.
+                catch (DbUpdateException dbEx) when (
+                    dbEx.InnerException is PostgresException pgEx && pgEx.SqlState == "23505")
+                {
+                    _context.Entry(user).State = EntityState.Detached;
+
+                    user = await _context.Users
+                        .IgnoreQueryFilters()
+                        .FirstOrDefaultAsync(u => u.AppleId == claims.Sub);
+
+                    if (user == null && !string.IsNullOrEmpty(claims.Email))
+                    {
+                        var emailLost = claims.Email.Trim().ToLowerInvariant();
+                        user = await _context.Users
+                            .IgnoreQueryFilters()
+                            .FirstOrDefaultAsync(u => u.Email.ToLower() == emailLost);
+                    }
+
+                    if (user == null)
+                        return StatusCode(500, new { code = "auth_conflict", message = "No se pudo completar el inicio de sesión. Inténtalo de nuevo." });
+
+                    if (user.IsBlocked) return Unauthorized(new { code = "account_blocked", message = "Cuenta bloqueada." });
+                    if (user.IsDeleted) return Unauthorized(new { code = "account_deleted", message = "Cuenta eliminada." });
+
+                    // Si el ganador es una cuenta email+password sin AppleId, respetamos el mismo guard
+                    // anti-takeover que el path de link explícito de arriba.
+                    if (string.IsNullOrEmpty(user.AppleId))
+                    {
+                        if (!string.IsNullOrEmpty(user.Password))
+                        {
+                            return Unauthorized(new
+                            {
+                                code = "account_has_password",
+                                message = "Ya existe una cuenta con ese email. Inicia sesión con tu contraseña y vincula Apple desde tu perfil."
+                            });
+                        }
+                        user.AppleId = claims.Sub;
+                        user.EmailVerified = true;
+                        user.EmailVerifiedAt ??= DateTime.UtcNow;
+                    }
+                }
             }
             await _context.SaveChangesAsync();
 

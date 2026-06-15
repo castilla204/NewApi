@@ -289,7 +289,10 @@ namespace newApi.DataLayer.Models.DTOs
         /// Radio de trabajo del experto en km (0 = solo en su taller/punto fijo, máx 200).
         /// </summary>
         public int WorkRadiusKm { get; set; }
-        public StripeStatus StripeStatus { get; set; }
+        // 🛡️ C2: serializar como string (nombre del enum) para que el frontend reciba
+        // "Approved"/"Pending"/... en vez del entero. Sin JsonStringEnumConverter global,
+        // un campo tipado enum se emitía como número y rompía el contrato con ReactWeb.
+        public string StripeStatus { get; set; }
         public string? StripeStatusDetails { get; set; }
         public bool OnboardingCompleted { get; set; }
         public bool IsOnVacation { get; set; }

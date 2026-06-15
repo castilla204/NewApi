@@ -1875,7 +1875,7 @@ namespace newApi.Services
                     Latitude = ss.ExpertProfile.Latitude,
                     Longitude = ss.ExpertProfile.Longitude,
                     WorkRadiusKm = ss.ExpertProfile.WorkRadiusKm,
-                    StripeStatus = ss.ExpertProfile.StripeStatus, // ✅ CORRECCIÓN: Mapear StripeStatus
+                    StripeStatus = ss.ExpertProfile.StripeStatus.ToString(), // 🛡️ C2: string, no entero
                     StripeStatusDetails = ss.ExpertProfile.StripeStatusDetails, // ✅ CORRECCIÓN: Mapear StripeStatusDetails
                     OnboardingCompleted = ss.ExpertProfile.OnboardingCompleted, // ✅ CORRECCIÓN: Mapear OnboardingCompleted
                     IsOnVacation = ss.ExpertProfile.IsOnVacation,

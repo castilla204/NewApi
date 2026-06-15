@@ -806,7 +806,7 @@ public class UserController : ControllerBase
                           CreatedAt = expertProfile.CreatedAt,
                           Latitude = expertProfile.Latitude,
                           Longitude = expertProfile.Longitude,
-                          StripeStatus = expertProfile.StripeStatus,
+                          StripeStatus = expertProfile.StripeStatus.ToString(), // 🛡️ C2: string, no entero
                           StripeStatusDetails = expertProfile.StripeStatusDetails,
                           OnboardingCompleted = expertProfile.OnboardingCompleted
                       }

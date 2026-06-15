@@ -84,5 +84,23 @@ namespace newApi.DataLayer.Models.PostGresModels
         [Required]
         [MaxLength(64)]
         public string VerificationToken { get; set; } = string.Empty;
+
+        // ── Registro pendiente (durable, sustituye al MemoryCache de AuthController) ───
+        // Cuando este OTP corresponde a un registro email/password (Purpose=EmailVerification),
+        // aquí guardamos el nombre y el hash BCrypt de la contraseña que el usuario envió en
+        // /auth/register. El User NO se crea hasta verify-email; antes estos datos vivían solo
+        // en un MemoryCache process-local que se perdía al reiniciar/redesplegar Render (o no
+        // funcionaba multi-réplica) → el usuario verificaba un OTP correcto pero la cuenta nunca
+        // se creaba. Persistiéndolos en la misma fila del OTP, sobreviven al reinicio y reusan
+        // el ciclo de vida / cleanup de 15 min ya existente. NUNCA se guarda la contraseña en
+        // plano: PendingPasswordHash es el hash BCrypt ya calculado.
+
+        /// <summary>Nombre del registro pendiente. Null salvo OTP de registro email/password.</summary>
+        [MaxLength(200)]
+        public string? PendingName { get; set; }
+
+        /// <summary>Hash BCrypt de la contraseña del registro pendiente. NUNCA plano. Null salvo registro.</summary>
+        [MaxLength(255)]
+        public string? PendingPasswordHash { get; set; }
     }
 }

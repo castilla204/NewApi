@@ -85,27 +85,26 @@ namespace newApi.Services
                 templateHtml = "<html><body><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
             }
 
-            // Create Action Button HTML if needed - Professional discrete style
+            // Create Action Button HTML if needed - Bulletproof CTA (VML para Outlook + <a> para el resto)
+            // Touch target >=44px, radio 12px, azul de marca con texto blanco (contraste AA).
             var actionButtonHtml = "";
             if (!string.IsNullOrEmpty(actionText) && !string.IsNullOrEmpty(actionUrl))
             {
                 actionButtonHtml = $@"
-                    <table align='center' border='0' cellpadding='0' cellspacing='0' style='border-collapse:collapse;border-spacing:0;padding:16px 0 0 0;text-align:center;vertical-align:top;width:100%'>
-                        <tbody>
-                            <tr>
-                                <td align='center' style='padding:0'>
-                                    <!--[if mso]>
-                                    <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:36px;v-text-anchor:middle;width:180px;' arcsize='15%' strokecolor='#2563EB' fillcolor='#2563EB'>
-                                    <w:anchorlock/>
-                                    <center style='color:#ffffff;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;'>{actionText}</center>
-                                    </v:roundrect>
-                                    <![endif]-->
-                                    <!--[if !mso]><!-->
-                                    <a href='{actionUrl}' style='background-color:#2563EB;border-radius:6px;color:#ffffff;display:inline-block;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;line-height:36px;mso-hide:all;padding:0 24px;text-align:center;text-decoration:none;'>{actionText}</a>
-                                    <!--<![endif]-->
-                                </td>
-                            </tr>
-                        </tbody>
+                    <table role='presentation' cellpadding='0' cellspacing='0' border='0' align='left' class='btn-td' style='margin:8px 0;'>
+                        <tr>
+                            <td align='center' bgcolor='#2563EB' style='border-radius:12px;'>
+                                <!--[if mso]>
+                                <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:50px;v-text-anchor:middle;width:260px;' arcsize='24%' stroke='f' fillcolor='#2563EB'>
+                                <w:anchorlock/>
+                                <center style='color:#ffffff;font-family:Segoe UI,Arial,sans-serif;font-size:16px;font-weight:bold;'>{actionText}</center>
+                                </v:roundrect>
+                                <![endif]-->
+                                <!--[if !mso]><!-- -->
+                                <a href='{actionUrl}' target='_blank' style='display:inline-block;padding:15px 32px;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;font-size:16px;font-weight:700;line-height:20px;color:#FFFFFF;background-color:#2563EB;border-radius:12px;box-shadow:0 4px 12px rgba(37,99,235,0.28);mso-padding-alt:0;mso-hide:all;'>{actionText}</a>
+                                <!--<![endif]-->
+                            </td>
+                        </tr>
                     </table>";
             }
 

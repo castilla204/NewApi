@@ -636,6 +636,36 @@ public class UserController : ControllerBase
         return Ok(new { profilePictureUrl = (string?)null });
     }
 
+    /// <summary>
+    /// ✏️ Actualiza el nombre de la cuenta del usuario autenticado. El email NO es editable
+    /// (es la identidad de login), solo el nombre.
+    /// </summary>
+    [Authorize]
+    [HttpPut("profile")]
+    public async Task<IActionResult> UpdateProfile([FromBody] UpdateProfileDto dto)
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            return Unauthorized(new { message = "Invalid user identification" });
+
+        var (success, name, errorCode) = await _userService.UpdateNameAsync(userId, dto?.Name ?? string.Empty);
+        if (!success)
+        {
+            var message = errorCode switch
+            {
+                "name_required" => "El nombre no puede estar vacío.",
+                "name_too_long" => "El nombre no puede superar los 100 caracteres.",
+                "user_not_found" => "Usuario no encontrado.",
+                _ => "No se pudo actualizar el nombre."
+            };
+            return BadRequest(new { message, errorCode });
+        }
+
+        return Ok(new { name });
+    }
+
+    public class UpdateProfileDto { public string Name { get; set; } = string.Empty; }
+
     [Authorize]
     [HttpPost("become-expert")]
     [RequestSizeLimit(10 * 1024 * 1024)] // 10MB limit

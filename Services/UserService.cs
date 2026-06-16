@@ -205,6 +205,29 @@ namespace newApi.Services
         }
 
         /// <summary>
+        /// ✏️ Actualiza el nombre de la cuenta. El email NO es editable desde aquí
+        /// (es la identidad de login). Como el nombre público del experto en el marketplace
+        /// se deriva de <see cref="User.Name"/>, este cambio también se refleja en su perfil
+        /// público — comportamiento deseado.
+        /// </summary>
+        public async Task<(bool success, string? name, string? errorCode)> UpdateNameAsync(int userId, string name)
+        {
+            var trimmed = (name ?? string.Empty).Trim();
+            if (string.IsNullOrEmpty(trimmed))
+                return (false, null, "name_required");
+            if (trimmed.Length > 100)
+                return (false, null, "name_too_long");
+
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+            if (user == null)
+                return (false, null, "user_not_found");
+
+            user.Name = trimmed;
+            await _context.SaveChangesAsync();
+            return (true, trimmed, null);
+        }
+
+        /// <summary>
         /// Best-effort: descarga la foto de Google y la re-hospeda como avatar del usuario,
         /// SOLO si el usuario aún no tiene foto. Nunca lanza — un fallo aquí jamás debe
         /// bloquear el login. El caller debe persistir (SaveChanges) después.

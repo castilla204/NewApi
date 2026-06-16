@@ -840,24 +840,14 @@ namespace newApi.Services
                 // ✅ LOG PARA DEPURACIÓN: Ver qué bounds se reciben y cuántos servicios se filtran
                 Console.WriteLine($"🔍 Bounds recibidos: NE({northeastLat}, {northeastLng}), SW({southwestLat}, {southwestLng}), Zoom={zoom}, Área={latDiff}x{lngDiffAbs} grados");
 
-                // ✅ OPTIMIZACIÓN: Determinar límite según zoom (mejora performance con muchos datos)
-                // Zoom alto = área pequeña = más servicios necesarios
-                // Zoom bajo = área grande = menos servicios necesarios
-                int maxResults = limit;
-                bool isVeryLowZoom = false;
-                if (zoom.HasValue)
-                {
-                    isVeryLowZoom = zoom.Value < 8; // Zoom muy bajo: continente/mundo
-                    maxResults = zoom.Value switch
-                    {
-                        >= 18 => Math.Min(limit, 500),  // Zoom muy alto: barrio específico
-                        >= 15 => Math.Min(limit, 200),   // Zoom alto: área pequeña
-                        >= 12 => Math.Min(limit, 100),   // Zoom medio: ciudad
-                        >= 10 => Math.Min(limit, 50),    // Zoom bajo: región
-                        >= 8 => Math.Min(limit, 30),     // Zoom muy bajo: país
-                        _ => Math.Min(limit, 50)         // Zoom extremadamente bajo: continente (aumentar límite)
-                    };
-                }
+                // ✅ SET ESTABLE INDEPENDIENTE DEL ZOOM: antes el límite se reducía al alejar
+                //    (zoom<8 → 50) y como además se ordena por distancia al centro y se hace
+                //    Take(maxResults), al alejar (bounds más anchos) se devolvían solo los 50 más
+                //    cercanos al centro → los expertos lejanos que ahora SÍ están en vista
+                //    DESAPARECÍAN. El cliente clusteriza en cliente, así que necesita TODOS los
+                //    del área. Respetamos el limit del cliente (tope 500) sea cual sea el zoom.
+                int maxResults = Math.Min(limit, 500);
+                bool isVeryLowZoom = zoom.HasValue && zoom.Value < 8; // solo para logging/branch SQL
                 
                 // ✅ CORREGIDO: Calcular ancho de bounds para detectar áreas muy grandes
                 // Si el ancho es > 180 grados, el área es tan grande que cubre casi todo el mundo

@@ -547,6 +547,12 @@ namespace newApi.Controllers
 
                 var service = await _context.SearchServices
                     .Include(ss => ss.ExpertProfile)
+                    // ✅ CHECKOUT UX: ServiceType/Category/Images alimentan el line item que ve el comprador
+                    // en la página alojada de Stripe (nombre real del servicio, descripción y foto) en lugar
+                    // de "Payment for Service {id}".
+                    .Include(ss => ss.ServiceType)
+                    .Include(ss => ss.Category)
+                    .Include(ss => ss.Images)
                     .FirstOrDefaultAsync(ss => ss.Id == searchDto.ServiceId);
                 if (service == null)
                 {
@@ -664,9 +670,45 @@ namespace newApi.Controllers
                         }
                     }
 
+                    // ✅ CHECKOUT UX: line item legible para el comprador (Spanish-first, voz de marca).
+                    // Antes: "Payment for Service {id}" — inglés + ID interno, sin contexto ni foto.
+                    var checkoutProductName = I6_Truncate(
+                        service.ServiceType?.Name?.Trim()
+                            ?? service.Category?.Name?.Trim()
+                            ?? "Inspección pre-compra",
+                        250);
+                    var checkoutProductDescription = I6_Truncate(service.Conditions?.Trim(), 300);
+                    // Stripe exige URLs https absolutas y públicas; descartamos rutas relativas/no http.
+                    var checkoutProductImage = service.Images?
+                        .Select(img => img.ImageUrl)
+                        .FirstOrDefault(url => !string.IsNullOrWhiteSpace(url)
+                            && url.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+
+                    var checkoutProductData = new SessionLineItemPriceDataProductDataOptions
+                    {
+                        Name = checkoutProductName
+                        // ✅ STRIPE TAX (Docs 2026): NO especificar TaxBehavior para que Stripe use el default automático configurado en Dashboard
+                        // Si el Dashboard está en "Automático", Stripe aplicará según moneda: USD/CAD → exclusive, resto → inclusive
+                        // Si se especifica, solo se permiten: "inclusive" o "exclusive" (no "unspecified" ni "automatic")
+                    };
+                    if (!string.IsNullOrWhiteSpace(checkoutProductDescription))
+                        checkoutProductData.Description = checkoutProductDescription;
+                    if (!string.IsNullOrWhiteSpace(checkoutProductImage))
+                        checkoutProductData.Images = new List<string> { checkoutProductImage };
+
                     var options = new SessionCreateOptions
                     {
                         PaymentMethodTypes = new List<string> { "card" },
+                        // ✅ CHECKOUT UX: botón "Reservar" en la página de Stripe (paridad con el CTA del checkout propio).
+                        SubmitType = "book",
+                        // ✅ CHECKOUT UX: refuerzo de confianza (escrow) justo encima del botón de pago.
+                        CustomText = new SessionCustomTextOptions
+                        {
+                            Submit = new SessionCustomTextSubmitOptions
+                            {
+                                Message = "No pagamos al experto hasta que revises el informe y des el visto bueno. Cancelación gratuita antes de que empiece la revisión."
+                            }
+                        },
                         LineItems = new List<SessionLineItemOptions>
                         {
                             new SessionLineItemOptions
@@ -676,13 +718,7 @@ namespace newApi.Controllers
                                     // 🛡️ Round 28 MUD-7: usar checkoutCurrency validado contra Stripe acct.
                                     Currency = checkoutCurrency,
                                     UnitAmount = checked((long)Math.Round(amountToCharge * 100)),
-                                    ProductData = new SessionLineItemPriceDataProductDataOptions
-                                    {
-                                        Name = $"Payment for Service {service.Id}"
-                                    }
-                                    // ✅ STRIPE TAX (Docs 2026): NO especificar TaxBehavior para que Stripe use el default automático configurado en Dashboard
-                                    // Si el Dashboard está en "Automático", Stripe aplicará según moneda: USD/CAD → exclusive, resto → inclusive
-                                    // Si se especifica, solo se permiten: "inclusive" o "exclusive" (no "unspecified" ni "automatic")
+                                    ProductData = checkoutProductData
                                 },
                                 Quantity = 1
                             }

@@ -30,6 +30,8 @@ namespace newApi.Services
         // 🖼️ Avatar de cuenta (unificado con la foto pública del experto).
         Task<(bool success, string? url, string? errorCode)> SetAvatarAsync(int userId, IFormFile file);
         Task<(bool success, string? errorCode)> RemoveAvatarAsync(int userId);
+        // ✏️ Edición del nombre de la cuenta desde el panel de configuración (el email no es editable).
+        Task<(bool success, string? name, string? errorCode)> UpdateNameAsync(int userId, string name);
         // ✅ REMOVED: GetUserBalanceAsync method eliminated - balance system removed
     }
 }

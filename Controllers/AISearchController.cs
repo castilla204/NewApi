@@ -82,6 +82,44 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = ex.Message });
             }
         }
+
+        [HttpPost("rewrite-description")]
+        public async Task<IActionResult> RewriteDescription([FromBody] RewriteDescriptionRequest request)
+        {
+            try
+            {
+                if (request == null || string.IsNullOrWhiteSpace(request.Text))
+                {
+                    return BadRequest(new { message = "El texto a reescribir es obligatorio" });
+                }
+
+                DescriptionKind kind;
+                switch (request.Kind)
+                {
+                    case "expertProfile":
+                        kind = DescriptionKind.ExpertProfile;
+                        break;
+                    case "serviceConditions":
+                        kind = DescriptionKind.ServiceConditions;
+                        break;
+                    default:
+                        return BadRequest(new { message = "kind debe ser 'expertProfile' o 'serviceConditions'" });
+                }
+
+                var trimmed = request.Text.Trim();
+                if (trimmed.Length < 10)
+                {
+                    return BadRequest(new { message = "Escribe un poco más para poder reescribirlo (mínimo 10 caracteres)" });
+                }
+
+                var rewritten = await _gptService.RewriteDescription(kind, trimmed);
+                return Ok(new { rewritten });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(502, new { message = "No se pudo generar el texto. Inténtalo de nuevo." });
+            }
+        }
     }
 
     public class AISearchRequest
@@ -89,6 +127,12 @@ namespace newApi.Controllers
         public string UserInput { get; set; }
         public int? Frequency { get; set; }
         public DateTime? StartDate { get; set; }
+    }
+
+    public class RewriteDescriptionRequest
+    {
+        public string Kind { get; set; }
+        public string Text { get; set; }
     }
 
     public class SearchParamsResult

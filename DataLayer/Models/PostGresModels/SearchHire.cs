@@ -90,6 +90,15 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// <summary>Radio de trabajo (km) del experto al momento de contratar (0 = solo taller).</summary>
         public int? ExpertWorkRadiusKmSnapshot { get; set; }
 
+        /// <summary>Puerta/garaje del taller del experto al momento de contratar (solo modo fijo).</summary>
+        public string? ExpertWorkLocationDoorSnapshot { get; set; }
+
+        /// <summary>Piso/planta del taller del experto al momento de contratar (solo modo fijo).</summary>
+        public string? ExpertWorkLocationFloorSnapshot { get; set; }
+
+        /// <summary>Observaciones de acceso al taller del experto al momento de contratar (solo modo fijo).</summary>
+        public string? ExpertWorkLocationDetailsSnapshot { get; set; }
+
         /// <summary>
         /// Flag operativo: el hire requiere revisión manual del admin (p.ej. cuenta de experto
         /// rechazada o desautorizada por Stripe tras prestar el servicio). NO se considera un

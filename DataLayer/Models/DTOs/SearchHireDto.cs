@@ -96,6 +96,12 @@ namespace newApi.DataLayer.Models.DTOs
         /// realiza en el punto fijo del experto y el frontend prefija la ubicación.
         /// </summary>
         public int? ExpertWorkRadiusKm { get; set; }
+
+        // 🏠 Detalle del punto fijo del experto (snapshot ?? dato vivo). Solo relevante con
+        // ExpertWorkRadiusKm == 0 (taller). El cliente los ve para saber cómo llegar.
+        public string? ExpertWorkLocationDoor { get; set; }
+        public string? ExpertWorkLocationFloor { get; set; }
+        public string? ExpertWorkLocationDetails { get; set; }
     }
     public class CreateSearchHireDto
     {
@@ -278,6 +284,8 @@ namespace newApi.DataLayer.Models.DTOs
         public int Id { get; set; }
         public string ProfilePictureUrl { get; set; }
         public string Description { get; set; }
+        /// <summary>Formación opcional (JSON de items). Se muestra al cliente como señal positiva.</summary>
+        public string? Formacion { get; set; }
         public string? StripeAccountId { get; set; }
         public DateTime CreatedAt { get; set; }
         public UserDto User { get; set; }
@@ -289,6 +297,13 @@ namespace newApi.DataLayer.Models.DTOs
         /// Radio de trabajo del experto en km (0 = solo en su taller/punto fijo, máx 200).
         /// </summary>
         public int WorkRadiusKm { get; set; }
+
+        /// <summary>Puerta/garaje del taller (solo modo fijo). Null si no aplica.</summary>
+        public string? WorkLocationDoor { get; set; }
+        /// <summary>Piso/planta del taller (solo modo fijo). Null si no aplica.</summary>
+        public string? WorkLocationFloor { get; set; }
+        /// <summary>Observaciones de acceso al taller (solo modo fijo). Null si no aplica.</summary>
+        public string? WorkLocationDetails { get; set; }
         // 🛡️ C2: serializar como string (nombre del enum) para que el frontend reciba
         // "Approved"/"Pending"/... en vez del entero. Sin JsonStringEnumConverter global,
         // un campo tipado enum se emitía como número y rompía el contrato con ReactWeb.

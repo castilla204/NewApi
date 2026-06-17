@@ -220,6 +220,9 @@ namespace newApi.Controllers
                     ExpertLatitudeSnapshot = expert.ExpertProfile?.Latitude ?? searchService.ExpertProfile?.Latitude,
                     ExpertLongitudeSnapshot = expert.ExpertProfile?.Longitude ?? searchService.ExpertProfile?.Longitude,
                     ExpertWorkRadiusKmSnapshot = expert.ExpertProfile?.WorkRadiusKm ?? searchService.ExpertProfile?.WorkRadiusKm,
+                    ExpertWorkLocationDoorSnapshot = expert.ExpertProfile?.WorkLocationDoor ?? searchService.ExpertProfile?.WorkLocationDoor,
+                    ExpertWorkLocationFloorSnapshot = expert.ExpertProfile?.WorkLocationFloor ?? searchService.ExpertProfile?.WorkLocationFloor,
+                    ExpertWorkLocationDetailsSnapshot = expert.ExpertProfile?.WorkLocationDetails ?? searchService.ExpertProfile?.WorkLocationDetails,
                     Conversations = new List<Conversation>()
                 };
 
@@ -825,7 +828,10 @@ namespace newApi.Controllers
                         ExpertLatitude = searchHire.ExpertLatitudeSnapshot ?? searchHire.SearchService.ExpertProfile?.Latitude,
                         ExpertLongitude = searchHire.ExpertLongitudeSnapshot ?? searchHire.SearchService.ExpertProfile?.Longitude,
                         LocationRange = searchHire.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50,
-                        ExpertWorkRadiusKm = searchHire.ExpertWorkRadiusKmSnapshot ?? searchHire.SearchService.ExpertProfile?.WorkRadiusKm
+                        ExpertWorkRadiusKm = searchHire.ExpertWorkRadiusKmSnapshot ?? searchHire.SearchService.ExpertProfile?.WorkRadiusKm,
+                        ExpertWorkLocationDoor = searchHire.ExpertWorkLocationDoorSnapshot ?? searchHire.SearchService.ExpertProfile?.WorkLocationDoor,
+                        ExpertWorkLocationFloor = searchHire.ExpertWorkLocationFloorSnapshot ?? searchHire.SearchService.ExpertProfile?.WorkLocationFloor,
+                        ExpertWorkLocationDetails = searchHire.ExpertWorkLocationDetailsSnapshot ?? searchHire.SearchService.ExpertProfile?.WorkLocationDetails
                     } : null,
                     StatusInfo = new SystemStatusDto
                     {
@@ -908,6 +914,9 @@ namespace newApi.Controllers
                         ExpertLongitude = searchHire.ExpertLongitudeSnapshot ?? searchHire.SearchService?.ExpertProfile?.Longitude,
                         LocationRange = searchHire.Search?.SearchParameters?.FirstOrDefault()?.LocationRange ?? 50,
                         ExpertWorkRadiusKm = searchHire.ExpertWorkRadiusKmSnapshot ?? searchHire.SearchService?.ExpertProfile?.WorkRadiusKm,
+                        ExpertWorkLocationDoor = searchHire.ExpertWorkLocationDoorSnapshot ?? searchHire.SearchService?.ExpertProfile?.WorkLocationDoor,
+                        ExpertWorkLocationFloor = searchHire.ExpertWorkLocationFloorSnapshot ?? searchHire.SearchService?.ExpertProfile?.WorkLocationFloor,
+                        ExpertWorkLocationDetails = searchHire.ExpertWorkLocationDetailsSnapshot ?? searchHire.SearchService?.ExpertProfile?.WorkLocationDetails,
                         StatusInfo = searchHire.Appointment.Status != null ? new SystemStatusDto
                         {
                             Id = searchHire.Appointment.Status.Id,

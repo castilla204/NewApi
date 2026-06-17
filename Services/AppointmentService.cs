@@ -6026,6 +6026,12 @@ namespace newApi.Services
 
                 ExpertWorkRadiusKm = appointment.SearchHire?.ExpertWorkRadiusKmSnapshot ?? appointment.SearchHire?.SearchService?.ExpertProfile?.WorkRadiusKm,
 
+                ExpertWorkLocationDoor = appointment.SearchHire?.ExpertWorkLocationDoorSnapshot ?? appointment.SearchHire?.SearchService?.ExpertProfile?.WorkLocationDoor,
+
+                ExpertWorkLocationFloor = appointment.SearchHire?.ExpertWorkLocationFloorSnapshot ?? appointment.SearchHire?.SearchService?.ExpertProfile?.WorkLocationFloor,
+
+                ExpertWorkLocationDetails = appointment.SearchHire?.ExpertWorkLocationDetailsSnapshot ?? appointment.SearchHire?.SearchService?.ExpertProfile?.WorkLocationDetails,
+
                 Timers = appointment.Timers?.Select(t => new AppointmentTimerDto
 
                 {

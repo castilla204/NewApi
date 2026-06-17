@@ -100,7 +100,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
             "convincente, como si la hubiera escrito una persona real. Está en primera persona.\n" +
             "Reglas estrictas:\n" +
             "- Responde SOLO con el texto reescrito, sin comillas, sin saludos y sin explicaciones.\n" +
-            "- Máximo 60 caracteres.\n" +
+            "- Entre 30 y 60 caracteres (nunca menos de 30).\n" +
             "- Prohibido usar emojis, iconos o símbolos.\n" +
             "- Prohibido usar markdown, asteriscos, almohadillas, viñetas o guiones de lista.\n" +
             "- No inventes datos, títulos ni años de experiencia que no aparezcan en el texto original.\n" +

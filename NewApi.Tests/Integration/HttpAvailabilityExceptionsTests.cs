@@ -161,6 +161,23 @@ public class HttpAvailabilityExceptionsTests
             .Should().BeFalse("lote atómico: si una fecha falla, no se aplica nada");
     }
 
+    [Fact(DisplayName = "PUT exceptions/batch rechaza lotes por encima del tope defensivo")]
+    public async Task Batch_rejects_oversized()
+    {
+        var (jwt, profileId) = await SeedExpertAsync("exc-batch-cap@test.dev");
+        var start = DateOnly.FromDateTime(DateTime.UtcNow.Date).AddDays(1);
+        var exceptions = Enumerable.Range(0, 801)
+            .Select(i => new { date = start.AddDays(i).ToString("yyyy-MM-dd"), isWorking = false, ranges = Array.Empty<object>() })
+            .ToArray();
+
+        var resp = await _api.Client.SendAsync(Authed(HttpMethod.Put, $"{Url}/batch", jwt, new { exceptions }));
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        await using var db = _api.CreateDbContext();
+        (await db.ExpertAvailabilityExceptions.AnyAsync(e => e.ExpertId == profileId))
+            .Should().BeFalse("un lote por encima del tope no debe aplicar nada");
+    }
+
     private sealed record ExceptionRead(string Date, bool IsWorking, List<RangeRead> Ranges);
     private sealed record RangeRead(string Start, string End);
 }

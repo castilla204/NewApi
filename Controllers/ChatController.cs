@@ -416,6 +416,162 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// ✅ NUEVO: Conversaciones del EXPERTO (pre y post contratación) en un único
+        /// listado tipo bandeja (WhatsApp/Wallapop), con el CLIENTE como contraparte.
+        /// Espejo de <see cref="GetMyConversations"/> pero filtrando por ExpertId.
+        /// </summary>
+        [HttpGet("expert-conversations")]
+        public async Task<ActionResult<List<ClientConversationSummaryDto>>> GetExpertConversations()
+        {
+            try
+            {
+                if (!int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
+                {
+                    return Unauthorized(new { message = "Invalid or missing user ID in token" });
+                }
+
+                // Conversaciones donde el usuario es el EXPERTO (pre y post contratación)
+                var conversations = await _context.Conversations
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Sender)
+                    .Include(c => c.Messages)
+                        .ThenInclude(m => m.Attachments)
+                    .Include(c => c.Client)
+                    .Include(c => c.Expert)
+                        .ThenInclude(e => e.ExpertProfile)
+                    .Include(c => c.SearchService)
+                        .ThenInclude(ss => ss.Images)
+                    .Include(c => c.SearchService)
+                        .ThenInclude(ss => ss.ServiceType)
+                    .Include(c => c.SearchHire)
+                        .ThenInclude(sh => sh.SearchService)
+                            .ThenInclude(ss => ss.Images)
+                    .Include(c => c.SearchHire)
+                        .ThenInclude(sh => sh.SearchService)
+                            .ThenInclude(ss => ss.ServiceType)
+                    .Include(c => c.SearchHire)
+                        .ThenInclude(sh => sh.Expert)
+                            .ThenInclude(e => e.ExpertProfile)
+                    .Include(c => c.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(c => c.SearchHire)
+                        .ThenInclude(sh => sh.Search)
+                    .Where(c => c.ExpertId.HasValue &&
+                               c.ExpertId.Value == userId &&
+                               c.IsActive == true)
+                    .OrderByDescending(c => c.UpdatedAt)
+                    .ToListAsync();
+
+                var conversationSummaries = conversations.Select(c =>
+                {
+                    var lastMessage = c.Messages
+                        .OrderByDescending(m => m.SentAt)
+                        .FirstOrDefault();
+
+                    var unreadCount = c.Messages
+                        .Count(m => !m.IsRead && m.SenderId.HasValue && m.SenderId.Value != userId);
+
+                    var isPreHire = c.SearchHireId == null && c.SearchServiceId != null;
+
+                    var summary = new ClientConversationSummaryDto
+                    {
+                        ConversationId = c.Id,
+                        ConversationType = isPreHire ? "pre-hire" : "post-hire",
+                        CreatedAt = c.CreatedAt,
+                        UpdatedAt = c.UpdatedAt,
+                        UnreadCount = unreadCount,
+                        LastMessage = lastMessage != null ? new MessageSummaryDto
+                        {
+                            Id = lastMessage.Id,
+                            Content = lastMessage.Content ?? "[Mensaje eliminado]",
+                            SentAt = lastMessage.SentAt,
+                            SenderId = lastMessage.SenderId,
+                            SenderName = lastMessage.SenderId.HasValue
+                                ? (lastMessage.Sender?.Name ?? "[Usuario eliminado]")
+                                : "[Usuario eliminado]",
+                            IsRead = lastMessage.IsRead
+                        } : null
+                    };
+
+                    // Contraparte = CLIENTE (lo que el experto ve en la bandeja)
+                    if (c.Client != null)
+                    {
+                        summary.ClientId = c.Client.Id;
+                        summary.ClientName = c.Client.Name ?? "[Usuario eliminado]";
+                        summary.ClientProfilePictureUrl = c.Client.ProfilePictureUrl;
+                    }
+
+                    // Experto = el propio usuario (se mantiene por compatibilidad del DTO)
+                    if (c.Expert != null)
+                    {
+                        summary.ExpertId = c.Expert.Id;
+                        summary.ExpertName = c.Expert.Name;
+                        summary.ExpertProfilePictureUrl = c.Expert.ExpertProfile?.ProfilePictureUrl;
+                    }
+
+                    // PRE-CONTRATACIÓN
+                    if (isPreHire && c.SearchService != null)
+                    {
+                        summary.SearchServiceId = c.SearchServiceId;
+                        summary.ServiceName = c.SearchService.ServiceType?.Name ?? "Servicio";
+                        summary.ServicePrice = c.SearchService.Price;
+                        summary.ServiceImageUrl = c.SearchService.Images
+                            .OrderBy(img => img.Id)
+                            .FirstOrDefault()?.ImageUrl;
+                    }
+
+                    // POST-CONTRATACIÓN
+                    if (!isPreHire && c.SearchHire != null)
+                    {
+                        summary.SearchHireId = c.SearchHireId;
+                        summary.HireStatus = c.SearchHire.Status?.StatusValue ?? "Unknown";
+                        summary.HireStatusTranslated = c.SearchHire.Status?.DisplayName ?? "Desconocido";
+                        summary.HireCreatedAt = c.SearchHire.CreatedAt;
+                        summary.HireAmount = c.SearchHire.Amount;
+                        summary.HireBaseAmount = c.SearchHire.BaseAmount;
+                        summary.HireTaxAmount = c.SearchHire.TaxAmount;
+
+                        if (c.SearchHire.SearchService != null)
+                        {
+                            summary.SearchServiceId = c.SearchHire.SearchServiceId;
+                            summary.ServiceName = c.SearchHire.SearchService.ServiceType?.Name ?? "Servicio";
+                            summary.ServicePrice = c.SearchHire.SearchService.Price;
+                            summary.ServiceImageUrl = c.SearchHire.SearchService.Images
+                                .OrderBy(img => img.Id)
+                                .FirstOrDefault()?.ImageUrl;
+                        }
+
+                        if (c.SearchHire.Search != null)
+                        {
+                            summary.SearchTitle = c.SearchHire.Search.Title;
+                            summary.SearchDescription = c.SearchHire.Search.Description;
+                        }
+                    }
+
+                    return summary;
+                }).ToList();
+
+                return Ok(conversationSummaries);
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogErrorAsync(
+                    message: "Error getting expert conversations",
+                    details: $"Error retrieving conversations for expert: {ex.Message}",
+                    userId: int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var uid) ? uid : null,
+                    source: "ChatController.GetExpertConversations",
+                    relatedEntityType: "Conversation",
+                    additionalData: new {
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+
+                return StatusCode(500, new { message = "An error occurred while retrieving expert conversations" });
+            }
+        }
+
+        /// <summary>
         /// Obtener todas las conversaciones (solo para Admin)
         /// </summary>
         [HttpGet("conversations")]
@@ -1981,6 +2137,12 @@ namespace newApi.Controllers
         public int? ExpertId { get; set; }
         public string ExpertName { get; set; } = string.Empty;
         public string? ExpertProfilePictureUrl { get; set; }
+
+        // Información del cliente (contraparte cuando el QUE MIRA es el experto;
+        // poblado por /Chat/expert-conversations). En la vista del cliente va vacío.
+        public int? ClientId { get; set; }
+        public string? ClientName { get; set; }
+        public string? ClientProfilePictureUrl { get; set; }
 
         // Información para PRE-CONTRATACIÓN (SearchServiceId)
         public int? SearchServiceId { get; set; }

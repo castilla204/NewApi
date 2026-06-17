@@ -8,6 +8,15 @@ namespace newApi.Services
 {
     public class GPTService : IGPTService
     {
+        // OpenAI devuelve las propiedades en minúsculas ("choices", "message", "content").
+        // System.Text.Json es sensible a mayúsculas por defecto, así que sin esto las
+        // clases PascalCase (Choices/Message/Content) quedaban en null y se lanzaba
+        // "No response from GPT" aunque la llamada HTTP fuese 200.
+        private static readonly JsonSerializerOptions CaseInsensitiveJson = new()
+        {
+            PropertyNameCaseInsensitive = true
+        };
+
         private readonly HttpClient _httpClient;
         private readonly string _openAiApiKey;
         private readonly ILogger<GPTService> _logger;
@@ -83,7 +92,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
                 }
 
                 var responseContent = await response.Content.ReadAsStringAsync();
-                var completionResponse = JsonSerializer.Deserialize<CompletionResponse>(responseContent);
+                var completionResponse = JsonSerializer.Deserialize<CompletionResponse>(responseContent, CaseInsensitiveJson);
 
                 if (completionResponse?.Choices == null || completionResponse.Choices.Length == 0)
                 {
@@ -159,7 +168,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
             }
 
             var responseContent = await response.Content.ReadAsStringAsync();
-            var completionResponse = JsonSerializer.Deserialize<CompletionResponse>(responseContent);
+            var completionResponse = JsonSerializer.Deserialize<CompletionResponse>(responseContent, CaseInsensitiveJson);
 
             if (completionResponse?.Choices == null || completionResponse.Choices.Length == 0)
             {

@@ -117,6 +117,10 @@ namespace newApi.Controllers
                 }
 
                 var rewritten = await _gptService.RewriteDescription(kind, trimmed);
+                if (string.IsNullOrWhiteSpace(rewritten) || LooksLikeRefusal(rewritten))
+                {
+                    return UnprocessableEntity(new { message = "No he podido mejorar ese texto. Escribe una descripción real (quién eres y en qué te especializas) e inténtalo de nuevo." });
+                }
                 return Ok(new { rewritten });
             }
             catch (Exception ex)
@@ -124,6 +128,22 @@ namespace newApi.Controllers
                 _logger.LogError(ex, "Error en rewrite-description");
                 return StatusCode(502, new { message = "No se pudo generar el texto. Inténtalo de nuevo.", detail = _env.IsDevelopment() ? ex.Message : null });
             }
+        }
+
+        private static bool LooksLikeRefusal(string text)
+        {
+            var t = text.ToLowerInvariant();
+            string[] markers =
+            {
+                "lo siento", "no puedo ayudar", "no puedo ayudarte", "no puedo asistir",
+                "lo lamento", "i'm sorry", "i am sorry", "i can't", "i cannot",
+                "as an ai", "como ia", "como modelo de lenguaje", "no es posible reescribir"
+            };
+            foreach (var m in markers)
+            {
+                if (t.Contains(m)) return true;
+            }
+            return false;
         }
     }
 

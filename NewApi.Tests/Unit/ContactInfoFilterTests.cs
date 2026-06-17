@@ -58,6 +58,8 @@ namespace NewApi.Tests.Unit
         [InlineData("tengo 25 años de experiencia")]
         [InlineData("incluye 3 o 4 visitas a tu domicilio")]
         [InlineData("")]
+        [InlineData("quedamos el 12.12.2024 18:30")]
+        [InlineData("compré 2 arrobas de queso")]
         public void Detect_does_not_flag_normal_text(string content)
         {
             var result = ContactInfoFilter.Detect(content);

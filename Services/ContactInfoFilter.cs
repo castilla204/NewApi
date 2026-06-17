@@ -26,22 +26,22 @@ namespace newApi.Services
 
         // Email ofuscado: "x arroba y punto com", "x (at) y".
         private static readonly Regex ObfuscatedEmailRegex = new(
-            @"\b\w+\s*(?:arroba|\(at\)|\[at\])\s*\w+",
+            @"\b[\w.]+\s*(?:arroba|\(at\)|\[at\])\s*[\w.]+\s*(?:punto|\.)\s*\w{2,}",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // URL: http(s), www. o dominio.tld con TLD conocido (evita foto.jpg, archivo.pdf).
         private static readonly Regex UrlRegex = new(
-            @"\b(?:https?://|www\.)\S+|\b[a-z0-9\-]+\.(?:com|net|org|es|io|app|me|info|biz|co|gg|tv|online|site|web)\b",
+            @"\b(?:https?://|www\.)\S{1,512}|\b[a-z0-9\-]+\.(?:com|net|org|es|io|app|me|info|biz|co|gg|tv|online|site|web)\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // Redes / apps / intentos de salir de la plataforma.
         private static readonly Regex SocialRegex = new(
-            @"whats\s?app|whatsap|wasap|wssp|wsp|telegram|t\.me|instagram|\binsta\b|\big\b|tiktok|\bsignal\b|facebook|\bfb\b|ll[áa]mame|mi\s+n[úu]mero|te\s+paso\s+el|fuera\s+de\s+la\s+(?:app|plataforma)|@[A-Za-z0-9_.]{3,}",
+            @"whats\s?app|whatsap|wasap|wssp|wsp|telegram|t\.me|instagram|\binsta\b|tiktok|\bsignal\b|facebook|ll[áa]mame|mi\s+n[úu]mero|te\s+paso\s+el|fuera\s+de\s+la\s+(?:app|plataforma)|@[A-Za-z0-9_.]{3,}",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // Secuencia de dígitos con separadores que contiene >= 9 dígitos.
         private static readonly Regex DigitRunRegex = new(
-            @"\d[\d\s.\-]{7,}\d",
+            @"\d[\d\s\-]{7,}\d",
             RegexOptions.Compiled);
 
         // >= 7 números deletreados en español seguidos.

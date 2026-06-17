@@ -77,6 +77,12 @@ namespace newApi.DataLayer.Models.DTOs
         /// Con 0, la ubicación de la cita es el punto fijo del experto.
         /// </summary>
         public int? ExpertWorkRadiusKm { get; set; }
+
+        // 🏠 Detalle del punto fijo del experto (snapshot ?? dato vivo). Solo relevante con
+        // ExpertWorkRadiusKm == 0 (taller). Permite al cliente saber cómo llegar.
+        public string? ExpertWorkLocationDoor { get; set; }
+        public string? ExpertWorkLocationFloor { get; set; }
+        public string? ExpertWorkLocationDetails { get; set; }
         public SystemStatusDto? StatusInfo { get; set; } // ✅ NUEVO: Información completa del estado
     }
 

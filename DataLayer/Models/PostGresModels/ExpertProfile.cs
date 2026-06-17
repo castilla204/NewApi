@@ -32,6 +32,13 @@ namespace newApi.DataLayer.Models.PostGresModels
         public string ProfilePictureUrl { get; set; }
         public string ProfilePictureObjectName { get; set; }
         public string Description { get; set; }
+
+        /// <summary>
+        /// Formación del experto (OPCIONAL). JSON con una lista de items
+        /// { titulo, centro, anio }. No requiere verificación de ninguna entidad;
+        /// se muestra al cliente como señal positiva de confianza. Nullable.
+        /// </summary>
+        public string? Formacion { get; set; }
         public string? StripeAccountId { get; set; }
         public string? PendingStripeAccountId { get; set; } // Cuenta temporal hasta completar onboarding
         public bool OnboardingCompleted { get; set; } = false; // Estado del onboarding
@@ -52,6 +59,22 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// </summary>
         [System.ComponentModel.DataAnnotations.Range(0, 200)]
         public int WorkRadiusKm { get; set; } = 100;
+
+        /// <summary>
+        /// 🏠 Detalle del punto fijo (solo aplica con WorkRadiusKm == 0): puerta/garaje del
+        /// taller donde el cliente debe presentarse. Opcional. Se limpia si el experto pasa a
+        /// modo rango (WorkRadiusKm > 0).
+        /// </summary>
+        [System.ComponentModel.DataAnnotations.MaxLength(60)]
+        public string? WorkLocationDoor { get; set; }
+
+        /// <summary>Piso/planta del taller (solo modo fijo). Opcional.</summary>
+        [System.ComponentModel.DataAnnotations.MaxLength(40)]
+        public string? WorkLocationFloor { get; set; }
+
+        /// <summary>Observaciones/indicaciones de acceso al taller (solo modo fijo). Opcional.</summary>
+        [System.ComponentModel.DataAnnotations.MaxLength(300)]
+        public string? WorkLocationDetails { get; set; }
 
         /// <summary>
         /// Zona horaria del experto en formato IANA (ej: "Europe/Madrid", "America/Mexico_City")

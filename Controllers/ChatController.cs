@@ -933,6 +933,19 @@ namespace newApi.Controllers
                     }
                 }
 
+                // 🛡️ Filtro de datos de contacto: SOLO en conversaciones de precontratación.
+                // Pre-hire = tiene SearchServiceId y NO tiene SearchHireId. Tras contratar
+                // NO se filtra (deben poder compartir teléfono/dirección para la cita).
+                var isPreHireConversation = conversation.SearchServiceId.HasValue && !conversation.SearchHireId.HasValue;
+                if (isPreHireConversation && !string.IsNullOrEmpty(sanitizedContent))
+                {
+                    var contactCheck = ContactInfoFilter.Detect(sanitizedContent);
+                    if (contactCheck.HasViolation)
+                    {
+                        return UnprocessableEntity(new { message = ContactInfoFilter.BuildBlockMessage(contactCheck.Types) });
+                    }
+                }
+
                 var message = new Message
                 {
                     ConversationId = dto.ConversationId,

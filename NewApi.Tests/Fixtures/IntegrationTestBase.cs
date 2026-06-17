@@ -40,6 +40,7 @@ public abstract class IntegrationTestBase : IAsyncLifetime
             "\"SearchServiceImages\"",
             "\"SearchServices\"",
             "\"ExpertAvailabilities\"",
+            "\"ExpertAvailabilityRules\"",
             "\"ExpertProfiles\"",
             "\"RefreshTokens\"",
             "\"EmailVerificationCodes\"",

@@ -2620,7 +2620,9 @@ namespace newApi.Services
 
                         // Ô£à VALIDACI├ôN: No se puede cancelar si quedan menos de 12 horas antes de la cita
                         // Solo aplicar si la cita est├í confirmada (appointment_confirmed)
-                        if (currentStatus == "appointment_confirmed")
+                        // 🗓️ Fase D: las citas CON HUECO (StartsAtUtc) NO usan el bloqueo duro de 12h;
+                        // se permiten siempre y la penalización escalonada protege al experto.
+                        if (currentStatus == "appointment_confirmed" && !appointment.StartsAtUtc.HasValue)
                         {
                             // Verificar que la fecha propuesta sea v├ílida (no sea DateTime.MinValue o default)
                             if (appointment.ProposedDate.HasValue && appointment.ProposedTime.HasValue && appointment.ProposedDate.Value != default(DateTime) && appointment.ProposedDate.Value > DateTime.MinValue)
@@ -2709,9 +2711,49 @@ namespace newApi.Services
 
 
 
+                // 🗓️ FASE D: para citas CON HUECO (StartsAtUtc), la cancelación usa la política
+                // escalonada por antelación + actor, SOBRESCRIBIENDO el statusValue clásico de arriba.
+                // Las citas legacy (sin hueco) conservan la lógica de 1ª/2ª cancelación intacta.
+                if (appointment.StartsAtUtc.HasValue && appointment.ProposedDate.HasValue && appointment.ProposedTime.HasValue)
+                {
+                    var apptUtcD = GetAppointmentUtc(appointment.ProposedDate.Value, appointment.ProposedTime.Value, appointment.SearchHire?.ExpertTimezone);
+                    var hoursUntilD = (apptUtcD - DateTime.UtcNow).TotalHours;
+
+                    var cancelSettings = await _context.SystemSettings.AsNoTracking().FirstOrDefaultAsync();
+                    var tierHighD = cancelSettings?.CancellationTierHighHours ?? 24;
+                    var tierLowD = cancelSettings?.CancellationTierLowHours ?? 6;
+                    var freeND = cancelSettings?.FreeCancellationsPerParty ?? 0;
+                    var windowDaysD = cancelSettings?.PenaltyFreeWindowDays ?? 30;
+
+                    if (appointment.SearchHire.ClientId == userId)
+                    {
+                        // Cuántas cancelaciones penalty-free (>24h) lleva el cliente en la ventana móvil.
+                        var windowStartD = DateTime.SpecifyKind(DateTime.UtcNow.AddDays(-windowDaysD), DateTimeKind.Utc);
+                        var freeUsedD = await _context.Appointments.CountAsync(a =>
+                            a.SearchHire.ClientId == userId
+                            && a.Status.StatusValue == CancellationPolicy.ClientGt24h
+                            && a.LastClientCancellationAt != null
+                            && a.LastClientCancellationAt >= windowStartD);
+
+                        statusValue = CancellationPolicy.ResolveClientStatus(hoursUntilD, freeUsedD, tierHighD, tierLowD, freeND);
+                    }
+                    else
+                    {
+                        // Experto cancela: cliente reembolso íntegro + strike a su perfil.
+                        statusValue = CancellationPolicy.ExpertStrike;
+                        var expertUserIdD = appointment.SearchHire.ExpertId;
+                        if (expertUserIdD.HasValue)
+                        {
+                            await _context.ExpertProfiles
+                                .Where(p => p.UserId == expertUserIdD.Value)
+                                .ExecuteUpdateAsync(s => s.SetProperty(p => p.CancellationStrikes, p => p.CancellationStrikes + 1));
+                        }
+                    }
+                }
+
                 var cancelledStatus = await _context.SystemStatuses
 
-                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
+                    .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" &&
 
                                             s.StatusValue == statusValue);
 
@@ -2727,7 +2769,14 @@ namespace newApi.Services
 
                 appointment.StatusId = cancelledStatus.Id;
 
-                
+                // 🗓️ FASE D · P0 FIX: liberar el hueco del calendario al cancelar. Sin esto BlocksCalendar
+                // queda true para siempre → el slot nunca reaparece en disponibilidad Y la exclusion
+                // constraint GiST impide volver a reservarlo (23P01 permanente). Las citas con hueco usan
+                // tramos finales (no reprogramables en la misma fila), así que liberar es correcto; en
+                // citas legacy BlocksCalendar ya es false (no-op).
+                appointment.BlocksCalendar = false;
+
+
 
                 // Incrementar contadores espec├¡ficos seg├║n qui├®n cancela
 
@@ -2770,6 +2819,12 @@ namespace newApi.Services
                     "appointment_cancelled_by_expert" => AppointmentStatus.AppointmentCancelledByExpert,
 
                     "appointment_cancelled_by_expert_second" => AppointmentStatus.AppointmentCancelledByExpertSecond,
+
+                    // 🗓️ Fase D: tramos escalonados (citas con hueco)
+                    "appointment_cancelled_by_client_gt24h" => AppointmentStatus.AppointmentCancelledByClientGt24h,
+                    "appointment_cancelled_by_client_6to24h" => AppointmentStatus.AppointmentCancelledByClient6to24h,
+                    "appointment_cancelled_by_client_lt6h" => AppointmentStatus.AppointmentCancelledByClientLt6h,
+                    "appointment_cancelled_by_expert_strike" => AppointmentStatus.AppointmentCancelledByExpertStrike,
 
                     _ => throw new InvalidOperationException($"Unknown appointment status: {statusValue}")
 

@@ -87,7 +87,10 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// Nullable porque expertos nuevos no lo tienen aún.
         /// </summary>
         public DateTime? LastPayoutDate { get; set; }
-        
+
+        /// <summary>🗓️ Fase D: nº de cancelaciones del experto (penalización por falta de profesionalidad).</summary>
+        public int CancellationStrikes { get; set; } = 0;
+
         public virtual User User { get; set; }
         public virtual ICollection<newApi.DataLayer.Models.PostGresModels.SearchService> SearchServices { get; set; }
     }

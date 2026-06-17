@@ -1615,6 +1615,7 @@ builder.Services.AddScoped<ISubscriptionService, newApi.Services.SubscriptionSer
 builder.Services.AddScoped<ISearchHireService, SearchHireService>();
 builder.Services.AddScoped<ISearchServiceService, SearchServiceService>();
 builder.Services.AddScoped<IAppointmentService, AppointmentService>();
+builder.Services.AddScoped<IAvailabilityService, AvailabilityService>();
 // Servicios redundantes eliminados - reemplazados por SystemStatusService
 // builder.Services.AddScoped<IAppointmentConfigService, AppointmentConfigService>();
 // builder.Services.AddScoped<ICategoryServiceTypeConfigService, CategoryServiceTypeConfigService>();

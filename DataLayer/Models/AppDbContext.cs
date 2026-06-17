@@ -32,6 +32,7 @@ namespace newApi.DataLayer.Models
         public DbSet<Severity> Severities { get; set; }
         public DbSet<ExpertProfile> ExpertProfiles { get; set; }
         public DbSet<ExpertAvailability> ExpertAvailabilities { get; set; }
+        public DbSet<ExpertAvailabilityRule> ExpertAvailabilityRules { get; set; }
         public DbSet<SearchService> SearchServices { get; set; }
         public DbSet<SearchServiceImage> SearchServiceImages { get; set; }
         public DbSet<SearchHire> SearchHires { get; set; }
@@ -781,6 +782,27 @@ namespace newApi.DataLayer.Models
                 entity.HasIndex(e => e.SearchHireId);
                 entity.HasIndex(e => e.StatusId);
                 entity.HasIndex(e => e.ProposedDate);
+
+                // 🗓️ Reserva atómica (Fase A): bloqueo de agenda + índice de huecos por experto.
+                entity.Property(e => e.BlocksCalendar).HasDefaultValue(false);
+                entity.HasIndex(e => new { e.ExpertId, e.StartsAtUtc })
+                    .HasFilter("\"BlocksCalendar\" = true");
+            });
+
+            // Configuración de ExpertAvailabilityRule
+            modelBuilder.Entity<ExpertAvailabilityRule>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.UpdatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                entity.HasOne(r => r.Expert)
+                    .WithMany()
+                    .HasForeignKey(r => r.ExpertId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasIndex(e => new { e.ExpertId, e.DayOfWeek });
             });
 
             // Configuración de AppointmentTimer

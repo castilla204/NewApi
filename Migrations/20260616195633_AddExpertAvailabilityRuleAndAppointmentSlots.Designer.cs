@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using newApi.DataLayer.Models;
@@ -11,9 +12,11 @@ using newApi.DataLayer.Models;
 namespace newApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260616195633_AddExpertAvailabilityRuleAndAppointmentSlots")]
+    partial class AddExpertAvailabilityRuleAndAppointmentSlots
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -973,9 +976,6 @@ namespace newApi.Migrations
                         .HasColumnType("integer");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("CancellationStrikes")
-                        .HasColumnType("integer");
 
                     b.Property<string>("City")
                         .HasColumnType("text");
@@ -2510,26 +2510,14 @@ namespace newApi.Migrations
                     b.Property<int?>("AIId")
                         .HasColumnType("integer");
 
-                    b.Property<int>("CancellationTierHighHours")
-                        .HasColumnType("integer");
-
-                    b.Property<int>("CancellationTierLowHours")
-                        .HasColumnType("integer");
-
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<int>("FreeCancellationsPerParty")
-                        .HasColumnType("integer");
 
                     b.Property<bool>("IsEmailNotificationEnabled")
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsWhatsAppNotificationEnabled")
                         .HasColumnType("boolean");
-
-                    b.Property<int>("PenaltyFreeWindowDays")
-                        .HasColumnType("integer");
 
                     b.Property<string>("StripeMode")
                         .IsRequired()

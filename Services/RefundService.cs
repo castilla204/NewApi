@@ -207,8 +207,16 @@ namespace newApi.Services
                 // retroactivos de % por admin: el experto que contrató con 95% recibe 95% aunque
                 // el admin baje el porcentaje después. NULL coalescing en las 3 → si alguno
                 // falta, usar config live (no mezclar snapshot parcial + live: incoherente).
+                // 🛡️ F4 FIX: el snapshot protege el % CONTRATADO en el camino de éxito (completed),
+                // pero NO debe aplicarse a cancelaciones: ahí mandan los tramos escalonados de la
+                // política (100/0, 50/50, 0/100). Si algún día se siembra un StatusConfiguration para
+                // 'pending', el snapshot se poblaría y, sin este guard, pisaría todos los % de
+                // cancelación con los de 'pending'. Para estados de cancelación: SIEMPRE config live.
+                var isCancellationStatus = statusValue.StartsWith("appointment_cancelled", StringComparison.OrdinalIgnoreCase);
+
                 MoneyDistributionConfigDto? config;
-                if (searchHire.ClientPercentageSnapshot.HasValue
+                if (!isCancellationStatus
+                    && searchHire.ClientPercentageSnapshot.HasValue
                     && searchHire.ExpertPercentageSnapshot.HasValue
                     && searchHire.PlatformPercentageSnapshot.HasValue)
                 {

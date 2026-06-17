@@ -23,7 +23,12 @@ namespace newApi.DataLayer.Models.enums
         AppointmentCompleted,                  // Servicio completado (cliente aprobó / disputa resuelta) -> hire 'completed'
         AppointmentCompletedWithoutClientApproval, // Cliente no decidió (aprobó/disputó) en 24h (timer "client_decision")
         AppointmentCancelledByClientAccountDelete, // Cliente eliminó su cuenta
-        AppointmentCancelledByExpertAccountDelete  // Experto eliminó su cuenta
+        AppointmentCancelledByExpertAccountDelete,  // Experto eliminó su cuenta
+        // 🗓️ Fase D: cancelación escalonada por antelación (solo citas con hueco)
+        AppointmentCancelledByClientGt24h,   // Cliente cancela >24h (con cupo N) -> 100/0/0
+        AppointmentCancelledByClient6to24h,  // Cliente 6-24h (o >24h sin cupo) -> 50/50/0
+        AppointmentCancelledByClientLt6h,    // Cliente <6h / no-show -> 0/100/0
+        AppointmentCancelledByExpertStrike   // Experto cancela -> 100/0/0 + strike
     }
 
     public static class AppointmentStatusExtensions
@@ -51,6 +56,10 @@ namespace newApi.DataLayer.Models.enums
                 AppointmentStatus.AppointmentCompletedWithoutClientApproval => "appointment_completed_without_client_approval",
                 AppointmentStatus.AppointmentCancelledByClientAccountDelete => "appointment_cancelled_by_client_account_delete",
                 AppointmentStatus.AppointmentCancelledByExpertAccountDelete => "appointment_cancelled_by_expert_account_delete",
+                AppointmentStatus.AppointmentCancelledByClientGt24h => "appointment_cancelled_by_client_gt24h",
+                AppointmentStatus.AppointmentCancelledByClient6to24h => "appointment_cancelled_by_client_6to24h",
+                AppointmentStatus.AppointmentCancelledByClientLt6h => "appointment_cancelled_by_client_lt6h",
+                AppointmentStatus.AppointmentCancelledByExpertStrike => "appointment_cancelled_by_expert_strike",
                 _ => status.ToString().ToLower()
             };
         }
@@ -78,6 +87,10 @@ namespace newApi.DataLayer.Models.enums
                 "appointment_completed_without_client_approval" => AppointmentStatus.AppointmentCompletedWithoutClientApproval,
                 "appointment_cancelled_by_client_account_delete" => AppointmentStatus.AppointmentCancelledByClientAccountDelete,
                 "appointment_cancelled_by_expert_account_delete" => AppointmentStatus.AppointmentCancelledByExpertAccountDelete,
+                "appointment_cancelled_by_client_gt24h" => AppointmentStatus.AppointmentCancelledByClientGt24h,
+                "appointment_cancelled_by_client_6to24h" => AppointmentStatus.AppointmentCancelledByClient6to24h,
+                "appointment_cancelled_by_client_lt6h" => AppointmentStatus.AppointmentCancelledByClientLt6h,
+                "appointment_cancelled_by_expert_strike" => AppointmentStatus.AppointmentCancelledByExpertStrike,
                 _ => throw new ArgumentException($"Invalid appointment status: {value}")
             };
         }

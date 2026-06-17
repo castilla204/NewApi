@@ -40,6 +40,14 @@ namespace newApi.DataLayer.Models.PostGresModels
         public DateTime? LastExpertCancellationAt { get; set; }
         public DateTime? LastProposalAt { get; set; }
         public DateTime? LastResponseAt { get; set; }
+
+        // 🗓️ Reserva atómica (Fase A): intervalo UTC + bandera de bloqueo de agenda.
+        // ExpertId se denormaliza desde SearchHire.ExpertId (User id) para que la query
+        // de solape no haga JOIN y la exclusion constraint agrupe por experto.
+        public int? ExpertId { get; set; }
+        public DateTime? StartsAtUtc { get; set; }
+        public DateTime? EndsAtUtc { get; set; }
+        public bool BlocksCalendar { get; set; } = false;
         
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;

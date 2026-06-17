@@ -18,6 +18,10 @@ public class AppointmentBuilder
     private int _rejectionCount;
     private int _clientCancellationCount;
     private int _expertCancellationCount;
+    private int? _expertId;
+    private DateTime? _startsAtUtc;
+    private DateTime? _endsAtUtc;
+    private bool _blocksCalendar;
 
     public AppointmentBuilder(int searchHireId) { _searchHireId = searchHireId; }
 
@@ -32,6 +36,14 @@ public class AppointmentBuilder
     public AppointmentBuilder WithRejectionCount(int n) { _rejectionCount = n; return this; }
     public AppointmentBuilder WithClientCancellations(int n) { _clientCancellationCount = n; return this; }
     public AppointmentBuilder WithExpertCancellations(int n) { _expertCancellationCount = n; return this; }
+    public AppointmentBuilder WithSlot(int expertId, DateTime startsAtUtc, DateTime endsAtUtc, bool blocksCalendar = true)
+    {
+        _expertId = expertId;
+        _startsAtUtc = startsAtUtc;
+        _endsAtUtc = endsAtUtc;
+        _blocksCalendar = blocksCalendar;
+        return this;
+    }
 
     public async Task<Appointment> PersistAsync(AppDbContext db)
     {
@@ -51,6 +63,10 @@ public class AppointmentBuilder
             RejectionCount = _rejectionCount,
             ClientCancellationCount = _clientCancellationCount,
             ExpertCancellationCount = _expertCancellationCount,
+            ExpertId = _expertId,
+            StartsAtUtc = _startsAtUtc,
+            EndsAtUtc = _endsAtUtc,
+            BlocksCalendar = _blocksCalendar,
         };
 
         db.Appointments.Add(appt);

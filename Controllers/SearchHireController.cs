@@ -81,6 +81,7 @@ namespace newApi.Controllers
             return systemStatus.Id;
         }
 
+#if false // ═══ SISTEMA ANTIGUO: alta manual de SearchHire (Admin) estilo "crear hire → 24h para proponer cita" (DESACTIVADO; la propuesta de cita ya no existe. Sustituido por el flujo atómico cita+pago. NO BORRAR) ═══
         // POST: api/searchhire
         // RESTRINGIDO A ADMIN: este endpoint crea SearchHire sin pasar por Stripe Checkout
         // (Amount tomado directamente del Price del servicio, sin cobro). Los clientes deben
@@ -569,6 +570,7 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Failed to create search hire" });
             }
         }
+#endif // ═══ FIN SISTEMA ANTIGUO (alta manual SearchHire Admin) ═══
 
         // GET: api/searchhire/{id}
         [HttpGet("{id}")]

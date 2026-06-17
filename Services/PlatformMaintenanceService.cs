@@ -25,6 +25,7 @@ namespace newApi.Services
         Task EscalateStaleDisputesAsync(); // 🛡️ T4
         Task NotifyUpcomingStripeDeadlinesAsync(); // 🛡️ Round 12 — D3
         Task NotifyStalledOnboardingExpertsAsync(); // 🛡️ A2 — onboarding abandonado
+        Task CheckAppointmentWatchdogHealthAsync(); // 🛡️ HEALTH — vigila que el watchdog de citas siga vivo
     }
 
     public class PlatformMaintenanceService : IPlatformMaintenanceService
@@ -36,6 +37,135 @@ namespace newApi.Services
         {
             _context = context;
             _loggingService = loggingService;
+        }
+
+        /// <summary>
+        /// 🛡️ HEALTH: vigila que el RecurringJob "appointment-timers-watchdog" (ProcessOverdueTimersAsync,
+        /// cada 10 min) siga vivo. Ese watchdog es el ÚNICO motor del ciclo de vida posterior a la
+        /// contratación en el flujo nuevo cita+pago (appointment_confirmed → awaiting_report → report →
+        /// decisión del cliente → payout). Si se para, TODAS las citas confirmadas quedan atascadas en
+        /// silencio: el HangfireFailedJobNotificationFilter NO lo detecta porque no hay job "Failed",
+        /// simplemente deja de ejecutarse. Dos comprobaciones complementarias:
+        ///   (a) HEARTBEAT (best-effort, independiente de tráfico): lee la última ejecución del recurring
+        ///       job desde el storage de Hangfire; si no consta o supera el umbral, alerta.
+        ///   (b) SÍNTOMA (fiable, robusto a timezone gracias al margen de 2 días que absorbe cualquier
+        ///       offset ±14h): si hay citas aún en "appointment_confirmed" con fecha de hace > 2 días, el
+        ///       watchdog NO está cumpliendo su función → alerta.
+        /// LogCriticalAsync ya enruta a email + Slack/Telegram (AlertChannelService).
+        /// ⚠️ Este job también corre EN Hangfire: si Hangfire está caído por completo, tampoco se ejecuta.
+        /// Para ese caso catastrófico hace falta un monitor EXTERNO (uptime check); ver INFORME.
+        /// </summary>
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 120)]
+        [Hangfire.AutomaticRetry(Attempts = 2, DelaysInSeconds = new[] { 0, 60 })]
+        public async Task CheckAppointmentWatchdogHealthAsync()
+        {
+            const string watchdogId = "appointment-timers-watchdog";
+            const int heartbeatStaleMinutes = 30; // el watchdog corre cada 10 min → 3 ejecuciones perdidas
+            var nowUtc = DateTime.UtcNow;
+
+            // (a) HEARTBEAT — best-effort. Cualquier problema de storage/parseo degrada a Warning, nunca lanza.
+            try
+            {
+                using var connection = Hangfire.JobStorage.Current.GetConnection();
+                var hash = connection.GetAllEntriesFromHash($"recurring-job:{watchdogId}");
+
+                if (hash == null || !hash.TryGetValue("LastExecution", out var lastExecRaw) || string.IsNullOrWhiteSpace(lastExecRaw))
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: appointment-timers-watchdog sin registro de última ejecución",
+                        details: $"El RecurringJob '{watchdogId}' no tiene 'LastExecution' en el storage de Hangfire (¿no registrado, nunca ejecutado o storage inaccesible?). El ciclo de vida de las citas confirmadas no avanzará. ACCIÓN: verificar que el servidor Hangfire está activo y el recurring job registrado en Program.cs.",
+                        userId: null,
+                        source: "PlatformMaintenanceService.CheckAppointmentWatchdogHealthAsync",
+                        relatedEntityType: "HangfireJob");
+                }
+                else
+                {
+                    var lastExec = TryParseHangfireDate(lastExecRaw);
+                    if (lastExec == null)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "No se pudo parsear LastExecution del watchdog de citas",
+                            details: $"'{watchdogId}' LastExecution='{lastExecRaw}' no se pudo interpretar como fecha. El heartbeat queda no disponible esta vez; la comprobación por síntoma (citas atascadas) sigue activa.",
+                            userId: null,
+                            source: "PlatformMaintenanceService.CheckAppointmentWatchdogHealthAsync",
+                            relatedEntityType: "HangfireJob");
+                    }
+                    else
+                    {
+                        var age = nowUtc - lastExec.Value;
+                        if (age > TimeSpan.FromMinutes(heartbeatStaleMinutes))
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: appointment-timers-watchdog no se ejecuta (heartbeat obsoleto)",
+                                details: $"Última ejecución de '{watchdogId}' hace {age.TotalMinutes:F0} min (umbral {heartbeatStaleMinutes} min; corre cada 10 min). El watchdog que avanza las citas confirmadas (y dispara los payouts) parece parado → ciclo de vida atascado en silencio. ACCIÓN: revisar el servidor Hangfire y sus logs.",
+                                userId: null,
+                                source: "PlatformMaintenanceService.CheckAppointmentWatchdogHealthAsync",
+                                relatedEntityType: "HangfireJob");
+                        }
+                    }
+                }
+            }
+            catch (Exception hbEx)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Heartbeat del watchdog de citas no disponible",
+                    details: $"No se pudo leer la última ejecución de '{watchdogId}' del storage de Hangfire: {hbEx.Message}. La comprobación por síntoma (citas atascadas) sigue cubriendo el caso.",
+                    userId: null,
+                    source: "PlatformMaintenanceService.CheckAppointmentWatchdogHealthAsync",
+                    relatedEntityType: "HangfireJob");
+            }
+
+            // (b) SÍNTOMA — fiable. Margen de 2 días: absorbe cualquier offset de timezone (±14h) y la
+            // ventana normal de transición (hora de cita + 3h), de modo que CERO falsos positivos en
+            // operación sana. Si aparecen, el watchdog no está avanzando las citas.
+            try
+            {
+                var staleCutoff = nowUtc.AddDays(-2);
+                var stalled = await _context.Appointments
+                    .Where(a => a.Status.StatusValue == "appointment_confirmed"
+                             && a.ProposedDate.HasValue
+                             && a.ProposedDate.Value < staleCutoff)
+                    .OrderBy(a => a.Id)
+                    .Select(a => a.Id)
+                    .Take(50)
+                    .ToListAsync();
+
+                if (stalled.Count > 0)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: citas confirmadas atascadas — el watchdog no las está avanzando",
+                        details: $"{stalled.Count} cita(s) siguen en 'appointment_confirmed' con fecha de hace > 2 días (IDs muestra: {string.Join(", ", stalled.Take(20))}). El barrido por estado de ProcessOverdueTimersAsync debería haberlas pasado a 'awaiting_report'. Indica que el watchdog no se ejecuta o falla de forma sistemática → payouts y ciclo de vida bloqueados. ACCIÓN: revisar Hangfire y ejecutar manualmente ProcessOverdueTimersAsync.",
+                        userId: null,
+                        source: "PlatformMaintenanceService.CheckAppointmentWatchdogHealthAsync",
+                        relatedEntityType: "Appointment");
+                }
+            }
+            catch (Exception symEx)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: el health-check del watchdog de citas falló al consultar citas atascadas",
+                    details: $"CheckAppointmentWatchdogHealthAsync no pudo ejecutar la comprobación por síntoma: {symEx.Message}. ACCIÓN: revisar BD/Hangfire.",
+                    userId: null,
+                    source: "PlatformMaintenanceService.CheckAppointmentWatchdogHealthAsync",
+                    relatedEntityType: "Appointment");
+            }
+        }
+
+        /// <summary>
+        /// Parsea el valor 'LastExecution' que Hangfire guarda en el hash del recurring job. Hangfire
+        /// lo serializa como ISO 8601 round-trip (formato actual) o como timestamp Unix en milisegundos
+        /// (formato legacy). Probamos ambos en UTC; si ninguno cuadra, devolvemos null (no lanza).
+        /// </summary>
+        private static DateTime? TryParseHangfireDate(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            if (DateTime.TryParse(raw, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                    out var iso))
+                return DateTime.SpecifyKind(iso, DateTimeKind.Utc);
+            if (long.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var unixMs))
+                return DateTimeOffset.FromUnixTimeMilliseconds(unixMs).UtcDateTime;
+            return null;
         }
 
         /// <summary>

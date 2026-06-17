@@ -33,6 +33,7 @@ namespace newApi.DataLayer.Models
         public DbSet<ExpertProfile> ExpertProfiles { get; set; }
         public DbSet<ExpertAvailability> ExpertAvailabilities { get; set; }
         public DbSet<ExpertAvailabilityRule> ExpertAvailabilityRules { get; set; }
+        public DbSet<ExpertAvailabilityException> ExpertAvailabilityExceptions { get; set; }
         public DbSet<SearchService> SearchServices { get; set; }
         public DbSet<SearchServiceImage> SearchServiceImages { get; set; }
         public DbSet<SearchHire> SearchHires { get; set; }
@@ -803,6 +804,21 @@ namespace newApi.DataLayer.Models
                     .OnDelete(DeleteBehavior.Cascade);
 
                 entity.HasIndex(e => new { e.ExpertId, e.DayOfWeek });
+            });
+
+            // Configuración de ExpertAvailabilityException (excepciones por fecha)
+            modelBuilder.Entity<ExpertAvailabilityException>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.UpdatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                entity.HasOne(e => e.Expert)
+                    .WithMany()
+                    .HasForeignKey(e => e.ExpertId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasIndex(e => new { e.ExpertId, e.Date });
             });
 
             // Configuración de AppointmentTimer

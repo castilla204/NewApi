@@ -233,6 +233,16 @@ namespace newApi.Controllers
             }
         }
 
+#if false // ═══ SISTEMA ANTIGUO: crear cita "pagar primero y luego proponer" (DESACTIVADO — sustituido por el flujo atómico cita+pago; NO BORRAR) ═══
+        // ⚠️ SEGURIDAD: este endpoint creaba la cita SIN pago simultáneo, SIN comprobar
+        // solape con otras citas (ValidateAppointmentAvailabilityAsync solo valida día/franja)
+        // y SIN poblar StartsAtUtc/EndsAtUtc/BlocksCalendar=true, por lo que la exclusion
+        // constraint GiST ux_expert_no_overlap NUNCA se aplicaba → permitía DOBLE RESERVA del
+        // mismo experto. Además no verificaba que el llamante fuese dueño del SearchHire (IDOR).
+        // El único flujo soportado es el atómico: SearchController.CreateSearchWithHire →
+        // Checkout Stripe (manual capture) → webhook HandlePendingHireCompleted, que inserta la
+        // cita confirmada dentro de la transacción y captura el pago solo si el hueco queda
+        // asegurado por la constraint GiST.
         /// <summary>
         /// Crear una nueva cita
         /// </summary>
@@ -280,6 +290,7 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
+#endif // ═══ FIN SISTEMA ANTIGUO (crear cita "pagar primero y luego proponer") ═══
 
 #if false // ═══ SISTEMA ANTIGUO: endpoints proponer/aceptar/rechazar cita (sin uso en prod, conservado, NO BORRAR) ═══
         /// <summary>
@@ -904,6 +915,75 @@ namespace newApi.Controllers
                 // usa exactamente el mismo camino fiable que los timers automáticos.
                 await _appointmentService.ProcessOverdueTimersAsync();
                 return Ok(new { message = "Appointment timers checked successfully" });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "Internal server error" });
+            }
+        }
+
+        /// <summary>
+        /// 🧪 PRUEBAS (Admin): salta la espera de 3h y transiciona una cita 'appointment_confirmed'
+        /// directamente a 'appointment_awaiting_report' (creando el timer expert_report de 24h).
+        /// Llama al MISMO handler que el watchdog (ProcessAppointmentToAwaitingReportAsync), que
+        /// re-valida el estado antes de actuar, así que es idempotente y seguro. Pensado para QA del
+        /// flujo de citas sin tener que esperar/antedatar en BD.
+        /// </summary>
+        [HttpPost("admin/{appointmentId:int}/skip-to-awaiting-report")]
+        public async Task<IActionResult> AdminSkipToAwaitingReport(int appointmentId)
+        {
+            try
+            {
+                // Verificar que el usuario sea admin
+                if (!_authService.IsAdmin(User))
+                {
+                    return Forbid("Admin access required");
+                }
+
+                var appointment = await _context.Appointments
+                    .Include(a => a.Status)
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(a => a.Id == appointmentId);
+
+                if (appointment == null)
+                {
+                    return NotFound(new { message = $"Cita {appointmentId} no encontrada" });
+                }
+
+                // El handler solo actúa sobre 'appointment_confirmed'; avisamos explícitamente si no lo está
+                // para que el botón de pruebas dé feedback útil en vez de un no-op silencioso.
+                if (appointment.Status?.StatusValue != "appointment_confirmed")
+                {
+                    return BadRequest(new
+                    {
+                        message = $"La cita {appointmentId} está en '{appointment.Status?.StatusValue}', no en 'appointment_confirmed'. El salto solo aplica desde una cita confirmada.",
+                        currentStatus = appointment.Status?.StatusValue
+                    });
+                }
+
+                await _loggingService.LogWarningAsync(
+                    message: "🧪 ADMIN TEST: salto manual confirmed→awaiting_report",
+                    details: $"Un admin forzó la transición de la cita {appointmentId} a awaiting_report saltándose la espera de 3h post-cita.",
+                    userId: GetCurrentUserId(),
+                    source: "AppointmentController.AdminSkipToAwaitingReport",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId,
+                    notifyUser: false);
+
+                await _appointmentService.ProcessAppointmentToAwaitingReportAsync(appointmentId);
+
+                // Re-leer el estado resultante para confirmarlo al cliente
+                var updated = await _context.Appointments
+                    .Include(a => a.Status)
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(a => a.Id == appointmentId);
+
+                return Ok(new
+                {
+                    message = "Cita transicionada a 'awaiting_report' (salto de prueba). El experto ya tiene 24h para subir el reporte.",
+                    appointmentId,
+                    newStatus = updated?.Status?.StatusValue
+                });
             }
             catch (Exception ex)
             {

@@ -10,7 +10,9 @@ namespace newApi.Services
         Task<AppointmentDto?> GetAppointmentAsync(int id);
         Task<AppointmentDto?> GetAppointmentBySearchHireIdAsync(int searchHireId);
         Task<List<AppointmentDto>> GetUserAppointmentsAsync(int userId);
+#if false // ═══ SISTEMA ANTIGUO: crear cita "pagar primero y luego proponer" (DESACTIVADO; impl en AppointmentService bajo #if false. NO BORRAR) ═══
         Task<AppointmentDto> CreateAppointmentAsync(CreateAppointmentDto dto);
+#endif
 #if false // ═══ SISTEMA ANTIGUO: proponer/aceptar/rechazar cita (sin uso en prod, conservado, NO BORRAR) ═══
         Task<AppointmentDto> ProposeAppointmentAsync(int searchHireId, ProposeAppointmentDto dto, int userId);
         Task<AppointmentDto> ConfirmAppointmentAsync(ConfirmAppointmentDto dto, int userId);

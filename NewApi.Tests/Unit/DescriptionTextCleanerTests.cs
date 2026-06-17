@@ -31,9 +31,11 @@ namespace NewApi.Tests.Unit
         [Fact]
         public void Clean_truncates_to_max_length_without_cutting_word()
         {
-            var input = "palabra ".PadRight(200, 'x');
+            // Espacio en la posición 50 (> maxLength/2 = 30) → debe retroceder hasta él.
+            var input = new string('x', 50) + " " + new string('y', 150);
             var result = DescriptionTextCleaner.Clean(input, 60);
             result.Length.Should().BeLessThanOrEqualTo(60);
+            result.Should().Be(new string('x', 50)); // back-off al último espacio, sin cortar palabra
         }
 
         [Fact]

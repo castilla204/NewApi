@@ -12,7 +12,7 @@ namespace newApi.Services
         // Símbolos pictográficos (\p{So}), surrogates de emojis astrales (\p{Cs}),
         // selector de variación (U+FE0F) y ZWJ (U+200D).
         private static readonly Regex EmojiRegex = new(
-            @"[\p{Cs}\p{So}️‍]",
+            @"[\p{Cs}\p{So}\uFE0F\u200D]",
             RegexOptions.Compiled);
 
         private static readonly Regex HeadingRegex = new(

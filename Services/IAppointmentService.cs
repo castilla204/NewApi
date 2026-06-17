@@ -11,9 +11,11 @@ namespace newApi.Services
         Task<AppointmentDto?> GetAppointmentBySearchHireIdAsync(int searchHireId);
         Task<List<AppointmentDto>> GetUserAppointmentsAsync(int userId);
         Task<AppointmentDto> CreateAppointmentAsync(CreateAppointmentDto dto);
+#if false // ═══ SISTEMA ANTIGUO: proponer/aceptar/rechazar cita (sin uso en prod, conservado, NO BORRAR) ═══
         Task<AppointmentDto> ProposeAppointmentAsync(int searchHireId, ProposeAppointmentDto dto, int userId);
         Task<AppointmentDto> ConfirmAppointmentAsync(ConfirmAppointmentDto dto, int userId);
         Task<AppointmentDto> RejectAppointmentAsync(RejectAppointmentDto dto, int userId);
+#endif
         Task<AppointmentDto> CancelAppointmentAsync(CancelAppointmentDto dto, int userId);
         Task<object> GetAppointmentMetricsAsync();
         Task ProcessOverdueTimersAsync();

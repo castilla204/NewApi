@@ -647,7 +647,7 @@ namespace newApi.Services
 
         }
 
-
+#if false // ═══ SISTEMA ANTIGUO: proponer/aceptar/rechazar cita (sin uso en prod, conservado, NO BORRAR) ═══
 
         public async Task<AppointmentDto> ProposeAppointmentAsync(int searchHireId, ProposeAppointmentDto dto, int userId)
 
@@ -2457,7 +2457,7 @@ namespace newApi.Services
 
         }
 
-
+#endif // ═══ FIN SISTEMA ANTIGUO (proponer/aceptar/rechazar) ═══
 
         public async Task<AppointmentDto> CancelAppointmentAsync(CancelAppointmentDto dto, int userId)
 

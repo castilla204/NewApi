@@ -281,6 +281,7 @@ namespace newApi.Controllers
             }
         }
 
+#if false // ═══ SISTEMA ANTIGUO: endpoints proponer/aceptar/rechazar cita (sin uso en prod, conservado, NO BORRAR) ═══
         /// <summary>
         /// Proponer una cita (Cliente)
         /// </summary>
@@ -502,6 +503,7 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Internal server error" });
             }
         }
+#endif // ═══ FIN SISTEMA ANTIGUO (endpoints proponer/aceptar/rechazar) ═══
 
         /// <summary>
         /// Cancelar una cita (Cliente o Experto)

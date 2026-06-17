@@ -36,15 +36,25 @@ namespace newApi.Services
     // Projection tipada para LINQ — evita dynamic y las inferencias rotas.
     internal record HireRow(int HireId, int ExpertProfileId, DateTime CreatedAt, decimal Amount, string Currency);
 
+    // 🛡️ Fila ya convertida a EUR y neta de reembolsos/chargebacks. El bucketing por
+    // trimestre se hace sobre CreatedAt del hire (igual que antes); Gross y Fees ya vienen
+    // en EUR para que AggregateQuarter pueda sumar sin mezclar divisas.
+    internal record HireEurRow(int HireId, int ExpertProfileId, DateTime CreatedAt, decimal GrossEur, decimal FeeEur);
+
     public class Dac7AnnualReportService
     {
         private readonly AppDbContext _context;
         private readonly ILoggingService _loggingService;
+        private readonly IExchangeRateService _exchangeRateService;
 
-        public Dac7AnnualReportService(AppDbContext context, ILoggingService loggingService)
+        public Dac7AnnualReportService(
+            AppDbContext context,
+            ILoggingService loggingService,
+            IExchangeRateService exchangeRateService)
         {
             _context = context;
             _loggingService = loggingService;
+            _exchangeRateService = exchangeRateService;
         }
 
         /// <summary>
@@ -103,6 +113,62 @@ namespace newApi.Services
                 .Select(g => new { HireId = g.Key, Total = g.Sum(ft => Math.Abs(ft.Amount)) })
                 .ToDictionaryAsync(x => x.HireId, x => x.Total, ct);
 
+            // 2-bis) Cargar reembolsos y chargebacks del año por hire. DAC7 reporta la
+            //   "consideration paid OR CREDITED": un hire reembolsado/disputado NO es
+            //   consideración percibida, así que se RESTA del bruto. La FinancialTransaction
+            //   de Refund/Chargeback está siempre en la misma divisa que el hire (ver
+            //   FinancialTransaction.Currency), por lo que el neto se calcula en divisa de
+            //   origen y se convierte una sola vez a EUR más abajo.
+            var refundsByHire = await _context.FinancialTransactions
+                .AsNoTracking()
+                .Where(ft => (ft.TransactionType == "Refund" || ft.TransactionType == "Chargeback")
+                          && ft.RelatedEntityType == "SearchHire"
+                          && ft.RelatedEntityId != null
+                          && hireIds.Contains(ft.RelatedEntityId.Value))
+                .GroupBy(ft => ft.RelatedEntityId!.Value)
+                .Select(g => new { HireId = g.Key, Total = g.Sum(ft => Math.Abs(ft.Amount)) })
+                .ToDictionaryAsync(x => x.HireId, x => x.Total, ct);
+
+            // 2-ter) Convertir cada hire (bruto neto de reembolsos + platform fee) a EUR a la
+            //   tasa de la fecha del hire. ReportingCurrency del snapshot es EUR fijo, así que
+            //   sumar divisas sin convertir (bug previo) sobre-/infra-declaraba el total. El
+            //   memo evita llamar a GetRateAsync una vez por hire: solo una vez por (divisa, día).
+            var rateMemo = new Dictionary<string, decimal>();
+            var eurRows = new List<HireEurRow>(expertsWithHires.Count);
+            foreach (var h in expertsWithHires)
+            {
+                var refunds = refundsByHire.GetValueOrDefault(h.HireId);
+                var netGross = h.Amount - refunds;
+                if (netGross < 0m) netGross = 0m; // sobre-reembolso no produce consideración negativa
+                var fee = feesByHire.GetValueOrDefault(h.HireId);
+
+                var ccy = string.IsNullOrWhiteSpace(h.Currency) ? "EUR" : h.Currency.Trim().ToUpperInvariant();
+                decimal rate;
+                if (ccy == "EUR")
+                {
+                    rate = 1m;
+                }
+                else
+                {
+                    var memoKey = ccy + "|" + h.CreatedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                    if (!rateMemo.TryGetValue(memoKey, out rate))
+                    {
+                        // GetRateAsync degrada a 1.0 ante outage del proveedor (no lanza). Si por
+                        // cualquier motivo devuelve <= 0, lo tratamos como 1.0 (degradación segura).
+                        rate = await _exchangeRateService.GetRateAsync(ccy, "EUR", h.CreatedAt);
+                        if (rate <= 0m) rate = 1m;
+                        rateMemo[memoKey] = rate;
+                    }
+                }
+
+                eurRows.Add(new HireEurRow(
+                    h.HireId,
+                    h.ExpertProfileId,
+                    h.CreatedAt,
+                    decimal.Round(netGross * rate, 2, MidpointRounding.AwayFromZero),
+                    decimal.Round(fee * rate, 2, MidpointRounding.AwayFromZero)));
+            }
+
             // 3) Cargar snapshots existentes para idempotencia.
             var existingSnapshots = await _context.Dac7SellerSnapshots
                 .Where(s => s.ExpertProfileId != null && expertIds.Contains(s.ExpertProfileId.Value) && s.Year == year)
@@ -123,13 +189,13 @@ namespace newApi.Services
             int generated = 0;
             foreach (var expertProfileId in expertIds)
             {
-                var hiresOfExpert = expertsWithHires.Where(e => e.ExpertProfileId == expertProfileId).ToList();
+                var hiresOfExpert = eurRows.Where(e => e.ExpertProfileId == expertProfileId).ToList();
 
-                // Agregar por trimestre
-                var aggQ1 = AggregateQuarter(hiresOfExpert, year, 1, feesByHire);
-                var aggQ2 = AggregateQuarter(hiresOfExpert, year, 2, feesByHire);
-                var aggQ3 = AggregateQuarter(hiresOfExpert, year, 3, feesByHire);
-                var aggQ4 = AggregateQuarter(hiresOfExpert, year, 4, feesByHire);
+                // Agregar por trimestre (importes ya en EUR y netos de reembolsos/chargebacks)
+                var aggQ1 = AggregateQuarter(hiresOfExpert, year, 1);
+                var aggQ2 = AggregateQuarter(hiresOfExpert, year, 2);
+                var aggQ3 = AggregateQuarter(hiresOfExpert, year, 3);
+                var aggQ4 = AggregateQuarter(hiresOfExpert, year, 4);
 
                 var profile = profileById.GetValueOrDefault(expertProfileId);
                 var user = profile?.User;
@@ -201,7 +267,7 @@ namespace newApi.Services
         }
 
         private static (decimal Gross, decimal Fees, int Count) AggregateQuarter(
-            IEnumerable<HireRow> hires, int year, int quarter, Dictionary<int, decimal> feesByHire)
+            IEnumerable<HireEurRow> hires, int year, int quarter)
         {
             var qStart = new DateTime(year, ((quarter - 1) * 3) + 1, 1, 0, 0, 0, DateTimeKind.Utc);
             var qEnd = qStart.AddMonths(3);
@@ -210,11 +276,8 @@ namespace newApi.Services
             foreach (var h in hires)
             {
                 if (h.CreatedAt < qStart || h.CreatedAt >= qEnd) continue;
-                gross += h.Amount;
-                if (feesByHire.TryGetValue(h.HireId, out var fee))
-                {
-                    fees += fee;
-                }
+                gross += h.GrossEur;
+                fees += h.FeeEur;
                 count++;
             }
             return (gross, fees, count);

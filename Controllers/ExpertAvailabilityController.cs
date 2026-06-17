@@ -27,6 +27,10 @@ namespace newApi.Controllers
             _context = context;
         }
 
+        /// <summary>Día de la semana (0=domingo … 6=sábado) → nombre inglés usado por la tabla legacy.</summary>
+        private static readonly string[] DayIntToName =
+            { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+
         /// <summary>
         /// Obtener la disponibilidad actual activa del experto autenticado
         /// </summary>
@@ -241,8 +245,169 @@ namespace newApi.Controllers
                 });
             }
 
+            // 🔄 Mantener coherente la disponibilidad legacy (la que muestran los widgets públicos del
+            // perfil) con el horario por-día recién guardado: resumen = unión de días + [min inicio, max fin].
+            // Así el perfil no muestra un horario distinto del que se usa para reservar.
+            var legacyActive = await _context.ExpertAvailabilities
+                .Where(ea => ea.ExpertId == expert.Id && ea.IsActive && ea.EffectiveTo == null)
+                .ToListAsync();
+            foreach (var oldLegacy in legacyActive)
+            {
+                oldLegacy.IsActive = false;
+                oldLegacy.EffectiveTo = now;
+                oldLegacy.UpdatedAt = now;
+            }
+            if (parsed.Count > 0)
+            {
+                var dayNames = parsed.Select(p => p.Day).Distinct().OrderBy(d => d)
+                    .Select(d => DayIntToName[d]).ToList();
+                _context.ExpertAvailabilities.Add(new ExpertAvailability
+                {
+                    ExpertId = expert.Id,
+                    DaysOfWeek = JsonSerializer.Serialize(dayNames),
+                    StartTime = parsed.Min(p => p.Start),
+                    EndTime = parsed.Max(p => p.End),
+                    Timezone = tz,
+                    EffectiveFrom = now,
+                    EffectiveTo = null,
+                    IsActive = true,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                });
+            }
+
             await _context.SaveChangesAsync();
             return Ok(new { count = parsed.Count });
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // 🗓️ Excepciones por FECHA concreta (sobreescriben el horario semanal ese día).
+        // Cerrado = IsWorking=false sin franjas. Abierto/horas especiales = IsWorking=true + N franjas.
+        // ─────────────────────────────────────────────────────────────────────────
+
+        /// <summary>Excepciones del experto autenticado en [from, to] (inclusive), agrupadas por fecha.</summary>
+        [HttpGet("exceptions")]
+        public async Task<IActionResult> GetExceptions([FromQuery] DateOnly from, [FromQuery] DateOnly to)
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                return Unauthorized(new { message = "Invalid user identification" });
+
+            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
+            if (expert == null)
+                return NotFound(new { message = "Expert profile not found" });
+
+            var rows = await _context.ExpertAvailabilityExceptions
+                .Where(e => e.ExpertId == expert.Id && e.Date >= from && e.Date <= to)
+                .OrderBy(e => e.Date).ThenBy(e => e.StartLocal)
+                .ToListAsync();
+
+            var result = rows.GroupBy(e => e.Date).Select(g => new AvailabilityExceptionDto
+            {
+                Date = g.Key.ToString("yyyy-MM-dd"),
+                IsWorking = g.Any(r => r.IsWorking),
+                Ranges = g.Where(r => r.IsWorking && r.StartLocal != null && r.EndLocal != null)
+                    .Select(r => new ExceptionRangeDto
+                    {
+                        Start = r.StartLocal!.Value.ToString(@"hh\:mm"),
+                        End = r.EndLocal!.Value.ToString(@"hh\:mm"),
+                    }).ToList(),
+            }).ToList();
+
+            return Ok(result);
+        }
+
+        /// <summary>Upsert de la excepción de UNA fecha (reemplaza las filas de esa fecha).</summary>
+        [HttpPut("exceptions")]
+        public async Task<IActionResult> SetException([FromBody] SetAvailabilityExceptionDto dto)
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                return Unauthorized(new { message = "Invalid user identification" });
+
+            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
+            if (expert == null)
+                return NotFound(new { message = "Expert profile not found. You must be an expert to manage availability." });
+
+            if (dto == null || !DateOnly.TryParse(dto.Date, out var date))
+                return BadRequest(new { message = "Fecha inválida (usa YYYY-MM-DD)." });
+            if (date < DateOnly.FromDateTime(DateTime.UtcNow.Date))
+                return BadRequest(new { message = "No puedes configurar una fecha en el pasado." });
+
+            var parsed = new List<(TimeSpan Start, TimeSpan End)>();
+            if (dto.IsWorking)
+            {
+                foreach (var r in dto.Ranges ?? new List<ExceptionRangeInputDto>())
+                {
+                    if (!TimeSpan.TryParse(r.Start, out var start) || !TimeSpan.TryParse(r.End, out var end))
+                        return BadRequest(new { message = "Hora inválida en una franja (usa HH:mm)." });
+                    if (end <= start)
+                        return BadRequest(new { message = "La hora de fin debe ser posterior a la de inicio." });
+                    if (start < TimeSpan.Zero || end > TimeSpan.FromHours(24))
+                        return BadRequest(new { message = "Franja fuera de rango (debe estar entre 00:00 y 24:00)." });
+                    parsed.Add((start, end));
+                }
+                // Sin solapes entre franjas del mismo día.
+                var ordered = parsed.OrderBy(p => p.Start).ToList();
+                for (var i = 1; i < ordered.Count; i++)
+                    if (ordered[i].Start < ordered[i - 1].End)
+                        return BadRequest(new { message = "Franjas solapadas; revísalas." });
+                if (parsed.Count == 0)
+                    return BadRequest(new { message = "Si el día está abierto, indica al menos una franja horaria." });
+            }
+
+            var now = DateTime.UtcNow;
+            var tz = string.IsNullOrWhiteSpace(expert.Timezone) ? "UTC" : expert.Timezone;
+
+            // Reemplazar las filas de esa fecha.
+            var existing = await _context.ExpertAvailabilityExceptions
+                .Where(e => e.ExpertId == expert.Id && e.Date == date).ToListAsync();
+            _context.ExpertAvailabilityExceptions.RemoveRange(existing);
+
+            if (!dto.IsWorking)
+            {
+                _context.ExpertAvailabilityExceptions.Add(new ExpertAvailabilityException
+                {
+                    ExpertId = expert.Id, Date = date, IsWorking = false,
+                    Timezone = tz, CreatedAt = now, UpdatedAt = now,
+                });
+            }
+            else
+            {
+                foreach (var (start, end) in parsed)
+                {
+                    _context.ExpertAvailabilityExceptions.Add(new ExpertAvailabilityException
+                    {
+                        ExpertId = expert.Id, Date = date, IsWorking = true,
+                        StartLocal = start, EndLocal = end,
+                        Timezone = tz, CreatedAt = now, UpdatedAt = now,
+                    });
+                }
+            }
+
+            await _context.SaveChangesAsync();
+            return Ok(new { date = dto.Date, ranges = parsed.Count });
+        }
+
+        /// <summary>Elimina la excepción de una fecha (vuelve a regir el horario semanal).</summary>
+        [HttpDelete("exceptions/{date}")]
+        public async Task<IActionResult> DeleteException(string date)
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                return Unauthorized(new { message = "Invalid user identification" });
+            if (!DateOnly.TryParse(date, out var d))
+                return BadRequest(new { message = "Fecha inválida (usa YYYY-MM-DD)." });
+
+            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
+            if (expert == null)
+                return NotFound(new { message = "Expert profile not found" });
+
+            var rows = await _context.ExpertAvailabilityExceptions
+                .Where(e => e.ExpertId == expert.Id && e.Date == d).ToListAsync();
+            _context.ExpertAvailabilityExceptions.RemoveRange(rows);
+            await _context.SaveChangesAsync();
+            return Ok(new { removed = rows.Count });
         }
     }
 
@@ -268,6 +433,34 @@ namespace newApi.Controllers
     public class SetAvailabilityRulesDto
     {
         public List<AvailabilityRuleInputDto> Rules { get; set; } = new();
+    }
+
+    /// <summary>Excepción de fecha para lectura (agrupada por día).</summary>
+    public class AvailabilityExceptionDto
+    {
+        public string Date { get; set; } = "";
+        public bool IsWorking { get; set; }
+        public List<ExceptionRangeDto> Ranges { get; set; } = new();
+    }
+
+    public class ExceptionRangeDto
+    {
+        public string Start { get; set; } = "";
+        public string End { get; set; } = "";
+    }
+
+    /// <summary>Upsert de la excepción de una fecha.</summary>
+    public class SetAvailabilityExceptionDto
+    {
+        public string Date { get; set; } = "";
+        public bool IsWorking { get; set; }
+        public List<ExceptionRangeInputDto> Ranges { get; set; } = new();
+    }
+
+    public class ExceptionRangeInputDto
+    {
+        public string Start { get; set; } = "";
+        public string End { get; set; } = "";
     }
 }
 

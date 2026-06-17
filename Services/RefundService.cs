@@ -2010,9 +2010,13 @@ namespace newApi.Services
                             && existingTransfer != null
                             && !string.IsNullOrEmpty(existingTransfer.StripeTransferId)
                             && clawbackAmountEur >= 0.01m
-                            // ⚠️ AUDITORÍA [M4] Medium: hasChargebackNow detecta el FT "Chargeback" (escrito SIEMPRE en SubscriptionController l.8842) y omite el clawback interno asumiendo que ReverseExpertTransferForChargebackAsync revertirá el transfer; pero en la rama T9 (SubscriptionController l.8883, dispute interna activa) ese reversal NUNCA se encola → el experto se queda el transfer y, sumado al chargeback que ya devolvió 100% al cliente, hay doble salida de dinero.
-                            // Disparo/ataque: resolver refund_client una dispute interna cuyo hire recibió un chargeback Stripe mientras la dispute estaba Pending/Resolving.
-                            // Fix: condicionar el skip a que EXISTA realmente un FT "ChargebackReversal" (TransferReversal) sobre este transfer, no solo el marcador "Chargeback"; si no se revirtió, ejecutar el clawback aquí.
+                            // ✅ [M4] RESUELTO (verificado 2026-06-17): omitir el clawback interno cuando hay
+                            // Chargeback es SEGURO porque la reversión del transfer SÍ se encola siempre. La rama
+                            // T9 de HandleChargeDisputeCreated (SubscriptionController ~l.9030-9053) ahora encola
+                            // ReverseExpertTransferForChargebackAsync TANTO con dispute interna activa COMO sin ella
+                            // (antes solo en el else). Ese job revierte el transfer COMPLETO y es idempotente, así
+                            // que duplicar aquí el clawback parcial provocaría doble-reversión. Por eso se mantiene
+                            // el skip cuando hasChargebackNow. (El comentario anterior describía el bug ya corregido.)
                             && !hasChargebackNow) // 🔁 R3 + 🛡️ FIX #9: hasChargebackNow incluye re-lectura justo antes del clawback (cierra la ventana de carrera con webhook)
                         {
                             var alreadyReversed = await _context.FinancialTransactions.AnyAsync(ft =>

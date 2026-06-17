@@ -2471,6 +2471,7 @@ namespace newApi.Controllers
         }
 
 
+#if false // ═══ SISTEMA ANTIGUO: pagar servicio SIN elegir hueco y proponer cita después (DESACTIVADO — sustituido por SearchController.CreateSearchWithHire, flujo atómico cita+pago. NO BORRAR) ═══
         [HttpPost("load-money-service")]
         public async Task<IActionResult> LoadMoneyService([FromBody] LoadMoneyServiceDto request)
         {
@@ -2775,6 +2776,7 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Failed to create load money session" });
             }
         }
+#endif // ═══ FIN SISTEMA ANTIGUO (load-money-service) ═══
 
         [HttpPost("webhook")]
         [AllowAnonymous]
@@ -6228,6 +6230,7 @@ namespace newApi.Controllers
                     throw;
                 }
 
+#if false // ═══ SISTEMA ANTIGUO: rama "sin hueco" → crea cita awaiting_appointment + timer de 24h para que el cliente proponga fecha (DESACTIVADO; la propuesta de cita ya no existe. Solo se ejecutaba para hires sin slot vía load-money-service, también desactivado. NO BORRAR) ═══
                 // ✅ Crear automáticamente la cita en estado "awaiting_appointment" con timer de 24h
                 // Esto asegura que el cliente tenga 24 horas para proponer una fecha/hora
                 try
@@ -6343,6 +6346,7 @@ namespace newApi.Controllers
                         notifyUser: false // No asustar al usuario, pero alertar a admins
                     );
                 }
+#endif // ═══ FIN SISTEMA ANTIGUO (rama sin hueco: awaiting_appointment + timer 24h) ═══
 
                 // ✅ Notificar al cliente y experto cuando se confirma la contratación
                 await _loggingService.LogInfoAsync(
@@ -6906,6 +6910,7 @@ namespace newApi.Controllers
             }
         }
 
+#if false // ═══ SISTEMA ANTIGUO: contratar servicio SIN elegir hueco (paga y luego propone cita; metadata sin startsAtUtc) (DESACTIVADO — sustituido por SearchController.CreateSearchWithHire, flujo atómico cita+pago. NO BORRAR) ═══
         [HttpPost("hire-service")]
         public async Task<IActionResult> HireService([FromBody] HireServiceDto request)
         {
@@ -7260,6 +7265,7 @@ namespace newApi.Controllers
                 return StatusCode(500, new { message = "Failed to hire service" });
             }
         }
+#endif // ═══ FIN SISTEMA ANTIGUO (hire-service sin hueco) ═══
 
         [HttpPost("cancel-service")]
         [Authorize(Roles = "Expert")]

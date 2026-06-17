@@ -2202,69 +2202,66 @@ namespace newApi.Services
                                                !string.IsNullOrEmpty(request.AvailabilityStartTime) && 
                                                !string.IsNullOrEmpty(request.AvailabilityEndTime);
 
-                if (currentAvailability != null && !hasAvailabilityProvided)
+                // 🗓️ La disponibilidad horaria se gestiona en su propia pestaña ("Disponibilidad",
+                // ExpertAvailabilityRule). El guardado de perfil ya NO la exige: si la petición no
+                // envía días/horas, se deja intacta. Solo se actualiza cuando SÍ se proporciona
+                // (p. ej. desde el alta/onboarding, que sigue mandando estos campos).
+                if (hasAvailabilityProvided)
                 {
-                    return (false, null, null, null, null);
-                }
-
-                if (!hasAvailabilityProvided)
-                {
-                    return (false, null, null, null, null);
-                }
-
-                // Parsear y validar tiempos
-                if (!TimeSpan.TryParse(request.AvailabilityStartTime, out var startTime) ||
-                    !TimeSpan.TryParse(request.AvailabilityEndTime, out var endTime))
-                {
-                    return (false, null, null, null, null);
-                }
-
-                // Validar días válidos
-                var validDays = new[] { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
-                var invalidDays = request.AvailabilityDaysOfWeek?.Except(validDays, StringComparer.OrdinalIgnoreCase).ToList() ?? new List<string>();
-                
-                if (invalidDays.Any())
-                {
-                    return (false, null, null, null, null);
-                }
-
-                if (startTime >= endTime)
-                {
-                    return (false, null, null, null, null);
-                }
-
-                // Actualizar disponibilidad horaria
-                try
-                {
-                    var now = DateTime.UtcNow;
-
-                    // Si existe una disponibilidad activa, marcarla como inactiva
-                    if (currentAvailability != null)
+                    // Parsear y validar tiempos
+                    if (!TimeSpan.TryParse(request.AvailabilityStartTime, out var startTime) ||
+                        !TimeSpan.TryParse(request.AvailabilityEndTime, out var endTime))
                     {
-                        currentAvailability.IsActive = false;
-                        currentAvailability.EffectiveTo = now;
-                        currentAvailability.UpdatedAt = now;
+                        return (false, null, null, null, null);
                     }
 
-                    // Crear nueva disponibilidad
-                    var newAvailability = new ExpertAvailability
-                    {
-                        ExpertId = expertProfile.Id,
-                        DaysOfWeek = System.Text.Json.JsonSerializer.Serialize(request.AvailabilityDaysOfWeek),
-                        StartTime = startTime,
-                        EndTime = endTime,
-                        EffectiveFrom = now,
-                        EffectiveTo = null,
-                        IsActive = true,
-                        CreatedAt = now,
-                        UpdatedAt = now
-                    };
+                    // Validar días válidos
+                    var validDays = new[] { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
+                    var invalidDays = request.AvailabilityDaysOfWeek?.Except(validDays, StringComparer.OrdinalIgnoreCase).ToList() ?? new List<string>();
 
-                    _context.ExpertAvailabilities.Add(newAvailability);
-                }
-                catch (Exception ex)
-                {
-                    return (false, null, null, null, null);
+                    if (invalidDays.Any())
+                    {
+                        return (false, null, null, null, null);
+                    }
+
+                    if (startTime >= endTime)
+                    {
+                        return (false, null, null, null, null);
+                    }
+
+                    // Actualizar disponibilidad horaria
+                    try
+                    {
+                        var now = DateTime.UtcNow;
+
+                        // Si existe una disponibilidad activa, marcarla como inactiva
+                        if (currentAvailability != null)
+                        {
+                            currentAvailability.IsActive = false;
+                            currentAvailability.EffectiveTo = now;
+                            currentAvailability.UpdatedAt = now;
+                        }
+
+                        // Crear nueva disponibilidad
+                        var newAvailability = new ExpertAvailability
+                        {
+                            ExpertId = expertProfile.Id,
+                            DaysOfWeek = System.Text.Json.JsonSerializer.Serialize(request.AvailabilityDaysOfWeek),
+                            StartTime = startTime,
+                            EndTime = endTime,
+                            EffectiveFrom = now,
+                            EffectiveTo = null,
+                            IsActive = true,
+                            CreatedAt = now,
+                            UpdatedAt = now
+                        };
+
+                        _context.ExpertAvailabilities.Add(newAvailability);
+                    }
+                    catch (Exception ex)
+                    {
+                        return (false, null, null, null, null);
+                    }
                 }
 
                 await _context.SaveChangesAsync();

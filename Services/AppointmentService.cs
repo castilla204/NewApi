@@ -381,6 +381,7 @@ namespace newApi.Services
 
 
 
+#if false // ═══ SISTEMA ANTIGUO: implementación de crear cita "pagar primero y luego proponer" (DESACTIVADO; su único llamador, AppointmentController.CreateAppointment, también está en #if false. Sustituido por el flujo atómico cita+pago. NO BORRAR) ═══
         public async Task<AppointmentDto> CreateAppointmentAsync(CreateAppointmentDto dto)
 
         {
@@ -646,6 +647,7 @@ namespace newApi.Services
             }
 
         }
+#endif // ═══ FIN SISTEMA ANTIGUO (implementación CreateAppointmentAsync) ═══
 
 #if false // ═══ SISTEMA ANTIGUO: proponer/aceptar/rechazar cita (sin uso en prod, conservado, NO BORRAR) ═══
 

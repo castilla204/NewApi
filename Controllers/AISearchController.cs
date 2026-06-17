@@ -15,11 +15,15 @@ namespace newApi.Controllers
     {
         private readonly AppDbContext _context;
         private readonly IGPTService _gptService;
+        private readonly ILogger<AISearchController> _logger;
+        private readonly IWebHostEnvironment _env;
 
-        public AISearchController(AppDbContext context, IGPTService gptService)
+        public AISearchController(AppDbContext context, IGPTService gptService, ILogger<AISearchController> logger, IWebHostEnvironment env)
         {
             _context = context;
             _gptService = gptService;
+            _logger = logger;
+            _env = env;
         }
 
         [HttpPost("create")]
@@ -117,7 +121,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(502, new { message = "No se pudo generar el texto. Inténtalo de nuevo." });
+                _logger.LogError(ex, "Error en rewrite-description");
+                return StatusCode(502, new { message = "No se pudo generar el texto. Inténtalo de nuevo.", detail = _env.IsDevelopment() ? ex.Message : null });
             }
         }
     }

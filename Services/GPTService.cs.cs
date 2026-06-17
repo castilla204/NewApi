@@ -10,9 +10,11 @@ namespace newApi.Services
     {
         private readonly HttpClient _httpClient;
         private readonly string _openAiApiKey;
-        public GPTService(IConfiguration configuration, IHttpClientFactory httpClientFactory)
+        private readonly ILogger<GPTService> _logger;
+        public GPTService(IConfiguration configuration, IHttpClientFactory httpClientFactory, ILogger<GPTService> logger)
         {
             _httpClient = httpClientFactory.CreateClient();
+            _logger = logger;
             _openAiApiKey = configuration["OpenAI:ApiKey"] ?? throw new InvalidOperationException("OpenAI API key not found");
         }
 
@@ -73,7 +75,12 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
 
                 _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _openAiApiKey);
                 var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
-                response.EnsureSuccessStatusCode();
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogError("OpenAI AnalyzeSearchInput falló: status {StatusCode}, body {Body}", (int)response.StatusCode, errorBody);
+                    throw new Exception($"OpenAI {(int)response.StatusCode}: {errorBody}");
+                }
 
                 var responseContent = await response.Content.ReadAsStringAsync();
                 var completionResponse = JsonSerializer.Deserialize<CompletionResponse>(responseContent);
@@ -144,7 +151,12 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
 
             _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _openAiApiKey);
             var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync();
+                _logger.LogError("OpenAI RewriteDescription falló: status {StatusCode}, body {Body}", (int)response.StatusCode, errorBody);
+                throw new Exception($"OpenAI {(int)response.StatusCode}: {errorBody}");
+            }
 
             var responseContent = await response.Content.ReadAsStringAsync();
             var completionResponse = JsonSerializer.Deserialize<CompletionResponse>(responseContent);

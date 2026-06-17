@@ -6046,6 +6046,123 @@ namespace newApi.Controllers
                 //   el cargo queda huérfano permanente y la reconciliación diaria NO lo detecta (ver L6 abajo).
                 // Fix: patrón outbox/idempotencia persistida ANTES de capturar (registrar intento de captura con clave
                 //   estable por PaymentIntentId, no por searchHireId regenerado), de modo que el retry recupere el commit.
+                // 🗓️ RESERVA ATÓMICA (Calendly): si el cliente eligió un hueco en el front, creamos la cita
+                // YA CONFIRMADA con el intervalo UTC DENTRO de esta transacción y ANTES de capturar. La
+                // exclusion constraint GiST hace de guardián: si el hueco se ocupó entre el checkout y este
+                // webhook, el INSERT lanza 23P01 → cancelamos la autorización (sin cobro) y abortamos. Solo
+                // se captura si el hueco quedó asegurado.
+                //
+                // Poblamos ProposedDate/ProposedTime (hora LOCAL del experto) además de StartsAtUtc/EndsAtUtc:
+                // el flujo downstream (rescate por estado en ProcessOverdueTimersAsync, transición a informe,
+                // display) usa la hora local; el watchdog rescata la cita confirmada y la progresa a completada,
+                // así que NO hace falta programar aquí el timer de transición.
+                //
+                // Backward-compat: servicios sin hueco (metadata sin startsAtUtc) NO entran aquí y siguen el
+                // flujo clásico (awaiting_appointment + timer de propuesta, creado tras el commit más abajo,
+                // que se auto-salta para el caso con hueco porque la cita ya existirá).
+                DateTime? slotStartUtc = null, slotEndUtc = null;
+                if (metadata != null
+                    && metadata.TryGetValue("startsAtUtc", out var slotStartRaw) && !string.IsNullOrWhiteSpace(slotStartRaw)
+                    && metadata.TryGetValue("endsAtUtc", out var slotEndRaw) && !string.IsNullOrWhiteSpace(slotEndRaw)
+                    && DateTime.TryParse(slotStartRaw, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out var parsedSlotStart)
+                    && DateTime.TryParse(slotEndRaw, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out var parsedSlotEnd))
+                {
+                    slotStartUtc = DateTime.SpecifyKind(parsedSlotStart, DateTimeKind.Utc);
+                    slotEndUtc = DateTime.SpecifyKind(parsedSlotEnd, DateTimeKind.Utc);
+                }
+
+                if (slotStartUtc.HasValue && slotEndUtc.HasValue)
+                {
+                    var confirmedStatus = await _context.SystemStatuses
+                        .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_confirmed");
+                    if (confirmedStatus == null)
+                        throw new InvalidOperationException("AppointmentStatus 'appointment_confirmed' no encontrado (¿seed cargado?).");
+
+                    // UTC → hora local del experto para ProposedDate/ProposedTime (lo que usa el flujo downstream).
+                    DateTime slotLocalStart;
+                    try
+                    {
+                        var tzi = TimeZoneInfo.FindSystemTimeZoneById(expertTimezone ?? "Europe/Madrid");
+                        slotLocalStart = TimeZoneInfo.ConvertTimeFromUtc(slotStartUtc.Value, tzi);
+                    }
+                    catch
+                    {
+                        slotLocalStart = slotStartUtc.Value; // fallback: tratar como UTC
+                    }
+
+                    // 🗓️ Fase E: ubicación de la cita (servicios con radio: la eligió el cliente en el mapa;
+                    // estáticos: la del experto). Llega en el metadata desde CreateSearchWithHire.
+                    metadata.TryGetValue("apptLocation", out var apptLocation);
+                    metadata.TryGetValue("apptDoor", out var apptDoor);
+                    metadata.TryGetValue("apptDetails", out var apptDetails);
+                    decimal? apptLat = metadata.TryGetValue("apptLat", out var apptLatRaw)
+                        && decimal.TryParse(apptLatRaw, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var apptLatVal)
+                        ? apptLatVal : (decimal?)null;
+                    decimal? apptLng = metadata.TryGetValue("apptLng", out var apptLngRaw)
+                        && decimal.TryParse(apptLngRaw, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var apptLngVal)
+                        ? apptLngVal : (decimal?)null;
+
+                    _context.Appointments.Add(new Appointment
+                    {
+                        SearchHireId = searchHireId,
+                        StatusId = confirmedStatus.Id,
+                        ExpertId = expertuserid,
+                        StartsAtUtc = slotStartUtc.Value,
+                        EndsAtUtc = slotEndUtc.Value,
+                        BlocksCalendar = true,
+                        Location = string.IsNullOrWhiteSpace(apptLocation) ? null : apptLocation,
+                        Latitude = apptLat,
+                        Longitude = apptLng,
+                        DoorNumber = string.IsNullOrWhiteSpace(apptDoor) ? null : apptDoor,
+                        SiteDetails = string.IsNullOrWhiteSpace(apptDetails) ? null : apptDetails,
+                        // Valor = fecha LOCAL del experto; etiqueta Utc solo para que Npgsql acepte el
+                        // timestamptz (el downstream GetAppointmentUtc re-especifica a Unspecified, así que
+                        // la semántica local se conserva intacta).
+                        ProposedDate = DateTime.SpecifyKind(slotLocalStart.Date, DateTimeKind.Utc),
+                        ProposedTime = slotLocalStart.TimeOfDay,
+                        ProposerTimezone = expertTimezone ?? "Europe/Madrid",
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow
+                    });
+
+                    try
+                    {
+                        await _context.SaveChangesAsync();
+                    }
+                    catch (DbUpdateException slotEx) when (slotEx.InnerException is Npgsql.PostgresException pgEx && pgEx.SqlState == "23P01")
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Hueco de cita ya ocupado al confirmar el pago — cancelando autorización sin cobro",
+                            details: $"SearchHire {searchHireId}: el hueco {slotStartUtc:O}–{slotEndUtc:O} del experto {expertuserid} ya estaba reservado (exclusion constraint 23P01). Se cancela el PaymentIntent {session.PaymentIntentId}; el cliente NO es cobrado y la contratación se aborta.",
+                            userId: userId,
+                            source: "SubscriptionController.HandlePendingHireCompleted",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId,
+                            notifyUser: true);
+
+                        try
+                        {
+                            var slotPiService = new PaymentIntentService();
+                            var slotPi = await slotPiService.GetAsync(session.PaymentIntentId);
+                            if (slotPi.Status == "requires_capture")
+                                await slotPiService.CancelAsync(session.PaymentIntentId);
+                        }
+                        catch (Exception slotCancelEx)
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: no se pudo cancelar la autorización tras colisión de hueco",
+                                details: $"PaymentIntent {session.PaymentIntentId}, SearchHire {searchHireId}: {slotCancelEx.Message}. ACCIÓN: cancelar el PI manualmente en Stripe.",
+                                userId: userId,
+                                source: "SubscriptionController.HandlePendingHireCompleted",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId);
+                        }
+
+                        await transaction.RollbackAsync();
+                        return;
+                    }
+                }
+
                 await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHireId); // ✅ FIX: Usar searchHireId guardado
 
                 // 🛡️ Round 28 MUD-AJ + MUD-AT: marcar Captured tras éxito del capture. El

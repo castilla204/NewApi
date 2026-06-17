@@ -109,6 +109,103 @@ public class HttpHireFlowTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // HF-SLOT · webhook con hueco (Calendly) → cita YA appointment_confirmed con
+    //           intervalo UTC + ProposedDate/Time local. Camino de la Fase C.
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-SLOT · webhook con hueco → cita appointment_confirmed con intervalo UTC")]
+    public async Task Webhook_with_slot_creates_confirmed_appointment()
+    {
+        var mk = await SeedMarketplaceAsync("hfslot");
+        var startUtc = new DateTime(2026, 8, 3, 7, 0, 0, DateTimeKind.Utc); // 09:00 Madrid CEST
+        var endUtc = startUtc.AddHours(2);
+
+        var payload = StripeEventBuilder.CheckoutSessionCompleted(
+            "evt_hfslot_" + Guid.NewGuid().ToString("N"),
+            "cs_hfslot_" + Guid.NewGuid().ToString("N"),
+            "pi_hfslot_" + Guid.NewGuid().ToString("N"),
+            mk.ClientId, mk.ServiceId, 110m, startsAtUtc: startUtc, endsAtUtc: endUtc);
+        var request = StripeWebhookSigner.BuildSignedPost(
+            WebhookUrl, payload, ApiFactoryFixture.GeneralWebhookSecret);
+        var response = await _api.Client.SendAsync(request);
+        Assert.True(response.IsSuccessStatusCode, $"webhook status {(int)response.StatusCode}");
+
+        await using var db = _api.CreateDbContext();
+        var hireId = await db.SearchHires
+            .Where(h => h.ClientId == mk.ClientId && h.SearchServiceId == mk.ServiceId)
+            .OrderByDescending(h => h.Id).Select(h => (int?)h.Id).FirstOrDefaultAsync();
+        Assert.NotNull(hireId);
+
+        var appt = await db.Appointments.Include(a => a.Status).SingleAsync(a => a.SearchHireId == hireId!.Value);
+        Assert.Equal("appointment_confirmed", appt.Status!.StatusValue);
+        Assert.Equal(startUtc, appt.StartsAtUtc);
+        Assert.Equal(endUtc, appt.EndsAtUtc);
+        Assert.True(appt.BlocksCalendar);
+        Assert.Equal(mk.ExpertUserId, appt.ExpertId);
+        Assert.Equal(new DateTime(2026, 8, 3), appt.ProposedDate!.Value.Date);
+        Assert.Equal(new TimeSpan(9, 0, 0), appt.ProposedTime); // 07:00 UTC = 09:00 Europe/Madrid (CEST)
+    }
+
+    /// <summary>Crea un hire con cita CON HUECO ya confirmada vía webhook y devuelve (hireId, apptId).</summary>
+    private async Task<(int hireId, int apptId)> SeedSlotHireAsync(Marketplace mk, string slug, DateTime startUtc)
+    {
+        var payload = StripeEventBuilder.CheckoutSessionCompleted(
+            $"evt_{slug}_" + Guid.NewGuid().ToString("N"), $"cs_{slug}_" + Guid.NewGuid().ToString("N"),
+            $"pi_{slug}_" + Guid.NewGuid().ToString("N"), mk.ClientId, mk.ServiceId, 110m,
+            startsAtUtc: startUtc, endsAtUtc: startUtc.AddHours(2));
+        var resp = await _api.Client.SendAsync(StripeWebhookSigner.BuildSignedPost(
+            WebhookUrl, payload, ApiFactoryFixture.GeneralWebhookSecret));
+        resp.IsSuccessStatusCode.Should().BeTrue("el webhook con hueco debe crear la cita confirmada");
+
+        await using var db = _api.CreateDbContext();
+        var hireId = await db.SearchHires.Where(h => h.ClientId == mk.ClientId && h.SearchServiceId == mk.ServiceId)
+            .OrderByDescending(h => h.Id).Select(h => h.Id).FirstAsync();
+        var apptId = await db.Appointments.Where(a => a.SearchHireId == hireId).Select(a => a.Id).FirstAsync();
+        return (hireId, apptId);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-SLOT-CANC · cliente cancela cita con hueco (>24h, N=0 default) → tramo 6-24h (50/50)
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-SLOT-CANC · cliente cancela cita con hueco (>24h, N=0) → tramo 50/50 + refund")]
+    public async Task Slot_client_cancel_applies_tiered_policy()
+    {
+        var mk = await SeedMarketplaceAsync("hfcanc");
+        var (hireId, apptId) = await SeedSlotHireAsync(mk, "hfcanc", new DateTime(2026, 8, 3, 7, 0, 0, DateTimeKind.Utc));
+
+        var refundsBefore = StripeCalls("POST /v1/refunds");
+        var cancel = await CancelAsync(mk, apptId, byExpert: false, "Cambio de planes");
+        var body = await cancel.Content.ReadAsStringAsync();
+        cancel.StatusCode.Should().Be(HttpStatusCode.OK, $"la cancelación con hueco se permite siempre. Body: {body}");
+
+        (await AppointmentOfAsync(hireId)).Status.Should().Be("appointment_cancelled_by_client_6to24h",
+            ">24h con N=0 (default) cae al tramo medio 50/50");
+        (await HireStatusAsync(hireId)).Should().Be("cancelled");
+        StripeCalls("POST /v1/refunds").Should().BeGreaterThan(refundsBefore, "50% de reembolso al cliente vía Stripe");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-SLOT-CANC-EXP · experto cancela cita con hueco → expert_strike + strike +1
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-SLOT-CANC-EXP · experto cancela cita con hueco → expert_strike + strike +1")]
+    public async Task Slot_expert_cancel_applies_strike()
+    {
+        var mk = await SeedMarketplaceAsync("hfcancx");
+        var (hireId, apptId) = await SeedSlotHireAsync(mk, "hfcancx", new DateTime(2026, 8, 4, 7, 0, 0, DateTimeKind.Utc));
+
+        var cancel = await CancelAsync(mk, apptId, byExpert: true, "No puedo asistir");
+        var body = await cancel.Content.ReadAsStringAsync();
+        cancel.StatusCode.Should().Be(HttpStatusCode.OK, $"el experto puede cancelar. Body: {body}");
+
+        (await AppointmentOfAsync(hireId)).Status.Should().Be("appointment_cancelled_by_expert_strike");
+        (await HireStatusAsync(hireId)).Should().Be("cancelled");
+
+        await using var db = _api.CreateDbContext();
+        var strikes = await db.ExpertProfiles.Where(p => p.UserId == mk.ExpertUserId)
+            .Select(p => p.CancellationStrikes).FirstAsync();
+        strikes.Should().Be(1, "el experto recibe un strike al cancelar");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // HF-01 · webhook sin header de firma → 400
     // ─────────────────────────────────────────────────────────────────────────
     [Fact(DisplayName = "HF-01 · webhook-general sin Stripe-Signature → 400")]

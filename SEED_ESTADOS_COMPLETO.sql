@@ -59,7 +59,12 @@ FROM (VALUES
   -- cosmeticos / fallback (display de la cita en borrado de cuenta + fallback timer)
   ('AppointmentStatus','AppointmentCancelledByClientAccountDelete','appointment_cancelled_by_client_account_delete','Cancelado por Borrado de Cuenta (Cliente)',true,18),
   ('AppointmentStatus','AppointmentCancelledByExpertAccountDelete','appointment_cancelled_by_expert_account_delete','Cancelado por Borrado de Cuenta (Experto)',true,19),
-  ('AppointmentStatus','AppointmentCompletedAuto','appointment_completed_auto','Completado Automaticamente',true,20)
+  ('AppointmentStatus','AppointmentCompletedAuto','appointment_completed_auto','Completado Automaticamente',true,20),
+  -- 🗓️ Cancelacion escalonada por antelacion (Fase D). Todas finalizan.
+  ('AppointmentStatus','AppointmentCancelledByClientGt24h','appointment_cancelled_by_client_gt24h','Cancelado por Cliente >24h',true,21),
+  ('AppointmentStatus','AppointmentCancelledByClient6to24h','appointment_cancelled_by_client_6to24h','Cancelado por Cliente 6-24h',true,22),
+  ('AppointmentStatus','AppointmentCancelledByClientLt6h','appointment_cancelled_by_client_lt6h','Cancelado por Cliente <6h',true,23),
+  ('AppointmentStatus','AppointmentCancelledByExpertStrike','appointment_cancelled_by_expert_strike','Cancelado por Experto',true,24)
 ) AS v("StatusType","StatusName","StatusValue","DisplayName","fin","sort")
 WHERE NOT EXISTS (SELECT 1 FROM "SystemStatuses" s WHERE s."StatusValue"=v."StatusValue" AND s."StatusType"=v."StatusType");
 
@@ -104,7 +109,12 @@ FROM (VALUES
   -- AHORA: cliente al fault → expert 95% / platform 5% (mismo que approve-without-decision).
   ('appointment_cancelled_by_client_second',        0,  95, 5),
   -- expert cancela 2× con cita confirmada (cliente sin culpa) → cliente 100%
-  ('appointment_cancelled_by_expert_second',      100,   0, 0)
+  ('appointment_cancelled_by_expert_second',      100,   0, 0),
+  -- 🗓️ Cancelacion escalonada (Fase D): reparto por antelacion + actor.
+  ('appointment_cancelled_by_client_gt24h',       100,   0, 0),  -- cliente >24h (con cupo N) -> reembolso integro
+  ('appointment_cancelled_by_client_6to24h',       50,  50, 0),  -- cliente 6-24h (o >24h sin cupo) -> 50/50
+  ('appointment_cancelled_by_client_lt6h',          0, 100, 0),  -- cliente <6h / no-show -> experto cobra todo
+  ('appointment_cancelled_by_expert_strike',      100,   0, 0)   -- experto cancela -> cliente reembolso integro + strike
 ) AS v("sv","cp","ep","pp")
 JOIN "SystemStatuses" s ON s."StatusValue"=v."sv" AND s."StatusType"='AppointmentStatus'
 WHERE NOT EXISTS (SELECT 1 FROM "StatusConfigurations" sc WHERE sc."StatusId"=s."Id" AND sc."CategoryId" IS NULL AND sc."ServiceTypeCategoryId" IS NULL);
@@ -118,7 +128,12 @@ FROM (VALUES
   ('appointment_cancelled_by_expert','cancelled',false),         -- 1a cancelacion: inactivo
   ('appointment_cancelled_by_expert_rejection','cancelled',true),
   ('appointment_cancelled_by_no_response','cancelled',true),
-  ('appointment_completed','completed',true)   -- FIX #3: cita completada -> hire 'completed' (antes apuntaba mal a 'awaiting_client_decision', un estado NO final)
+  ('appointment_completed','completed',true),   -- FIX #3: cita completada -> hire 'completed' (antes apuntaba mal a 'awaiting_client_decision', un estado NO final)
+  -- 🗓️ Cancelacion escalonada (Fase D): todas mapean a hire 'cancelled' (activo = finaliza).
+  ('appointment_cancelled_by_client_gt24h','cancelled',true),
+  ('appointment_cancelled_by_client_6to24h','cancelled',true),
+  ('appointment_cancelled_by_client_lt6h','cancelled',true),
+  ('appointment_cancelled_by_expert_strike','cancelled',true)
 ) AS v("src","tgt","act")
 JOIN "SystemStatuses" src ON src."StatusValue"=v."src" AND src."StatusType"='AppointmentStatus'
 JOIN "SystemStatuses" tgt ON tgt."StatusValue"=v."tgt" AND tgt."StatusType"='SearchHireStatus'

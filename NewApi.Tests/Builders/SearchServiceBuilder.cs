@@ -17,6 +17,7 @@ public class SearchServiceBuilder
     private string _currency = "EUR";
     private string _conditions = "Test conditions";
     private bool _isActive = true;
+    private int? _durationInHours;
 
     public SearchServiceBuilder(int expertProfileId) { _expertProfileId = expertProfileId; }
 
@@ -33,6 +34,7 @@ public class SearchServiceBuilder
         return this;
     }
     public SearchServiceBuilder Inactive() { _isActive = false; return this; }
+    public SearchServiceBuilder WithDuration(int hours) { _durationInHours = hours; return this; }
 
     public async Task<SearchService> PersistAsync(AppDbContext db)
     {
@@ -74,6 +76,7 @@ public class SearchServiceBuilder
             Currency = _currency,
             Conditions = _conditions,
             IsActive = _isActive,
+            DurationInHours = _durationInHours,
             CreatedAt = DateTime.UtcNow,
         };
         db.SearchServices.Add(svc);

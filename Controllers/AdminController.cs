@@ -789,6 +789,84 @@ namespace newApi.Controllers
             }
         }
 
+        /// <summary>🗓️ Fase D: leer la política de cancelación escalonada (admin).</summary>
+        [HttpGet("cancellation/settings")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> GetCancellationSettings()
+        {
+            try
+            {
+                var s = await _context.SystemSettings.AsNoTracking().FirstOrDefaultAsync();
+                return Ok(new
+                {
+                    tierHighHours = s?.CancellationTierHighHours ?? 24,
+                    tierLowHours = s?.CancellationTierLowHours ?? 6,
+                    freeCancellationsPerParty = s?.FreeCancellationsPerParty ?? 0,
+                    penaltyFreeWindowDays = s?.PenaltyFreeWindowDays ?? 30
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error obteniendo configuración de cancelaciones");
+                return StatusCode(500, new { success = false, message = "Error obteniendo configuración de cancelaciones", error = ex.Message });
+            }
+        }
+
+        /// <summary>🗓️ Fase D: editar la política de cancelación escalonada (admin). N=0 = máxima dureza.</summary>
+        [HttpPost("cancellation/settings")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> SetCancellationSettings([FromBody] CancellationSettingsRequest request)
+        {
+            try
+            {
+                if (request == null)
+                    return BadRequest(new { success = false, message = "Cuerpo requerido" });
+                if (request.TierHighHours <= request.TierLowHours)
+                    return BadRequest(new { success = false, message = "tierHighHours debe ser mayor que tierLowHours" });
+                if (request.TierLowHours < 0 || request.FreeCancellationsPerParty < 0 || request.PenaltyFreeWindowDays < 1)
+                    return BadRequest(new { success = false, message = "Valores fuera de rango" });
+
+                var s = await _context.SystemSettings.FirstOrDefaultAsync();
+                if (s == null)
+                {
+                    s = new global::newApi.DataLayer.Models.PostGresModels.SystemSetting();
+                    _context.SystemSettings.Add(s);
+                }
+                s.CancellationTierHighHours = request.TierHighHours;
+                s.CancellationTierLowHours = request.TierLowHours;
+                s.FreeCancellationsPerParty = request.FreeCancellationsPerParty;
+                s.PenaltyFreeWindowDays = request.PenaltyFreeWindowDays;
+                s.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+
+                var adminId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "0");
+                _logger.LogInformation($"🗓️ Política de cancelación actualizada por admin {adminId}: high={request.TierHighHours} low={request.TierLowHours} N={request.FreeCancellationsPerParty} window={request.PenaltyFreeWindowDays}");
+
+                return Ok(new
+                {
+                    success = true,
+                    tierHighHours = s.CancellationTierHighHours,
+                    tierLowHours = s.CancellationTierLowHours,
+                    freeCancellationsPerParty = s.FreeCancellationsPerParty,
+                    penaltyFreeWindowDays = s.PenaltyFreeWindowDays
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error estableciendo configuración de cancelaciones");
+                return StatusCode(500, new { success = false, message = "Error estableciendo configuración de cancelaciones", error = ex.Message });
+            }
+        }
+
+        /// <summary>DTO para editar la política de cancelación escalonada (Fase D).</summary>
+        public class CancellationSettingsRequest
+        {
+            public int TierHighHours { get; set; } = 24;
+            public int TierLowHours { get; set; } = 6;
+            public int FreeCancellationsPerParty { get; set; } = 0;
+            public int PenaltyFreeWindowDays { get; set; } = 30;
+        }
+
         /// <summary>
         /// ✅ Alternar el modo de Stripe automáticamente (development ↔ production)
         /// </summary>

@@ -39,6 +39,25 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
         await using var db = CreateDbContext();
         await db.Database.EnsureCreatedAsync();
 
+        // 1b) Exclusion constraint anti-solape (SQL crudo no modelado por EF; EnsureCreated
+        //     no la crea). Debe existir en tests para validar la prevención de doble-booking.
+        await db.Database.ExecuteSqlRawAsync("CREATE EXTENSION IF NOT EXISTS btree_gist;");
+        await db.Database.ExecuteSqlRawAsync(
+            @"ALTER TABLE ""Appointments"" DROP CONSTRAINT IF EXISTS ux_expert_no_overlap;");
+        await db.Database.ExecuteSqlRawAsync(@"
+            ALTER TABLE ""Appointments""
+            ADD CONSTRAINT ux_expert_no_overlap
+            EXCLUDE USING gist (
+                ""ExpertId"" WITH =,
+                tstzrange(""StartsAtUtc"", ""EndsAtUtc"", '[)') WITH &&
+            )
+            WHERE (""BlocksCalendar"" = true AND ""ExpertId"" IS NOT NULL
+                   AND ""StartsAtUtc"" IS NOT NULL AND ""EndsAtUtc"" IS NOT NULL);");
+        await db.Database.ExecuteSqlRawAsync(
+            @"ALTER TABLE ""Appointments"" DROP CONSTRAINT IF EXISTS ck_appointment_interval_order;");
+        await db.Database.ExecuteSqlRawAsync(
+            @"ALTER TABLE ""Appointments"" ADD CONSTRAINT ck_appointment_interval_order CHECK (""StartsAtUtc"" IS NULL OR ""EndsAtUtc"" IS NULL OR ""EndsAtUtc"" > ""StartsAtUtc"");");
+
         // 2) Aplicar seed de estados/mappings/configuraciones
         var seedPath = Path.Combine(AppContext.BaseDirectory, "Resources", "SEED_ESTADOS_COMPLETO.sql");
         if (File.Exists(seedPath))

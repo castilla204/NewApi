@@ -133,6 +133,127 @@ namespace newApi.Controllers
             }
         }
 
+        // ─────────────────────────────────────────────────────────────────────────
+        // 🗓️ Fase E1: CRUD de ExpertAvailabilityRule (horas por día + turnos partidos).
+        // Es la tabla que consume el slot API (modelo Calendly). NO toca la disponibilidad
+        // legacy (ExpertAvailability), que se conserva para hires en curso del flujo antiguo.
+        // ─────────────────────────────────────────────────────────────────────────
+
+        /// <summary>Reglas de disponibilidad activas del experto autenticado (horas por día).</summary>
+        [HttpGet("rules")]
+        public async Task<IActionResult> GetRules()
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                return Unauthorized(new { message = "Invalid user identification" });
+
+            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
+            if (expert == null)
+                return NotFound(new { message = "Expert profile not found" });
+
+            var rules = await _context.ExpertAvailabilityRules
+                .Where(r => r.ExpertId == expert.Id && r.IsActive && r.EffectiveTo == null)
+                .OrderBy(r => r.DayOfWeek).ThenBy(r => r.StartLocal)
+                .Select(r => new AvailabilityRuleDto
+                {
+                    Id = r.Id,
+                    DayOfWeek = r.DayOfWeek,
+                    StartLocal = r.StartLocal.ToString(@"hh\:mm"),
+                    EndLocal = r.EndLocal.ToString(@"hh\:mm"),
+                    Timezone = r.Timezone,
+                })
+                .ToListAsync();
+
+            return Ok(rules);
+        }
+
+        /// <summary>
+        /// Reemplaza TODA la disponibilidad por reglas del experto (set semanal completo).
+        /// Desactiva las reglas activas (effective-dating) e inserta las nuevas con snapshot del timezone.
+        /// </summary>
+        [HttpPut("rules")]
+        public async Task<IActionResult> SetRules([FromBody] SetAvailabilityRulesDto dto)
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                return Unauthorized(new { message = "Invalid user identification" });
+
+            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
+            if (expert == null)
+                return NotFound(new { message = "Expert profile not found. You must be an expert to manage availability." });
+
+            var rules = dto?.Rules ?? new List<AvailabilityRuleInputDto>();
+
+            // Validar + parsear antes de tocar la BD.
+            var parsed = new List<(int Day, TimeSpan Start, TimeSpan End)>();
+            foreach (var r in rules)
+            {
+                if (r.DayOfWeek < 0 || r.DayOfWeek > 6)
+                    return BadRequest(new { message = $"Día inválido: {r.DayOfWeek} (debe ser 0=domingo … 6=sábado)." });
+                if (!TimeSpan.TryParse(r.StartLocal, out var start) || !TimeSpan.TryParse(r.EndLocal, out var end))
+                    return BadRequest(new { message = $"Hora inválida en una franja del día {r.DayOfWeek} (usa HH:mm)." });
+                if (end <= start)
+                    return BadRequest(new { message = $"La hora de fin debe ser posterior a la de inicio (día {r.DayOfWeek})." });
+                parsed.Add((r.DayOfWeek, start, end));
+            }
+
+            var now = DateTime.UtcNow;
+            var tz = string.IsNullOrWhiteSpace(expert.Timezone) ? "UTC" : expert.Timezone;
+
+            var existing = await _context.ExpertAvailabilityRules
+                .Where(r => r.ExpertId == expert.Id && r.IsActive && r.EffectiveTo == null)
+                .ToListAsync();
+            foreach (var old in existing)
+            {
+                old.IsActive = false;
+                old.EffectiveTo = now;
+                old.UpdatedAt = now;
+            }
+
+            foreach (var (day, start, end) in parsed)
+            {
+                _context.ExpertAvailabilityRules.Add(new ExpertAvailabilityRule
+                {
+                    ExpertId = expert.Id,
+                    DayOfWeek = day,
+                    StartLocal = start,
+                    EndLocal = end,
+                    Timezone = tz,
+                    EffectiveFrom = now,
+                    EffectiveTo = null,
+                    IsActive = true,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                });
+            }
+
+            await _context.SaveChangesAsync();
+            return Ok(new { count = parsed.Count });
+        }
+    }
+
+    /// <summary>Regla de disponibilidad para lectura (Fase E1).</summary>
+    public class AvailabilityRuleDto
+    {
+        public int Id { get; set; }
+        public int DayOfWeek { get; set; }
+        public string StartLocal { get; set; } = "";
+        public string EndLocal { get; set; } = "";
+        public string? Timezone { get; set; }
+    }
+
+    /// <summary>Una franja del editor (Fase E1).</summary>
+    public class AvailabilityRuleInputDto
+    {
+        public int DayOfWeek { get; set; }
+        public string StartLocal { get; set; } = "";
+        public string EndLocal { get; set; } = "";
+    }
+
+    /// <summary>Set semanal completo a guardar (Fase E1).</summary>
+    public class SetAvailabilityRulesDto
+    {
+        public List<AvailabilityRuleInputDto> Rules { get; set; } = new();
     }
 }
 

@@ -477,6 +477,20 @@ namespace newApi.Controllers
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
 
+                // 🗓️ F1 FIX: validar el hueco de cita ANTES de crear el Checkout Session. Sin esto, un
+                // EndsAtUtc<=StartsAtUtc dispara el CHECK 23514 en el webhook (tras autorizar el pago),
+                // escapa del filtro 23P01 → webhook 500 → Stripe reintenta ~3 días y la autorización del
+                // cliente queda retenida ~7 días. Validamos aquí y devolvemos 400 sin cobrar nada.
+                if (request.StartsAtUtc.HasValue || request.EndsAtUtc.HasValue)
+                {
+                    if (!request.StartsAtUtc.HasValue || !request.EndsAtUtc.HasValue)
+                        return BadRequest(new { message = "Cita inválida: faltan inicio o fin del hueco." });
+                    if (request.EndsAtUtc.Value <= request.StartsAtUtc.Value)
+                        return BadRequest(new { message = "Cita inválida: el fin debe ser posterior al inicio." });
+                    if (request.StartsAtUtc.Value <= DateTime.UtcNow)
+                        return BadRequest(new { message = "Cita inválida: el hueco ya ha pasado, elige otro." });
+                }
+
                 var activeSearchCount = await _context.Searches.CountAsync(s => s.UserId == userId && s.IsActive);
                 var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
 
@@ -762,7 +776,18 @@ namespace newApi.Controllers
                             { "locationName", I6_Truncate(parameterDto?.LocationName, 100) },
                             { "categoryId", parameterDto?.Category?.ToString() ?? "" },
                             { "serviceTypeId", parameterDto?.ServiceTypeId?.ToString() ?? "" },
-                            { "locationRange", parameterDto?.LocationRange?.ToString() ?? "" }
+                            { "locationRange", parameterDto?.LocationRange?.ToString() ?? "" },
+                            // 🗓️ Reserva atómica: hueco elegido en UTC (ISO 8601 round-trip). Vacío si el
+                            // servicio no usa cita. El webhook lo lee para crear la cita YA CONFIRMADA y
+                            // dejar que la exclusion constraint GiST garantice que no hay doble-booking.
+                            { "startsAtUtc", request.StartsAtUtc?.ToString("O", System.Globalization.CultureInfo.InvariantCulture) ?? "" },
+                            { "endsAtUtc", request.EndsAtUtc?.ToString("O", System.Globalization.CultureInfo.InvariantCulture) ?? "" },
+                            // 🗓️ Fase E: ubicación de la cita (servicios con radio). El webhook la pone en el Appointment.
+                            { "apptLocation", I6_Truncate(request.Location, 150) },
+                            { "apptLat", request.Latitude ?? "" },
+                            { "apptLng", request.Longitude ?? "" },
+                            { "apptDoor", I6_Truncate(request.DoorNumber, 60) },
+                            { "apptDetails", I6_Truncate(request.SiteDetails, 200) }
                         },
                         // ✅ CAPTURA MANUAL: Autoriza el pago pero no lo captura hasta validar todo en el webhook
                         // Esto evita perder comisiones si algo falla después del pago
@@ -1683,5 +1708,24 @@ namespace newApi.Controllers
         /// DTO con los parámetros de la búsqueda.
         /// </summary>
         public CreateSearchParameterDto ParameterDto { get; set; }
+
+        /// <summary>
+        /// 🗓️ Reserva atómica (Calendly): inicio del hueco de cita elegido por el cliente, en UTC.
+        /// Null si el servicio no requiere cita. Se asegura en el webhook con la exclusion constraint GiST.
+        /// </summary>
+        public DateTime? StartsAtUtc { get; set; }
+
+        /// <summary>Fin del hueco elegido, en UTC (= inicio + duración del servicio).</summary>
+        public DateTime? EndsAtUtc { get; set; }
+
+        /// <summary>
+        /// 🗓️ Fase E: ubicación de la cita elegida por el cliente (servicios con radio de km).
+        /// Para servicios estáticos (taller, radio 0) es la ubicación del experto. Nullable.
+        /// </summary>
+        public string? Location { get; set; }
+        public string? Latitude { get; set; }
+        public string? Longitude { get; set; }
+        public string? DoorNumber { get; set; }
+        public string? SiteDetails { get; set; }
     }
 }

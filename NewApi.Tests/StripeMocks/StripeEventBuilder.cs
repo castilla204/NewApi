@@ -24,8 +24,24 @@ public static class StripeEventBuilder
         int clientUserId,
         int serviceId,
         decimal amount,
-        string currency = "eur")
+        string currency = "eur",
+        DateTime? startsAtUtc = null,
+        DateTime? endsAtUtc = null)
     {
+        var metadata = new Dictionary<string, string>
+        {
+            ["userId"] = clientUserId.ToString(),
+            ["serviceId"] = serviceId.ToString(),
+            ["amount"] = amount.ToString("0.##"),
+            ["pendingHire"] = "true",
+        };
+        // 🗓️ Reserva atómica (Calendly): hueco elegido en UTC, como lo manda CreateSearchWithHire.
+        if (startsAtUtc.HasValue && endsAtUtc.HasValue)
+        {
+            metadata["startsAtUtc"] = startsAtUtc.Value.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+            metadata["endsAtUtc"] = endsAtUtc.Value.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         var payload = new
         {
             id = eventId,
@@ -50,13 +66,7 @@ public static class StripeEventBuilder
                     status = "complete",
                     amount_total = (long)(amount * 100),
                     currency,
-                    metadata = new Dictionary<string, string>
-                    {
-                        ["userId"] = clientUserId.ToString(),
-                        ["serviceId"] = serviceId.ToString(),
-                        ["amount"] = amount.ToString("0.##"),
-                        ["pendingHire"] = "true",
-                    },
+                    metadata = metadata,
                 },
             },
         };

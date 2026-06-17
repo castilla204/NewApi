@@ -116,6 +116,51 @@ public class HttpAvailabilityExceptionsTests
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
+    [Fact(DisplayName = "PUT exceptions/batch aplica varias fechas (cerrar + horas + borrar) en una llamada")]
+    public async Task Batch_applies_multiple_dates()
+    {
+        var (jwt, profileId) = await SeedExpertAsync("exc-batch@test.dev");
+        // Pre-crear una excepción que el batch va a BORRAR (remove=true).
+        await _api.Client.SendAsync(Authed(HttpMethod.Put, Url, jwt,
+            new { date = "2026-07-08", isWorking = false, ranges = Array.Empty<object>() }));
+
+        var batch = await _api.Client.SendAsync(Authed(HttpMethod.Put, $"{Url}/batch", jwt, new
+        {
+            exceptions = new object[]
+            {
+                new { date = "2026-07-06", isWorking = false, ranges = Array.Empty<object>() },
+                new { date = "2026-07-07", isWorking = true, ranges = new object[] { new { start = "10:00", end = "12:00" }, new { start = "16:00", end = "18:00" } } },
+                new { date = "2026-07-08", remove = true, isWorking = false, ranges = Array.Empty<object>() },
+            },
+        }));
+        batch.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await using var db = _api.CreateDbContext();
+        (await db.ExpertAvailabilityExceptions.CountAsync(e => e.ExpertId == profileId && e.Date == new DateOnly(2026, 7, 6) && !e.IsWorking)).Should().Be(1);
+        (await db.ExpertAvailabilityExceptions.CountAsync(e => e.ExpertId == profileId && e.Date == new DateOnly(2026, 7, 7) && e.IsWorking)).Should().Be(2);
+        (await db.ExpertAvailabilityExceptions.AnyAsync(e => e.ExpertId == profileId && e.Date == new DateOnly(2026, 7, 8)))
+            .Should().BeFalse("remove=true borra la excepción de esa fecha");
+    }
+
+    [Fact(DisplayName = "PUT exceptions/batch es atómico: una fecha pasada rechaza TODO el lote")]
+    public async Task Batch_is_atomic_on_invalid()
+    {
+        var (jwt, profileId) = await SeedExpertAsync("exc-batch-atomic@test.dev");
+        var batch = await _api.Client.SendAsync(Authed(HttpMethod.Put, $"{Url}/batch", jwt, new
+        {
+            exceptions = new object[]
+            {
+                new { date = "2026-07-06", isWorking = false, ranges = Array.Empty<object>() },
+                new { date = "2000-01-01", isWorking = false, ranges = Array.Empty<object>() }, // pasada → rechaza todo
+            },
+        }));
+        batch.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        await using var db = _api.CreateDbContext();
+        (await db.ExpertAvailabilityExceptions.AnyAsync(e => e.ExpertId == profileId))
+            .Should().BeFalse("lote atómico: si una fecha falla, no se aplica nada");
+    }
+
     private sealed record ExceptionRead(string Date, bool IsWorking, List<RangeRead> Ranges);
     private sealed record RangeRead(string Start, string End);
 }

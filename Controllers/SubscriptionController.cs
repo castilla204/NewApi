@@ -7335,6 +7335,8 @@ namespace newApi.Controllers
                     // dentro de esta MISMA tx; la cita se marca aquí.
                     appointment.StatusId = cancelledStatus.Id;
                     appointment.UpdatedAt = DateTime.UtcNow;
+                    // 🗓️ P0: liberar el hueco del calendario en la cancelación terminal del experto.
+                    appointment.BlocksCalendar = false;
 
                     bool refundSuccess = await _refundService.ProcessMoneyDistributionAsync(
                         searchHire.Id,
@@ -9839,6 +9841,8 @@ namespace newApi.Controllers
                     {
                         hire.Appointment.StatusId = appointmentCancelledStatusId.Value;
                         hire.Appointment.UpdatedAt = DateTime.UtcNow;
+                        // 🗓️ P0: liberar el hueco del calendario tras cancelación/fallo del PaymentIntent.
+                        hire.Appointment.BlocksCalendar = false;
 
                         var activeTimers = await _context.AppointmentTimers
                             .Where(t => t.AppointmentId == hire.Appointment.Id
@@ -10470,6 +10474,8 @@ namespace newApi.Controllers
                     {
                         hire.Appointment.StatusId = appointmentCancelledStatusId.Value;
                         hire.Appointment.UpdatedAt = DateTime.UtcNow;
+                        // 🗓️ P0: liberar el hueco del calendario tras cancelación/fallo del PaymentIntent.
+                        hire.Appointment.BlocksCalendar = false;
 
                         var activeTimers = await _context.AppointmentTimers
                             .Where(t => t.AppointmentId == hire.Appointment.Id

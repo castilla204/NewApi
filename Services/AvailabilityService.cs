@@ -75,6 +75,33 @@ namespace newApi.Services
             return SlotCalculator.ComputeFreeSlots(windows, bookings, day, durationHours, DateTime.UtcNow);
         }
 
+        public async Task<bool> IsSlotBookableAsync(int serviceId, DateTime startUtc, DateTime endUtc, CancellationToken ct = default)
+        {
+            // Sanidad: hueco de longitud exacta AppointmentSlotHours y fin > inicio.
+            if (endUtc <= startUtc) return false;
+            if ((endUtc - startUtc) != TimeSpan.FromHours(AppointmentSlotHours)) return false;
+
+            var startUtcKind = DateTime.SpecifyKind(startUtc, DateTimeKind.Utc);
+            var endUtcKind = DateTime.SpecifyKind(endUtc, DateTimeKind.Utc);
+
+            // El start cae en un día LOCAL que, según el offset del experto, mapea a la fecha UTC del
+            // start o a ±1 día. Probamos las tres y comprobamos coincidencia exacta con un hueco real.
+            var probeDates = new[]
+            {
+                startUtcKind.Date.AddDays(-1),
+                startUtcKind.Date,
+                startUtcKind.Date.AddDays(1),
+            };
+
+            foreach (var probe in probeDates.Distinct())
+            {
+                var slots = await GetAvailableSlotsAsync(serviceId, probe, ct);
+                if (slots.Any(s => s.StartUtc == startUtcKind && s.EndUtc == endUtcKind))
+                    return true;
+            }
+            return false;
+        }
+
         public async Task<List<DayAvailability>> GetAvailabilitySummaryAsync(int serviceId, DateTime fromDate, int days, CancellationToken ct = default)
         {
             var result = new List<DayAvailability>();

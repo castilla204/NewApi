@@ -194,7 +194,21 @@ namespace newApi.Controllers
                     return BadRequest(new { message = $"Hora inválida en una franja del día {r.DayOfWeek} (usa HH:mm)." });
                 if (end <= start)
                     return BadRequest(new { message = $"La hora de fin debe ser posterior a la de inicio (día {r.DayOfWeek})." });
+                // P3: la franja debe caer dentro de [00:00, 24:00] (TimeSpan.TryParse acepta días/>24h).
+                if (start < TimeSpan.Zero || end > TimeSpan.FromHours(24))
+                    return BadRequest(new { message = $"Franja fuera de rango en el día {r.DayOfWeek} (debe estar entre 00:00 y 24:00)." });
                 parsed.Add((r.DayOfWeek, start, end));
+            }
+
+            // P2: rechazar franjas que se solapan dentro del MISMO día (turnos partidos deben ser disjuntos).
+            foreach (var dayGroup in parsed.GroupBy(p => p.Day))
+            {
+                var ordered = dayGroup.OrderBy(p => p.Start).ToList();
+                for (var i = 1; i < ordered.Count; i++)
+                {
+                    if (ordered[i].Start < ordered[i - 1].End)
+                        return BadRequest(new { message = $"Franjas solapadas en el día {dayGroup.Key}; revísalas." });
+                }
             }
 
             var now = DateTime.UtcNow;

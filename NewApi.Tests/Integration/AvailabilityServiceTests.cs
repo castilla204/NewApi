@@ -60,8 +60,10 @@ public class AvailabilityServiceTests : IntegrationTestBase
         var sut = new AvailabilityService(sutDb);
         var slots = await sut.GetAvailableSlotsAsync(serviceId, Monday);
 
-        slots.Should().HaveCount(1, "el primer hueco está reservado");
-        slots[0].StartUtc.Should().Be(new DateTime(2026, 7, 6, 9, 0, 0, DateTimeKind.Utc));
+        // Huecos de 1h fijos (desacoplados de la duración del servicio): 09,10,11,12 Madrid.
+        // La reserva 09-11 Madrid (07-09 UTC) bloquea los huecos de 09:00 y 10:00 → quedan 11:00 y 12:00.
+        slots.Should().HaveCount(2, "los dos primeros huecos de 1h (09:00 y 10:00) están reservados");
+        slots[0].StartUtc.Should().Be(new DateTime(2026, 7, 6, 9, 0, 0, DateTimeKind.Utc)); // 11:00 Madrid
         slots[0].Timezone.Should().Be("Europe/Madrid");
     }
 
@@ -105,7 +107,7 @@ public class AvailabilityServiceTests : IntegrationTestBase
     [Fact]
     public async Task SummaryReportsFreeSlotsPerDay()
     {
-        // Lunes 09-13 Madrid, duración 2 → 2 huecos el lunes; 0 el resto de días sin regla.
+        // Lunes 09-13 Madrid; huecos de 1h fijos → 4 huecos el lunes (09,10,11,12); 0 el resto sin regla.
         var serviceId = await SeedExpertWithRuleAsync(2, new TimeSpan(9, 0, 0), new TimeSpan(13, 0, 0));
 
         await using var sutDb = NewDbContext();
@@ -113,7 +115,7 @@ public class AvailabilityServiceTests : IntegrationTestBase
         var summary = await sut.GetAvailabilitySummaryAsync(serviceId, Monday, 7);
 
         summary.Should().HaveCount(7);
-        summary.Single(d => d.Date == "2026-07-06").FreeSlots.Should().Be(2, "lunes: 09-11 y 11-13");
+        summary.Single(d => d.Date == "2026-07-06").FreeSlots.Should().Be(4, "lunes 09-13 con huecos de 1h: 09,10,11,12");
         summary.Single(d => d.Date == "2026-07-07").FreeSlots.Should().Be(0, "martes: sin regla");
     }
 }

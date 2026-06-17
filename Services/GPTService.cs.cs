@@ -95,6 +95,69 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
             }
         }
 
+        private const string ExpertProfileSystemPrompt =
+            "Reescribe la descripción profesional de un experto para que suene natural, cercana y " +
+            "convincente, como si la hubiera escrito una persona real. Está en primera persona.\n" +
+            "Reglas estrictas:\n" +
+            "- Responde SOLO con el texto reescrito, sin comillas, sin saludos y sin explicaciones.\n" +
+            "- Máximo 60 caracteres.\n" +
+            "- Prohibido usar emojis, iconos o símbolos.\n" +
+            "- Prohibido usar markdown, asteriscos, almohadillas, viñetas o guiones de lista.\n" +
+            "- No inventes datos, títulos ni años de experiencia que no aparezcan en el texto original.\n" +
+            "- Español de España, tono profesional y humano. Nada de frases de relleno.";
+
+        private const string ServiceConditionsSystemPrompt =
+            "Reescribe la descripción de un servicio (sus condiciones) para que quede clara, " +
+            "profesional y atractiva, como si la hubiera escrito un profesional real dirigiéndose a " +
+            "un posible cliente.\n" +
+            "Reglas estrictas:\n" +
+            "- Responde SOLO con el texto reescrito, sin comillas, sin saludos y sin explicaciones.\n" +
+            "- Entre 400 y 1000 caracteres.\n" +
+            "- Prohibido usar emojis, iconos o símbolos.\n" +
+            "- Prohibido usar markdown, asteriscos, almohadillas, viñetas o listas con guiones.\n" +
+            "- Escribe en párrafos de prosa normal.\n" +
+            "- No inventes datos, garantías ni servicios que no aparezcan en el texto original; " +
+            "solo mejora la redacción de lo aportado.\n" +
+            "- Español de España, tono profesional y humano. Nada de frases de relleno.";
+
+        public async Task<string> RewriteDescription(DescriptionKind kind, string text)
+        {
+            var systemPrompt = kind == DescriptionKind.ExpertProfile
+                ? ExpertProfileSystemPrompt
+                : ServiceConditionsSystemPrompt;
+            var maxLength = kind == DescriptionKind.ExpertProfile ? 60 : 1000;
+
+            var requestBody = new
+            {
+                model = "gpt-4o-mini",
+                messages = new[]
+                {
+                    new { role = "system", content = systemPrompt },
+                    new { role = "user", content = text }
+                },
+                max_tokens = 800,
+                temperature = 0.6
+            };
+
+            var requestJson = JsonSerializer.Serialize(requestBody);
+            var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+
+            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _openAiApiKey);
+            var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
+            response.EnsureSuccessStatusCode();
+
+            var responseContent = await response.Content.ReadAsStringAsync();
+            var completionResponse = JsonSerializer.Deserialize<CompletionResponse>(responseContent);
+
+            if (completionResponse?.Choices == null || completionResponse.Choices.Length == 0)
+            {
+                throw new Exception("No response from GPT");
+            }
+
+            var raw = completionResponse.Choices[0].Message.Content;
+            return DescriptionTextCleaner.Clean(raw, maxLength);
+        }
+
         private class CompletionResponse
         {
             public Choice[] Choices { get; set; }

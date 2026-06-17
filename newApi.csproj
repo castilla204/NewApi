@@ -49,11 +49,11 @@
 	</ItemGroup>
 
 	<ItemGroup>
-	  <Compile Remove="Controllers\AISearchController.cs" />
+	  <!-- Estos dos DTOs se excluyen porque sus clases (ExpertProfileDto, UpdateSearchDto)
+	       están duplicadas en SearchHireDto.cs / SearchDto.cs; reincluirlos rompe el build
+	       con CS0101 (definición duplicada). NO reincluir. -->
 	  <Compile Remove="DataLayer\Models\DTOs\ExpertProfileDto.cs" />
 	  <Compile Remove="DataLayer\Models\DTOs\UpdateSearchDto.cs" />
-	  <Compile Remove="Services\GPTService.cs.cs" />
-	  <Compile Remove="Services\IGPTService.cs" />
 	</ItemGroup>
 
 	<ItemGroup>

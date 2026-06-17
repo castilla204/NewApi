@@ -1,4 +1,4 @@
-using DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models.PostGresModels;
 using newApi.Controllers;
 
 namespace newApi.Services

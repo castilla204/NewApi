@@ -1,7 +1,7 @@
 ﻿using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models.PostGresModels;
 using newApi.Controllers;
 
 namespace newApi.Services

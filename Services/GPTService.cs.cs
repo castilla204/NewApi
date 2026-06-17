@@ -120,6 +120,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
             "- Prohibido usar emojis, iconos o símbolos.\n" +
             "- Prohibido usar markdown, asteriscos, almohadillas, viñetas o guiones de lista.\n" +
             "- No inventes datos, títulos ni años de experiencia que no aparezcan en el texto original.\n" +
+            "- Nunca te disculpes, nunca expliques y nunca digas que no puedes ayudar; si el texto es breve o confuso, redacta igualmente una descripción profesional plausible a partir de lo que haya. Devuelve ÚNICAMENTE el texto reescrito.\n" +
             "- Español de España, tono profesional y humano. Nada de frases de relleno.";
 
         private const string ServiceConditionsSystemPrompt =
@@ -134,6 +135,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
             "- Escribe en párrafos de prosa normal.\n" +
             "- No inventes datos, garantías ni servicios que no aparezcan en el texto original; " +
             "solo mejora la redacción de lo aportado.\n" +
+            "- Nunca te disculpes, nunca expliques y nunca digas que no puedes ayudar; si el texto es breve o confuso, redacta igualmente una descripción profesional plausible a partir de lo que haya. Devuelve ÚNICAMENTE el texto reescrito.\n" +
             "- Español de España, tono profesional y humano. Nada de frases de relleno.";
 
         public async Task<string> RewriteDescription(DescriptionKind kind, string text)

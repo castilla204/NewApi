@@ -409,6 +409,108 @@ namespace newApi.Controllers
             await _context.SaveChangesAsync();
             return Ok(new { removed = rows.Count });
         }
+
+        /// <summary>
+        /// 🗓️ Guardado GLOBAL: aplica una lista de cambios de excepción (upsert o borrado por fecha)
+        /// en UNA sola operación atómica. Permite editar varios días y guardar todo de golpe.
+        /// Validación previa de todo el lote: o entra entero o no entra nada.
+        /// </summary>
+        [HttpPut("exceptions/batch")]
+        public async Task<IActionResult> SetExceptionsBatch([FromBody] BatchAvailabilityExceptionsDto dto)
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                return Unauthorized(new { message = "Invalid user identification" });
+
+            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
+            if (expert == null)
+                return NotFound(new { message = "Expert profile not found. You must be an expert to manage availability." });
+
+            var items = dto?.Exceptions ?? new List<BatchExceptionItemDto>();
+            var todayLocal = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+
+            // 1) Validar y parsear TODO antes de tocar la BD (atómico).
+            var plan = new List<(DateOnly Date, bool Remove, bool IsWorking, List<(TimeSpan Start, TimeSpan End)> Ranges)>();
+            var seenDates = new HashSet<DateOnly>();
+            foreach (var item in items)
+            {
+                if (item == null || !DateOnly.TryParse(item.Date, out var date))
+                    return BadRequest(new { message = $"Fecha inválida (usa YYYY-MM-DD): '{item?.Date}'." });
+                if (!seenDates.Add(date))
+                    return BadRequest(new { message = $"Fecha repetida en el lote: {item.Date}." });
+                if (date < todayLocal)
+                    return BadRequest(new { message = $"No puedes configurar una fecha en el pasado: {item.Date}." });
+
+                if (item.Remove)
+                {
+                    plan.Add((date, true, false, new List<(TimeSpan, TimeSpan)>()));
+                    continue;
+                }
+
+                var parsed = new List<(TimeSpan Start, TimeSpan End)>();
+                if (item.IsWorking)
+                {
+                    foreach (var r in item.Ranges ?? new List<ExceptionRangeInputDto>())
+                    {
+                        if (!TimeSpan.TryParse(r.Start, out var start) || !TimeSpan.TryParse(r.End, out var end))
+                            return BadRequest(new { message = $"Hora inválida en una franja del {item.Date} (usa HH:mm)." });
+                        if (end <= start)
+                            return BadRequest(new { message = $"La hora de fin debe ser posterior a la de inicio ({item.Date})." });
+                        if (start < TimeSpan.Zero || end > TimeSpan.FromHours(24))
+                            return BadRequest(new { message = $"Franja fuera de rango el {item.Date} (00:00–24:00)." });
+                        parsed.Add((start, end));
+                    }
+                    var ordered = parsed.OrderBy(p => p.Start).ToList();
+                    for (var i = 1; i < ordered.Count; i++)
+                        if (ordered[i].Start < ordered[i - 1].End)
+                            return BadRequest(new { message = $"Franjas solapadas el {item.Date}; revísalas." });
+                    if (parsed.Count == 0)
+                        return BadRequest(new { message = $"Si el {item.Date} está abierto, indica al menos una franja." });
+                }
+                plan.Add((date, false, item.IsWorking, parsed));
+            }
+
+            if (plan.Count == 0)
+                return Ok(new { applied = 0, rows = 0 });
+
+            // 2) Aplicar: reemplazar las filas de todas las fechas afectadas y reinsertar.
+            var now = DateTime.UtcNow;
+            var tz = string.IsNullOrWhiteSpace(expert.Timezone) ? "UTC" : expert.Timezone;
+            var dates = plan.Select(p => p.Date).ToList();
+            var existing = await _context.ExpertAvailabilityExceptions
+                .Where(e => e.ExpertId == expert.Id && dates.Contains(e.Date)).ToListAsync();
+            _context.ExpertAvailabilityExceptions.RemoveRange(existing);
+
+            var added = 0;
+            foreach (var p in plan)
+            {
+                if (p.Remove) continue; // borrar = solo quitar (vuelve a regir el horario semanal)
+                if (!p.IsWorking)
+                {
+                    _context.ExpertAvailabilityExceptions.Add(new ExpertAvailabilityException
+                    {
+                        ExpertId = expert.Id, Date = p.Date, IsWorking = false,
+                        Timezone = tz, CreatedAt = now, UpdatedAt = now,
+                    });
+                    added++;
+                }
+                else
+                {
+                    foreach (var (start, end) in p.Ranges)
+                    {
+                        _context.ExpertAvailabilityExceptions.Add(new ExpertAvailabilityException
+                        {
+                            ExpertId = expert.Id, Date = p.Date, IsWorking = true,
+                            StartLocal = start, EndLocal = end, Timezone = tz, CreatedAt = now, UpdatedAt = now,
+                        });
+                        added++;
+                    }
+                }
+            }
+
+            await _context.SaveChangesAsync();
+            return Ok(new { applied = plan.Count, rows = added });
+        }
     }
 
     /// <summary>Regla de disponibilidad para lectura (Fase E1).</summary>
@@ -461,6 +563,22 @@ namespace newApi.Controllers
     {
         public string Start { get; set; } = "";
         public string End { get; set; } = "";
+    }
+
+    /// <summary>Guardado global de excepciones (varias fechas en una sola llamada atómica).</summary>
+    public class BatchAvailabilityExceptionsDto
+    {
+        public List<BatchExceptionItemDto> Exceptions { get; set; } = new();
+    }
+
+    /// <summary>Un cambio de excepción dentro del lote: upsert (abrir/cerrar/horas) o borrado.</summary>
+    public class BatchExceptionItemDto
+    {
+        public string Date { get; set; } = "";
+        /// <summary>true = borrar la excepción de esa fecha (vuelve a regir el horario semanal).</summary>
+        public bool Remove { get; set; }
+        public bool IsWorking { get; set; }
+        public List<ExceptionRangeInputDto> Ranges { get; set; } = new();
     }
 }
 

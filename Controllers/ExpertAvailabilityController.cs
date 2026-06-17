@@ -31,6 +31,25 @@ namespace newApi.Controllers
         private static readonly string[] DayIntToName =
             { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
 
+        /// <summary>Tope defensivo de filas (fechas × franjas) por guardado batch.</summary>
+        private const int MaxBatchRows = 800;
+
+        /// <summary>
+        /// "Hoy" en la ZONA HORARIA del experto (no en UTC). La excepción es una fecha-calendario que
+        /// se evalúa en la zona del experto; validar el pasado en UTC rechazaría/aceptaría mal el día
+        /// en zonas alejadas. Si la zona es inválida, cae a UTC.
+        /// </summary>
+        private static DateOnly TodayInExpertTz(ExpertProfile expert)
+        {
+            var tzId = string.IsNullOrWhiteSpace(expert.Timezone) ? "UTC" : expert.Timezone;
+            try
+            {
+                var tz = TimeZoneInfo.FindSystemTimeZoneById(tzId);
+                return DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, tz).Date);
+            }
+            catch { return DateOnly.FromDateTime(DateTime.UtcNow.Date); }
+        }
+
         /// <summary>
         /// Obtener la disponibilidad actual activa del experto autenticado
         /// </summary>
@@ -331,7 +350,7 @@ namespace newApi.Controllers
 
             if (dto == null || !DateOnly.TryParse(dto.Date, out var date))
                 return BadRequest(new { message = "Fecha inválida (usa YYYY-MM-DD)." });
-            if (date < DateOnly.FromDateTime(DateTime.UtcNow.Date))
+            if (date < TodayInExpertTz(expert))
                 return BadRequest(new { message = "No puedes configurar una fecha en el pasado." });
 
             var parsed = new List<(TimeSpan Start, TimeSpan End)>();
@@ -427,7 +446,7 @@ namespace newApi.Controllers
                 return NotFound(new { message = "Expert profile not found. You must be an expert to manage availability." });
 
             var items = dto?.Exceptions ?? new List<BatchExceptionItemDto>();
-            var todayLocal = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+            var todayLocal = TodayInExpertTz(expert);
 
             // 1) Validar y parsear TODO antes de tocar la BD (atómico).
             var plan = new List<(DateOnly Date, bool Remove, bool IsWorking, List<(TimeSpan Start, TimeSpan End)> Ranges)>();
@@ -472,6 +491,12 @@ namespace newApi.Controllers
 
             if (plan.Count == 0)
                 return Ok(new { applied = 0, rows = 0 });
+
+            // Tope defensivo: evita un guardado gigante (timeout / payload). 800 filas cubre de sobra
+            // "todos los X de 18 meses" (~78) incluso con turnos partidos en muchas fechas.
+            var totalRows = plan.Sum(p => p.Remove ? 0 : (p.IsWorking ? Math.Max(1, p.Ranges.Count) : 1));
+            if (totalRows > MaxBatchRows)
+                return BadRequest(new { message = $"Demasiados cambios en un solo guardado (máximo {MaxBatchRows}). Guárdalos por tramos." });
 
             // 2) Aplicar: reemplazar las filas de todas las fechas afectadas y reinsertar.
             var now = DateTime.UtcNow;

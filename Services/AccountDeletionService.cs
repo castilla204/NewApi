@@ -3324,6 +3324,8 @@ namespace newApi.Services
                         
                         currentSearchHire.Appointment.StatusId = appointmentStatusRow.Id;
                         currentSearchHire.Appointment.UpdatedAt = DateTime.UtcNow;
+                        // 🗓️ P0: liberar el hueco del calendario al pasar a estado terminal/cancelado.
+                        currentSearchHire.Appointment.BlocksCalendar = false;
                     }
                     else
                     {

@@ -43,6 +43,7 @@ namespace newApi.Controllers
         private readonly ILoggingService _loggingService;
         private readonly ISignedUrlService _signedUrlService;
         private readonly IConfiguration _configuration;
+        private readonly IAvailabilityService _availabilityService;
 
         // ✅ COMENTADO: Ya no necesario - Stripe usa default automático configurado en Dashboard
         // Según docs oficiales Stripe 2026, se recomienda usar "unspecified" y configurar
@@ -65,6 +66,7 @@ namespace newApi.Controllers
             IStripeValidationService stripeValidationService,
             ILoggingService loggingService,
             ISignedUrlService signedUrlService,
+            IAvailabilityService availabilityService,
             IConfiguration configuration)
         {
             _context = context;
@@ -74,6 +76,7 @@ namespace newApi.Controllers
             _stripeValidationService = stripeValidationService;
             _loggingService = loggingService;
             _signedUrlService = signedUrlService;
+            _availabilityService = availabilityService;
             _configuration = configuration;
         }
 
@@ -489,6 +492,13 @@ namespace newApi.Controllers
                         return BadRequest(new { message = "Cita inválida: el fin debe ser posterior al inicio." });
                     if (request.StartsAtUtc.Value <= DateTime.UtcNow)
                         return BadRequest(new { message = "Cita inválida: el hueco ya ha pasado, elige otro." });
+
+                    // 🔒 Slot-trust: el cliente NO puede reservar un hueco que el calendario no ofrece.
+                    // Re-validamos contra la disponibilidad real (reglas + duración) ANTES del Checkout.
+                    var slotOk = await _availabilityService.IsSlotBookableAsync(
+                        searchDto.ServiceId, request.StartsAtUtc.Value, request.EndsAtUtc.Value);
+                    if (!slotOk)
+                        return BadRequest(new { message = "Cita inválida: ese hueco ya no está disponible, elige otro." });
                 }
 
                 var activeSearchCount = await _context.Searches.CountAsync(s => s.UserId == userId && s.IsActive);

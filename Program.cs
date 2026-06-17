@@ -1614,6 +1614,7 @@ builder.Services.AddScoped<IAuthorizationServices, AuthorizationServices>();
 builder.Services.AddScoped<ISubscriptionService, newApi.Services.SubscriptionService>();
 builder.Services.AddScoped<ISearchHireService, SearchHireService>();
 builder.Services.AddScoped<ISearchServiceService, SearchServiceService>();
+builder.Services.AddScoped<newApi.Services.IGPTService, newApi.Services.GPTService>(); // AISearchController (reescritura de descripciones + búsqueda IA)
 builder.Services.AddScoped<IAppointmentService, AppointmentService>();
 builder.Services.AddScoped<IAvailabilityService, AvailabilityService>();
 // Servicios redundantes eliminados - reemplazados por SystemStatusService
@@ -1968,6 +1969,18 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IAppointmentService>(
     "appointment-timers-watchdog",
     svc => svc.ProcessOverdueTimersAsync(),
     "*/10 * * * *",
+    n29UtcOptions);
+
+// 🛡️ HEALTH: vigila que el watchdog de arriba siga vivo. El watchdog es el único motor del ciclo
+// de vida de las citas confirmadas (flujo nuevo cita+pago); si se para, las citas y los payouts se
+// atascan en silencio (no hay job "Failed" que dispare el filtro de alertas). Este check (cada 15
+// min, distinto del watchdog) alerta vía LogCritical → email + Slack/Telegram si el heartbeat del
+// watchdog está obsoleto o si hay citas confirmadas atascadas. NOTA: para "Hangfire totalmente
+// caído" hace falta además un monitor EXTERNO (uptime check), ya que este job también corre en HF.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "appointment-watchdog-health",
+    svc => svc.CheckAppointmentWatchdogHealthAsync(),
+    "*/15 * * * *",
     n29UtcOptions);
 
 // P2-5: Conciliación diaria BD ↔ Stripe a las 03:00 UTC. Detecta y reporta

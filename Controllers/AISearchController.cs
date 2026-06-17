@@ -1,9 +1,9 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
-using DataLayer.Models;
-using DataLayer.Models.DTOs;
-using DataLayer.Models.PostGresModels;
+using newApi.DataLayer.Models;
+using newApi.DataLayer.Models.DTOs;
+using newApi.DataLayer.Models.PostGresModels;
 using newApi.Services;
 
 namespace newApi.Controllers

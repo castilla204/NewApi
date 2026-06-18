@@ -10756,6 +10756,8 @@ namespace newApi.Controllers
                 .ToListAsync();
 
             int ok = 0, failed = 0;
+            // Stripe rate limit: 100 req/s en live. Aceptable para el volumen actual de expertos;
+            // añadir un delay o batch si la tabla crece mucho.
             foreach (var accountId in accountIds)
             {
                 try
@@ -10763,12 +10765,12 @@ namespace newApi.Controllers
                     await accountService.UpdateAsync(accountId, branding);
                     ok++;
                 }
-                catch (StripeException ex)
+                catch (Exception ex)
                 {
                     failed++;
                     await _loggingService.LogErrorAsync(
-                        message: "Backfill branding falló para una cuenta Connect",
-                        details: $"acct={accountId}: {ex.StripeError?.Code} {ex.Message}",
+                        message: "Backfill branding: excepción inesperada para una cuenta Connect",
+                        details: $"acct={accountId}: {ex.GetType().Name} {ex.Message}",
                         source: "SubscriptionController.BackfillConnectBranding",
                         relatedEntityType: "ExpertProfile");
                 }

@@ -10726,6 +10726,58 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// Backfill idempotente: aplica el branding de la plataforma a TODAS las cuentas Connect
+        /// existentes. Necesario porque las cuentas creadas antes del branding-on-create no tienen
+        /// Settings.Branding.
+        /// </summary>
+        [HttpPost("admin/backfill-connect-branding")]
+        public async Task<IActionResult> BackfillConnectBranding()
+        {
+            // 🔐 SEGURIDAD: Solo administradores
+            if (!_authService.IsAdmin(User))
+            {
+                return Unauthorized(new { message = "Admin access required" });
+            }
+
+            var accountService = new AccountService();
+            var branding = new AccountUpdateOptions
+            {
+                Settings = new AccountSettingsOptions
+                {
+                    Branding = global::newApi.Services.StripeBranding.InspeccionoBranding.BuildAccountBranding(
+                        _configuration["Stripe:BrandingIconFileId"],
+                        _configuration["Stripe:BrandingLogoFileId"])
+                }
+            };
+
+            var accountIds = await _context.ExpertProfiles
+                .Where(e => e.StripeAccountId != null && e.StripeAccountId != "")
+                .Select(e => e.StripeAccountId!)
+                .ToListAsync();
+
+            int ok = 0, failed = 0;
+            foreach (var accountId in accountIds)
+            {
+                try
+                {
+                    await accountService.UpdateAsync(accountId, branding);
+                    ok++;
+                }
+                catch (StripeException ex)
+                {
+                    failed++;
+                    await _loggingService.LogErrorAsync(
+                        message: "Backfill branding falló para una cuenta Connect",
+                        details: $"acct={accountId}: {ex.StripeError?.Code} {ex.Message}",
+                        source: "SubscriptionController.BackfillConnectBranding",
+                        relatedEntityType: "ExpertProfile");
+                }
+            }
+
+            return Ok(new { total = accountIds.Count, ok, failed });
+        }
+
+        /// <summary>
         /// Maneja el rechazo de una cuenta de Stripe, notificando tanto al admin como al experto
         /// </summary>
         private async Task HandleAccountRejection(int expertId, string rejectionReason)

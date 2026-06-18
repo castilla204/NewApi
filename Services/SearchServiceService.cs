@@ -1834,6 +1834,8 @@ namespace newApi.Services
                 // 🛡️ Round 28: emitir Currency real del servicio (no asumir EUR en cards/panel).
                 Currency = string.IsNullOrWhiteSpace(ss.Currency) ? "EUR" : ss.Currency.Trim().ToUpperInvariant(),
                 Conditions = ss.Conditions,
+                InspectionTemplatePdfUrl = ss.InspectionTemplatePdfUrl,
+                InspectionTemplateConfig = ss.InspectionTemplateConfig,
                 DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,
                 IsActive = ss.IsActive,
@@ -1974,6 +1976,8 @@ namespace newApi.Services
                 Price = baseDto.Price,
                 Currency = baseDto.Currency, // 🛡️ Round 28: copiar Currency al DTO de detalle
                 Conditions = baseDto.Conditions,
+                InspectionTemplatePdfUrl = baseDto.InspectionTemplatePdfUrl,
+                InspectionTemplateConfig = baseDto.InspectionTemplateConfig,
                 DurationInHours = baseDto.DurationInHours,
                 CreatedAt = baseDto.CreatedAt,
                 IsActive = baseDto.IsActive, // ✅ CORRECCIÓN: Incluir IsActive
@@ -2005,6 +2009,8 @@ namespace newApi.Services
                 // 🛡️ Round 28: emitir Currency real del servicio.
                 Currency = string.IsNullOrWhiteSpace(ss.Currency) ? "EUR" : ss.Currency.Trim().ToUpperInvariant(),
                 Conditions = ss.Conditions,
+                InspectionTemplatePdfUrl = ss.InspectionTemplatePdfUrl,
+                InspectionTemplateConfig = ss.InspectionTemplateConfig,
                 DurationInHours = ss.DurationInHours ?? 0,
                 CreatedAt = ss.CreatedAt,
                 IsActive = ss.IsActive,

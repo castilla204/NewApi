@@ -1367,6 +1367,18 @@ namespace newApi.Controllers
                     {
                         ServiceAgreement = "full"
                     },
+                    // 🎨 Branding de la plataforma en el onboarding hospedado + Express Dashboard.
+                    Settings = new AccountSettingsOptions
+                    {
+                        Branding = global::newApi.Services.StripeBranding.InspeccionoBranding.BuildAccountBranding(
+                            _configuration["Stripe:BrandingIconFileId"],
+                            _configuration["Stripe:BrandingLogoFileId"])
+                    },
+                    BusinessProfile = new AccountBusinessProfileOptions
+                    {
+                        Name = global::newApi.Services.StripeBranding.InspeccionoBranding.DisplayName,
+                        Url = _configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com"
+                    },
                     Metadata = new Dictionary<string, string>
                     {
                         { "userId", userId.ToString() }
@@ -1409,8 +1421,8 @@ namespace newApi.Controllers
                         ? $"-reloc{expertProfile.RelocatedAt.Value.Ticks}"
                         : string.Empty;
                     var idempotencyKeyValue = string.IsNullOrEmpty(onboardingAttemptToken)
-                        ? $"account-onboarding-v3-{userId}{relocationDiscriminator}"
-                        : $"account-onboarding-v3-{userId}{relocationDiscriminator}-{onboardingAttemptToken}";
+                        ? $"account-onboarding-v4-{userId}{relocationDiscriminator}"
+                        : $"account-onboarding-v4-{userId}{relocationDiscriminator}-{onboardingAttemptToken}";
                     var accountIdempotencyOptions = new Stripe.RequestOptions
                     {
                         IdempotencyKey = idempotencyKeyValue

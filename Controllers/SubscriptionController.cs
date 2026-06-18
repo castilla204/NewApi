@@ -1408,6 +1408,10 @@ namespace newApi.Controllers
                     // + service_agreement="full" explícito. Sin este bump, los expertos US que
                     // probaron en v2 (sin tax_reporting) reusarían la respuesta cacheada y se
                     // perderían la capability nueva.
+                    // 🛡️ bumped a "v4" tras añadir Settings.Branding + BusinessProfile al AccountCreateOptions.
+                    // El body cambió, así que una key v3 reusada devolvería idempotency_error (body mismatch)
+                    // o una cuenta cacheada SIN branding. v4 fuerza key fresca; las cuentas v3 ya creadas
+                    // no se duplican porque el create solo se alcanza si no hay StripeAccountId/PendingStripeAccountId guardado.
                     // 🛡️ Round 28 MUD-AE: incluir RelocatedAt.Ticks en la idempotency key.
                     // Sin este discriminador, el segundo (o tercero, etc.) ciclo de mudanza
                     // reusa la key `account-onboarding-v3-{userId}` con un body distinto

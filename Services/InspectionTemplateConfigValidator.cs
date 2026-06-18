@@ -3,17 +3,14 @@ using System.Text.Json;
 namespace newApi.Services
 {
     /// <summary>
-    /// Validación de servidor del JSON de personalización del informe.
-    /// Refleja las reglas del cliente (inspectionTemplateConfig.ts): no se pueden
-    /// desactivar puntos obligatorios (1, 2, 4) ni la sección A.
+    /// Validación de servidor (estructural) del JSON de personalización del informe.
+    /// Las reglas específicas por categoría (qué puntos son obligatorios, qué
+    /// secciones existen) las aplica el cliente con el catálogo de cada categoría
+    /// (inspectionTemplateConfig.ts / inspectionCatalog.ts). Aquí solo validamos que
+    /// el JSON tenga forma válida y que las preguntas propias estén acotadas.
     /// </summary>
     public static class InspectionTemplateConfigValidator
     {
-        private static readonly HashSet<int> RequiredPoints = new() { 1, 2, 4 };
-        private static readonly HashSet<string> SectionsWithRequired = new() { "A" };
-        private static readonly HashSet<string> ValidSections = new()
-            { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K" };
-
         public static bool IsValid(string? json, out string error)
         {
             error = "";
@@ -32,31 +29,6 @@ namespace newApi.Services
                     error = "Configuración del informe inválida."; return false;
                 }
 
-                if (root.TryGetProperty("disabledSections", out var ds) && ds.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var s in ds.EnumerateArray())
-                    {
-                        var id = s.GetString();
-                        if (id != null && SectionsWithRequired.Contains(id))
-                        {
-                            error = $"La sección {id} no se puede desactivar (contiene puntos obligatorios).";
-                            return false;
-                        }
-                    }
-                }
-
-                if (root.TryGetProperty("disabledPoints", out var dp) && dp.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var p in dp.EnumerateArray())
-                    {
-                        if (p.TryGetInt32(out var n) && RequiredPoints.Contains(n))
-                        {
-                            error = $"El punto {n} es obligatorio y no se puede quitar.";
-                            return false;
-                        }
-                    }
-                }
-
                 if (root.TryGetProperty("customPoints", out var cp) && cp.ValueKind == JsonValueKind.Array)
                 {
                     int customCount = 0;
@@ -69,7 +41,7 @@ namespace newApi.Services
                         }
 
                         var sec = c.TryGetProperty("section", out var se) ? se.GetString() : null;
-                        if (sec == null || !ValidSections.Contains(sec))
+                        if (string.IsNullOrWhiteSpace(sec))
                         {
                             error = "Pregunta propia con sección inválida."; return false;
                         }

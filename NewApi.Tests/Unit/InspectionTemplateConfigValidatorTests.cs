@@ -11,17 +11,18 @@ public class InspectionTemplateConfigValidatorTests
     }
 
     [Fact]
-    public void RejectsDisablingRequiredPoint()
+    public void AcceptsDisablingPointsAndSections()
     {
-        var json = "{\"disabledPoints\":[2]}";
-        Assert.False(InspectionTemplateConfigValidator.IsValid(json, out var error));
-        Assert.Contains("obligatorio", error);
+        // El servidor solo valida la estructura; qué puntos son obligatorios por
+        // categoría lo aplica el cliente con su catálogo (coche/moto/inmueble…).
+        Assert.True(InspectionTemplateConfigValidator.IsValid("{\"disabledPoints\":[2]}", out _));
+        Assert.True(InspectionTemplateConfigValidator.IsValid("{\"disabledSections\":[\"A\"]}", out _));
     }
 
     [Fact]
-    public void RejectsDisablingSectionA()
+    public void RejectsCustomPointWithoutSection()
     {
-        var json = "{\"disabledSections\":[\"A\"]}";
+        var json = "{\"customPoints\":[{\"label\":\"X\"}]}";
         Assert.False(InspectionTemplateConfigValidator.IsValid(json, out _));
     }
 

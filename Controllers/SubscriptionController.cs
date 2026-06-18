@@ -5914,7 +5914,8 @@ namespace newApi.Controllers
                     DurationInHoursSnapshot = service.DurationInHours,
                     ExpertLatitudeSnapshot = service.ExpertProfile?.Latitude,
                     ExpertLongitudeSnapshot = service.ExpertProfile?.Longitude,
-                    ExpertWorkRadiusKmSnapshot = service.ExpertProfile?.WorkRadiusKm
+                    ExpertWorkRadiusKmSnapshot = service.ExpertProfile?.WorkRadiusKm,
+                    InspectionTemplatePdfUrlSnapshot = service.InspectionTemplatePdfUrl
                 };
                     // ✅ REMOVED: Balance verification eliminated - all payments are direct Stripe
 

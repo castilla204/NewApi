@@ -57,6 +57,9 @@ namespace newApi.DataLayer.Models.DTOs
         public decimal? ClientPercentageSnapshot { get; set; }
         public decimal? ExpertPercentageSnapshot { get; set; }
         public decimal? PlatformPercentageSnapshot { get; set; }
+
+        /// <summary>Snapshot de la URL del PDF del informe del servicio al contratar (congelado).</summary>
+        public string? InspectionTemplatePdfUrlSnapshot { get; set; }
     }
 
     public class ServiceInfo

@@ -1494,6 +1494,17 @@ namespace newApi.Services
                     searchService = recoveryService; // Actualizar referencia
                 }
                 
+                // Persistir config + PDF del informe personalizable (si se envió)
+                searchService.InspectionTemplateConfig = string.IsNullOrWhiteSpace(request.InspectionTemplateConfig)
+                    ? null : request.InspectionTemplateConfig;
+                var tplUrl = await UploadInspectionTemplateAsync(serviceId, request.InspectionTemplatePdf);
+                if (tplUrl != null) searchService.InspectionTemplatePdfUrl = tplUrl;
+                if (searchService.InspectionTemplateConfig != null || tplUrl != null)
+                {
+                    try { await _context.SaveChangesAsync(); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "Could not persist inspection template for service {ServiceId}; continuing", serviceId); }
+                }
+
                 // ✅ VALIDACIÓN: Verificar que al menos un tipo de entregable esté seleccionado
                 if (string.IsNullOrWhiteSpace(request.SelectedDeliverableTypes))
                 {
@@ -2268,6 +2279,18 @@ namespace newApi.Services
                     newServiceId = recoveryService.Id; // ✅ FIX: Guardar ID del servicio recuperado
                     newSearchService = recoveryService; // Actualizar referencia
                 }
+
+                // Persistir config + PDF del informe personalizable en el nuevo servicio (si se envió)
+                newSearchService.InspectionTemplateConfig = string.IsNullOrWhiteSpace(request.InspectionTemplateConfig)
+                    ? null : request.InspectionTemplateConfig;
+                var newTplUrl = await UploadInspectionTemplateAsync(newServiceId, request.InspectionTemplatePdf);
+                if (newTplUrl != null) newSearchService.InspectionTemplatePdfUrl = newTplUrl;
+                if (newSearchService.InspectionTemplateConfig != null || newTplUrl != null)
+                {
+                    try { await _context.SaveChangesAsync(); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "Could not persist inspection template for updated service {ServiceId}; continuing", newServiceId); }
+                }
+
                 // ✅ VALIDACIÓN: Verificar que al menos un tipo de entregable esté seleccionado
                 if (string.IsNullOrWhiteSpace(request.SelectedDeliverableTypes))
                 {
@@ -2732,6 +2755,17 @@ namespace newApi.Services
             {
                 return false;
             }
+        }
+
+        private async Task<string?> UploadInspectionTemplateAsync(int serviceId, IFormFile? pdf)
+        {
+            if (pdf == null || pdf.Length == 0) return null;
+            var objectName = $"templates/service_{serviceId}_{Guid.NewGuid():N}.pdf";
+            using var ms = new MemoryStream();
+            await pdf.CopyToAsync(ms);
+            ms.Position = 0;
+            await _supabaseStorage.UploadAsync(_supabaseStorage.ImagesBucket, objectName, ms, "application/pdf");
+            return _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
         }
 
         private string ResolveProfilePictureUrl(ExpertProfile? expertProfile)

@@ -10747,6 +10747,10 @@ namespace newApi.Controllers
                     Branding = global::newApi.Services.StripeBranding.InspeccionoBranding.BuildAccountBranding(
                         _configuration["Stripe:BrandingIconFileId"],
                         _configuration["Stripe:BrandingLogoFileId"])
+                },
+                BusinessProfile = new AccountBusinessProfileOptions
+                {
+                    Name = global::newApi.Services.StripeBranding.InspeccionoBranding.DisplayName
                 }
             };
 

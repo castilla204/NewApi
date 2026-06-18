@@ -1925,9 +1925,11 @@ namespace newApi.Services
                     expertProfile.WorkRadiusKm = request.WorkRadiusKm.Value;
                 }
 
-                // 🏠 Detalle del punto fijo: solo tiene sentido en modo fijo (WorkRadiusKm == 0).
-                // Si el experto está (o pasa a estar) en modo rango, se limpian para que no quede
-                // un taller-detalle obsoleto pegado a alguien que se desplaza.
+                // 🏠 Detalle del punto fijo: solo EDITABLE en modo fijo (WorkRadiusKm == 0).
+                // En modo rango NO se tocan: se PRESERVAN para que, si el experto vuelve a fijo,
+                // recupere su configuración anterior (puerta/piso/observaciones). El display al
+                // cliente ya está gateado por WorkRadiusKm == 0, así que un valor preservado nunca
+                // se muestra mientras el experto esté en rango → preservarlo es seguro.
                 if (expertProfile.WorkRadiusKm == 0)
                 {
                     expertProfile.WorkLocationDoor = string.IsNullOrWhiteSpace(request.WorkLocationDoor)
@@ -1937,12 +1939,7 @@ namespace newApi.Services
                     expertProfile.WorkLocationDetails = string.IsNullOrWhiteSpace(request.WorkLocationDetails)
                         ? null : request.WorkLocationDetails.Trim();
                 }
-                else
-                {
-                    expertProfile.WorkLocationDoor = null;
-                    expertProfile.WorkLocationFloor = null;
-                    expertProfile.WorkLocationDetails = null;
-                }
+                // else (modo rango): se dejan intactos los valores actuales → se preservan.
 
                 // ✅ DETECTAR TIMEZONE Y COUNTRY si cambian las coordenadas
                 var coordinatesChanged = expertProfile.Latitude != request.Latitude ||

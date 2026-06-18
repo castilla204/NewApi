@@ -28,10 +28,11 @@ SELECT setval(pg_get_serial_sequence('"Categories"', 'Id'), GREATEST((SELECT MAX
 INSERT INTO "DeliverableTypes" ("Id", "Name", "DisplayName", "Description", "IsRequired", "IsActive", "SortOrder", "CreatedAt", "UpdatedAt")
 VALUES
   (1, 'PDF', 'Informe PDF', 'Informe detallado en formato PDF', TRUE, TRUE, 1, NOW(), NOW()),
-  (2, 'Video', 'Vídeo de inspección', 'Vídeo grabado durante la revisión presencial.', FALSE, TRUE, 2, NOW(), NOW())
+  (2, 'Video', 'Vídeo de inspección', 'Vídeo grabado durante la revisión presencial.', FALSE, TRUE, 2, NOW(), NOW()),
+  (3, 'Llamada', 'Llamada telefónica', 'Llamada para explicarte el informe y resolver dudas.', FALSE, TRUE, 3, NOW(), NOW())
 ON CONFLICT ("Id") DO NOTHING;
 
-SELECT setval(pg_get_serial_sequence('"DeliverableTypes"', 'Id'), GREATEST((SELECT MAX("Id") FROM "DeliverableTypes"), 2));
+SELECT setval(pg_get_serial_sequence('"DeliverableTypes"', 'Id'), GREATEST((SELECT MAX("Id") FROM "DeliverableTypes"), 3));
 
 -- ========== Plan de suscripción gratuito ==========
 INSERT INTO "SubscriptionPlans" (

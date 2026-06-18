@@ -394,6 +394,10 @@ namespace newApi.DataLayer.Models.DTOs
         public int? DurationInHours { get; set; }
         public List<IFormFile> Images { get; set; }
         public string? SelectedDeliverableTypes { get; set; } // JSON string from FormData
+        /// <summary>JSON de personalización del informe (opcional, solo categoría coche).</summary>
+        public string? InspectionTemplateConfig { get; set; }
+        /// <summary>PDF rellenable generado en el cliente para este servicio (opcional).</summary>
+        public IFormFile? InspectionTemplatePdf { get; set; }
     }
 
     public class UpdateSearchServiceRequestDto
@@ -441,6 +445,10 @@ namespace newApi.DataLayer.Models.DTOs
         public string? ImagesSequence { get; set; }
         
         public string? SelectedDeliverableTypes { get; set; } // JSON string from FormData
+        /// <summary>JSON de personalización del informe (opcional, solo categoría coche).</summary>
+        public string? InspectionTemplateConfig { get; set; }
+        /// <summary>PDF rellenable generado en el cliente para este servicio (opcional).</summary>
+        public IFormFile? InspectionTemplatePdf { get; set; }
     }
 
 

@@ -720,17 +720,45 @@ namespace newApi.Controllers
                     if (!string.IsNullOrWhiteSpace(checkoutProductImage))
                         checkoutProductData.Images = new List<string> { checkoutProductImage };
 
+                    // 🌐 Locale del Checkout: es por defecto, en si el navegador del cliente lo pide.
+                    var acceptLang = Request.Headers["Accept-Language"].ToString();
+                    var checkoutLocale = acceptLang.StartsWith("en", StringComparison.OrdinalIgnoreCase) ? "en" : "es";
+
                     var options = new SessionCreateOptions
                     {
                         PaymentMethodTypes = new List<string> { "card" },
                         // ✅ CHECKOUT UX: botón "Reservar" en la página de Stripe (paridad con el CTA del checkout propio).
                         SubmitType = "book",
+                        Locale = checkoutLocale,
+                        // 🎨 BRANDING: nombre de negocio + logo/icono + color de marca en la página hospedada.
+                        // Logo e Icon son null-safe: si las config keys no están en Render, Stripe las omite.
+                        BrandingSettings = new Stripe.Checkout.SessionBrandingSettingsOptions
+                        {
+                            DisplayName = global::newApi.Services.StripeBranding.InspeccionoBranding.DisplayName,
+                            ButtonColor = global::newApi.Services.StripeBranding.InspeccionoBranding.PrimaryColor,
+                            Logo = string.IsNullOrWhiteSpace(_configuration["Stripe:BrandingLogoFileId"]) ? null
+                                : new Stripe.Checkout.SessionBrandingSettingsLogoOptions
+                                {
+                                    Type = "file",
+                                    File = _configuration["Stripe:BrandingLogoFileId"]
+                                },
+                            Icon = string.IsNullOrWhiteSpace(_configuration["Stripe:BrandingIconFileId"]) ? null
+                                : new Stripe.Checkout.SessionBrandingSettingsIconOptions
+                                {
+                                    Type = "file",
+                                    File = _configuration["Stripe:BrandingIconFileId"]
+                                }
+                        },
                         // ✅ CHECKOUT UX: refuerzo de confianza (escrow) justo encima del botón de pago.
                         CustomText = new SessionCustomTextOptions
                         {
                             Submit = new SessionCustomTextSubmitOptions
                             {
                                 Message = "No pagamos al experto hasta que revises el informe y des el visto bueno. Cancelación gratuita antes de que empiece la revisión."
+                            },
+                            AfterSubmit = new SessionCustomTextAfterSubmitOptions
+                            {
+                                Message = "Te avisaremos por email en cada paso. Puedes seguir el estado de tu inspección en tu cuenta de Inspecciono."
                             }
                         },
                         LineItems = new List<SessionLineItemOptions>

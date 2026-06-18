@@ -720,9 +720,17 @@ namespace newApi.Controllers
                     if (!string.IsNullOrWhiteSpace(checkoutProductImage))
                         checkoutProductData.Images = new List<string> { checkoutProductImage };
 
-                    // 🌐 Locale del Checkout: es por defecto, en si el navegador del cliente lo pide.
+                    // 🌐 Locale del Checkout: primer tag del Accept-Language; "en" si es inglés, "es" por defecto.
                     var acceptLang = Request.Headers["Accept-Language"].ToString();
-                    var checkoutLocale = acceptLang.StartsWith("en", StringComparison.OrdinalIgnoreCase) ? "en" : "es";
+                    var firstLangTag = acceptLang.Split(',').FirstOrDefault()?.Trim() ?? string.Empty;
+                    var checkoutLocale = firstLangTag.StartsWith("en", StringComparison.OrdinalIgnoreCase) ? "en" : "es";
+
+                    var submitMessage = checkoutLocale == "en"
+                        ? "We don't pay the expert until you review the report and approve it. Free cancellation before the review starts."
+                        : "No pagamos al experto hasta que revises el informe y des el visto bueno. Cancelación gratuita antes de que empiece la revisión.";
+                    var afterSubmitMessage = checkoutLocale == "en"
+                        ? "We'll email you at every step. You can track your inspection status in your Inspecciono account."
+                        : "Te avisaremos por email en cada paso. Puedes seguir el estado de tu inspección en tu cuenta de Inspecciono.";
 
                     var options = new SessionCreateOptions
                     {
@@ -754,11 +762,11 @@ namespace newApi.Controllers
                         {
                             Submit = new SessionCustomTextSubmitOptions
                             {
-                                Message = "No pagamos al experto hasta que revises el informe y des el visto bueno. Cancelación gratuita antes de que empiece la revisión."
+                                Message = submitMessage
                             },
                             AfterSubmit = new SessionCustomTextAfterSubmitOptions
                             {
-                                Message = "Te avisaremos por email en cada paso. Puedes seguir el estado de tu inspección en tu cuenta de Inspecciono."
+                                Message = afterSubmitMessage
                             }
                         },
                         LineItems = new List<SessionLineItemOptions>

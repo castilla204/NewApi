@@ -223,6 +223,7 @@ namespace newApi.Controllers
                     ExpertWorkLocationDoorSnapshot = expert.ExpertProfile?.WorkLocationDoor ?? searchService.ExpertProfile?.WorkLocationDoor,
                     ExpertWorkLocationFloorSnapshot = expert.ExpertProfile?.WorkLocationFloor ?? searchService.ExpertProfile?.WorkLocationFloor,
                     ExpertWorkLocationDetailsSnapshot = expert.ExpertProfile?.WorkLocationDetails ?? searchService.ExpertProfile?.WorkLocationDetails,
+                    InspectionTemplatePdfUrlSnapshot = searchService.InspectionTemplatePdfUrl,
                     Conversations = new List<Conversation>()
                 };
 
@@ -803,6 +804,7 @@ namespace newApi.Controllers
                     ClientPercentageSnapshot = searchHire.ClientPercentageSnapshot,
                     ExpertPercentageSnapshot = searchHire.ExpertPercentageSnapshot,
                     PlatformPercentageSnapshot = searchHire.PlatformPercentageSnapshot,
+                    InspectionTemplatePdfUrlSnapshot = searchHire.InspectionTemplatePdfUrlSnapshot,
                     Expert = searchHire.ExpertId.HasValue && searchHire.Expert != null ? new UserDto
                     {
                         Id = searchHire.Expert.Id,

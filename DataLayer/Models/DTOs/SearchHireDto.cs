@@ -215,6 +215,11 @@ namespace newApi.DataLayer.Models.DTOs
         public List<SearchServiceImageDto> Images { get; set; } = new List<SearchServiceImageDto>(); // ✅ NUEVO: Incluye IDs
         public ExpertProfileDto? Expert { get; set; }
         public List<DeliverableTypeDto> SelectedDeliverableTypes { get; set; } = new List<DeliverableTypeDto>();
+
+        /// <summary>URL del PDF rellenable personalizado del informe (null = plantilla base). Solo coche.</summary>
+        public string? InspectionTemplatePdfUrl { get; set; }
+        /// <summary>JSON de personalización del informe (para precargar el editor al editar).</summary>
+        public string? InspectionTemplateConfig { get; set; }
     }
 
     public class SearchServiceDetailDto : SearchServiceResponseDto

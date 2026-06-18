@@ -734,7 +734,10 @@ namespace newApi.Controllers
 
                     var options = new SessionCreateOptions
                     {
-                        PaymentMethodTypes = new List<string> { "card" },
+                        // 💳 Métodos de pago automáticos (dinámicos del Dashboard). Al NO fijar PaymentMethodTypes,
+                        // Stripe muestra los métodos habilitados; con CaptureMethod=manual (escrow) FILTRA y deja
+                        // solo los compatibles con captura manual: tarjeta + Apple Pay + Google Pay + Link.
+                        // SEPA/Bizum/PayPal quedan fuera por diseño (no soportan captura manual → romperían el escrow).
                         // ✅ CHECKOUT UX: botón "Reservar" en la página de Stripe (paridad con el CTA del checkout propio).
                         SubmitType = "book",
                         Locale = checkoutLocale,
@@ -744,6 +747,7 @@ namespace newApi.Controllers
                         {
                             DisplayName = global::newApi.Services.StripeBranding.InspeccionoBranding.DisplayName,
                             ButtonColor = global::newApi.Services.StripeBranding.InspeccionoBranding.PrimaryColor,
+                            FontFamily = "inter", // 🎨 fuente de marca; valor enum de la API en snake_case (NO "Inter")
                             Logo = string.IsNullOrWhiteSpace(_configuration["Stripe:BrandingLogoFileId"]) ? null
                                 : new Stripe.Checkout.SessionBrandingSettingsLogoOptions
                                 {

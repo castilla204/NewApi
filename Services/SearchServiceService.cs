@@ -1888,6 +1888,7 @@ namespace newApi.Services
                     Id = ss.ExpertProfile.Id,
                     ProfilePictureUrl = ResolveProfilePictureUrl(ss.ExpertProfile),
                     Description = ss.ExpertProfile.Description,
+                    Formacion = ss.ExpertProfile.Formacion,
                     StripeAccountId = ss.ExpertProfile.StripeAccountId,
                     CreatedAt = ss.ExpertProfile.CreatedAt,
                     User = userDto,
@@ -2040,6 +2041,7 @@ namespace newApi.Services
                     Id = ss.ExpertProfile.Id,
                     ProfilePictureUrl = ResolveProfilePictureUrl(ss.ExpertProfile),
                     Description = ss.ExpertProfile.Description,
+                    Formacion = ss.ExpertProfile.Formacion,
                     CreatedAt = ss.ExpertProfile.CreatedAt,
                     User = userDto,
                     Reviews = reviews,
@@ -2432,9 +2434,26 @@ namespace newApi.Services
                 var imagesToKeep = existingImages
                     .Where(img => !imagesToDeleteIds.Contains(img.Id))
                     .ToList();
-                
-                // ✅ NUEVO: Copiar imágenes conservadas al nuevo servicio
-                foreach (var existingImage in imagesToKeep)
+
+                var imagesToKeepById = imagesToKeep.ToDictionary(img => img.Id);
+                var newFilesList = request.Images?.ToList() ?? new List<IFormFile>();
+                var uploadedImages = new List<(string ImageUrl, string ImageObjectName)>();
+                List<string>? imagesSequence = null;
+                if (!string.IsNullOrWhiteSpace(request.ImagesSequence))
+                {
+                    try
+                    {
+                        imagesSequence = System.Text.Json.JsonSerializer.Deserialize<List<string>>(request.ImagesSequence);
+                    }
+                    catch (System.Text.Json.JsonException)
+                    {
+                        _logger.LogWarning("Invalid format for ImagesSequence in UpdateSearchService request. ServiceId: {ServiceId}", request.ServiceId);
+                    }
+                }
+
+                var usedNewIndices = new HashSet<int>();
+
+                void CopyExistingImage(SearchServiceImage existingImage)
                 {
                     var copiedImage = new SearchServiceImage
                     {
@@ -2446,59 +2465,96 @@ namespace newApi.Services
                     _context.SearchServiceImages.Add(copiedImage);
                     imageUrls.Add(ResolveServiceImageUrl(copiedImage));
                 }
-                
-                // ✅ NUEVO: Agregar nuevas imágenes si se proporcionaron
-                var uploadedImages = new List<(string ImageUrl, string ImageObjectName)>();
-                if (request.Images != null && request.Images.Any())
+
+                async Task UploadNewImageAsync(IFormFile imageFile)
                 {
-                    var bucketName = _configuration["GoogleCloud:BucketName"];
-                    
-                    foreach (var imageFile in request.Images)
+                    var extension = Path.GetExtension(imageFile.FileName).ToLowerInvariant();
+                    var uniqueFileName = $"{Guid.NewGuid()}{extension}";
+                    var objectName = $"services/{uniqueFileName}";
+
+                    using (var inputStream = imageFile.OpenReadStream())
+                    using (var image = Image.Load(inputStream))
                     {
-                        var extension = Path.GetExtension(imageFile.FileName).ToLowerInvariant();
-                        var uniqueFileName = $"{Guid.NewGuid()}{extension}";
-                        var objectName = $"services/{uniqueFileName}";
-
-                        using (var inputStream = imageFile.OpenReadStream())
-                        using (var image = Image.Load(inputStream))
+                        image.Mutate(x => x.Resize(new ResizeOptions
                         {
-                            image.Mutate(x => x.Resize(new ResizeOptions
-                            {
-                                Size = new Size(1600, 1600), // antes 200x200: causaba fotos pixeladas al mostrarlas a 360-720px
-                                Mode = ResizeMode.Max
-                            }));
+                            Size = new Size(1600, 1600),
+                            Mode = ResizeMode.Max
+                        }));
 
-                            using (var outputStream = new MemoryStream())
-                            {
-                                image.SaveAsJpeg(outputStream, new JpegEncoder { Quality = 88 }); // antes default (~75)
-                                outputStream.Position = 0;
-                                // ✅ FIX: Quitar PredefinedAcl cuando el bucket tiene uniform bucket-level access habilitado
-                                // El acceso se controla mediante IAM policies del bucket, no ACLs por objeto
-                                await _supabaseStorage.UploadAsync(
-                                    _supabaseStorage.ImagesBucket,
-                                    objectName,
-                                    outputStream,
-                                    "image/jpeg");
-                            }
+                        using (var outputStream = new MemoryStream())
+                        {
+                            image.SaveAsJpeg(outputStream, new JpegEncoder { Quality = 88 });
+                            outputStream.Position = 0;
+                            await _supabaseStorage.UploadAsync(
+                                _supabaseStorage.ImagesBucket,
+                                objectName,
+                                outputStream,
+                                "image/jpeg");
                         }
+                    }
 
-                        var imageUrl = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
-                        uploadedImages.Add((imageUrl, objectName));
-                        
-                        var searchServiceImage = new SearchServiceImage
+                    var imageUrl = _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
+                    uploadedImages.Add((imageUrl, objectName));
+                    var searchServiceImage = new SearchServiceImage
+                    {
+                        SearchServiceId = newServiceId,
+                        ImageUrl = imageUrl,
+                        ImageObjectName = objectName,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    _context.SearchServiceImages.Add(searchServiceImage);
+                    imageUrls.Add(ResolveServiceImageUrl(searchServiceImage));
+                }
+
+                if (imagesSequence != null && imagesSequence.Count > 0)
+                {
+                    foreach (var token in imagesSequence)
+                    {
+                        if (token.StartsWith("id:", StringComparison.OrdinalIgnoreCase)
+                            && int.TryParse(token.AsSpan(3), out var existingId)
+                            && imagesToKeepById.TryGetValue(existingId, out var existingImage))
                         {
-                            SearchServiceId = newServiceId, // ✅ FIX: Usar newServiceId guardado
-                            ImageUrl = imageUrl,
-                            ImageObjectName = objectName,
-                            CreatedAt = DateTime.UtcNow
-                        };
-                        _context.SearchServiceImages.Add(searchServiceImage);
-                        imageUrls.Add(ResolveServiceImageUrl(searchServiceImage));
+                            CopyExistingImage(existingImage);
+                            imagesToKeepById.Remove(existingId);
+                        }
+                        else if (token.StartsWith("new:", StringComparison.OrdinalIgnoreCase)
+                            && int.TryParse(token.AsSpan(4), out var newIndex)
+                            && newIndex >= 0
+                            && newIndex < newFilesList.Count)
+                        {
+                            await UploadNewImageAsync(newFilesList[newIndex]);
+                            usedNewIndices.Add(newIndex);
+                        }
+                    }
+
+                    foreach (var remainingImage in imagesToKeepById.Values)
+                    {
+                        CopyExistingImage(remainingImage);
+                    }
+
+                    for (var i = 0; i < newFilesList.Count; i++)
+                    {
+                        if (!usedNewIndices.Contains(i))
+                        {
+                            await UploadNewImageAsync(newFilesList[i]);
+                        }
+                    }
+                }
+                else
+                {
+                    foreach (var existingImage in imagesToKeep)
+                    {
+                        CopyExistingImage(existingImage);
+                    }
+
+                    foreach (var imageFile in newFilesList)
+                    {
+                        await UploadNewImageAsync(imageFile);
                     }
                 }
                 
                 // ✅ NUEVO: Guardar todas las imágenes (conservadas + nuevas) en una sola transacción
-                if (imagesToKeep.Any() || uploadedImages.Any())
+                if (imageUrls.Any())
                 {
                     try
                     {

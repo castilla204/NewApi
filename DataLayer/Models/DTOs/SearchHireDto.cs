@@ -433,6 +433,12 @@ namespace newApi.DataLayer.Models.DTOs
         /// Si no se proporciona o está vacío, se conservarán todas las imágenes existentes.
         /// </summary>
         public string? ImagesToDelete { get; set; } // JSON string from FormData: array de IDs de SearchServiceImage
+
+        /// <summary>
+        /// Orden final de imágenes al actualizar. JSON array de tokens:
+        /// "id:123" para imagen existente, "new:0" para el archivo en Images[index].
+        /// </summary>
+        public string? ImagesSequence { get; set; }
         
         public string? SelectedDeliverableTypes { get; set; } // JSON string from FormData
     }

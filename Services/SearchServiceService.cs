@@ -2255,7 +2255,9 @@ namespace newApi.Services
                         Conditions = request.Conditions,
                         DurationInHours = request.DurationInHours ?? 0,
                         CreatedAt = DateTime.UtcNow,
-                        IsActive = true
+                        IsActive = true,
+                        InspectionTemplateConfig = string.IsNullOrWhiteSpace(request.InspectionTemplateConfig) ? null : request.InspectionTemplateConfig,
+                        InspectionTemplatePdfUrl = existingService.InspectionTemplatePdfUrl
                     };
 
                     recoveryContext.SearchServices.Add(recoveryService);
@@ -2289,7 +2291,9 @@ namespace newApi.Services
                         Conditions = request.Conditions,
                         DurationInHours = request.DurationInHours ?? 0,
                         CreatedAt = DateTime.UtcNow,
-                        IsActive = true
+                        IsActive = true,
+                        InspectionTemplateConfig = string.IsNullOrWhiteSpace(request.InspectionTemplateConfig) ? null : request.InspectionTemplateConfig,
+                        InspectionTemplatePdfUrl = existingService.InspectionTemplatePdfUrl
                     };
 
                     recoveryContext.SearchServices.Add(recoveryService);

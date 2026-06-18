@@ -99,6 +99,9 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// <summary>Observaciones de acceso al taller del experto al momento de contratar (solo modo fijo).</summary>
         public string? ExpertWorkLocationDetailsSnapshot { get; set; }
 
+        /// <summary>Snapshot de la URL del PDF del informe del servicio al contratar (congelado).</summary>
+        public string? InspectionTemplatePdfUrlSnapshot { get; set; }
+
         /// <summary>
         /// Flag operativo: el hire requiere revisión manual del admin (p.ej. cuenta de experto
         /// rechazada o desautorizada por Stripe tras prestar el servicio). NO se considera un

@@ -27,6 +27,10 @@ namespace newApi.DataLayer.Models.PostGresModels
         public string Currency { get; set; } = "EUR";
         public string Conditions { get; set; }
         public int? DurationInHours { get; set; }
+        /// <summary>JSON de personalización del informe (inspectionTemplateConfig). Null = informe base completo.</summary>
+        public string? InspectionTemplateConfig { get; set; }
+        /// <summary>URL pública del PDF rellenable generado para este servicio. Null = usar plantilla base.</summary>
+        public string? InspectionTemplatePdfUrl { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public bool IsActive { get; set; } // Added IsActive property
         public virtual ExpertProfile? ExpertProfile { get; set; }

@@ -19,13 +19,6 @@ namespace newApi.ScrapperGateway.DataLayer.Models.DTOs
         /// </summary>
         public int? WorkRadiusKm { get; set; }
 
-        /// <summary>Puerta/garaje del taller (solo modo fijo). Opcional.</summary>
-        public string? WorkLocationDoor { get; set; }
-        /// <summary>Piso/planta del taller (solo modo fijo). Opcional.</summary>
-        public string? WorkLocationFloor { get; set; }
-        /// <summary>Observaciones de acceso al taller (solo modo fijo). Opcional.</summary>
-        public string? WorkLocationDetails { get; set; }
-
         /// <summary>
         /// Días de la semana en los que el experto trabaja (múltiples valores permitidos en form-data)
         /// Valores permitidos: "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"

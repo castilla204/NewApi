@@ -19,53 +19,71 @@ namespace newApi.Services
             error = "";
             if (string.IsNullOrWhiteSpace(json)) return true;
 
-            JsonElement root;
-            try { root = JsonDocument.Parse(json).RootElement; }
+            JsonDocument doc;
+            try { doc = JsonDocument.Parse(json); }
             catch { error = "Configuración del informe con formato inválido."; return false; }
 
-            if (root.ValueKind != JsonValueKind.Object)
+            using (doc)
             {
-                error = "Configuración del informe inválida."; return false;
-            }
+                var root = doc.RootElement;
 
-            if (root.TryGetProperty("disabledSections", out var ds) && ds.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var s in ds.EnumerateArray())
+                if (root.ValueKind != JsonValueKind.Object)
                 {
-                    var id = s.GetString();
-                    if (id != null && SectionsWithRequired.Contains(id))
+                    error = "Configuración del informe inválida."; return false;
+                }
+
+                if (root.TryGetProperty("disabledSections", out var ds) && ds.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var s in ds.EnumerateArray())
                     {
-                        error = $"La sección {id} no se puede desactivar (contiene puntos obligatorios).";
-                        return false;
+                        var id = s.GetString();
+                        if (id != null && SectionsWithRequired.Contains(id))
+                        {
+                            error = $"La sección {id} no se puede desactivar (contiene puntos obligatorios).";
+                            return false;
+                        }
                     }
                 }
-            }
 
-            if (root.TryGetProperty("disabledPoints", out var dp) && dp.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var p in dp.EnumerateArray())
+                if (root.TryGetProperty("disabledPoints", out var dp) && dp.ValueKind == JsonValueKind.Array)
                 {
-                    if (p.TryGetInt32(out var n) && RequiredPoints.Contains(n))
+                    foreach (var p in dp.EnumerateArray())
                     {
-                        error = $"El punto {n} es obligatorio y no se puede quitar.";
-                        return false;
+                        if (p.TryGetInt32(out var n) && RequiredPoints.Contains(n))
+                        {
+                            error = $"El punto {n} es obligatorio y no se puede quitar.";
+                            return false;
+                        }
                     }
                 }
-            }
 
-            if (root.TryGetProperty("customPoints", out var cp) && cp.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var c in cp.EnumerateArray())
+                if (root.TryGetProperty("customPoints", out var cp) && cp.ValueKind == JsonValueKind.Array)
                 {
-                    var sec = c.TryGetProperty("section", out var se) ? se.GetString() : null;
-                    if (sec == null || !ValidSections.Contains(sec))
+                    int customCount = 0;
+                    foreach (var c in cp.EnumerateArray())
                     {
-                        error = "Pregunta propia con sección inválida."; return false;
+                        customCount++;
+                        if (customCount > 50)
+                        {
+                            error = "No se pueden añadir más de 50 preguntas propias."; return false;
+                        }
+
+                        var sec = c.TryGetProperty("section", out var se) ? se.GetString() : null;
+                        if (sec == null || !ValidSections.Contains(sec))
+                        {
+                            error = "Pregunta propia con sección inválida."; return false;
+                        }
+
+                        var lbl = c.TryGetProperty("label", out var lblProp) ? lblProp.GetString() : null;
+                        if (lbl != null && lbl.Length > 200)
+                        {
+                            error = "Una pregunta propia no puede superar los 200 caracteres."; return false;
+                        }
                     }
                 }
-            }
 
-            return true;
+                return true;
+            }
         }
     }
 }

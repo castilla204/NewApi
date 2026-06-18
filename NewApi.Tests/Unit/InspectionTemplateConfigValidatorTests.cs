@@ -37,4 +37,22 @@ public class InspectionTemplateConfigValidatorTests
     {
         Assert.False(InspectionTemplateConfigValidator.IsValid("{not json", out _));
     }
+
+    [Fact]
+    public void RejectsTooManyCustomPoints()
+    {
+        var points = string.Join(",", Enumerable.Range(1, 51).Select(i => $"{{\"section\":\"B\",\"label\":\"Q{i}\"}}"));
+        var json = $"{{\"customPoints\":[{points}]}}";
+        Assert.False(InspectionTemplateConfigValidator.IsValid(json, out var error));
+        Assert.Contains("50", error);
+    }
+
+    [Fact]
+    public void RejectsCustomPointLabelTooLong()
+    {
+        var longLabel = new string('X', 201);
+        var json = $"{{\"customPoints\":[{{\"section\":\"B\",\"label\":\"{longLabel}\"}}]}}";
+        Assert.False(InspectionTemplateConfigValidator.IsValid(json, out var error));
+        Assert.Contains("200", error);
+    }
 }

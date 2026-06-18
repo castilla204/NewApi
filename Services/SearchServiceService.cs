@@ -1497,12 +1497,29 @@ namespace newApi.Services
                 // Persistir config + PDF del informe personalizable (si se envió)
                 searchService.InspectionTemplateConfig = string.IsNullOrWhiteSpace(request.InspectionTemplateConfig)
                     ? null : request.InspectionTemplateConfig;
-                var tplUrl = await UploadInspectionTemplateAsync(serviceId, request.InspectionTemplatePdf);
-                if (tplUrl != null) searchService.InspectionTemplatePdfUrl = tplUrl;
-                if (searchService.InspectionTemplateConfig != null || tplUrl != null)
+                try
                 {
-                    try { await _context.SaveChangesAsync(); }
-                    catch (Exception ex) { _logger.LogWarning(ex, "Could not persist inspection template for service {ServiceId}; continuing", serviceId); }
+                    var tplUrl = await UploadInspectionTemplateAsync(serviceId, request.InspectionTemplatePdf);
+                    if (tplUrl != null)
+                    {
+                        searchService.InspectionTemplatePdfUrl = tplUrl;
+                        try { await _context.SaveChangesAsync(); }
+                        catch (Exception ex) { _logger.LogWarning(ex, "Could not persist inspection template for service {ServiceId}; continuing", serviceId); }
+                    }
+                    else if (searchService.InspectionTemplateConfig != null)
+                    {
+                        try { await _context.SaveChangesAsync(); }
+                        catch (Exception ex) { _logger.LogWarning(ex, "Could not persist inspection template config for service {ServiceId}; continuing", serviceId); }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Fallo al subir el PDF del informe del servicio {ServiceId}; se continúa sin PDF", serviceId);
+                    if (searchService.InspectionTemplateConfig != null)
+                    {
+                        try { await _context.SaveChangesAsync(); }
+                        catch (Exception saveEx) { _logger.LogWarning(saveEx, "Could not persist inspection template config for service {ServiceId}; continuing", serviceId); }
+                    }
                 }
 
                 // ✅ VALIDACIÓN: Verificar que al menos un tipo de entregable esté seleccionado
@@ -2201,7 +2218,8 @@ namespace newApi.Services
                     Conditions = request.Conditions,
                     DurationInHours = request.DurationInHours ?? 0,
                     CreatedAt = DateTime.UtcNow,
-                    IsActive = true
+                    IsActive = true,
+                    InspectionTemplatePdfUrl = existingService.InspectionTemplatePdfUrl
                 };
 
                 _context.SearchServices.Add(newSearchService);
@@ -2283,12 +2301,24 @@ namespace newApi.Services
                 // Persistir config + PDF del informe personalizable en el nuevo servicio (si se envió)
                 newSearchService.InspectionTemplateConfig = string.IsNullOrWhiteSpace(request.InspectionTemplateConfig)
                     ? null : request.InspectionTemplateConfig;
-                var newTplUrl = await UploadInspectionTemplateAsync(newServiceId, request.InspectionTemplatePdf);
-                if (newTplUrl != null) newSearchService.InspectionTemplatePdfUrl = newTplUrl;
-                if (newSearchService.InspectionTemplateConfig != null || newTplUrl != null)
+                try
                 {
-                    try { await _context.SaveChangesAsync(); }
-                    catch (Exception ex) { _logger.LogWarning(ex, "Could not persist inspection template for updated service {ServiceId}; continuing", newServiceId); }
+                    var newTplUrl = await UploadInspectionTemplateAsync(newServiceId, request.InspectionTemplatePdf);
+                    if (newTplUrl != null) newSearchService.InspectionTemplatePdfUrl = newTplUrl;
+                    if (newSearchService.InspectionTemplateConfig != null || newTplUrl != null)
+                    {
+                        try { await _context.SaveChangesAsync(); }
+                        catch (Exception ex) { _logger.LogWarning(ex, "Could not persist inspection template for updated service {ServiceId}; continuing", newServiceId); }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Fallo al subir el PDF del informe del servicio {ServiceId}; se continúa sin PDF", newServiceId);
+                    if (newSearchService.InspectionTemplateConfig != null)
+                    {
+                        try { await _context.SaveChangesAsync(); }
+                        catch (Exception saveEx) { _logger.LogWarning(saveEx, "Could not persist inspection template config for updated service {ServiceId}; continuing", newServiceId); }
+                    }
                 }
 
                 // ✅ VALIDACIÓN: Verificar que al menos un tipo de entregable esté seleccionado

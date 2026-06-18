@@ -740,6 +740,17 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "El formato de tipos de entregables no es válido" });
                 }
 
+                // ✅ VALIDACIÓN: se requieren al menos 2 fotos por servicio
+                if (request.Images == null || request.Images.Count < 2)
+                {
+                    return BadRequest(new { message = "Debes subir al menos 2 fotos del servicio" });
+                }
+
+                if (!InspectionTemplateConfigValidator.IsValid(request.InspectionTemplateConfig, out var tplError))
+                {
+                    return BadRequest(new { message = tplError });
+                }
+
                 var (success, service, imageUrls) = await _searchServiceService.CreateSearchService(userId, request);
                 if (!success)
                 {
@@ -840,7 +851,8 @@ namespace newApi.Controllers
                         service.CreatedAt,
                         service.IsActive,
                         ImageUrls = imageUrls,
-                        SelectedDeliverableTypes = selectedDeliverableTypes
+                        SelectedDeliverableTypes = selectedDeliverableTypes,
+                        service.InspectionTemplatePdfUrl
                     }
                 });
             }
@@ -953,6 +965,38 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "El formato de tipos de entregables no es válido" });
                 }
 
+                // ✅ VALIDACIÓN: tras la edición el servicio debe conservar al menos 2 fotos.
+                // Conteo final = (existentes que NO se eliminan) + nuevas a subir.
+                var currentImageIds = await _context.SearchServiceImages
+                    .Where(img => img.SearchServiceId == request.ServiceId)
+                    .Select(img => img.Id)
+                    .ToListAsync();
+
+                var deleteIds = new List<int>();
+                if (!string.IsNullOrWhiteSpace(request.ImagesToDelete))
+                {
+                    try
+                    {
+                        deleteIds = System.Text.Json.JsonSerializer.Deserialize<List<int>>(request.ImagesToDelete) ?? new List<int>();
+                    }
+                    catch (System.Text.Json.JsonException)
+                    {
+                        return BadRequest(new { message = "El formato de imágenes a eliminar no es válido" });
+                    }
+                }
+
+                var keptImagesCount = currentImageIds.Count(id => !deleteIds.Contains(id));
+                var newImagesCount = request.Images?.Count ?? 0;
+                if (keptImagesCount + newImagesCount < 2)
+                {
+                    return BadRequest(new { message = "El servicio debe tener al menos 2 fotos" });
+                }
+
+                if (!InspectionTemplateConfigValidator.IsValid(request.InspectionTemplateConfig, out var tplError))
+                {
+                    return BadRequest(new { message = tplError });
+                }
+
                 var (success, newService, imageUrls) = await _searchServiceService.UpdateSearchService(userId, request);
                 if (!success)
                 {
@@ -994,7 +1038,8 @@ namespace newApi.Controllers
                         newService.CreatedAt,
                         newService.IsActive,
                         ImageUrls = imageUrls,
-                        SelectedDeliverableTypes = selectedDeliverableTypes
+                        SelectedDeliverableTypes = selectedDeliverableTypes,
+                        newService.InspectionTemplatePdfUrl
                     },
                     originalServiceId = request.ServiceId
                 });

@@ -69,10 +69,12 @@ public class HttpHireFlowTests
 
     /// <summary>POST del webhook firmado y devuelve el hire creado (o null).</summary>
     private async Task<(HttpResponseMessage Response, int? HireId)> PostCheckoutWebhookAsync(
-        Marketplace mk, string eventId, string sessionId, string paymentIntentId, decimal amount = 110m)
+        Marketplace mk, string eventId, string sessionId, string paymentIntentId, decimal amount = 110m,
+        string? coordinationMode = null)
     {
         var payload = StripeEventBuilder.CheckoutSessionCompleted(
-            eventId, sessionId, paymentIntentId, mk.ClientId, mk.ServiceId, amount);
+            eventId, sessionId, paymentIntentId, mk.ClientId, mk.ServiceId, amount,
+            coordinationMode: coordinationMode);
         var request = StripeWebhookSigner.BuildSignedPost(
             WebhookUrl, payload, ApiFactoryFixture.GeneralWebhookSecret);
         var response = await _api.Client.SendAsync(request);
@@ -98,6 +100,13 @@ public class HttpHireFlowTests
         await using var db = _api.CreateDbContext();
         return await db.SearchHires.Where(h => h.Id == hireId)
             .Select(h => h.Status!.StatusValue).SingleAsync();
+    }
+
+    private async Task<string?> HireCaptureStatusAsync(int hireId)
+    {
+        await using var db = _api.CreateDbContext();
+        return await db.SearchHires.Where(h => h.Id == hireId)
+            .Select(h => h.CaptureStatus).SingleAsync();
     }
 
     private async Task<(int Id, string Status)> AppointmentOfAsync(int hireId)
@@ -273,6 +282,70 @@ public class HttpHireFlowTests
         // El backend REAL capturó el PaymentIntent contra el stub de Stripe.
         _api.FakeStripe.Requests.Should().Contain(r => r == $"POST /v1/payment_intents/{pi}/capture",
             "EnsurePaymentCapturedAsync llama a PaymentIntentService.CaptureAsync (SubscriptionController.cs:6314)");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-03b · captura DIFERIDA: modo "seller" SIN hueco → el PI NO se captura
+    //           (sigue autorizado) y el hire queda CaptureStatus="Authorized".
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-03b · seller sin hueco → PI NO capturado, hire CaptureStatus=Authorized")]
+    public async Task Seller_checkout_without_slot_defers_capture()
+    {
+        var mk = await SeedMarketplaceAsync("hf03b");
+        var pi = "pi_hf03b_" + Guid.NewGuid().ToString("N")[..10];
+        var eventId = "evt_hf03b_" + Guid.NewGuid().ToString("N");
+
+        // Modo seller SIN startsAtUtc → captura diferida.
+        var (response, hireId) = await PostCheckoutWebhookAsync(
+            mk, eventId, "cs_hf03b", pi, coordinationMode: "seller");
+
+        var body = await response.Content.ReadAsStringAsync();
+        string? serverError = null;
+        await using (var diag = _api.CreateDbContext())
+            serverError = await diag.ProcessedWebhookEvents
+                .Where(e => e.EventId == eventId).Select(e => e.ErrorMessage).FirstOrDefaultAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK,
+            $"body: {body} | ProcessedWebhookEvent.ErrorMessage: {serverError}");
+        hireId.Should().NotBeNull("el handler real debe crear el SearchHire también en modo seller");
+
+        // El hire queda AUTORIZADO (no cobrado): se capturará al confirmar el vendedor (Tarea 3).
+        (await HireCaptureStatusAsync(hireId!.Value)).Should().Be("Authorized",
+            "modo seller sin hueco difiere la captura: PI en requires_capture, sin cobro");
+
+        // La FT ServicePayment SÍ se inserta (mantiene el vínculo PI↔hire que usan los jobs).
+        await using var db = _api.CreateDbContext();
+        var ft = await db.FinancialTransactions.SingleOrDefaultAsync(f =>
+            f.StripePaymentIntentId == pi && f.TransactionType == "ServicePayment");
+        ft.Should().NotBeNull("la FT ServicePayment se inserta como hoy, incluso difiriendo la captura");
+        ft!.RelatedEntityId.Should().Be(hireId.Value);
+
+        // CLAVE: el backend NO debe haber capturado el PaymentIntent contra el stub.
+        _api.FakeStripe.Requests.Should().NotContain(r => r == $"POST /v1/payment_intents/{pi}/capture",
+            "captura diferida: no debe haber POST .../capture para el PI del seller sin hueco");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-03c · NO regresión: caso self/normal → captura como hoy y CaptureStatus="Captured".
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-03c · self/normal → PI capturado y hire CaptureStatus=Captured")]
+    public async Task Self_checkout_captures_immediately()
+    {
+        var mk = await SeedMarketplaceAsync("hf03c");
+        var pi = "pi_hf03c_" + Guid.NewGuid().ToString("N")[..10];
+        var eventId = "evt_hf03c_" + Guid.NewGuid().ToString("N");
+
+        // Sin coordinationMode (equivale a self) y sin hueco → captura inmediata, como hoy.
+        var (response, hireId) = await PostCheckoutWebhookAsync(mk, eventId, "cs_hf03c", pi);
+
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, $"body: {body}");
+        hireId.Should().NotBeNull();
+
+        (await HireCaptureStatusAsync(hireId!.Value)).Should().Be("Captured",
+            "el caso self/normal captura el pago en el webhook como hoy");
+
+        _api.FakeStripe.Requests.Should().Contain(r => r == $"POST /v1/payment_intents/{pi}/capture",
+            "el caso self/normal SÍ captura el PaymentIntent");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

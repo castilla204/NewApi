@@ -6094,11 +6094,20 @@ namespace newApi.Controllers
                     slotEndUtc = DateTime.SpecifyKind(parsedSlotEnd, DateTimeKind.Utc);
                 }
 
+                // 💳 Captura diferida (Tarea 2): en modo vendedor SIN hueco elegido NO capturamos el
+                // pago en el webhook; dejamos el PaymentIntent en requires_capture (autorización viva) y
+                // lo capturamos al confirmar el vendedor la cita (Tarea 3). En el resto de casos (self, o
+                // seller con hueco ya elegido) se captura como hoy. Se fija dentro del bloque metadata
+                // donde coordModeRaw es legible; por defecto NO se difiere.
+                bool deferCapture = false;
+
                 // 🤝 Coordinación con el vendedor (modo "seller"): persistir en el hire los datos
                 // que el cliente metió en el checkout. En modo "self" estas claves van vacías.
                 if (metadata != null)
                 {
                     metadata.TryGetValue("coordinationMode", out var coordModeRaw);
+                    // Predicado canónico "seller sin hueco" (mismo que el del magic link, ~más abajo).
+                    deferCapture = (coordModeRaw == "seller" && !slotStartUtc.HasValue);
                     metadata.TryGetValue("sellerPhone", out var sellerPhoneRaw);
                     metadata.TryGetValue("sellerEmail", out var sellerEmailRaw);
                     metadata.TryGetValue("sellerListing", out var sellerListingRaw);
@@ -6223,18 +6232,29 @@ namespace newApi.Controllers
                     searchHire.CompletionDeadline = slotEndUtc.Value.AddHours(searchHire.DurationInHoursSnapshot ?? 24);
                 }
 
-                await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHireId); // ✅ FIX: Usar searchHireId guardado
+                if (deferCapture)
+                {
+                    // 💳 Captura diferida (Tarea 2): modo vendedor sin hueco. NO capturamos: el PI sigue
+                    // en requires_capture (autorización viva). Se capturará al confirmar el vendedor la
+                    // cita (Tarea 3). El watchdog NO debe finalizar/capturar este hire por su cuenta:
+                    // CaptureStatus="Authorized" lo deja explícitamente fuera de "Captured".
+                    searchHire.CaptureStatus = "Authorized";
+                }
+                else
+                {
+                    await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHireId); // ✅ FIX: Usar searchHireId guardado
 
-                // 🛡️ Round 28 MUD-AJ + MUD-AT: marcar Captured tras éxito del capture. El
-                // watchdog (PlatformMaintenanceService.ProcessExpiringPaymentIntentsAsync) NO
-                // procesa hires con CaptureStatus="Captured".
-                //
-                // MUD-AT: NO hacer SaveChangesAsync extra aquí — EF flushea la mutación al
-                // CommitAsync de abajo. El SaveChanges intermedio anterior abría ventana de
-                // fallo (Stripe captured OK pero conexión BD caída entre SaveChanges y Commit)
-                // sin recovery, mientras el catch(commitEx) sí tiene compensación Stripe.
-                // Asignación pura → EF lo persiste atómicamente con el commit.
-                searchHire.CaptureStatus = "Captured";
+                    // 🛡️ Round 28 MUD-AJ + MUD-AT: marcar Captured tras éxito del capture. El
+                    // watchdog (PlatformMaintenanceService.ProcessExpiringPaymentIntentsAsync) NO
+                    // procesa hires con CaptureStatus="Captured".
+                    //
+                    // MUD-AT: NO hacer SaveChangesAsync extra aquí — EF flushea la mutación al
+                    // CommitAsync de abajo. El SaveChanges intermedio anterior abría ventana de
+                    // fallo (Stripe captured OK pero conexión BD caída entre SaveChanges y Commit)
+                    // sin recovery, mientras el catch(commitEx) sí tiene compensación Stripe.
+                    // Asignación pura → EF lo persiste atómicamente con el commit.
+                    searchHire.CaptureStatus = "Captured";
+                }
 
                 try
                 {
@@ -6431,53 +6451,60 @@ namespace newApi.Controllers
                 }
 #endif // ═══ FIN SISTEMA ANTIGUO (rama sin hueco: awaiting_appointment + timer 24h) ═══
 
-                // ✅ Notificar al cliente y experto cuando se confirma la contratación
-                await _loggingService.LogInfoAsync(
-                    message: "Contratación confirmada",
-                    details: $"Tu pago se procesó correctamente. La contratación #{searchHireId} está activa y el experto ha sido notificado.", // ✅ FIX: Usar searchHireId guardado
-                    userId: userId,
-                    source: "SubscriptionController.HandlePendingHireCompleted",
-                    relatedEntityType: "SearchHire",
-                    relatedEntityId: searchHireId, // ✅ FIX: Usar searchHireId guardado
-                    notifyUser: true
-                );
-
-                // ✅ Enviar factura por email al cliente (en segundo plano con Hangfire)
-                if (!string.IsNullOrEmpty(user.Email))
+                // 💳 Captura diferida (Tarea 2): en modo vendedor sin hueco NO se ha cobrado todavía
+                // (PI en requires_capture). Por eso se difiere tanto el aviso "pago procesado" al cliente
+                // como la factura: ambos se emitirán cuando el vendedor confirme la cita y se capture
+                // el pago (Tarea 3). El resto de casos (self / seller con hueco) notifica y factura como hoy.
+                if (!deferCapture)
                 {
-                    try
+                    // ✅ Notificar al cliente y experto cuando se confirma la contratación
+                    await _loggingService.LogInfoAsync(
+                        message: "Contratación confirmada",
+                        details: $"Tu pago se procesó correctamente. La contratación #{searchHireId} está activa y el experto ha sido notificado.", // ✅ FIX: Usar searchHireId guardado
+                        userId: userId,
+                        source: "SubscriptionController.HandlePendingHireCompleted",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId, // ✅ FIX: Usar searchHireId guardado
+                        notifyUser: true
+                    );
+
+                    // ✅ Enviar factura por email al cliente (en segundo plano con Hangfire)
+                    if (!string.IsNullOrEmpty(user.Email))
                     {
-                        Hangfire.BackgroundJob.Enqueue<IInvoiceService>(service =>
-                            service.SendInvoiceByEmailBackgroundJob(searchHireId, user.Email)); // ✅ FIX: Usar searchHireId guardado
-                        
-                        await _loggingService.LogInfoAsync(
-                            message: "Factura encolada para envío por email",
-                            details: $"Factura para SearchHire {searchHireId} encolada en Hangfire para envío a {user.Email}",
-                            userId: userId,
-                            source: "SubscriptionController.HandlePendingHireCompleted",
-                            relatedEntityType: "SearchHire",
-                            relatedEntityId: searchHireId
-                        );
-                    }
-                    catch (Exception invoiceEx)
-                    {
-                        // ✅ LOG: Error al encolar email de factura (no crítico, la contratación se completó)
-                        await _loggingService.LogWarningAsync(
-                            message: "Failed to enqueue invoice email job",
-                            details: $"Hangfire job enqueue failed for SearchHire {searchHireId}. Error: {invoiceEx.Message}. The hire was completed successfully, but the invoice email will not be sent automatically.",
-                            userId: userId,
-                            source: "SubscriptionController.HandlePendingHireCompleted",
-                            relatedEntityType: "SearchHire",
-                            relatedEntityId: searchHireId,
-                            additionalData: new { 
-                                SearchHireId = searchHireId,
-                                Email = user.Email,
-                                Exception = invoiceEx.Message,
-                                ErrorType = invoiceEx.GetType().Name,
-                                StackTrace = invoiceEx.StackTrace,
-                                InnerException = invoiceEx.InnerException?.Message
-                            }
-                        );
+                        try
+                        {
+                            Hangfire.BackgroundJob.Enqueue<IInvoiceService>(service =>
+                                service.SendInvoiceByEmailBackgroundJob(searchHireId, user.Email)); // ✅ FIX: Usar searchHireId guardado
+
+                            await _loggingService.LogInfoAsync(
+                                message: "Factura encolada para envío por email",
+                                details: $"Factura para SearchHire {searchHireId} encolada en Hangfire para envío a {user.Email}",
+                                userId: userId,
+                                source: "SubscriptionController.HandlePendingHireCompleted",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId
+                            );
+                        }
+                        catch (Exception invoiceEx)
+                        {
+                            // ✅ LOG: Error al encolar email de factura (no crítico, la contratación se completó)
+                            await _loggingService.LogWarningAsync(
+                                message: "Failed to enqueue invoice email job",
+                                details: $"Hangfire job enqueue failed for SearchHire {searchHireId}. Error: {invoiceEx.Message}. The hire was completed successfully, but the invoice email will not be sent automatically.",
+                                userId: userId,
+                                source: "SubscriptionController.HandlePendingHireCompleted",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                additionalData: new {
+                                    SearchHireId = searchHireId,
+                                    Email = user.Email,
+                                    Exception = invoiceEx.Message,
+                                    ErrorType = invoiceEx.GetType().Name,
+                                    StackTrace = invoiceEx.StackTrace,
+                                    InnerException = invoiceEx.InnerException?.Message
+                                }
+                            );
+                        }
                     }
                 }
 

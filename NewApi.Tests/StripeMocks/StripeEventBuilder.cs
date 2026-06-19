@@ -26,7 +26,8 @@ public static class StripeEventBuilder
         decimal amount,
         string currency = "eur",
         DateTime? startsAtUtc = null,
-        DateTime? endsAtUtc = null)
+        DateTime? endsAtUtc = null,
+        string? coordinationMode = null)
     {
         var metadata = new Dictionary<string, string>
         {
@@ -35,6 +36,10 @@ public static class StripeEventBuilder
             ["amount"] = amount.ToString("0.##"),
             ["pendingHire"] = "true",
         };
+        // 🤝 Modo de coordinación (Coordínalo Inspecciono): "self" | "seller". En "seller"
+        // sin hueco (sin startsAtUtc) el backend difiere la captura del PaymentIntent.
+        if (!string.IsNullOrWhiteSpace(coordinationMode))
+            metadata["coordinationMode"] = coordinationMode;
         // 🗓️ Reserva atómica (Calendly): hueco elegido en UTC, como lo manda CreateSearchWithHire.
         if (startsAtUtc.HasValue && endsAtUtc.HasValue)
         {

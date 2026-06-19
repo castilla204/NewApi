@@ -64,7 +64,11 @@ FROM (VALUES
   ('AppointmentStatus','AppointmentCancelledByClientGt24h','appointment_cancelled_by_client_gt24h','Cancelado por Cliente >24h',true,21),
   ('AppointmentStatus','AppointmentCancelledByClient6to24h','appointment_cancelled_by_client_6to24h','Cancelado por Cliente 6-24h',true,22),
   ('AppointmentStatus','AppointmentCancelledByClientLt6h','appointment_cancelled_by_client_lt6h','Cancelado por Cliente <6h',true,23),
-  ('AppointmentStatus','AppointmentCancelledByExpertStrike','appointment_cancelled_by_expert_strike','Cancelado por Experto',true,24)
+  ('AppointmentStatus','AppointmentCancelledByExpertStrike','appointment_cancelled_by_expert_strike','Cancelado por Experto',true,24),
+  -- Confirmación del experto: cita creada con pago AUTORIZADO sin capturar, esperando aprobar/rechazar.
+  -- NO-FINAL (fin=false): es transitorio y NO mueve dinero (no llama a ProcessMoneyDistributionAsync),
+  -- por eso NO lleva StatusConfiguration (igual que appointment_confirmed / appointment_awaiting_report).
+  ('AppointmentStatus','AppointmentPendingExpertConfirmation','appointment_pending_expert_confirmation','Pendiente de Confirmación del Experto',false,25)
 ) AS v("StatusType","StatusName","StatusValue","DisplayName","fin","sort")
 WHERE NOT EXISTS (SELECT 1 FROM "SystemStatuses" s WHERE s."StatusValue"=v."StatusValue" AND s."StatusType"=v."StatusType");
 

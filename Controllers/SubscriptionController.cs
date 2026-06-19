@@ -6100,20 +6100,19 @@ namespace newApi.Controllers
                     slotEndUtc = DateTime.SpecifyKind(parsedSlotEnd, DateTimeKind.Utc);
                 }
 
-                // 💳 Captura diferida (Tarea 2): en modo vendedor SIN hueco elegido NO capturamos el
-                // pago en el webhook; dejamos el PaymentIntent en requires_capture (autorización viva) y
-                // lo capturamos al confirmar el vendedor la cita (Tarea 3). En el resto de casos (self, o
-                // seller con hueco ya elegido) se captura como hoy. Se fija dentro del bloque metadata
-                // donde coordModeRaw es legible; por defecto NO se difiere.
-                bool deferCapture = false;
+                // 💳 Captura diferida (confirmación del experto, Tarea 3): NUNCA capturamos el pago en
+                // el webhook. La cita nace en `appointment_pending_expert_confirmation` con el pago
+                // AUTORIZADO (PI en requires_capture, CaptureStatus="Authorized"); la captura se hará
+                // cuando el experto APRUEBE la cita (otra tarea). Esto aplica a AMBOS modos (self y seller).
+                // La rama else (EnsurePaymentCapturedAsync) queda como defensa pero ya no se alcanza.
+                bool deferCapture = true;
 
                 // 🤝 Coordinación con el vendedor (modo "seller"): persistir en el hire los datos
                 // que el cliente metió en el checkout. En modo "self" estas claves van vacías.
                 if (metadata != null)
                 {
                     metadata.TryGetValue("coordinationMode", out var coordModeRaw);
-                    // Predicado canónico "seller sin hueco" (mismo que el del magic link, ~más abajo).
-                    deferCapture = (coordModeRaw == "seller" && !slotStartUtc.HasValue);
+                    // deferCapture ya es true SIEMPRE (confirmación del experto): no se reasigna aquí.
                     metadata.TryGetValue("sellerPhone", out var sellerPhoneRaw);
                     metadata.TryGetValue("sellerEmail", out var sellerEmailRaw);
                     metadata.TryGetValue("sellerListing", out var sellerListingRaw);
@@ -6145,10 +6144,12 @@ namespace newApi.Controllers
 
                 if (slotStartUtc.HasValue && slotEndUtc.HasValue)
                 {
-                    var confirmedStatus = await _context.SystemStatuses
-                        .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_confirmed");
-                    if (confirmedStatus == null)
-                        throw new InvalidOperationException("AppointmentStatus 'appointment_confirmed' no encontrado (¿seed cargado?).");
+                    // La cita nace PENDIENTE DE CONFIRMACIÓN DEL EXPERTO (no confirmada): el pago está
+                    // AUTORIZADO pero no cobrado; el experto debe aprobar para que se capture.
+                    var pendingExpertStatus = await _context.SystemStatuses
+                        .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_pending_expert_confirmation");
+                    if (pendingExpertStatus == null)
+                        throw new InvalidOperationException("AppointmentStatus 'appointment_pending_expert_confirmation' no encontrado (¿seed cargado?).");
 
                     // UTC → hora local del experto para ProposedDate/ProposedTime (lo que usa el flujo downstream).
                     DateTime slotLocalStart;
@@ -6177,7 +6178,7 @@ namespace newApi.Controllers
                     _context.Appointments.Add(new Appointment
                     {
                         SearchHireId = searchHireId,
-                        StatusId = confirmedStatus.Id,
+                        StatusId = pendingExpertStatus.Id,
                         ExpertId = expertuserid,
                         StartsAtUtc = slotStartUtc.Value,
                         EndsAtUtc = slotEndUtc.Value,
@@ -6236,6 +6237,13 @@ namespace newApi.Controllers
 
                     // Cita conocida ya en el checkout: plazo de entrega = fin de cita + SLA del servicio.
                     searchHire.CompletionDeadline = slotEndUtc.Value.AddHours(searchHire.DurationInHoursSnapshot ?? 24);
+
+                    // 🔐 Confirmación del experto (modo self = ventana 48h): genera el token y el plazo
+                    // para que el experto apruebe/rechace la cita. El plazo nunca supera el inicio de la
+                    // cita (no tiene sentido aprobar después de empezar).
+                    searchHire.ExpertConfirmationToken = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+                    var baseDl = DateTime.UtcNow.AddHours(48);
+                    searchHire.ExpertConfirmationDeadline = baseDl < slotStartUtc.Value ? baseDl : slotStartUtc.Value;
                 }
 
                 if (deferCapture)
@@ -6290,6 +6298,8 @@ namespace newApi.Controllers
                         }
                         catch { /* best-effort: el envío del enlace nunca debe tumbar el webhook */ }
                     }
+
+                    // ⚓ TODO Tarea 5/6: crear timer expert_confirmation + notificar al experto
                 }
                 catch (Exception commitEx)
                 {

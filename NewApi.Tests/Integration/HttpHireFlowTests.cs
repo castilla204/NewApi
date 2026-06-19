@@ -109,6 +109,29 @@ public class HttpHireFlowTests
             .Select(h => h.CaptureStatus).SingleAsync();
     }
 
+    /// <summary>
+    /// Simula la APROBACIÓN DEL EXPERTO (la captura del pago, que ahora vive fuera del webhook/confirm):
+    /// marca el hire como Captured en BD y pone el PaymentIntent en 'succeeded' en el stub de Stripe,
+    /// para que los flujos de dinero downstream (complete-service, disputa, retry, borrado) operen como
+    /// antes lo hacían inmediatamente tras el webhook. Si <paramref name="confirmAppointment"/> es true,
+    /// avanza también la cita de 'appointment_pending_expert_confirmation' a 'appointment_confirmed'.
+    /// </summary>
+    private async Task SimulateExpertApprovalAsync(int hireId, string paymentIntentId, bool confirmAppointment = false)
+    {
+        _api.FakeStripe.SetPaymentIntentStatus(paymentIntentId, "succeeded");
+        await using var db = _api.CreateDbContext();
+        var hire = await db.SearchHires.SingleAsync(h => h.Id == hireId);
+        hire.CaptureStatus = "Captured";
+        if (confirmAppointment)
+        {
+            var confirmed = await db.SystemStatuses.SingleAsync(s =>
+                s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_confirmed");
+            var appt = await db.Appointments.SingleOrDefaultAsync(a => a.SearchHireId == hireId);
+            if (appt is not null) appt.StatusId = confirmed.Id;
+        }
+        await db.SaveChangesAsync();
+    }
+
     private async Task<(int Id, string Status)> AppointmentOfAsync(int hireId)
     {
         await using var db = _api.CreateDbContext();
@@ -118,10 +141,11 @@ public class HttpHireFlowTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // HF-SLOT · webhook con hueco (Calendly) → cita YA appointment_confirmed con
-    //           intervalo UTC + ProposedDate/Time local. Camino de la Fase C.
+    // HF-SLOT · webhook con hueco (Calendly) → cita YA appointment_pending_expert_confirmation
+    //           con intervalo UTC + ProposedDate/Time local. La cita nace pendiente de
+    //           confirmación del experto (pago autorizado, no capturado).
     // ─────────────────────────────────────────────────────────────────────────
-    [Fact(DisplayName = "HF-SLOT · webhook con hueco → cita appointment_confirmed con intervalo UTC")]
+    [Fact(DisplayName = "HF-SLOT · webhook con hueco → cita appointment_pending_expert_confirmation con intervalo UTC")]
     public async Task Webhook_with_slot_creates_confirmed_appointment()
     {
         var mk = await SeedMarketplaceAsync("hfslot");
@@ -145,30 +169,52 @@ public class HttpHireFlowTests
         Assert.NotNull(hireId);
 
         var appt = await db.Appointments.Include(a => a.Status).SingleAsync(a => a.SearchHireId == hireId!.Value);
-        Assert.Equal("appointment_confirmed", appt.Status!.StatusValue);
+        Assert.Equal("appointment_pending_expert_confirmation", appt.Status!.StatusValue);
         Assert.Equal(startUtc, appt.StartsAtUtc);
         Assert.Equal(endUtc, appt.EndsAtUtc);
         Assert.True(appt.BlocksCalendar);
         Assert.Equal(mk.ExpertUserId, appt.ExpertId);
         Assert.Equal(new DateTime(2026, 8, 3), appt.ProposedDate!.Value.Date);
         Assert.Equal(new TimeSpan(9, 0, 0), appt.ProposedTime); // 07:00 UTC = 09:00 Europe/Madrid (CEST)
+
+        // Pago AUTORIZADO (no capturado) + token/plazo de confirmación del experto generados.
+        var hire = await db.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId!.Value);
+        Assert.Equal("Authorized", hire.CaptureStatus);
+        Assert.False(string.IsNullOrEmpty(hire.ExpertConfirmationToken), "el webhook self genera el token de confirmación del experto");
+        Assert.NotNull(hire.ExpertConfirmationDeadline);
+        // Ventana self = min(now+48h, inicio de la cita). La cita (2026-08-03) está lejos → manda now+48h.
+        Assert.True(hire.ExpertConfirmationDeadline! <= startUtc, "el plazo nunca supera el inicio de la cita");
+        Assert.True(hire.ExpertConfirmationDeadline! <= DateTime.UtcNow.AddHours(48).AddMinutes(1)
+                    && hire.ExpertConfirmationDeadline! >= DateTime.UtcNow.AddHours(47),
+            "plazo ≈ now+48h cuando la cita es lejana");
     }
 
-    /// <summary>Crea un hire con cita CON HUECO ya confirmada vía webhook y devuelve (hireId, apptId).</summary>
+    /// <summary>
+    /// Crea un hire con cita CON HUECO vía webhook y la deja YA CONFIRMADA + pago CAPTURADO, simulando
+    /// la aprobación del experto (la cita nace ahora en pending_expert_confirmation con el pago solo
+    /// autorizado; estos tests de cancelación/dinero parten del estado post-aprobación). Devuelve
+    /// (hireId, apptId).
+    /// </summary>
     private async Task<(int hireId, int apptId)> SeedSlotHireAsync(Marketplace mk, string slug, DateTime startUtc)
     {
+        var pi = $"pi_{slug}_" + Guid.NewGuid().ToString("N");
         var payload = StripeEventBuilder.CheckoutSessionCompleted(
             $"evt_{slug}_" + Guid.NewGuid().ToString("N"), $"cs_{slug}_" + Guid.NewGuid().ToString("N"),
-            $"pi_{slug}_" + Guid.NewGuid().ToString("N"), mk.ClientId, mk.ServiceId, 110m,
+            pi, mk.ClientId, mk.ServiceId, 110m,
             startsAtUtc: startUtc, endsAtUtc: startUtc.AddHours(2));
         var resp = await _api.Client.SendAsync(StripeWebhookSigner.BuildSignedPost(
             WebhookUrl, payload, ApiFactoryFixture.GeneralWebhookSecret));
-        resp.IsSuccessStatusCode.Should().BeTrue("el webhook con hueco debe crear la cita confirmada");
+        resp.IsSuccessStatusCode.Should().BeTrue("el webhook con hueco debe crear la cita pendiente de confirmación");
 
-        await using var db = _api.CreateDbContext();
-        var hireId = await db.SearchHires.Where(h => h.ClientId == mk.ClientId && h.SearchServiceId == mk.ServiceId)
-            .OrderByDescending(h => h.Id).Select(h => h.Id).FirstAsync();
-        var apptId = await db.Appointments.Where(a => a.SearchHireId == hireId).Select(a => a.Id).FirstAsync();
+        int hireId, apptId;
+        await using (var db = _api.CreateDbContext())
+        {
+            hireId = await db.SearchHires.Where(h => h.ClientId == mk.ClientId && h.SearchServiceId == mk.ServiceId)
+                .OrderByDescending(h => h.Id).Select(h => h.Id).FirstAsync();
+            apptId = await db.Appointments.Where(a => a.SearchHireId == hireId).Select(a => a.Id).FirstAsync();
+        }
+        // El experto aprueba: cita confirmada + pago capturado (paso de otra tarea, simulado aquí).
+        await SimulateExpertApprovalAsync(hireId, pi, confirmAppointment: true);
         return (hireId, apptId);
     }
 
@@ -252,9 +298,10 @@ public class HttpHireFlowTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // HF-03 · checkout.session.completed firmado → captura PI + SearchHire(pending) + FT
+    // HF-03 · checkout.session.completed firmado → SearchHire(pending) + FT, pago AUTORIZADO
+    //          (captura DIFERIDA a la confirmación del experto: NO hay POST .../capture).
     // ─────────────────────────────────────────────────────────────────────────
-    [Fact(DisplayName = "HF-03 · webhook firmado válido → 200, captura PI y crea hire(pending)+FT")]
+    [Fact(DisplayName = "HF-03 · webhook firmado válido → 200, crea hire(pending)+FT y NO captura (autorizado)")]
     public async Task Valid_checkout_webhook_creates_hire()
     {
         var mk = await SeedMarketplaceAsync("hf03");
@@ -279,9 +326,11 @@ public class HttpHireFlowTests
         ft.Should().NotBeNull("el handler registra la FT ServicePayment con el PaymentIntentId");
         ft!.RelatedEntityId.Should().Be(hireId.Value);
 
-        // El backend REAL capturó el PaymentIntent contra el stub de Stripe.
-        _api.FakeStripe.Requests.Should().Contain(r => r == $"POST /v1/payment_intents/{pi}/capture",
-            "EnsurePaymentCapturedAsync llama a PaymentIntentService.CaptureAsync (SubscriptionController.cs:6314)");
+        // Captura DIFERIDA a la confirmación del experto: el pago queda AUTORIZADO, sin POST .../capture.
+        (await HireCaptureStatusAsync(hireId.Value)).Should().Be("Authorized",
+            "el webhook ya NUNCA captura: la captura se hace al aprobar el experto");
+        _api.FakeStripe.Requests.Should().NotContain(r => r == $"POST /v1/payment_intents/{pi}/capture",
+            "captura diferida: el webhook no debe capturar el PaymentIntent en ningún modo");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -325,27 +374,28 @@ public class HttpHireFlowTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // HF-03c · NO regresión: caso self/normal → captura como hoy y CaptureStatus="Captured".
+    // HF-03c · self/normal → captura DIFERIDA: pago AUTORIZADO, sin POST .../capture en el webhook.
+    //          (Antes capturaba en el acto; ahora la captura se hace al aprobar el experto.)
     // ─────────────────────────────────────────────────────────────────────────
-    [Fact(DisplayName = "HF-03c · self/normal → PI capturado y hire CaptureStatus=Captured")]
+    [Fact(DisplayName = "HF-03c · self/normal → PI NO capturado y hire CaptureStatus=Authorized")]
     public async Task Self_checkout_captures_immediately()
     {
         var mk = await SeedMarketplaceAsync("hf03c");
         var pi = "pi_hf03c_" + Guid.NewGuid().ToString("N")[..10];
         var eventId = "evt_hf03c_" + Guid.NewGuid().ToString("N");
 
-        // Sin coordinationMode (equivale a self) y sin hueco → captura inmediata, como hoy.
+        // Sin coordinationMode (equivale a self) y sin hueco → ahora también difiere la captura.
         var (response, hireId) = await PostCheckoutWebhookAsync(mk, eventId, "cs_hf03c", pi);
 
         var body = await response.Content.ReadAsStringAsync();
         response.StatusCode.Should().Be(HttpStatusCode.OK, $"body: {body}");
         hireId.Should().NotBeNull();
 
-        (await HireCaptureStatusAsync(hireId!.Value)).Should().Be("Captured",
-            "el caso self/normal captura el pago en el webhook como hoy");
+        (await HireCaptureStatusAsync(hireId!.Value)).Should().Be("Authorized",
+            "el webhook ya NUNCA captura; el pago queda autorizado hasta que el experto apruebe");
 
-        _api.FakeStripe.Requests.Should().Contain(r => r == $"POST /v1/payment_intents/{pi}/capture",
-            "el caso self/normal SÍ captura el PaymentIntent");
+        _api.FakeStripe.Requests.Should().NotContain(r => r == $"POST /v1/payment_intents/{pi}/capture",
+            "captura diferida: el caso self/normal ya no captura en el webhook");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -381,10 +431,14 @@ public class HttpHireFlowTests
     public async Task Complete_service_via_http_completes_hire()
     {
         var mk = await SeedMarketplaceAsync("hf05");
+        var pi = "pi_hf05_" + Guid.NewGuid().ToString("N")[..10];
         var (_, hireId) = await PostCheckoutWebhookAsync(
-            mk, "evt_hf05_" + Guid.NewGuid().ToString("N"), "cs_hf05",
-            "pi_hf05_" + Guid.NewGuid().ToString("N")[..10]);
+            mk, "evt_hf05_" + Guid.NewGuid().ToString("N"), "cs_hf05", pi);
         hireId.Should().NotBeNull();
+
+        // El pago se captura al aprobar el experto (fuera del webhook): completar el servicio y
+        // pagar al experto parte de un hire ya cobrado, así que simulamos esa aprobación.
+        await SimulateExpertApprovalAsync(hireId!.Value, pi);
 
         var jwt = _api.MintJwtFor(mk.ClientId, mk.ClientEmail);
         var response = await _api.Client.SendAsync(AuthedJson(
@@ -769,10 +823,14 @@ public class HttpHireFlowTests
     private async Task<(Marketplace Mk, int HireId, int DisputeId)> SetupDisputedHireAsync(string slug)
     {
         var mk = await SeedMarketplaceAsync(slug);
+        var pi = $"pi_{slug}_" + Guid.NewGuid().ToString("N")[..10];
         var (_, hireId) = await PostCheckoutWebhookAsync(
-            mk, $"evt_{slug}_" + Guid.NewGuid().ToString("N"), $"cs_{slug}",
-            $"pi_{slug}_" + Guid.NewGuid().ToString("N")[..10]);
+            mk, $"evt_{slug}_" + Guid.NewGuid().ToString("N"), $"cs_{slug}", pi);
         hireId.Should().NotBeNull();
+
+        // El pago ahora se captura al aprobar el experto (fuera del webhook); las disputas parten de
+        // un hire con el dinero ya cobrado, así que simulamos esa aprobación.
+        await SimulateExpertApprovalAsync(hireId!.Value, pi);
 
         await using (var db = _api.CreateDbContext())
         {
@@ -1000,10 +1058,14 @@ public class HttpHireFlowTests
     public async Task Money_retry_with_appointment_status_executes()
     {
         var mk = await SeedMarketplaceAsync("hf18");
+        var pi = "pi_hf18_" + Guid.NewGuid().ToString("N")[..10];
         var (_, hireId) = await PostCheckoutWebhookAsync(
-            mk, "evt_hf18_" + Guid.NewGuid().ToString("N"), "cs_hf18",
-            "pi_hf18_" + Guid.NewGuid().ToString("N")[..10]);
+            mk, "evt_hf18_" + Guid.NewGuid().ToString("N"), "cs_hf18", pi);
         hireId.Should().NotBeNull();
+
+        // El dinero a redistribuir parte de un pago ya capturado (la captura ocurre al aprobar el
+        // experto, fuera del webhook): simulamos esa captura para reproducir el estado del hire 16 prod.
+        await SimulateExpertApprovalAsync(hireId!.Value, pi);
 
         // Reproducir el estado exacto del hire 16 de prod: el watchdog canceló por
         // no-propose → appointment en _no_proposal y hire finalizado a cancelled,
@@ -1259,10 +1321,15 @@ public class HttpHireFlowTests
     public async Task Account_deletion_refund_failure_enqueues_retry()
     {
         var mk = await SeedMarketplaceAsync("hf23");
+        var pi = "pi_hf23_" + Guid.NewGuid().ToString("N")[..10];
         var (_, hireId) = await PostCheckoutWebhookAsync(
-            mk, "evt_hf23_" + Guid.NewGuid().ToString("N"), "cs_hf23",
-            "pi_hf23_" + Guid.NewGuid().ToString("N")[..10]);
+            mk, "evt_hf23_" + Guid.NewGuid().ToString("N"), "cs_hf23", pi);
         hireId.Should().NotBeNull();
+
+        // El refund-al-cliente del borrado parte de un pago ya capturado (la captura ocurre al aprobar
+        // el experto, fuera del webhook). Sin capturar, el borrado cancelaría la autorización (0€, sin
+        // refund ni retry); simulamos la aprobación para ejercitar la rama de refund fallido → retry.
+        await SimulateExpertApprovalAsync(hireId!.Value, pi);
 
         int retriesBefore;
         await using (var db0 = _api.CreateDbContext())

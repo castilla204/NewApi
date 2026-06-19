@@ -1612,6 +1612,7 @@ builder.Services.AddScoped<ILikeService, LikeService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IAuthorizationServices, AuthorizationServices>();
 builder.Services.AddScoped<ISubscriptionService, newApi.Services.SubscriptionService>();
+builder.Services.AddScoped<IPaymentCaptureService, PaymentCaptureService>(); // 💳 REFACTOR Tarea 1: captura del PaymentIntent extraída de SubscriptionController
 builder.Services.AddScoped<ISearchHireService, SearchHireService>();
 builder.Services.AddScoped<ISearchServiceService, SearchServiceService>();
 builder.Services.AddScoped<newApi.Services.IGPTService, newApi.Services.GPTService>(); // AISearchController (reescritura de descripciones + búsqueda IA)

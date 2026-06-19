@@ -58,6 +58,9 @@ namespace newApi.Controllers
         private readonly IStripeValidationService _stripeValidationService;
         private readonly IAppointmentService _appointmentService;
         private readonly IServiceScopeFactory _serviceScopeFactory;
+        // 💳 REFACTOR Tarea 1: captura del PaymentIntent extraída a servicio inyectable
+        // (reutilizable desde el confirm del vendedor en tareas futuras).
+        private readonly IPaymentCaptureService _paymentCapture;
         // 🔧 FISCAL FLIP: perfil fiscal de la plataforma (default IsVatRegistered=false → pre-alta).
         private readonly global::newApi.Configuration.PlatformFiscalProfile _fiscalProfile;
 
@@ -82,7 +85,7 @@ namespace newApi.Controllers
         // 🛡️ Round 28 MUD-BF: sync DAC7 datos legales desde account.updated.
         private readonly global::newApi.Services.Dac7DataSyncService? _dac7DataSync;
 
-        public SubscriptionController(AppDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService, IInvoiceService invoiceService, IAppointmentService appointmentService, IServiceScopeFactory serviceScopeFactory, Microsoft.Extensions.Options.IOptions<global::newApi.Configuration.PlatformFiscalProfile> fiscalProfile, global::newApi.Services.Dac7DataSyncService? dac7DataSync = null)
+        public SubscriptionController(AppDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, StorageClient storageClient, SystemStatusService systemStatusService, IAuthorizationServices authService, ILoggingService loggingService, StripeRefundService refundService, IStripeValidationService stripeValidationService, IInvoiceService invoiceService, IAppointmentService appointmentService, IServiceScopeFactory serviceScopeFactory, IPaymentCaptureService paymentCapture, Microsoft.Extensions.Options.IOptions<global::newApi.Configuration.PlatformFiscalProfile> fiscalProfile, global::newApi.Services.Dac7DataSyncService? dac7DataSync = null)
         {
             _context = context;
             _systemStatusService = systemStatusService;
@@ -96,6 +99,7 @@ namespace newApi.Controllers
             _invoiceService = invoiceService;
             _appointmentService = appointmentService;
             _serviceScopeFactory = serviceScopeFactory;
+            _paymentCapture = paymentCapture;
             _fiscalProfile = fiscalProfile?.Value ?? new global::newApi.Configuration.PlatformFiscalProfile();
             _dac7DataSync = dac7DataSync;
 
@@ -6652,47 +6656,10 @@ namespace newApi.Controllers
             }
         }
 
-        private async Task EnsurePaymentCapturedAsync(string paymentIntentId, int userId, int serviceId, int searchHireId)
-        {
-            var paymentIntentService = new PaymentIntentService();
-            PaymentIntent paymentIntent;
-
-            try
-            {
-                paymentIntent = await paymentIntentService.GetAsync(paymentIntentId);
-            }
-            catch (StripeException ex)
-            {
-                await LogPaymentCaptureFailureAsync(paymentIntentId, userId, serviceId, $"Stripe error retrieving PaymentIntent: {ex.Message}", searchHireId, ex);
-                throw;
-            }
-
-            if (paymentIntent.Status == "requires_capture")
-            {
-                try
-                {
-                    await paymentIntentService.CaptureAsync(
-                        paymentIntentId,
-                        null,
-                        new RequestOptions { IdempotencyKey = $"capture-{searchHireId}" });
-                }
-                catch (StripeException ex)
-                {
-                    await LogPaymentCaptureFailureAsync(paymentIntentId, userId, serviceId, $"Stripe error capturing PaymentIntent: {ex.Message}", searchHireId, ex);
-                    throw;
-                }
-            }
-            else if (paymentIntent.Status == "succeeded")
-            {
-                return;
-            }
-            else
-            {
-                var message = $"PaymentIntent {paymentIntentId} is in '{paymentIntent.Status}' state and cannot be captured.";
-                await LogPaymentCaptureFailureAsync(paymentIntentId, userId, serviceId, message, searchHireId);
-                throw new InvalidOperationException(message);
-            }
-        }
+        // 💳 REFACTOR Tarea 1: la lógica se movió a IPaymentCaptureService.EnsureCapturedAsync.
+        // Se conserva esta firma para no tocar los call sites existentes (~6222 y ~6314).
+        private Task EnsurePaymentCapturedAsync(string paymentIntentId, int userId, int serviceId, int searchHireId)
+            => _paymentCapture.EnsureCapturedAsync(paymentIntentId, userId, serviceId, searchHireId);
 
         private async Task LogPaymentCaptureFailureAsync(string paymentIntentId, int userId, int serviceId, string failureReason, int? searchHireId = null, Exception? exception = null, [System.Runtime.CompilerServices.CallerMemberName] string callerMember = "")
         {

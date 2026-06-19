@@ -102,6 +102,40 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// <summary>Snapshot de la URL del PDF del informe del servicio al contratar (congelado).</summary>
         public string? InspectionTemplatePdfUrlSnapshot { get; set; }
 
+        // ───────────────────────────────────────────────────────────────────────
+        // COORDINACIÓN CON EL VENDEDOR (2026-06). Modo de fijar la cita:
+        //  - null / "self"  → el cliente eligió día/hora en el checkout (flujo de siempre).
+        //  - "seller"       → el cliente NO elige hueco; el experto propondrá la cita tras
+        //                     coordinar con el vendedor (un tercero). Se guardan los datos
+        //                     de contacto del vendedor para poder avisarle.
+        // Nullable en todos los casos: los hires anteriores no tienen estas columnas.
+        // ───────────────────────────────────────────────────────────────────────
+        public string? CoordinationMode { get; set; }
+        public string? SellerPhone { get; set; }
+        public string? SellerEmail { get; set; }
+        public string? SellerListingUrl { get; set; }
+
+        /// <summary>
+        /// Token secreto del "magic link" del vendedor (modo "seller"). El vendedor abre
+        /// /coordinar-cita/{token} SIN login y elige día/hora + lugar dentro del rango.
+        /// Se genera al confirmarse el pago en modo seller. Se pone a null tras usarse
+        /// (un solo uso) o si la cita ya existe. Nullable.
+        /// </summary>
+        public string? SellerBookingToken { get; set; }
+
+        /// <summary>
+        /// Modo "seller": máximo de días a futuro dentro de los que el vendedor puede elegir la cita
+        /// (lo fija el cliente al pagar, para que no la ponga dentro de 2 meses). Null = default (14).
+        /// </summary>
+        public int? SellerBookingMaxDays { get; set; }
+
+        /// <summary>
+        /// Modo "seller": fecha límite para que el vendedor RESERVE (use el enlace). Si pasa sin
+        /// reservar, el vendedor no colabora → se reembolsa el 100% al comprador (job Hangfire).
+        /// Se calcula al pagar = ahora + plazo elegido por el comprador (default 48h). Null = no aplica.
+        /// </summary>
+        public DateTime? SellerBookingDeadline { get; set; }
+
         /// <summary>
         /// Flag operativo: el hire requiere revisión manual del admin (p.ej. cuenta de experto
         /// rechazada o desautorizada por Stripe tras prestar el servicio). NO se considera un

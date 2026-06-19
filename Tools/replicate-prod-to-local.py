@@ -6,6 +6,8 @@ USO:  python Tools/replicate-prod-to-local.py
   - Crea/reutiliza el contenedor 'inspecciono-dev-db' (postgres:17, puerto 5434,
     volumen persistente inspecciono_dev_data).
   - pg_dump (SOLO LECTURA sobre prod) + pg_restore en local.
+  - Sincroniza __EFMigrationsHistory con las migraciones del repo (evita el drift
+    que hace que el backend grite "migraciones sin aplicar" en cada arranque).
   - Vacia la cola Hangfire de la COPIA local (que no re-ejecute jobs de prod).
   - Re-ejecutable: borra y recrea el schema local en cada pasada.
 
@@ -13,7 +15,7 @@ Requiere: Docker Desktop arrancado. Prod NO se modifica nunca.
 Conexion local resultante:
   Host=localhost;Port=5434;Database=inspecciono_dev;Username=dev;Password=devlocal
 """
-import re, subprocess, sys, time, urllib.parse
+import os, re, subprocess, sys, time, urllib.parse
 
 APP = r"C:\Users\Diego\OneDrive - Educacyl\Escritorio\proyecto\NewApi\appsettings.Development.json"
 CONTAINER = "inspecciono-dev-db"
@@ -32,12 +34,12 @@ kv = dict(p.split("=", 1) for p in cs.split(";") if "=" in p)
 host, port = kv["Host"], kv.get("Port", "5432")
 user, pwd, db = kv["Username"], kv["Password"], kv["Database"]
 prod_uri = f"postgresql://{urllib.parse.quote(user)}:__REDACTED_URI_PASSWORD__@{host}:{port}/{db}?sslmode=require"
-print(f"[1/6] Prod: host={host} db={db} (password oculta)")
+print(f"[1/7] Prod: host={host} db={db} (password oculta)")
 
 # 2) Contenedor local persistente
 existing = run(["docker", "ps", "-aq", "-f", f"name=^{CONTAINER}$"]).stdout.strip()
 if existing:
-    print(f"[2/6] Contenedor {CONTAINER} ya existe -> lo reutilizo (docker start)")
+    print(f"[2/7] Contenedor {CONTAINER} ya existe -> lo reutilizo (docker start)")
     run(["docker", "start", CONTAINER])
 else:
     r = run(["docker", "run", "-d", "--name", CONTAINER,
@@ -50,7 +52,7 @@ else:
              "postgres:17-alpine"])
     if r.returncode != 0:
         print("ERROR docker run:", r.stderr); sys.exit(1)
-    print(f"[2/6] Contenedor {CONTAINER} creado (puerto {LOCAL_PORT}, volumen persistente)")
+    print(f"[2/7] Contenedor {CONTAINER} creado (puerto {LOCAL_PORT}, volumen persistente)")
 
 # 3) Esperar a que Postgres acepte conexiones
 for i in range(60):
@@ -59,10 +61,10 @@ for i in range(60):
     time.sleep(2)
 else:
     print("ERROR: Postgres local no responde"); sys.exit(1)
-print("[3/6] Postgres local listo")
+print("[3/7] Postgres local listo")
 
 # 4) Dump de PROD (solo lectura) con pg_dump 17 del contenedor
-print("[4/6] pg_dump de prod (puede tardar un poco)...")
+print("[4/7] pg_dump de prod (puede tardar un poco)...")
 r = run(["docker", "exec", CONTAINER, "pg_dump", f"--dbname={prod_uri}",
          "--no-owner", "--no-privileges", "-Fc", "-f", "/tmp/prod.dump"])
 if r.returncode != 0:
@@ -73,7 +75,7 @@ print(f"      dump OK ({size})")
 # 5) Restaurar en local (BD limpia: drop schema public+hangfire por si es re-ejecucion)
 run(["docker", "exec", CONTAINER, "psql", "-U", LOCAL_USER, "-d", LOCAL_DB, "-c",
      "DROP SCHEMA IF EXISTS public CASCADE; DROP SCHEMA IF EXISTS hangfire CASCADE; CREATE SCHEMA public;"])
-print("[5/6] pg_restore en local...")
+print("[5/7] pg_restore en local...")
 r = run(["docker", "exec", CONTAINER, "pg_restore", "--no-owner", "--no-privileges",
          "-U", LOCAL_USER, "-d", LOCAL_DB, "/tmp/prod.dump"])
 # pg_restore devuelve !=0 con warnings benignos; comprobamos con counts despues
@@ -84,11 +86,45 @@ if r.returncode != 0:
 
 run(["docker", "exec", CONTAINER, "rm", "-f", "/tmp/prod.dump"])
 
-# 6) Higiene: vaciar la cola Hangfire LOCAL (que la copia no re-ejecute jobs de prod)
+# 6) Sincronizar __EFMigrationsHistory con las migraciones del repo.
+#    POR QUE: el dump trae el historial de PROD, que suele ir ATRASADO respecto al
+#    esquema (prod aplica mucho DDL a mano / con migraciones idempotentes sin
+#    registrar la fila). Resultado: el backend en dev grita en cada arranque
+#    "QUEDAN N MIGRACIONES SIN APLICAR" aunque el esquema ya este. Como la replica
+#    ESPEJA el esquema de prod (fuente de verdad), marcamos como aplicadas todas las
+#    migraciones presentes en /Migrations. ON CONFLICT DO NOTHING -> no pisa nada.
+#    OJO: si tienes una migracion NUEVA aun NO desplegada a prod, su columna/tabla
+#    no estara en la replica; aplica su DDL a dev a mano tras refrescar (y su fila
+#    ya quedara marcada aqui, asi que no choca).
+MIG_DIR = os.path.join(os.path.dirname(APP), "Migrations")
+mig_ids = sorted(
+    f[:-3] for f in os.listdir(MIG_DIR)
+    if f.endswith(".cs") and not f.endswith(".Designer.cs") and "ModelSnapshot" not in f
+)
+if mig_ids:
+    values = ",".join(f"('{mid}','10.0.8')" for mid in mig_ids)
+    sql = (
+        'CREATE TABLE IF NOT EXISTS "__EFMigrationsHistory" ('
+        '"MigrationId" character varying(150) NOT NULL, '
+        '"ProductVersion" character varying(32) NOT NULL, '
+        'CONSTRAINT "PK___EFMigrationsHistory" PRIMARY KEY ("MigrationId")); '
+        'INSERT INTO "__EFMigrationsHistory" ("MigrationId","ProductVersion") VALUES '
+        + values + ' ON CONFLICT ("MigrationId") DO NOTHING;'
+    )
+    r = run(["docker", "exec", CONTAINER, "psql", "-U", LOCAL_USER, "-d", LOCAL_DB,
+             "-v", "ON_ERROR_STOP=1", "-c", sql])
+    if r.returncode == 0:
+        print(f"[6/7] __EFMigrationsHistory sincronizado ({len(mig_ids)} migraciones marcadas como aplicadas)")
+    else:
+        print(f"[6/7] AVISO sincronizando historial: {(r.stderr or '')[:300]}")
+else:
+    print(f"[6/7] AVISO: no encontre migraciones en {MIG_DIR}")
+
+# 7) Higiene: vaciar la cola Hangfire LOCAL (que la copia no re-ejecute jobs de prod)
 hf = run(["docker", "exec", CONTAINER, "psql", "-U", LOCAL_USER, "-d", LOCAL_DB, "-c",
           'TRUNCATE hangfire.jobqueue, hangfire.state, hangfire.job, hangfire.server, '
           'hangfire."set", hangfire.counter, hangfire.hash, hangfire.list CASCADE;'])
-print("[6/6] Cola Hangfire local vaciada" if hf.returncode == 0 else f"[6/6] Aviso truncate hangfire: {hf.stderr[:300]}")
+print("[7/7] Cola Hangfire local vaciada" if hf.returncode == 0 else f"[7/7] Aviso truncate hangfire: {hf.stderr[:300]}")
 
 # Verificacion: counts de tablas clave
 q = ("SELECT 'Users', count(*) FROM \"Users\" UNION ALL "

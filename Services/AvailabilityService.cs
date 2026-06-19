@@ -160,11 +160,12 @@ namespace newApi.Services
                 if (exceptions.TryGetValue(dateKey, out var ex))
                     windows = ex.IsWorking ? ex.Windows : new List<AvailabilityWindow>();
 
-                var free = windows.Count == 0
+                var isWorking = windows.Count > 0;
+                var free = !isWorking
                     ? 0
                     : SlotCalculator.ComputeFreeSlots(windows, bookings, day, durationHours, now).Count;
 
-                result.Add(new DayAvailability(day.ToString("yyyy-MM-dd"), free));
+                result.Add(new DayAvailability(day.ToString("yyyy-MM-dd"), free, isWorking));
             }
 
             return result;

@@ -126,8 +126,14 @@ FROM (VALUES
   ('appointment_cancelled_by_client','cancelled',false),         -- 1a cancelacion: inactivo (no finaliza)
   ('appointment_cancelled_by_client_second','cancelled',true),
   ('appointment_cancelled_by_expert','cancelled',false),         -- 1a cancelacion: inactivo
-  ('appointment_cancelled_by_expert_rejection','cancelled',true),
-  ('appointment_cancelled_by_no_response','cancelled',true),
+  -- 🧹 LEGACY (inactivo): estos dos estados pertenecen al sistema antiguo de proponer/aceptar/rechazar,
+  -- que está retirado (#if false en AppointmentController/AppointmentService y SearchHireController).
+  -- Ningún código vivo los produce: 'expert_rejection' solo se asignaba en RejectAppointmentAsync (#if false),
+  -- y 'no_response' está marcado [DEPRECATED] en el enum. Se desactivan para no ensuciar el panel de mapeos.
+  -- Si por datos antiguos alguna cita quedó en estos estados, el hire ya está finalizado y, ante cualquier
+  -- re-evaluación, SystemStatusService.GetDefaultMapping (switch C#, líneas ~488-489) los resuelve igual a 'cancelled'.
+  ('appointment_cancelled_by_expert_rejection','cancelled',false),
+  ('appointment_cancelled_by_no_response','cancelled',false),
   ('appointment_completed','completed',true),   -- FIX #3: cita completada -> hire 'completed' (antes apuntaba mal a 'awaiting_client_decision', un estado NO final)
   -- 🗓️ Cancelacion escalonada (Fase D): todas mapean a hire 'cancelled' (activo = finaliza).
   ('appointment_cancelled_by_client_gt24h','cancelled',true),
@@ -145,4 +151,15 @@ WHERE "SourceStatusId" IN (
   SELECT "Id" FROM "SystemStatuses"
   WHERE "StatusType"='AppointmentStatus'
     AND "StatusValue" IN ('appointment_cancelled_by_client','appointment_cancelled_by_expert')
+) AND "IsActive"<>false;
+
+-- ---------- 4c) CORRECTIVO: mapeos LEGACY del sistema antiguo de propuesta -> INACTIVOS (aunque ya existan) ----------
+-- 'expert_rejection' y 'no_response' son estados muertos (flujo proponer/rechazar en #if false; 'no_response'
+-- además [DEPRECATED]). El INSERT de arriba no los actualiza si ya existían, así que aquí se fuerza IsActive=false.
+-- Inofensivo: GetDefaultMapping (C#) sigue resolviéndolos a 'cancelled' si hiciera falta.
+UPDATE "StatusMappings" SET "IsActive"=false
+WHERE "SourceStatusId" IN (
+  SELECT "Id" FROM "SystemStatuses"
+  WHERE "StatusType"='AppointmentStatus'
+    AND "StatusValue" IN ('appointment_cancelled_by_expert_rejection','appointment_cancelled_by_no_response')
 ) AND "IsActive"<>false;

@@ -10,7 +10,7 @@ namespace newApi.Services
     public sealed record AvailableSlot(DateTime StartUtc, DateTime EndUtc, string StartLocal, string Timezone);
 
     /// <summary>Resumen de disponibilidad de un día (para colorear el calendario por ocupación).</summary>
-    public sealed record DayAvailability(string Date, int FreeSlots);
+    public sealed record DayAvailability(string Date, int FreeSlots, bool IsWorking);
 
     /// <summary>
     /// Cálculo PURO de huecos libres (sin BD ni DI, testeable en aislamiento):

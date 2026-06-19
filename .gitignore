@@ -158,3 +158,5 @@ docker-compose.override.yml
 *.tar.gz
 *.rar
 *.7z
+Tools/__pycache__/
+*.pyc

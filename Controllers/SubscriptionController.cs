@@ -6090,6 +6090,36 @@ namespace newApi.Controllers
                     slotEndUtc = DateTime.SpecifyKind(parsedSlotEnd, DateTimeKind.Utc);
                 }
 
+                // 🤝 Coordinación con el vendedor (modo "seller"): persistir en el hire los datos
+                // que el cliente metió en el checkout. En modo "self" estas claves van vacías.
+                if (metadata != null)
+                {
+                    metadata.TryGetValue("coordinationMode", out var coordModeRaw);
+                    metadata.TryGetValue("sellerPhone", out var sellerPhoneRaw);
+                    metadata.TryGetValue("sellerEmail", out var sellerEmailRaw);
+                    metadata.TryGetValue("sellerListing", out var sellerListingRaw);
+                    if (!string.IsNullOrWhiteSpace(coordModeRaw)) searchHire.CoordinationMode = coordModeRaw;
+                    if (!string.IsNullOrWhiteSpace(sellerPhoneRaw)) searchHire.SellerPhone = sellerPhoneRaw;
+                    if (!string.IsNullOrWhiteSpace(sellerEmailRaw)) searchHire.SellerEmail = sellerEmailRaw;
+                    if (!string.IsNullOrWhiteSpace(sellerListingRaw)) searchHire.SellerListingUrl = sellerListingRaw;
+                    if (metadata.TryGetValue("sellerMaxDays", out var sellerMaxDaysRaw) && int.TryParse(sellerMaxDaysRaw, out var sellerMaxDaysVal) && sellerMaxDaysVal > 0)
+                        searchHire.SellerBookingMaxDays = sellerMaxDaysVal;
+
+                    // 🤝 Modo seller + sin hueco elegido → generar el token del magic link del vendedor.
+                    if (coordModeRaw == "seller" && !slotStartUtc.HasValue && string.IsNullOrEmpty(searchHire.SellerBookingToken))
+                    {
+                        searchHire.SellerBookingToken = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+
+                        // Plazo para que el vendedor reserve (default 48h). Si pasa sin cita → reembolso 100%.
+                        var deadlineHours = 48;
+                        if (metadata.TryGetValue("sellerDeadlineHours", out var dhRaw) && int.TryParse(dhRaw, out var dhVal) && dhVal > 0)
+                            deadlineHours = dhVal;
+                        searchHire.SellerBookingDeadline = DateTime.UtcNow.AddHours(deadlineHours);
+                        // El email/SMS del magic link se envía DESPUÉS del CommitAsync (ver C1 FIX),
+                        // para no avisar al vendedor de un hire que podría revertirse.
+                    }
+                }
+
                 if (slotStartUtc.HasValue && slotEndUtc.HasValue)
                 {
                     var confirmedStatus = await _context.SystemStatuses
@@ -6198,6 +6228,31 @@ namespace newApi.Controllers
                 try
                 {
                     await transaction.CommitAsync();
+
+                    // 🤝 C1 FIX: el magic link del vendedor se envía SOLO tras commit exitoso. Si se
+                    // enviara antes y el commit fallara (compensación), el vendedor recibiría un enlace
+                    // de un hire revertido (token inexistente). Best-effort: nunca rompe el flujo.
+                    if (string.Equals(searchHire.CoordinationMode, "seller", StringComparison.OrdinalIgnoreCase)
+                        && !string.IsNullOrEmpty(searchHire.SellerBookingToken))
+                    {
+                        try
+                        {
+                            var frontendBase = _configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com";
+                            var link = $"{frontendBase}/coordinar-cita/{searchHire.SellerBookingToken}";
+                            var emailSvc = HttpContext?.RequestServices?.GetService(typeof(IEmailService)) as IEmailService;
+                            var smsSvc = HttpContext?.RequestServices?.GetService(typeof(ISmsService)) as ISmsService;
+                            if (emailSvc != null && !string.IsNullOrWhiteSpace(searchHire.SellerEmail))
+                            {
+                                var emailBody = $"<p>Un comprador interesado en tu vehículo ha <strong>pagado una inspección profesional independiente</strong> antes de comprarlo.</p><p>Solo falta que elijas cuándo y dónde puede verlo el técnico:</p><p><a href=\"{link}\">{link}</a></p><p>No necesitas cuenta. — Inspecciono</p>";
+                                await emailSvc.SendEmailAsync(searchHire.SellerEmail, "Coordina la inspección de tu vehículo", emailBody);
+                            }
+                            if (smsSvc != null && !string.IsNullOrWhiteSpace(searchHire.SellerPhone))
+                            {
+                                await smsSvc.SendSmsAsync(searchHire.SellerPhone, $"Inspecciono: un comprador ha pagado una inspección de tu vehículo. Elige día, hora y lugar: {link}");
+                            }
+                        }
+                        catch { /* best-effort: el envío del enlace nunca debe tumbar el webhook */ }
+                    }
                 }
                 catch (Exception commitEx)
                 {

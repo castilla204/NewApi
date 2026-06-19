@@ -405,4 +405,146 @@ public class ExpertConfirmationTests
         var res = await _api.Client.PostAsync($"/api/expert-confirmation/{token}/approve", content: null);
         res.StatusCode.Should().Be(HttpStatusCode.Conflict, await res.Content.ReadAsStringAsync());
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tarea 6 — notificaciones (email magic-link + in-app + SMS) + recordatorios.
+    // El harness corre INotificationService (encola email en Hangfire, no ejecuta) e
+    // IInAppNotificationService (inserta filas Notification reales) contra la BD real.
+    // Verificamos los efectos observables (filas Notification) y que SMS sin configurar no peta.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── EC-N1: NotifyExpertConfirmationRequestedAsync → in-app al experto con Url que contiene el
+    //    token y "/confirmar-cita/". Con SMS no configurado (Twilio:FromNumber vacío) NO lanza.
+    [Fact(DisplayName = "EC-N1 · notify requested → in-app al experto con magic-link, SMS off no peta")]
+    public async Task NotifyRequested_creates_in_app_with_magic_link()
+    {
+        var (token, _, hireId, expertUserId, _) = await SeedPendingExpertConfirmationAsync();
+
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<IAppointmentService>();
+            await svc.NotifyExpertConfirmationRequestedAsync(hireId); // no debe lanzar (SMS gated)
+        }
+
+        await using var db = _api.CreateDbContext();
+        var notif = await db.Notifications.AsNoTracking()
+            .Where(n => n.UserId == expertUserId && n.Type == "expert_confirmation_requested")
+            .OrderByDescending(n => n.CreatedAt)
+            .FirstOrDefaultAsync();
+        notif.Should().NotBeNull("debe crearse la notificación in-app al experto");
+        notif!.Url.Should().Contain("/confirmar-cita/").And.Contain(token,
+            "el enlace in-app es el magic-link con el token");
+    }
+
+    // ── EC-N2: approve → notificación in-app al CLIENTE (cita confirmada).
+    [Fact(DisplayName = "EC-N2 · approve → in-app al cliente (cita confirmada)")]
+    public async Task Approve_notifies_client_confirmed()
+    {
+        var (token, _, hireId, _, _) = await SeedPendingExpertConfirmationAsync();
+        int clientId;
+        await using (var db0 = _api.CreateDbContext())
+            clientId = (await db0.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId)).ClientId!.Value;
+
+        var res = await _api.Client.PostAsync($"/api/expert-confirmation/{token}/approve", content: null);
+        res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
+
+        await using var db = _api.CreateDbContext();
+        var notif = await db.Notifications.AsNoTracking()
+            .AnyAsync(n => n.UserId == clientId && n.Type == "expert_confirmation_approved");
+        notif.Should().BeTrue("approve notifica al cliente que la cita está confirmada");
+    }
+
+    // ── EC-N3: reject → in-app al CLIENTE (reembolso) + in-app al EXPERTO (rechazada).
+    [Fact(DisplayName = "EC-N3 · reject → in-app cliente (reembolso) + experto (rechazada)")]
+    public async Task Reject_notifies_client_refund_and_expert_rejected()
+    {
+        var (token, _, hireId, expertUserId, _) = await SeedPendingExpertConfirmationAsync();
+        int clientId;
+        await using (var db0 = _api.CreateDbContext())
+            clientId = (await db0.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId)).ClientId!.Value;
+
+        var res = await _api.Client.PostAsync($"/api/expert-confirmation/{token}/reject", content: null);
+        res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
+
+        await using var db = _api.CreateDbContext();
+        (await db.Notifications.AsNoTracking()
+            .AnyAsync(n => n.UserId == clientId && n.Type == "expert_confirmation_refunded"))
+            .Should().BeTrue("reject notifica al cliente el reembolso 100%");
+        (await db.Notifications.AsNoTracking()
+            .AnyAsync(n => n.UserId == expertUserId && n.Type == "expert_confirmation_rejected"))
+            .Should().BeTrue("reject notifica al experto que rechazó la cita");
+    }
+
+    // ── EC-N4: timeout (timer expira pending) → in-app al cliente (reembolso) + experto (caducada).
+    [Fact(DisplayName = "EC-N4 · timeout → in-app cliente (reembolso) + experto (caducada)")]
+    public async Task Timeout_notifies_client_refund_and_expert_timeout()
+    {
+        var (_, _, hireId, expertUserId, _) = await SeedPendingExpertConfirmationAsync();
+        int clientId;
+        await using (var db0 = _api.CreateDbContext())
+            clientId = (await db0.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId)).ClientId!.Value;
+        var timerId = await SeedExpertConfirmationTimerAsync(hireId, DateTime.UtcNow.AddSeconds(-1));
+
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<IAppointmentService>();
+            await svc.ProcessAppointmentTimerAsync(timerId);
+        }
+
+        await using var db = _api.CreateDbContext();
+        (await db.Notifications.AsNoTracking()
+            .AnyAsync(n => n.UserId == clientId && n.Type == "expert_confirmation_refunded"))
+            .Should().BeTrue("el timeout notifica al cliente el reembolso 100%");
+        (await db.Notifications.AsNoTracking()
+            .AnyAsync(n => n.UserId == expertUserId && n.Type == "expert_confirmation_timeout"))
+            .Should().BeTrue("el timeout notifica al experto la caducidad");
+    }
+
+    // ── EC-N5: recordatorios — ventana 48h → 2 reminders + 1 admin alert programados (3 jobIds en Notes).
+    [Fact(DisplayName = "EC-N5 · reminders ventana 48h → 3 jobs en Notes (50%/80%/90%)")]
+    public async Task ScheduleReminders_48h_window_stores_three_jobs()
+    {
+        var (_, _, hireId, _, _) = await SeedPendingExpertConfirmationAsync();
+        var start = DateTime.UtcNow;
+        var end = start.AddHours(48);
+        var timerId = await SeedExpertConfirmationTimerAsync(hireId, end);
+        int apptId;
+        await using (var db0 = _api.CreateDbContext())
+            apptId = await db0.Appointments.Where(a => a.SearchHireId == hireId).Select(a => a.Id).SingleAsync();
+
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<IAppointmentService>();
+            await svc.ScheduleExpertConfirmationRemindersAsync(timerId, hireId, apptId, start, end);
+        }
+
+        await using var db = _api.CreateDbContext();
+        var notes = await db.AppointmentTimers.AsNoTracking().Where(t => t.Id == timerId).Select(t => t.Notes).SingleAsync();
+        notes.Should().NotBeNullOrWhiteSpace("debe guardar los jobIds de los recordatorios");
+        notes!.Split(',', StringSplitOptions.RemoveEmptyEntries).Length.Should().Be(3,
+            "ventana 48h programa 2 reminders (50%/80%) + 1 admin alert (90%)");
+    }
+
+    // ── EC-N6: recordatorios — ventana <15min → NO programa nada (Notes vacío).
+    [Fact(DisplayName = "EC-N6 · reminders ventana <15min → ninguno (Notes vacío)")]
+    public async Task ScheduleReminders_short_window_schedules_none()
+    {
+        var (_, _, hireId, _, _) = await SeedPendingExpertConfirmationAsync();
+        var start = DateTime.UtcNow;
+        var end = start.AddMinutes(10); // <15min
+        var timerId = await SeedExpertConfirmationTimerAsync(hireId, end);
+        int apptId;
+        await using (var db0 = _api.CreateDbContext())
+            apptId = await db0.Appointments.Where(a => a.SearchHireId == hireId).Select(a => a.Id).SingleAsync();
+
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<IAppointmentService>();
+            await svc.ScheduleExpertConfirmationRemindersAsync(timerId, hireId, apptId, start, end);
+        }
+
+        await using var db = _api.CreateDbContext();
+        var notes = await db.AppointmentTimers.AsNoTracking().Where(t => t.Id == timerId).Select(t => t.Notes).SingleAsync();
+        notes.Should().BeNullOrEmpty("ventana <15min no programa recordatorios escalonados");
+    }
 }

@@ -231,7 +231,13 @@ namespace newApi.Controllers
                     try { await apptSvc.CancelExpertConfirmationTimerAsync(hire.Appointment.Id); }
                     catch { /* best-effort: el guard de estado del handler evita el auto-cancel */ }
                 }
-                // ⚓ TODO Tarea 6: notificar al cliente (cita confirmada)
+
+                // ⚓ Tarea 6: notificar al cliente (cita confirmada). Best-effort.
+                if (HttpContext?.RequestServices?.GetService(typeof(IAppointmentService)) is IAppointmentService notifySvc)
+                {
+                    try { await notifySvc.NotifyExpertConfirmationResolvedAsync(hire.Id, "approved"); }
+                    catch { /* best-effort: la notificación nunca rompe el approve ya commiteado */ }
+                }
 
                 return Ok(new { ok = true });
             });
@@ -296,7 +302,13 @@ namespace newApi.Controllers
                 try { await apptSvc.CancelExpertConfirmationTimerAsync(hire.Appointment.Id); }
                 catch { /* best-effort: el guard de estado del handler evita el auto-cancel */ }
             }
-            // ⚓ TODO Tarea 6: notificar al cliente (cita rechazada, reembolso en curso)
+
+            // ⚓ Tarea 6: notificar al cliente (cita rechazada, reembolso 100%) + al experto (rechazada). Best-effort.
+            if (HttpContext?.RequestServices?.GetService(typeof(IAppointmentService)) is IAppointmentService notifySvc)
+            {
+                try { await notifySvc.NotifyExpertConfirmationResolvedAsync(hire.Id, "rejected"); }
+                catch { /* best-effort: la notificación nunca rompe el reject ya procesado */ }
+            }
 
             return Ok(new { ok = true });
         }

@@ -49,8 +49,10 @@ namespace newApi.Services
         private static readonly TimeSpan _cacheExpiration = TimeSpan.FromMinutes(30); // Cache v├ílido por 30 minutos
 
         private readonly IInAppNotificationService _inAppNotifications; // 📱 SMS-CENTRAL
+        private readonly INotificationService _notificationService;     // ✉️ Tarea 6: emails con plantilla+botón
+        private readonly IConfiguration _configuration;                 // ⚓ Tarea 6: App:FrontendBaseUrl
 
-        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService, IInAppNotificationService inAppNotifications)
+        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService, IInAppNotificationService inAppNotifications, INotificationService notificationService, IConfiguration configuration)
 
         {
 
@@ -67,6 +69,10 @@ namespace newApi.Services
             _timezoneService = timezoneService;
 
             _inAppNotifications = inAppNotifications;
+
+            _notificationService = notificationService;
+
+            _configuration = configuration;
 
         }
 
@@ -4627,7 +4633,9 @@ namespace newApi.Services
                             searchHire.ExpertConfirmationToken = null;
                         }
 
-                        // ⚓ TODO Tarea 6: notificar cliente (reembolso) y experto (caducada)
+                        // ⚓ Tarea 6: notificar cliente (reembolso 100%) y experto (cita caducada). Best-effort.
+                        try { await NotifyExpertConfirmationResolvedAsync(searchHire.Id, "timeout"); }
+                        catch { /* best-effort: la notificación nunca rompe el auto-cancel */ }
                         break;
 
                     default:
@@ -6217,6 +6225,11 @@ namespace newApi.Services
 
                 confirmationTimer.HangfireJobId = jobId;
                 await _context.SaveChangesAsync();
+
+                // ⚓ Tarea 6: recordatorios escalonados (50%/80% al experto, 90% aviso a admin) dentro del
+                // plazo. Best-effort interno: no rompe la creación del timer principal si falla.
+                await ScheduleExpertConfirmationRemindersAsync(
+                    confirmationTimer.Id, searchHireId, appointment.Id, confirmationTimer.StartTime, endTime);
             }
             catch (Exception ex)
             {
@@ -6277,7 +6290,10 @@ namespace newApi.Services
                     catch { /* job ya procesado o inexistente: ignorar */ }
                 }
 
-                // ⚓ TODO Tarea 7: cancelar recordatorios
+                // ⚓ Tarea 6/7: cancelar los recordatorios escalonados programados (50%/80%/90%).
+                // Best-effort: si la cita ya no está pending, el guard de estado de cada reminder/alert
+                // los vuelve no-op igualmente, pero borramos los jobs para no malgastar la cola.
+                await CancelExpertConfirmationRemindersAsync(appointmentId);
             }
             catch (Exception ex)
             {
@@ -6292,6 +6308,452 @@ namespace newApi.Services
                     relatedEntityType: "Appointment",
                     relatedEntityId: appointmentId);
             }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════════════
+        // ⚓ Tarea 6: NOTIFICACIONES + RECORDATORIOS de la confirmación del experto.
+        // Contrato: TODO best-effort. Estos métodos JAMÁS deben lanzar al caller ni romper el
+        // flujo de dinero/estado. Cada uno está envuelto en try/catch y solo loguea si algo falla.
+        // ═══════════════════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// 🔧 Helper local: formatea la fecha/hora de la cita para el copy de las notificaciones.
+        /// Usa StartsAtUtc convertido a la zona del experto si está disponible; si no, ProposedDate+Time.
+        /// Devuelve "dd/MM/yyyy a las HH:mm" o cadena vacía si no hay datos.
+        /// </summary>
+        private string FormatAppointmentWhen(Appointment? appointment, string? expertTimezone)
+        {
+            try
+            {
+                DateTime local;
+                if (appointment?.StartsAtUtc.HasValue == true)
+                {
+                    var utc = DateTime.SpecifyKind(appointment.StartsAtUtc.Value, DateTimeKind.Utc);
+                    if (!string.IsNullOrWhiteSpace(expertTimezone))
+                    {
+                        try
+                        {
+                            var tz = TimeZoneInfo.FindSystemTimeZoneById(expertTimezone);
+                            local = TimeZoneInfo.ConvertTimeFromUtc(utc, tz);
+                        }
+                        catch { local = utc; }
+                    }
+                    else { local = utc; }
+                }
+                else if (appointment?.ProposedDate.HasValue == true && appointment.ProposedTime.HasValue)
+                {
+                    local = appointment.ProposedDate.Value.Date + appointment.ProposedTime.Value;
+                }
+                else
+                {
+                    return string.Empty;
+                }
+                return local.ToString("dd/MM/yyyy 'a las' HH:mm", CultureInfo.GetCultureInfo("es-ES"));
+            }
+            catch { return string.Empty; }
+        }
+
+        /// <summary>
+        /// 🔧 Helper local: enlace del magic-link del experto para confirmar/rechazar la cita.
+        /// {frontend}/confirmar-cita/{ExpertConfirmationToken}.
+        /// </summary>
+        private string BuildExpertConfirmationLink(string token)
+        {
+            var frontend = _configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com";
+            return $"{frontend.TrimEnd('/')}/confirmar-cita/{token}";
+        }
+
+        /// <summary>
+        /// ⚓ Tarea 6.1: avisa al experto de que tiene una cita pendiente de su confirmación.
+        /// (a) EMAIL con botón "Revisar y confirmar" → magic-link.
+        /// (b) IN-APP + SMS (si tel verificado) con el mismo enlace.
+        /// Best-effort: carga el hire con Expert+Appointment; si falta token o experto, sale sin hacer nada.
+        /// </summary>
+        public async Task NotifyExpertConfirmationRequestedAsync(int searchHireId)
+        {
+            try
+            {
+                var hire = await _context.SearchHires
+                    .Include(h => h.Expert)
+                    .Include(h => h.Appointment)
+                    .FirstOrDefaultAsync(h => h.Id == searchHireId);
+
+                if (hire == null || string.IsNullOrEmpty(hire.ExpertConfirmationToken) || hire.Expert == null)
+                {
+                    return; // nada que notificar (hire/token/experto ausente)
+                }
+
+                var link = BuildExpertConfirmationLink(hire.ExpertConfirmationToken);
+                var when = FormatAppointmentWhen(hire.Appointment, hire.ExpertTimezone);
+                var whenPhrase = string.IsNullOrEmpty(when) ? "la fecha acordada" : $"el {when}";
+
+                // (a) EMAIL con plantilla + botón.
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(hire.Expert.Email))
+                    {
+                        await _notificationService.SendGeneralNotificationEmailAsync(
+                            toEmail: hire.Expert.Email,
+                            userName: hire.Expert.Name ?? "experto",
+                            title: "Confirma tu disponibilidad para una inspección",
+                            message: $"Un comprador ha reservado una inspección contigo para {whenPhrase}. " +
+                                     "Revisa los detalles y confirma o rechaza la cita. El pago del comprador está " +
+                                     "autorizado pero no se cobrará hasta que confirmes.",
+                            actionText: "Revisar y confirmar",
+                            actionUrl: link);
+                    }
+                }
+                catch (Exception emailEx)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Best-effort: no se pudo enviar el email de confirmación al experto",
+                        details: $"SearchHire {searchHireId}: {emailEx.Message}",
+                        userId: hire.ExpertId,
+                        source: "AppointmentService.NotifyExpertConfirmationRequestedAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId);
+                }
+
+                // (b) IN-APP + SMS (gated: solo sale si Twilio:FromNumber + tel verificado).
+                try
+                {
+                    if (hire.ExpertId.HasValue)
+                    {
+                        var inAppMsg = string.IsNullOrEmpty(when)
+                            ? "Tienes una cita pendiente de tu confirmación. Confírmala o recházala antes de que caduque."
+                            : $"Tienes una cita pendiente de tu confirmación para el {when}. Confírmala o recházala antes de que caduque.";
+                        var smsText = $"Inspecciono: confirma o rechaza tu cita del {(string.IsNullOrEmpty(when) ? "" : when + " ")}: {link}";
+                        await _inAppNotifications.CreateAsync(
+                            userId: hire.ExpertId.Value,
+                            title: "Confirma tu cita",
+                            message: inAppMsg,
+                            type: "expert_confirmation_requested",
+                            sendSms: true,
+                            smsText: smsText,
+                            url: link);
+                    }
+                }
+                catch (Exception inAppEx)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Best-effort: no se pudo crear la notificación in-app/SMS de confirmación al experto",
+                        details: $"SearchHire {searchHireId}: {inAppEx.Message}",
+                        userId: hire.ExpertId,
+                        source: "AppointmentService.NotifyExpertConfirmationRequestedAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Best-effort total: nunca romper el caller (webhook/confirm/reminder).
+                await _loggingService.LogWarningAsync(
+                    message: "Best-effort: NotifyExpertConfirmationRequestedAsync falló",
+                    details: $"SearchHire {searchHireId}: {ex.Message}",
+                    userId: null,
+                    source: "AppointmentService.NotifyExpertConfirmationRequestedAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId);
+            }
+        }
+
+        /// <summary>
+        /// ⚓ Tarea 6.2: notifica el desenlace de la confirmación.
+        /// outcome "approved" → cliente: "cita confirmada".
+        /// outcome "rejected"/"timeout" → cliente: "el experto no pudo atender, reembolso 100%" + in-app al experto.
+        /// Best-effort.
+        /// </summary>
+        public async Task NotifyExpertConfirmationResolvedAsync(int searchHireId, string outcome)
+        {
+            try
+            {
+                var hire = await _context.SearchHires
+                    .Include(h => h.Client)
+                    .Include(h => h.Appointment)
+                    .FirstOrDefaultAsync(h => h.Id == searchHireId);
+                if (hire == null) return;
+
+                var when = FormatAppointmentWhen(hire.Appointment, hire.ExpertTimezone);
+                var isApproved = string.Equals(outcome, "approved", StringComparison.OrdinalIgnoreCase);
+
+                // ── Cliente ──
+                try
+                {
+                    if (hire.ClientId.HasValue)
+                    {
+                        string title, msg;
+                        if (isApproved)
+                        {
+                            title = "Tu cita está confirmada";
+                            msg = string.IsNullOrEmpty(when)
+                                ? "El experto ha confirmado tu cita. ¡Todo listo!"
+                                : $"Tu cita está confirmada para el {when}.";
+                        }
+                        else
+                        {
+                            title = "Cita no disponible · reembolso completo";
+                            msg = "El experto no pudo atender tu cita; se te ha devuelto el 100% (0€ cobrados).";
+                        }
+
+                        await _inAppNotifications.CreateAsync(
+                            userId: hire.ClientId.Value,
+                            title: title,
+                            message: msg,
+                            type: isApproved ? "expert_confirmation_approved" : "expert_confirmation_refunded",
+                            sendSms: false,
+                            smsText: null,
+                            url: $"/mis-contrataciones/{searchHireId}");
+
+                        if (hire.Client != null && !string.IsNullOrWhiteSpace(hire.Client.Email))
+                        {
+                            await _notificationService.SendGeneralNotificationEmailAsync(
+                                toEmail: hire.Client.Email,
+                                userName: hire.Client.Name ?? "cliente",
+                                title: title,
+                                message: msg,
+                                actionText: "Ver mi contratación",
+                                actionUrl: $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com").TrimEnd('/')}/mis-contrataciones/{searchHireId}");
+                        }
+                    }
+                }
+                catch (Exception cEx)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Best-effort: no se pudo notificar el desenlace al cliente",
+                        details: $"SearchHire {searchHireId} outcome={outcome}: {cEx.Message}",
+                        userId: hire.ClientId,
+                        source: "AppointmentService.NotifyExpertConfirmationResolvedAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId);
+                }
+
+                // ── Experto (solo en rejected/timeout) ──
+                if (!isApproved && hire.ExpertId.HasValue)
+                {
+                    try
+                    {
+                        var isTimeout = string.Equals(outcome, "timeout", StringComparison.OrdinalIgnoreCase);
+                        await _inAppNotifications.CreateAsync(
+                            userId: hire.ExpertId.Value,
+                            title: isTimeout ? "Cita caducada" : "Cita rechazada",
+                            message: isTimeout
+                                ? "Tu cita se canceló automáticamente por no responder a tiempo. El comprador recibió el reembolso completo."
+                                : "Has rechazado la cita. El comprador recibió el reembolso completo.",
+                            type: isTimeout ? "expert_confirmation_timeout" : "expert_confirmation_rejected",
+                            url: null);
+                    }
+                    catch (Exception eEx)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Best-effort: no se pudo notificar el desenlace al experto",
+                            details: $"SearchHire {searchHireId} outcome={outcome}: {eEx.Message}",
+                            userId: hire.ExpertId,
+                            source: "AppointmentService.NotifyExpertConfirmationResolvedAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Best-effort: NotifyExpertConfirmationResolvedAsync falló",
+                    details: $"SearchHire {searchHireId} outcome={outcome}: {ex.Message}",
+                    userId: null,
+                    source: "AppointmentService.NotifyExpertConfirmationResolvedAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId);
+            }
+        }
+
+        /// <summary>
+        /// ⚓ Tarea 6.3: programa recordatorios ESCALONADOS dentro del plazo de confirmación.
+        /// Recordatorios al 50% y 80% del plazo (→ SendExpertConfirmationReminderAsync) y un aviso a admin
+        /// al 90% (→ AlertAdminExpertConfirmationExpiringAsync). Si la ventana es ≤15 min, no programa nada
+        /// (solo el aviso inicial basta). Los jobIds se guardan como CSV en AppointmentTimer.Notes del timer
+        /// principal (timerId) para poder cancelarlos al responder el experto. Best-effort.
+        /// </summary>
+        public async Task ScheduleExpertConfirmationRemindersAsync(int timerId, int searchHireId, int appointmentId, DateTime start, DateTime end)
+        {
+            try
+            {
+                var total = end - start;
+                if (total <= TimeSpan.FromMinutes(15))
+                {
+                    return; // ventana muy corta: solo el aviso inicial, sin recordatorios escalonados
+                }
+
+                var now = DateTime.UtcNow;
+                var jobIds = new List<string>();
+
+                // Recordatorios al experto al 50% y 80% del plazo.
+                foreach (var frac in new[] { 0.50, 0.80 })
+                {
+                    var fireAt = start + TimeSpan.FromTicks((long)(total.Ticks * frac));
+                    var delay = fireAt - now;
+                    if (delay <= TimeSpan.Zero) continue; // ya pasado: no programar en el pasado
+                    var jid = BackgroundJob.Schedule<IAppointmentService>(
+                        svc => svc.SendExpertConfirmationReminderAsync(searchHireId, appointmentId),
+                        delay);
+                    if (!string.IsNullOrEmpty(jid)) jobIds.Add(jid);
+                }
+
+                // Aviso a admin al 90% (red de seguridad de lanzamiento).
+                {
+                    var fireAt = start + TimeSpan.FromTicks((long)(total.Ticks * 0.90));
+                    var delay = fireAt - now;
+                    if (delay > TimeSpan.Zero)
+                    {
+                        var jid = BackgroundJob.Schedule<IAppointmentService>(
+                            svc => svc.AlertAdminExpertConfirmationExpiringAsync(searchHireId, appointmentId),
+                            delay);
+                        if (!string.IsNullOrEmpty(jid)) jobIds.Add(jid);
+                    }
+                }
+
+                if (jobIds.Count == 0) return;
+
+                // Persistir los jobIds en el timer principal para poder cancelarlos al responder el experto.
+                var timer = await _context.AppointmentTimers.FirstOrDefaultAsync(t => t.Id == timerId);
+                if (timer != null)
+                {
+                    timer.Notes = string.Join(",", jobIds);
+                    await _context.SaveChangesAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                // Best-effort: si la programación falla, el aviso inicial y el watchdog siguen cubriendo el caso.
+                await _loggingService.LogWarningAsync(
+                    message: "Best-effort: no se pudieron programar los recordatorios de confirmación",
+                    details: $"SearchHire {searchHireId} / Appointment {appointmentId} / Timer {timerId}: {ex.Message}",
+                    userId: null,
+                    source: "AppointmentService.ScheduleExpertConfirmationRemindersAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId);
+            }
+        }
+
+        /// <summary>
+        /// ⚓ Tarea 6.3: recordatorio escalonado. Re-valida que la cita SIGUE pendiente de confirmación
+        /// (idempotente: si ya se resolvió, no-op) y reusa NotifyExpertConfirmationRequestedAsync. Best-effort.
+        /// </summary>
+        public async Task SendExpertConfirmationReminderAsync(int searchHireId, int appointmentId)
+        {
+            try
+            {
+                var stillPending = await IsAppointmentPendingExpertConfirmationAsync(appointmentId);
+                if (!stillPending) return; // el experto ya respondió o la cita se resolvió → no-op
+                await NotifyExpertConfirmationRequestedAsync(searchHireId);
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Best-effort: SendExpertConfirmationReminderAsync falló",
+                    details: $"SearchHire {searchHireId} / Appointment {appointmentId}: {ex.Message}",
+                    userId: null,
+                    source: "AppointmentService.SendExpertConfirmationReminderAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId);
+            }
+        }
+
+        /// <summary>
+        /// ⚓ Tarea 6.4: red de seguridad de lanzamiento. Al 90% del plazo, si la cita SIGUE pendiente,
+        /// avisa a los admins (in-app global, userId=null) + LogCritical. Si ya se resolvió, no-op. Best-effort.
+        /// </summary>
+        public async Task AlertAdminExpertConfirmationExpiringAsync(int searchHireId, int appointmentId)
+        {
+            try
+            {
+                var stillPending = await IsAppointmentPendingExpertConfirmationAsync(appointmentId);
+                if (!stillPending) return; // ya resuelto → no avisar
+
+                var hire = await _context.SearchHires
+                    .Include(h => h.Expert)
+                    .FirstOrDefaultAsync(h => h.Id == searchHireId);
+                var expertName = hire?.Expert?.Name ?? "(experto)";
+                var expertPhone = hire?.Expert?.PhoneNumber ?? "(sin teléfono)";
+
+                try
+                {
+                    await _inAppNotifications.CreateAsync(
+                        userId: null, // global: bandeja de admins
+                        title: "Confirmación de experto a punto de caducar",
+                        message: $"La confirmación de la cita del hire #{searchHireId} (experto {expertName}, tel {expertPhone}) " +
+                                 "está a punto de caducar sin respuesta. Si caduca, el comprador será reembolsado al 100%.",
+                        type: "critical_alert",
+                        url: $"/admin/hires/{searchHireId}");
+                }
+                catch { /* el LogCritical de abajo es la red de seguridad principal */ }
+
+                await _loggingService.LogCriticalAsync(
+                    message: "Confirmación de experto a punto de caducar sin respuesta",
+                    details: $"Hire #{searchHireId} / Appointment {appointmentId}: el experto {expertName} (tel {expertPhone}) " +
+                             "no ha confirmado y el plazo está al 90%. Si caduca, auto-cancel + reembolso 100% al comprador.",
+                    userId: hire?.ExpertId,
+                    source: "AppointmentService.AlertAdminExpertConfirmationExpiringAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId);
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Best-effort: AlertAdminExpertConfirmationExpiringAsync falló",
+                    details: $"SearchHire {searchHireId} / Appointment {appointmentId}: {ex.Message}",
+                    userId: null,
+                    source: "AppointmentService.AlertAdminExpertConfirmationExpiringAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId);
+            }
+        }
+
+        /// <summary>
+        /// ⚓ Tarea 6/7: cancela los recordatorios escalonados programados leyendo los jobIds guardados
+        /// en AppointmentTimer.Notes del timer expert_confirmation de la cita. Best-effort.
+        /// </summary>
+        public async Task CancelExpertConfirmationRemindersAsync(int appointmentId)
+        {
+            try
+            {
+                var notesList = await _context.AppointmentTimers
+                    .Where(t => t.AppointmentId == appointmentId && t.TimerType == "expert_confirmation")
+                    .Select(t => t.Notes)
+                    .ToListAsync();
+
+                foreach (var notes in notesList)
+                {
+                    if (string.IsNullOrWhiteSpace(notes)) continue;
+                    foreach (var jobId in notes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    {
+                        try { BackgroundJob.Delete(jobId); }
+                        catch { /* job ya procesado o inexistente: ignorar */ }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Best-effort: si no se pueden borrar, cada reminder/alert tiene su propio guard de estado → no-op.
+                await _loggingService.LogWarningAsync(
+                    message: "Best-effort: no se pudieron cancelar los recordatorios de confirmación",
+                    details: $"Appointment {appointmentId}: {ex.Message}",
+                    userId: null,
+                    source: "AppointmentService.CancelExpertConfirmationRemindersAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId);
+            }
+        }
+
+        /// <summary>
+        /// 🔧 Helper: ¿la cita sigue en appointment_pending_expert_confirmation? Usado como guard de
+        /// idempotencia por los recordatorios y el aviso a admin.
+        /// </summary>
+        private async Task<bool> IsAppointmentPendingExpertConfirmationAsync(int appointmentId)
+        {
+            var pendingStatusId = await GetStatusIdByValueAsync(
+                AppointmentStatus.AppointmentPendingExpertConfirmation.ToStringValue(), "AppointmentStatus");
+            return await _context.Appointments
+                .AnyAsync(a => a.Id == appointmentId && a.StatusId == pendingStatusId);
         }
 
         /// <summary>

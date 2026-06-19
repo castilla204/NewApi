@@ -114,6 +114,16 @@ namespace newApi.Services
                 .Where(h => string.IsNullOrEmpty(h.ClientVatNumber)) // B2C: sin NIF B2B
                 .Where(h => !string.IsNullOrEmpty(h.ClientVatCountryCode))
                 .Where(h => h.ClientVatCountryCode != platformCountry)
+                // 🛡️ Captura diferida (modo vendedor): un hire con CaptureStatus="Authorized" tiene el
+                // PI sólo AUTORIZADO (requires_capture), NO cobrado, hasta 48h hasta que el vendedor
+                // confirma la cita. "Failed" = captura cancelada/fallida → tampoco se cobró. Contar ese
+                // dinero aún-no-recaudado podía disparar el umbral OSS €10.000 de forma prematura.
+                // Excluimos AMBOS estados de no-cobrado. CRÍTICO null-safe: los hires legacy (y los
+                // recién creados) tienen CaptureStatus=null AUNQUE SÍ se cobraron — NO deben excluirse,
+                // si no INFRA-reportaríamos el umbral (riesgo fiscal peor que el original). "Pending"
+                // (captura en vuelo que normalmente acaba "Captured") y "Captured" siguen contando.
+                .Where(h => h.CaptureStatus == null
+                            || (h.CaptureStatus != "Authorized" && h.CaptureStatus != "Failed"))
                 .Select(h => new
                 {
                     h.ClientVatCountryCode,

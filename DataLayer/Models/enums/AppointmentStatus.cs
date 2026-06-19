@@ -28,7 +28,8 @@ namespace newApi.DataLayer.Models.enums
         AppointmentCancelledByClientGt24h,   // Cliente cancela >24h (con cupo N) -> 100/0/0
         AppointmentCancelledByClient6to24h,  // Cliente 6-24h (o >24h sin cupo) -> 50/50/0
         AppointmentCancelledByClientLt6h,    // Cliente <6h / no-show -> 0/100/0
-        AppointmentCancelledByExpertStrike   // Experto cancela -> 100/0/0 + strike
+        AppointmentCancelledByExpertStrike,  // Experto cancela -> 100/0/0 + strike
+        AppointmentPendingExpertConfirmation // Cita creada, pago autorizado sin capturar, esperando aprobación/rechazo del experto (NO-FINAL, no mueve dinero)
     }
 
     public static class AppointmentStatusExtensions
@@ -60,6 +61,7 @@ namespace newApi.DataLayer.Models.enums
                 AppointmentStatus.AppointmentCancelledByClient6to24h => "appointment_cancelled_by_client_6to24h",
                 AppointmentStatus.AppointmentCancelledByClientLt6h => "appointment_cancelled_by_client_lt6h",
                 AppointmentStatus.AppointmentCancelledByExpertStrike => "appointment_cancelled_by_expert_strike",
+                AppointmentStatus.AppointmentPendingExpertConfirmation => "appointment_pending_expert_confirmation",
                 _ => status.ToString().ToLower()
             };
         }
@@ -91,6 +93,7 @@ namespace newApi.DataLayer.Models.enums
                 "appointment_cancelled_by_client_6to24h" => AppointmentStatus.AppointmentCancelledByClient6to24h,
                 "appointment_cancelled_by_client_lt6h" => AppointmentStatus.AppointmentCancelledByClientLt6h,
                 "appointment_cancelled_by_expert_strike" => AppointmentStatus.AppointmentCancelledByExpertStrike,
+                "appointment_pending_expert_confirmation" => AppointmentStatus.AppointmentPendingExpertConfirmation,
                 _ => throw new ArgumentException($"Invalid appointment status: {value}")
             };
         }

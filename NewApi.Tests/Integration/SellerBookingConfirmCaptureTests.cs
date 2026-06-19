@@ -11,14 +11,14 @@ using FluentAssertions;
 namespace NewApi.Tests.Integration;
 
 /// <summary>
-/// Tarea 3 — captura DIFERIDA del modo seller al confirmar la cita.
+/// Confirmación del experto (Tarea 3) — el confirm del vendedor YA NO captura el pago.
 ///
 /// Tras el checkout en modo "seller" sin hueco, el pago queda AUTORIZADO (PI en
 /// requires_capture, hire.CaptureStatus="Authorized"). Cuando el vendedor confirma
-/// día/hora/lugar vía POST /api/seller-booking/{token}/confirm hay que CAPTURAR el pago.
-///
-/// DECISIÓN: si la captura FALLA se RECHAZA la confirmación (rollback de la reserva, no
-/// se crea cita, hire.CaptureStatus="Failed", 402) — nunca una cita sin dinero cobrado.
+/// día/hora/lugar vía POST /api/seller-booking/{token}/confirm la cita nace en
+/// `appointment_pending_expert_confirmation` y el pago SIGUE autorizado: la captura se
+/// hará cuando el EXPERTO apruebe la cita (otra tarea). El confirm NO emite POST .../capture
+/// y genera el token+plazo (36h) de confirmación del experto, anulando el SellerBookingToken.
 ///
 /// Reusa el harness HTTP real (ApiFactoryFixture + FakeStripeServer) y siembra un hire
 /// seller AUTORIZADO con su FinancialTransaction ServicePayment (vínculo PI↔hire) más un
@@ -93,9 +93,10 @@ public class SellerBookingConfirmCaptureTests
         return slots![0];
     }
 
-    // ── Test 1: captura OK → 200, PI succeeded, CaptureStatus=Captured, 1 Appointment, token=null.
-    [Fact(DisplayName = "SBC-01 · confirm con captura OK → 200, PI capturado, cita creada")]
-    public async Task Confirm_capture_ok_creates_appointment_and_captures()
+    // ── Test 1: confirm OK → 200, cita pending_expert_confirmation, pago SIGUE Authorized,
+    //    PI NO capturado (sin POST .../capture), token+plazo (36h) generados, SellerBookingToken=null.
+    [Fact(DisplayName = "SBC-01 · confirm → 200, cita pending_expert_confirmation, sin captura, token experto")]
+    public async Task Confirm_creates_pending_appointment_without_capture()
     {
         var createdAt = DateTime.UtcNow;
         var (token, serviceId, hireId, pi) = await SeedAuthorizedSellerHireAsync(createdAt);
@@ -108,28 +109,37 @@ public class SellerBookingConfirmCaptureTests
         });
         res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
 
-        // El backend capturó el PI contra el stub.
-        _api.FakeStripe.Requests.Should().Contain(r => r == $"POST /v1/payment_intents/{pi}/capture",
-            "al confirmar el vendedor se captura el pago autorizado");
+        // CLAVE: el confirm del vendedor YA NO captura — el pago se cobra al aprobar el experto.
+        _api.FakeStripe.Requests.Should().NotContain(r => r == $"POST /v1/payment_intents/{pi}/capture",
+            "el confirm del vendedor no captura: la captura es al aprobar el experto");
 
         await using var db = _api.CreateDbContext();
         var hire = await db.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId);
-        hire.CaptureStatus.Should().Be("Captured");
+        hire.CaptureStatus.Should().Be("Authorized", "el pago sigue autorizado tras confirmar el vendedor");
         hire.SellerBookingToken.Should().BeNull("token de un solo uso");
+        hire.ExpertConfirmationToken.Should().NotBeNullOrEmpty("el confirm genera el token de confirmación del experto");
+        hire.ExpertConfirmationDeadline.Should().NotBeNull();
+        // Ventana seller = min(now+36h, inicio de la cita). El hueco (+4 días) está lejos → manda now+36h.
+        hire.ExpertConfirmationDeadline!.Value.Should().BeOnOrBefore(slot.StartUtc, "el plazo nunca supera el inicio de la cita");
+        hire.ExpertConfirmationDeadline!.Value.Should().BeCloseTo(DateTime.UtcNow.AddHours(36), TimeSpan.FromMinutes(2),
+            "plazo ≈ now+36h cuando la cita es lejana");
 
-        var appts = await db.Appointments.AsNoTracking().Where(a => a.SearchHireId == hireId).ToListAsync();
-        appts.Should().HaveCount(1);
+        var appt = await db.Appointments.AsNoTracking().Include(a => a.Status)
+            .SingleAsync(a => a.SearchHireId == hireId);
+        appt.Status!.StatusValue.Should().Be("appointment_pending_expert_confirmation");
+        appt.BlocksCalendar.Should().BeTrue();
     }
 
-    // ── Test 2: captura FALLA → 402, NO se crea cita, CaptureStatus=Failed, token NO se consume.
-    [Fact(DisplayName = "SBC-02 · confirm con captura que FALLA → 402, sin cita, CaptureStatus=Failed")]
-    public async Task Confirm_capture_failure_rejects_and_creates_no_appointment()
+    // ── Test 2: como el confirm ya NO captura, un PI que fallaría al capturar es IRRELEVANTE:
+    //    el confirm completa igual (200, sin POST .../capture). Captura = futura aprobación del experto.
+    [Fact(DisplayName = "SBC-02 · confirm no intenta capturar (PI marcado como fallo de captura es irrelevante) → 200")]
+    public async Task Confirm_does_not_capture_even_if_capture_would_fail()
     {
         var createdAt = DateTime.UtcNow;
         var (token, serviceId, hireId, pi) = await SeedAuthorizedSellerHireAsync(createdAt);
         var slot = await FirstSlotAsync(token, createdAt);
 
-        // Forzar que la captura de ESTE PI falle.
+        // Aunque marquemos este PI para fallar al capturar, el confirm no debe NI intentar capturar.
         _api.FakeStripe.CaptureFailurePaymentIntents[pi] = 1;
         try
         {
@@ -137,25 +147,28 @@ public class SellerBookingConfirmCaptureTests
             {
                 startsAtUtc = slot.StartUtc, endsAtUtc = slot.EndUtc, location = "Calle Mayor 1",
             });
-            res.StatusCode.Should().Be((HttpStatusCode)402, await res.Content.ReadAsStringAsync());
+            res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
         }
         finally
         {
             _api.FakeStripe.CaptureFailurePaymentIntents.TryRemove(pi, out _);
         }
 
+        _api.FakeStripe.Requests.Should().NotContain(r => r == $"POST /v1/payment_intents/{pi}/capture",
+            "el confirm nunca captura, así que un fallo de captura forzado no le afecta");
+
         await using var db = _api.CreateDbContext();
         var hire = await db.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId);
-        hire.CaptureStatus.Should().Be("Failed", "captura fallida marca el hire como Failed");
+        hire.CaptureStatus.Should().Be("Authorized", "sigue autorizado: no hay captura en el confirm");
 
         var appts = await db.Appointments.AsNoTracking().Where(a => a.SearchHireId == hireId).ToListAsync();
-        appts.Should().BeEmpty("no debe quedar cita si la captura falló (rollback)");
+        appts.Should().HaveCount(1, "la cita se crea pendiente de confirmación del experto");
     }
 
-    // ── Test 3: hire AUTORIZADO pero SIN FT ServicePayment (sin PaymentIntent localizable) →
-    //    500, NO se crea cita y NO se captura nada (rollback de la reserva).
-    [Fact(DisplayName = "SBC-03 · confirm sin PaymentIntent → 500, sin cita, sin captura")]
-    public async Task Confirm_without_payment_intent_rejects_and_creates_no_appointment()
+    // ── Test 3: hire AUTORIZADO SIN FT ServicePayment: como el confirm ya NO localiza ni captura el
+    //    PI, la ausencia de FT es irrelevante → 200, cita pending creada, sin POST .../capture.
+    [Fact(DisplayName = "SBC-03 · confirm sin FT ServicePayment → 200 (ya no se localiza/captura el PI)")]
+    public async Task Confirm_without_payment_intent_still_creates_pending_appointment()
     {
         var createdAt = DateTime.UtcNow;
         var (token, serviceId, hireId, pi) = await SeedAuthorizedSellerHireAsync(createdAt, withServicePayment: false);
@@ -165,16 +178,42 @@ public class SellerBookingConfirmCaptureTests
         {
             startsAtUtc = slot.StartUtc, endsAtUtc = slot.EndUtc, location = "Calle Mayor 1",
         });
-        res.StatusCode.Should().Be((HttpStatusCode)500, await res.Content.ReadAsStringAsync());
+        res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
 
-        // No se intentó capturar el PI de este hire (Requests es una cola compartida por la
-        // colección, así que filtramos por el PI único sembrado, que NUNCA se persistió como FT).
+        // No se intentó capturar el PI de este hire (el confirm ya no captura en absoluto).
         _api.FakeStripe.Requests.Should().NotContain(r => r == $"POST /v1/payment_intents/{pi}/capture",
-            "sin FT ServicePayment no hay PaymentIntent que capturar");
+            "el confirm no captura, así que no necesita localizar el PaymentIntent");
 
         await using var db = _api.CreateDbContext();
         var appts = await db.Appointments.AsNoTracking().Where(a => a.SearchHireId == hireId).ToListAsync();
-        appts.Should().BeEmpty("sin PaymentIntent la reserva se revierte y no queda cita");
+        appts.Should().HaveCount(1, "el confirm crea la cita pendiente sin depender de la FT ServicePayment");
+    }
+
+    // ── SBC-Timer: confirm → se crea un AppointmentTimer "expert_confirmation" con
+    //    EndTime = ExpertConfirmationDeadline y HangfireJobId no nulo (Tarea 5).
+    [Fact(DisplayName = "SBC-T1 · confirm crea timer expert_confirmation (EndTime=deadline, jobId no nulo)")]
+    public async Task Confirm_creates_expert_confirmation_timer()
+    {
+        var createdAt = DateTime.UtcNow;
+        var (token, _, hireId, _) = await SeedAuthorizedSellerHireAsync(createdAt);
+        var slot = await FirstSlotAsync(token, createdAt);
+
+        var res = await _api.Client.PostAsJsonAsync($"/api/seller-booking/{token}/confirm", new
+        {
+            startsAtUtc = slot.StartUtc, endsAtUtc = slot.EndUtc, location = "Calle Mayor 1",
+        });
+        res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
+
+        await using var db = _api.CreateDbContext();
+        var hire = await db.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId);
+        var apptId = await db.Appointments.AsNoTracking().Where(a => a.SearchHireId == hireId).Select(a => a.Id).SingleAsync();
+
+        var timer = await db.AppointmentTimers.AsNoTracking()
+            .SingleAsync(t => t.AppointmentId == apptId && t.TimerType == "expert_confirmation");
+        timer.IsExpired.Should().BeFalse("el timer nace activo");
+        timer.HangfireJobId.Should().NotBeNullOrEmpty("se programa el job de Hangfire y se guarda su id");
+        timer.EndTime.Should().BeCloseTo(hire.ExpertConfirmationDeadline!.Value, TimeSpan.FromSeconds(1),
+            "EndTime del timer = plazo de confirmación del experto");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

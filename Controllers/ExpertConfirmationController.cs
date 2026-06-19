@@ -1,0 +1,284 @@
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using newApi.DataLayer.Models;
+using newApi.DataLayer.Models.PostGresModels;
+using newApi.Services;
+
+namespace newApi.Controllers
+{
+    /// <summary>
+    /// Magic link del EXPERTO (modo "seller"). SIN login: el token secreto de la URL ES la
+    /// credencial. La cita nace en `appointment_pending_expert_confirmation` con el pago
+    /// AUTORIZADO (PI en requires_capture, CaptureStatus="Authorized"). El experto decide:
+    ///
+    ///   • APPROVE → confirma la cita y CAPTURA el pago (cobro real al comprador).
+    ///   • REJECT  → cancela la AUTORIZACIÓN del pago SIN coste (0 €, ni fee), devuelve el 100%
+    ///               al comprador y añade un strike de cancelación al experto.
+    ///
+    /// Clon estructural de SellerBookingController: token single-use como mutex + xmin
+    /// (DbUpdateConcurrencyException) para idempotencia, ExecutionStrategy + transacción por
+    /// EnableRetryOnFailure, y nunca expone datos personales del cliente.
+    /// </summary>
+    [ApiController]
+    [Route("api/expert-confirmation")]
+    [AllowAnonymous]
+    public class ExpertConfirmationController : ControllerBase
+    {
+        private readonly AppDbContext _context;
+        private readonly IPaymentCaptureService _paymentCapture;
+        private readonly ILoggingService _logging;
+
+        public ExpertConfirmationController(
+            AppDbContext context,
+            IPaymentCaptureService paymentCapture,
+            ILoggingService logging)
+        {
+            _context = context;
+            _paymentCapture = paymentCapture;
+            _logging = logging;
+        }
+
+        private static bool TokenLooksValid(string? token) =>
+            !string.IsNullOrWhiteSpace(token) && token.Length >= 32 && token.Length <= 128;
+
+        private Task<SearchHire?> FindByTokenAsync(string token, bool tracking) =>
+            (tracking ? _context.SearchHires : _context.SearchHires.AsNoTracking())
+                .Include(h => h.Appointment)
+                .Include(h => h.SearchService)
+                .FirstOrDefaultAsync(h => h.ExpertConfirmationToken == token);
+
+        // ── Contexto (solo lectura) ────────────────────────────────────────────
+        // Solo lo imprescindible para que el experto decida: cuándo, dónde y hasta cuándo
+        // puede responder. NUNCA nombre/email/teléfono del cliente.
+        [HttpGet("{token}")]
+        public async Task<IActionResult> GetContext(string token)
+        {
+            if (!TokenLooksValid(token)) return NotFound(new { message = "Enlace no válido." });
+            var hire = await FindByTokenAsync(token, tracking: false);
+            if (hire == null || hire.Appointment == null)
+                return NotFound(new { message = "Enlace no válido o caducado." });
+
+            var appt = hire.Appointment;
+            return Ok(new
+            {
+                serviceId = hire.SearchServiceId,
+                startsAtUtc = appt.StartsAtUtc,
+                endsAtUtc = appt.EndsAtUtc,
+                location = appt.Location,
+                doorNumber = appt.DoorNumber,
+                siteDetails = appt.SiteDetails,
+                latitude = appt.Latitude,
+                longitude = appt.Longitude,
+                deadline = hire.ExpertConfirmationDeadline,
+                expired = hire.ExpertConfirmationDeadline.HasValue
+                          && DateTime.UtcNow > hire.ExpertConfirmationDeadline.Value,
+            });
+        }
+
+        // ── Aprobar la cita → confirma + CAPTURA el pago ──────────────────────────
+        // Orden: el hueco ya está reservado desde el checkout, así que cambiamos estado →
+        // capturamos. Si la captura falla, el rollback deshace el cambio de estado y deja
+        // el token vivo (reintentable). Estado EXACTO pending + token single-use + xmin =
+        // idempotencia (un segundo approve no recaptura ni reconfirma).
+        [HttpPost("{token}/approve")]
+        public async Task<IActionResult> Approve(string token)
+        {
+            if (!TokenLooksValid(token)) return NotFound(new { message = "Enlace no válido." });
+
+            var hire = await FindByTokenAsync(token, tracking: true);
+            if (hire == null || hire.Appointment == null)
+                return NotFound(new { message = "Enlace no válido o caducado." });
+
+            // El estado debe ser EXACTAMENTE pending_expert_confirmation. Si ya se confirmó,
+            // canceló o expiró → 409 (esto + token single-use + xmin dan idempotencia).
+            var pendingStatusId = await _context.SystemStatuses
+                .Where(s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_pending_expert_confirmation")
+                .Select(s => (int?)s.Id)
+                .FirstOrDefaultAsync();
+            if (pendingStatusId == null)
+                return StatusCode(500, new { message = "Configuración de estados incompleta." });
+
+            if (hire.Appointment.StatusId != pendingStatusId.Value)
+                return Conflict(new { message = "La cita ya no está pendiente de confirmación." });
+
+            var confirmedStatusId = await _context.SystemStatuses
+                .Where(s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_confirmed")
+                .Select(s => (int?)s.Id)
+                .FirstOrDefaultAsync();
+            if (confirmedStatusId == null)
+                return StatusCode(500, new { message = "Configuración de estados incompleta." });
+
+            // Localizar el PaymentIntent del cobro del servicio (ServicePayment del hire).
+            var paymentIntentId = await _context.FinancialTransactions.AsNoTracking()
+                .Where(t => t.RelatedEntityType == "SearchHire"
+                            && t.RelatedEntityId == hire.Id
+                            && t.TransactionType == "ServicePayment")
+                .OrderByDescending(t => t.Id)
+                .Select(t => t.StripePaymentIntentId)
+                .FirstOrDefaultAsync();
+            if (string.IsNullOrWhiteSpace(paymentIntentId))
+            {
+                await _logging.LogCriticalAsync(
+                    message: "CRITICAL: approve del experto sin PaymentIntent localizable",
+                    details: $"No hay FinancialTransaction ServicePayment con StripePaymentIntentId para el hire {hire.Id}. " +
+                             "No se puede capturar el pago al aprobar la cita. ACCIÓN ADMIN: revisar el vínculo PI↔hire.",
+                    userId: hire.ClientId,
+                    source: "ExpertConfirmationController.Approve",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: hire.Id,
+                    additionalData: new { SearchHireId = hire.Id });
+                return StatusCode(500, new { message = "No se pudo localizar el pago de la cita." });
+            }
+
+            // La connection string usa EnableRetryOnFailure (NpgsqlRetryingExecutionStrategy), que
+            // prohíbe transacciones iniciadas por el usuario salvo a través de la propia execution
+            // strategy → envolvemos el cambio de estado + captura en ella. Los fallos no transitorios
+            // se capturan y devuelven IActionResult (no relanzan) para que la strategy no los reintente.
+            var strategy = _context.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync<IActionResult>(async () =>
+            {
+                await using var tx = await _context.Database.BeginTransactionAsync();
+
+                // (1) Confirmar la cita + anular el token (single-use). SaveChanges con xmin: si otro
+                //     proceso tocó el hire/cita a la vez → concurrency → rollback + 409.
+                hire.Appointment!.StatusId = confirmedStatusId.Value;
+                hire.Appointment.UpdatedAt = DateTime.UtcNow;
+                hire.ExpertConfirmationToken = null;
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    await tx.RollbackAsync();
+                    return Conflict(new { message = "La cita ya no está pendiente de confirmación." });
+                }
+
+                // (2) Capturar el pago (idempotente, IdempotencyKey capture-{hireId}). Si falla, el
+                //     rollback deshace la confirmación y deja el token vivo (reintentable). Marcamos
+                //     CaptureStatus="Failed" en un contexto LIMPIO (la tx del _context se va a revertir)
+                //     para que admin/watchdog lo vea sin contaminar el change-tracker que vamos a rollback.
+                try
+                {
+                    await _paymentCapture.EnsureCapturedAsync(paymentIntentId, hire.ExpertId ?? 0, hire.SearchServiceId, hire.Id);
+                }
+                catch (Exception captureEx)
+                {
+                    try { await tx.RollbackAsync(); } catch { /* la tx puede estar ya inutilizable */ }
+
+                    try
+                    {
+                        var opts = new DbContextOptionsBuilder<AppDbContext>()
+                            .UseNpgsql(_context.Database.GetConnectionString())
+                            .Options;
+                        await using var cleanCtx = new AppDbContext(opts);
+                        await cleanCtx.SearchHires
+                            .Where(h => h.Id == hire.Id)
+                            .ExecuteUpdateAsync(s => s.SetProperty(h => h.CaptureStatus, "Failed"));
+                    }
+                    catch { /* best-effort: el watchdog cubrirá el PI si esto falla */ }
+
+                    await _logging.LogCriticalAsync(
+                        message: "CRITICAL: la captura falló al aprobar el experto",
+                        details: $"EnsureCapturedAsync falló para el hire {hire.Id} (PI {paymentIntentId}) al aprobar la cita. " +
+                                 "La confirmación se revirtió (rollback) y el token sigue vivo (reintentable). " +
+                                 $"CaptureStatus marcado 'Failed'. Error: {captureEx.Message}",
+                        userId: hire.ClientId,
+                        source: "ExpertConfirmationController.Approve",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hire.Id,
+                        additionalData: new { SearchHireId = hire.Id, PaymentIntentId = paymentIntentId, Exception = captureEx.Message });
+
+                    return StatusCode(402, new { message = "No se pudo confirmar el pago. Inténtalo de nuevo." });
+                }
+
+                // (3) Captura OK → marcar Captured y confirmar la tx.
+                hire.CaptureStatus = "Captured";
+                try
+                {
+                    await _context.SaveChangesAsync();
+                    await tx.CommitAsync();
+                }
+                catch (Exception commitEx)
+                {
+                    // HUECO 1b: el dinero YA se cobró en Stripe pero el commit local falló. Rollback
+                    // best-effort (el cambio de estado se revierte) y log crítico para derivar a soporte:
+                    // hay un PI succeeded sin cita confirmada que requiere reconciliación manual.
+                    try { await tx.RollbackAsync(); } catch { /* la tx puede estar ya inutilizable */ }
+
+                    await _logging.LogCriticalAsync(
+                        message: "CRITICAL: commit falló tras capturar el pago al aprobar el experto",
+                        details: $"PI {paymentIntentId} YA capturado en Stripe pero el commit local falló (hire {hire.Id}). " +
+                                 "El cambio de estado se revirtió: hay dinero cobrado sin cita confirmada. " +
+                                 $"ACCIÓN SOPORTE: reconciliar manualmente. Error: {commitEx.Message}",
+                        userId: hire.ClientId,
+                        source: "ExpertConfirmationController.Approve",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hire.Id,
+                        additionalData: new { SearchHireId = hire.Id, PaymentIntentId = paymentIntentId, Exception = commitEx.Message });
+
+                    return StatusCode(500, new { message = "El pago se procesó pero hubo un problema al confirmar. Contacta con soporte." });
+                }
+
+                // ⚓ TODO Tarea 5: cancelar timer expert_confirmation + notificar cliente
+
+                return Ok(new { ok = true });
+            });
+        }
+
+        // ── Rechazar la cita → cancela autorización (0 €) + reembolso 100% + strike ──
+        // El experto pulsa "no puedo". Cancelamos la AUTORIZACIÓN del pago SIN coste (PI en
+        // requires_capture → cancel = 0 €) y devolvemos el 100% al comprador finalizando el
+        // hire. Penaliza al experto con un strike. Anular el token actúa de mutex frente al
+        // approve y al job de expiración (ambos buscan por token).
+        [HttpPost("{token}/reject")]
+        public async Task<IActionResult> Reject(string token)
+        {
+            if (!TokenLooksValid(token)) return NotFound(new { message = "Enlace no válido." });
+
+            var hire = await FindByTokenAsync(token, tracking: true);
+            if (hire == null || hire.Appointment == null)
+                return NotFound(new { message = "Enlace no válido o caducado." });
+
+            // Strike SÍNCRONO al experto (penalización por rechazar la cita). ExecuteUpdate
+            // sobre la fila ExpertProfiles del experto del hire (independiente del change-tracker).
+            if (hire.ExpertId.HasValue)
+            {
+                await _context.ExpertProfiles
+                    .Where(p => p.UserId == hire.ExpertId.Value)
+                    .ExecuteUpdateAsync(s => s.SetProperty(p => p.CancellationStrikes, p => p.CancellationStrikes + 1));
+            }
+
+            // Anular el token = mutex: a partir de aquí ni el approve ni el job de expiración
+            // (ambos buscan por token) podrán confirmar la cita ni coexistir con esta devolución.
+            hire.ExpertConfirmationToken = null;
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Carrera approve-vs-reject: el approve ganó (token xmin). La cita ya quedó
+                // confirmada y capturada → NO rechazamos ni reembolsamos. 409 limpio.
+                return Conflict(new { message = "La cita acaba de confirmarse. No se puede rechazar." });
+            }
+
+            // Reembolso 100% al comprador + cancelar el hire + cancelar el PI no capturado (0 €).
+            // La rama N10 del RefundService CANCELA el PI si sigue en requires_capture (0 €, sin fee).
+            // El estado "appointment_cancelled_by_expert_strike" empieza por "appointment_cancelled"
+            // → finalización del hire.
+            Hangfire.BackgroundJob.Enqueue<global::newApi.Services.StripeRefundService>(svc =>
+                svc.ProcessMoneyDistributionAsync(
+                    hire.Id,
+                    "appointment_cancelled_by_expert_strike",
+                    "El experto rechazó la cita: devolución íntegra al cliente (0€) + strike.",
+                    null,
+                    true));
+
+            // ⚓ TODO Tarea 5: cancelar timer + notificar cliente
+
+            return Ok(new { ok = true });
+        }
+    }
+}

@@ -295,8 +295,11 @@ namespace newApi.Controllers
                         await apptSvc.CreateExpertConfirmationTimerAsync(pendingExpertAppointment.Id, hire.Id);
                     }
                     catch { /* best-effort: el watchdog recogerá la cita si quedó sin timer */ }
+
+                    // ⚓ Tarea 6: notificar al experto (email magic-link + in-app + SMS). Best-effort.
+                    try { await apptSvc.NotifyExpertConfirmationRequestedAsync(hire.Id); }
+                    catch { /* best-effort: la notificación nunca tumba el confirm del vendedor */ }
                 }
-                // ⚓ TODO Tarea 6: notificar al experto (nueva cita pendiente de su confirmación)
 
                 return Ok(new { ok = true });
             });

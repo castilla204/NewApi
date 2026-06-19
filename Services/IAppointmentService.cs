@@ -26,7 +26,21 @@ namespace newApi.Services
         // ⚓ Tarea 5: timer de confirmación del experto (auto-cancela si no aprueba/rechaza a tiempo).
         Task CreateExpertConfirmationTimerAsync(int appointmentId, int searchHireId);
         Task CancelExpertConfirmationTimerAsync(int appointmentId);
-        
+
+        // ⚓ Tarea 6: notificaciones + recordatorios de la confirmación del experto. TODAS best-effort
+        // (try/catch internos): un fallo de notificación NUNCA debe romper el flujo de dinero/estado.
+        Task NotifyExpertConfirmationRequestedAsync(int searchHireId);
+        Task NotifyExpertConfirmationResolvedAsync(int searchHireId, string outcome);
+        Task ScheduleExpertConfirmationRemindersAsync(int timerId, int searchHireId, int appointmentId, DateTime start, DateTime end);
+
+        [JobDisplayName("🔔 Recordatorio Confirmación Experto - SearchHire #{0}")]
+        Task SendExpertConfirmationReminderAsync(int searchHireId, int appointmentId);
+
+        [JobDisplayName("🚨 Aviso Admin: Confirmación Experto a punto de caducar - SearchHire #{0}")]
+        Task AlertAdminExpertConfirmationExpiringAsync(int searchHireId, int appointmentId);
+
+        Task CancelExpertConfirmationRemindersAsync(int appointmentId);
+
         [JobDisplayName("⏰ Timer Propuesta Cliente (Penaliza Cliente) - Timer #{0}")]
         Task ProcessProposalTimerAsync(int timerId);
         

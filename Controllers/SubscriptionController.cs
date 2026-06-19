@@ -6315,7 +6315,10 @@ namespace newApi.Controllers
                         }
                         catch { /* best-effort: el watchdog recogerá la cita si quedó sin timer */ }
                     }
-                    // ⚓ TODO Tarea 6: notificar al experto (nueva cita pendiente de su confirmación)
+                    // ⚓ Tarea 6: notificar al experto (email magic-link + in-app + SMS). Best-effort:
+                    // nunca romper el webhook (Stripe lo reintentaría) por un fallo de notificación.
+                    try { await _appointmentService.NotifyExpertConfirmationRequestedAsync(searchHireId); }
+                    catch { /* best-effort: la notificación nunca tumba el webhook */ }
                 }
                 catch (Exception commitEx)
                 {

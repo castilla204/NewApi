@@ -317,9 +317,39 @@ namespace newApi.Controllers
                 }
 
                 // Captura OK: marcar cobrado y confirmar la tx (cita + token anulado + deadline).
+                // ⚠️ HUECO 1b: la captura YA cobró en Stripe (capture idempotente capture-{hireId}).
+                // Si el SaveChanges/Commit POSTERIOR falla con una excepción NO transitoria, el
+                // dinero queda cobrado pero SIN cita y con CaptureStatus aún "Authorized". No hay
+                // compensación automática (reembolsar/crear cita a mano es decisión humana): basta
+                // dejar un log CRITICAL accionable y NO devolver el flujo en silencio.
+                // Idempotencia: si la ExecutionStrategy reintentara, EnsureCapturedAsync
+                // (capture-{hireId}) no doble-cobra.
                 hire.CaptureStatus = "Captured";
-                await _context.SaveChangesAsync();
-                await tx.CommitAsync();
+                try
+                {
+                    await _context.SaveChangesAsync();
+                    await tx.CommitAsync();
+                }
+                catch (Exception commitEx)
+                {
+                    try { await tx.RollbackAsync(); } catch { /* la tx puede estar ya inutilizable */ }
+
+                    await _logging.LogCriticalAsync(
+                        message: "CRITICAL: pago capturado pero la cita NO se pudo persistir",
+                        details: $"EnsureCapturedAsync YA capturó el PaymentIntent {paymentIntentId} (dinero COBRADO) " +
+                                 $"para el hire {hire.Id}, pero el SaveChanges/Commit posterior falló → la cita NO se creó " +
+                                 $"y CaptureStatus sigue \"Authorized\" en BD. ACCIÓN ADMIN: reconciliar manualmente " +
+                                 $"(crear la cita a mano y marcar Captured, o reembolsar al comprador). Error: {commitEx.Message}",
+                        userId: hire.ClientId,
+                        source: "SellerBookingController.Confirm",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hire.Id,
+                        additionalData: new { SearchHireId = hire.Id, PaymentIntentId = paymentIntentId, Exception = commitEx.Message });
+
+                    // No dejar el flujo silencioso: el vendedor recibe un 500 claro (la captura
+                    // ya ocurrió, así que NO pedimos repetir el pago — derivamos a soporte).
+                    return StatusCode(500, new { message = "La reserva se está procesando, contacta con soporte." });
+                }
 
                 // TODO (Tarea futura): emitir la factura diferida del servicio aquí ahora que el
                 // pago está realmente capturado (en el flujo self/normal la emite el webhook).

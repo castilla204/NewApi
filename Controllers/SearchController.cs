@@ -837,7 +837,15 @@ namespace newApi.Controllers
                             { "apptLat", request.Latitude ?? "" },
                             { "apptLng", request.Longitude ?? "" },
                             { "apptDoor", I6_Truncate(request.DoorNumber, 60) },
-                            { "apptDetails", I6_Truncate(request.SiteDetails, 200) }
+                            { "apptDetails", I6_Truncate(request.SiteDetails, 200) },
+                            // 🤝 Coordinación con el vendedor (modo "seller"): el webhook guarda estos
+                            // datos en el hire. Vacíos en el modo "self" (el cliente eligió hueco).
+                            { "coordinationMode", I6_Truncate(request.CoordinationMode, 16) },
+                            { "sellerPhone", I6_Truncate(request.SellerPhone, 30) },
+                            { "sellerEmail", I6_Truncate(request.SellerEmail, 60) },
+                            { "sellerListing", I6_Truncate(request.SellerListingUrl, 120) },
+                            { "sellerMaxDays", request.SellerBookingMaxDays?.ToString() ?? "" },
+                            { "sellerDeadlineHours", request.SellerBookingDeadlineHours?.ToString() ?? "" }
                         },
                         // ✅ CAPTURA MANUAL: Autoriza el pago pero no lo captura hasta validar todo en el webhook
                         // Esto evita perder comisiones si algo falla después del pago
@@ -1777,5 +1785,16 @@ namespace newApi.Controllers
         public string? Longitude { get; set; }
         public string? DoorNumber { get; set; }
         public string? SiteDetails { get; set; }
+
+        // 🤝 Coordinación con el vendedor (modo "seller"). Vacío/null en el modo "self".
+        /// <summary>"self" (el cliente eligió hueco) o "seller" (el experto propondrá tras coordinar).</summary>
+        public string? CoordinationMode { get; set; }
+        public string? SellerPhone { get; set; }
+        public string? SellerEmail { get; set; }
+        public string? SellerListingUrl { get; set; }
+        /// <summary>Modo seller: máximo de días a futuro que el vendedor puede elegir la cita.</summary>
+        public int? SellerBookingMaxDays { get; set; }
+        /// <summary>Modo seller: horas que tiene el vendedor para reservar (default 48). Si pasa, reembolso 100%.</summary>
+        public int? SellerBookingDeadlineHours { get; set; }
     }
 }

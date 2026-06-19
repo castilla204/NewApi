@@ -1983,6 +1983,14 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     "*/15 * * * *",
     n29UtcOptions);
 
+// 🤝 Magic link del vendedor: cada 15 min revisa hires cuyo plazo para reservar venció sin
+// cita → reembolso 100% al comprador (el vendedor no colaboró).
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "seller-booking-expiry-refund",
+    svc => svc.ProcessExpiredSellerBookingsAsync(),
+    "*/15 * * * *",
+    n29UtcOptions);
+
 // P2-5: Conciliación diaria BD ↔ Stripe a las 03:00 UTC. Detecta y reporta
 // (LogCritical → email admin) refunds/transfers que existen sólo en Stripe o
 // sólo en FinancialTransactions en las últimas 24h. NO muta nada por sí solo.

@@ -26,6 +26,7 @@ namespace newApi.Services
         Task NotifyUpcomingStripeDeadlinesAsync(); // 🛡️ Round 12 — D3
         Task NotifyStalledOnboardingExpertsAsync(); // 🛡️ A2 — onboarding abandonado
         Task CheckAppointmentWatchdogHealthAsync(); // 🛡️ HEALTH — vigila que el watchdog de citas siga vivo
+        Task ProcessExpiredSellerBookingsAsync(); // 🤝 Magic link vendedor: si no reserva en plazo → reembolso 100%
     }
 
     public class PlatformMaintenanceService : IPlatformMaintenanceService
@@ -339,6 +340,78 @@ namespace newApi.Services
                     source: "PlatformMaintenanceService.CleanupOldProcessedWebhookEventsAsync",
                     relatedEntityType: "ProcessedWebhookEvent",
                     relatedEntityId: null);
+            }
+        }
+
+        // 🤝 Magic link del vendedor: hires en modo "seller" cuyo plazo para reservar ha vencido
+        // SIN cita → el vendedor no colaboró → reembolso 100% al comprador. "Reclama" el hire
+        // anulando el token (re-check token!=null && sin cita) y encola la distribución de dinero.
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
+        [Hangfire.AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 0, 60, 300 })]
+        public async Task ProcessExpiredSellerBookingsAsync()
+        {
+            List<int> expiredIds;
+            try
+            {
+                var now = DateTime.UtcNow;
+                expiredIds = await _context.SearchHires
+                    .Where(h => h.SellerBookingToken != null
+                                && h.SellerBookingDeadline != null
+                                && h.SellerBookingDeadline < now
+                                && h.Appointment == null)
+                    .Select(h => h.Id)
+                    .Take(200)
+                    .ToListAsync();
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "ProcessExpiredSellerBookingsAsync: fallo al consultar hires vencidos",
+                    details: ex.Message,
+                    source: "PlatformMaintenanceService.ProcessExpiredSellerBookingsAsync");
+                return;
+            }
+
+            // try/catch POR hire: un fallo en uno no aborta el lote.
+            foreach (var hireId in expiredIds)
+            {
+                try
+                {
+                    // Reclamar: solo procede si sigue sin reservar. Anular el token = mutex: a partir
+                    // de aquí el confirm del vendedor (busca por token) ya no podrá crear la cita,
+                    // así que no puede coexistir "cita confirmada + reembolso".
+                    var hire = await _context.SearchHires
+                        .FirstOrDefaultAsync(h => h.Id == hireId && h.SellerBookingToken != null && h.Appointment == null);
+                    if (hire == null) continue;
+                    hire.SellerBookingToken = null;
+                    await _context.SaveChangesAsync();
+
+                    // Reembolso 100% al comprador + cancelar el hire.
+                    // ⚠️ CRÍTICO: el estado DEBE empezar por "appointment_cancelled" para que
+                    // ProcessMoneyDistributionAsync IGNORE el snapshot V8 de % (reparto de COMPLETADO:
+                    // experto 95%) y use el de cancelación. Con "cancelled" pagaría al EXPERTO.
+                    // "appointment_cancelled_by_client_gt24h" → (cliente 100, experto 0, plataforma 0),
+                    // es finalización, mapea el hire a 'cancelled' y NO penaliza al experto.
+                    Hangfire.BackgroundJob.Enqueue<newApi.Services.StripeRefundService>(svc =>
+                        svc.ProcessMoneyDistributionAsync(
+                            hireId,
+                            "appointment_cancelled_by_client_gt24h",
+                            "Vendedor no reservó la cita en el plazo: reembolso 100% al comprador.",
+                            null,
+                            true));
+                }
+                catch (Exception exHire)
+                {
+                    // Si el token se anuló pero el encolado del reembolso falló, el comprador quedaría
+                    // sin servicio y sin dinero → CRÍTICO para que el admin lo reembolse a mano.
+                    await _loggingService.LogCriticalAsync(
+                        message: "Fallo al procesar expiración de reserva del vendedor (posible reembolso pendiente manual)",
+                        details: $"SearchHire {hireId}: {exHire.Message}. ACCIÓN: verificar si el token se anuló y, si no hay reembolso, reembolsar 100% al comprador a mano.",
+                        userId: 0,
+                        source: "PlatformMaintenanceService.ProcessExpiredSellerBookingsAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hireId);
+                }
             }
         }
 

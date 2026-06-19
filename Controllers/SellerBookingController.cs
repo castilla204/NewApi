@@ -23,11 +23,19 @@ namespace newApi.Controllers
     {
         private readonly IAvailabilityService _availability;
         private readonly AppDbContext _context;
+        private readonly IPaymentCaptureService _paymentCapture;
+        private readonly ILoggingService _logging;
 
-        public SellerBookingController(IAvailabilityService availability, AppDbContext context)
+        public SellerBookingController(
+            IAvailabilityService availability,
+            AppDbContext context,
+            IPaymentCaptureService paymentCapture,
+            ILoggingService logging)
         {
             _availability = availability;
             _context = context;
+            _paymentCapture = paymentCapture;
+            _logging = logging;
         }
 
         private static bool TokenLooksValid(string? token) =>
@@ -211,23 +219,113 @@ namespace newApi.Controllers
             // Plazo de entrega real = fin de cita + SLA del servicio (sobrescribe el provisional).
             hire.CompletionDeadline = endUtc.AddHours(hire.DurationInHoursSnapshot ?? 24);
 
-            try
+            // ⚠️ Captura DIFERIDA del modo seller (Tarea 3): el pago quedó AUTORIZADO en el
+            // checkout (PI en requires_capture, CaptureStatus="Authorized"). Al confirmar el
+            // vendedor hay que COBRARLO. ORDEN CRÍTICO para no cobrar por un hueco que no se
+            // pudo reservar ni dejar una cita sin dinero:
+            //   1) Reservar el hueco DENTRO de la tx (SaveChanges → exclusion constraint GiST).
+            //   2) Capturar el pago.
+            //   3) Si la captura FALLA → rollback (libera el hueco, no queda cita) + 402.
+            //      DECISIÓN: nunca crear cita sin cobro; se rechaza la confirmación.
+            //
+            // La connection string usa EnableRetryOnFailure (NpgsqlRetryingExecutionStrategy),
+            // que prohíbe transacciones iniciadas por el usuario salvo a través de la propia
+            // execution strategy → envolvemos toda la unidad reserva+captura en ella. Los
+            // caminos de fallo NO transitorios (23P01, concurrency, captura) se capturan y
+            // devuelven IActionResult (no relanzan) para que la strategy no los reintente.
+            var strategy = _context.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync<IActionResult>(async () =>
             {
-                await _context.SaveChangesAsync();
-            }
-            catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException pg && pg.SqlState == "23P01")
-            {
-                // Otro reservó el mismo hueco en paralelo (exclusion constraint GiST).
-                return Conflict(new { message = "Ese hueco se acaba de ocupar, elige otro." });
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                // El job de expiración (u otro proceso) tocó el mismo hire a la vez (token xmin):
-                // el plazo acaba de vencer mientras confirmabas. Devolver 409 en vez de 500.
-                return Conflict(new { message = "El plazo para reservar acaba de vencer. Pide al comprador que te reenvíe el enlace." });
-            }
+                await using var tx = await _context.Database.BeginTransactionAsync();
 
-            return Ok(new { ok = true });
+                try
+                {
+                    // 1) Reservar el hueco (Add appointment + anular token + deadline en el change-tracker).
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException pg && pg.SqlState == "23P01")
+                {
+                    // Otro reservó el mismo hueco en paralelo (exclusion constraint GiST).
+                    // NOTA: aún NO se ha capturado nada — no hay POST .../capture en este camino.
+                    await tx.RollbackAsync();
+                    return Conflict(new { message = "Ese hueco se acaba de ocupar, elige otro." });
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    // El job de expiración (u otro proceso) tocó el mismo hire a la vez (token xmin):
+                    // el plazo acaba de vencer mientras confirmabas. Devolver 409 en vez de 500.
+                    await tx.RollbackAsync();
+                    return Conflict(new { message = "El plazo para reservar acaba de vencer. Pide al comprador que te reenvíe el enlace." });
+                }
+
+                // 2) Localizar el PaymentIntent del hire vía la FT ServicePayment (mismo patrón que
+                //    PlatformMaintenanceService): RelatedEntityType=SearchHire + ServicePayment.
+                var paymentIntentId = await _context.FinancialTransactions
+                    .AsNoTracking()
+                    .Where(t => t.RelatedEntityType == "SearchHire" && t.RelatedEntityId == hire.Id
+                                && t.TransactionType == "ServicePayment")
+                    .OrderByDescending(t => t.Id)
+                    .Select(t => t.StripePaymentIntentId)
+                    .FirstOrDefaultAsync();
+
+                if (string.IsNullOrEmpty(paymentIntentId))
+                {
+                    // Sin PI no podemos cobrar: no dejar cita creada. Rollback + 500.
+                    await tx.RollbackAsync();
+                    await _logging.LogCriticalAsync(
+                        message: "CRITICAL: seller confirm sin PaymentIntent",
+                        details: $"No se encontró FT ServicePayment con StripePaymentIntentId para el hire {hire.Id}; no se pudo capturar al confirmar el vendedor. Reserva revertida.",
+                        userId: hire.ClientId,
+                        source: "SellerBookingController.Confirm",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hire.Id);
+                    return StatusCode(500, new { message = "No se pudo localizar el pago de la reserva. Contacta con soporte." });
+                }
+
+                // 3) Capturar el pago autorizado. Si falla → revertir la reserva (libera el hueco).
+                try
+                {
+                    await _paymentCapture.EnsureCapturedAsync(
+                        paymentIntentId, hire.ClientId ?? 0, hire.SearchServiceId, hire.Id);
+                }
+                catch (Exception captureEx)
+                {
+                    // Captura fallida: revertir la reserva (no queda cita ni se ocupa el hueco) y
+                    // marcar el hire como Failed en un contexto LIMPIO (la tx revertida ya no sirve).
+                    await tx.RollbackAsync();
+
+                    await using (var failDb = new AppDbContext(
+                        new DbContextOptionsBuilder<AppDbContext>()
+                            .UseNpgsql(_context.Database.GetConnectionString())
+                            .Options))
+                    {
+                        await failDb.SearchHires
+                            .Where(h => h.Id == hire.Id)
+                            .ExecuteUpdateAsync(s => s.SetProperty(h => h.CaptureStatus, "Failed"));
+                    }
+
+                    await _logging.LogCriticalAsync(
+                        message: "CRITICAL: captura fallida al confirmar el vendedor",
+                        details: $"EnsureCapturedAsync falló para el PI {paymentIntentId} (hire {hire.Id}) al confirmar la cita del vendedor. La reserva se revirtió y NO se creó cita. CaptureStatus=Failed. Error: {captureEx.Message}",
+                        userId: hire.ClientId,
+                        source: "SellerBookingController.Confirm",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hire.Id,
+                        additionalData: new { PaymentIntentId = paymentIntentId, Exception = captureEx.Message });
+
+                    return StatusCode(402, new { message = "No se pudo confirmar el pago de la reserva. Pide al comprador que repita el pago." });
+                }
+
+                // Captura OK: marcar cobrado y confirmar la tx (cita + token anulado + deadline).
+                hire.CaptureStatus = "Captured";
+                await _context.SaveChangesAsync();
+                await tx.CommitAsync();
+
+                // TODO (Tarea futura): emitir la factura diferida del servicio aquí ahora que el
+                // pago está realmente capturado (en el flujo self/normal la emite el webhook).
+
+                return Ok(new { ok = true });
+            });
         }
     }
 

@@ -56,6 +56,13 @@ public sealed class FakeStripeServer : IDisposable
     /// </summary>
     public int TransferFailuresRemaining;
 
+    /// <summary>
+    /// Inyección de fallos por-PI: un POST /v1/payment_intents/{id}/capture sobre un id
+    /// presente en este set devuelve 402 (card_error). Permite reproducir el escenario
+    /// "captura falla al confirmar el vendedor" sin afectar a otros PIs en paralelo.
+    /// </summary>
+    public ConcurrentDictionary<string, byte> CaptureFailurePaymentIntents { get; } = new();
+
     public void Start()
     {
         // Puerto libre: probar hasta enganchar uno (HttpListener sobre localhost no
@@ -145,6 +152,13 @@ public sealed class FakeStripeServer : IDisposable
         if (method == "POST" && (m = Regex.Match(path, "^/v1/payment_intents/([^/]+)/capture$")).Success)
         {
             var id = m.Groups[1].Value;
+            // Inyección de fallo por-PI: la captura de este PI falla (card_error → 402).
+            if (CaptureFailurePaymentIntents.ContainsKey(id))
+            {
+                return (402, """
+                    {"error":{"type":"card_error","code":"card_declined","message":"FakeStripeServer: fallo inyectado en capture (seller confirm)"}}
+                    """);
+            }
             _piStatus[id] = "succeeded";
             return (200, PiJson(id, "succeeded"));
         }

@@ -49,6 +49,22 @@ public class SellerBookingWindowHttpTests
         hire.SellerBookingToken = token;
         hire.SellerBookingDeadline = createdAtUtc.AddHours(48);
         hire.ExpertTimezone = "Europe/Madrid";
+        // Modo seller con captura diferida (Tarea 3): el pago quedó AUTORIZADO en el checkout
+        // y se captura al confirmar. El confirm localiza el PI vía la FT ServicePayment, así
+        // que la sembramos aquí (en prod la crea el webhook). Sin ella el confirm devolvería 500.
+        hire.CaptureStatus = "Authorized";
+        db.FinancialTransactions.Add(new newApi.DataLayer.Models.PostGresModels.FinancialTransaction
+        {
+            UserId = client.Id,
+            Amount = 100m,
+            AmountCents = 10000,
+            Currency = "EUR",
+            TransactionType = "ServicePayment",
+            RelatedEntityType = "SearchHire",
+            RelatedEntityId = hire.Id,
+            StripePaymentIntentId = "pi_sbw_" + Guid.NewGuid().ToString("N")[..12],
+            CreatedAt = DateTime.UtcNow,
+        });
         await db.SaveChangesAsync();
         return (token, svc.Id, createdAtUtc);
     }

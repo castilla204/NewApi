@@ -378,7 +378,17 @@ namespace newApi.Controllers
             // Anular el token = mutex: a partir de aquí ni el confirm ni el job de expiración
             // (ambos buscan por token) podrán crear la cita ni coexistir con esta devolución.
             hire.SellerBookingToken = null;
-            await _context.SaveChangesAsync();
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Carrera confirm-vs-decline: el confirm ganó (token xmin). La cita ya quedó
+                // reservada y capturada por el confirm → NO declinamos ni reembolsamos. 409 limpio
+                // (en vez de un 500), igual que el catch equivalente en Confirm.
+                return Conflict(new { message = "La cita acaba de reservarse. No se puede cancelar." });
+            }
 
             // Reembolso 100% al comprador + cancelar el hire, reusando EXACTAMENTE el patrón del
             // job de expiración. "appointment_cancelled_by_client_gt24h" → (cliente 100, experto 0,

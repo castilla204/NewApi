@@ -374,6 +374,126 @@ public class ExpertConfirmationTests
         timer.ExpiredAt.Should().NotBeNull();
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tarea 7 — WATCHDOG de expiración (red de seguridad del timer expert_confirmation).
+    // ProcessExpiredExpertConfirmationsAsync cubre el caso de timer Hangfire perdido: si el
+    // plazo (ExpertConfirmationDeadline) venció con la cita aún pending y token vivo, el
+    // watchdog reclama (anula el token) y encola la distribución de dinero (reembolso 100%).
+    // Como Hangfire no procesa jobs en tests, drenamos la distribución a mano (mismo patrón).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── EC-W1: deadline pasado + token vivo + cita pending + SIN timer (timer perdido) →
+    //    el watchdog anula el token y la distribución cancela el PI (0€), hire 'cancelled',
+    //    cita appointment_cancelled_by_expert_no_response, sin FT Refund.
+    [Fact(DisplayName = "EC-W1 · watchdog expira confirmación sin timer → token null, hire cancelled, PI 0€, no_response")]
+    public async Task ExpiryWatchdog_expires_confirmation_without_timer()
+    {
+        // Sembrar y forzar el deadline al pasado (NO sembramos AppointmentTimer → simula timer perdido).
+        var (_, _, hireId, _, pi) = await SeedPendingExpertConfirmationAsync();
+        await using (var db = _api.CreateDbContext())
+        {
+            await db.SearchHires.Where(h => h.Id == hireId)
+                .ExecuteUpdateAsync(s => s.SetProperty(h => h.ExpertConfirmationDeadline, DateTime.UtcNow.AddHours(-1)));
+        }
+
+        // Paso 1: el watchdog reclama el hire (anula el token) y encola la distribución.
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var maintenance = scope.ServiceProvider.GetRequiredService<IPlatformMaintenanceService>();
+            await maintenance.ProcessExpiredExpertConfirmationsAsync();
+        }
+
+        await using (var db = _api.CreateDbContext())
+        {
+            var hire = await db.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId);
+            hire.ExpertConfirmationToken.Should().BeNull("el watchdog anula el token de un solo uso (mutex)");
+        }
+
+        // Paso 2: drenar la distribución encolada (mismos argumentos que encola el watchdog).
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var refundService = scope.ServiceProvider.GetRequiredService<newApi.Services.StripeRefundService>();
+            var ok = await refundService.ProcessMoneyDistributionAsync(
+                hireId,
+                "appointment_cancelled_by_expert_no_response",
+                "Watchdog: expert confirmation deadline passed (no response).",
+                null,
+                true);
+            ok.Should().BeTrue("la distribución de una cancelación pre-captura completa (N10 cancela el PI)");
+        }
+
+        // N10: PI en requires_capture → CANCELADO (0 €), nunca capturado.
+        _api.FakeStripe.Requests.Should().Contain(r => r == $"POST /v1/payment_intents/{pi}/cancel",
+            "el watchdog cancela el PI no capturado (0 € de fee)");
+        _api.FakeStripe.Requests.Should().NotContain(r => r == $"POST /v1/payment_intents/{pi}/capture",
+            "expirar la confirmación NUNCA cobra al comprador");
+
+        await using (var db = _api.CreateDbContext())
+        {
+            var apptStatus = await db.Appointments.AsNoTracking().Include(a => a.Status)
+                .Where(a => a.SearchHireId == hireId).Select(a => a.Status!.StatusValue).SingleAsync();
+            apptStatus.Should().Be("appointment_cancelled_by_expert_no_response");
+
+            var hireStatus = await db.SearchHires.AsNoTracking()
+                .Where(h => h.Id == hireId)
+                .Join(db.SystemStatuses.AsNoTracking(), h => h.StatusId, s => s.Id, (h, s) => s.StatusValue)
+                .SingleAsync();
+            hireStatus.Should().Be("cancelled", "la devolución 100% al comprador finaliza el hire");
+
+            var refundFts = await db.FinancialTransactions.AsNoTracking()
+                .Where(t => t.RelatedEntityType == "SearchHire" && t.RelatedEntityId == hireId && t.TransactionType == "Refund")
+                .ToListAsync();
+            refundFts.Should().BeEmpty("cancelar un PI no capturado no genera FT Refund");
+        }
+    }
+
+    // ── EC-W2: el watchdog NO toca un hire cuyo token YA fue reclamado (token null) aunque el
+    //    deadline esté vencido → idempotencia (no reencola distribución sobre algo ya resuelto).
+    [Fact(DisplayName = "EC-W2 · watchdog ignora confirmación ya reclamada (token null)")]
+    public async Task ExpiryWatchdog_ignores_already_claimed()
+    {
+        var (_, _, hireId, _, pi) = await SeedPendingExpertConfirmationAsync();
+        await using (var db = _api.CreateDbContext())
+        {
+            await db.SearchHires.Where(h => h.Id == hireId)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(h => h.ExpertConfirmationDeadline, DateTime.UtcNow.AddHours(-1))
+                    .SetProperty(h => h.ExpertConfirmationToken, (string?)null));
+        }
+
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var maintenance = scope.ServiceProvider.GetRequiredService<IPlatformMaintenanceService>();
+            await maintenance.ProcessExpiredExpertConfirmationsAsync();
+        }
+
+        // No tocó el PI: el token null lo excluye del lote (la query filtra token != null).
+        _api.FakeStripe.Requests.Should().NotContain(r => r.StartsWith($"POST /v1/payment_intents/{pi}/"),
+            "un hire ya reclamado (token null) está fuera de la query del watchdog");
+    }
+
+    // ── EC-INV1: approve → además de capturar, ENCOLA la factura (OBS-1). El job
+    //    SendInvoiceByEmailBackgroundJob queda en la cola de Hangfire (server disabled en tests).
+    [Fact(DisplayName = "EC-INV1 · approve encola la factura (SendInvoiceByEmailBackgroundJob)")]
+    public async Task Approve_enqueues_invoice_job()
+    {
+        var (token, _, hireId, _, _) = await SeedPendingExpertConfirmationAsync();
+
+        var res = await _api.Client.PostAsync($"/api/expert-confirmation/{token}/approve", content: null);
+        res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
+
+        // El enqueue es best-effort, pero con cliente verificado (tiene email) DEBE encolarse.
+        // Inspeccionamos la cola "default" de Hangfire (PostgreSQL storage del testcontainer).
+        var monitoring = Hangfire.JobStorage.Current.GetMonitoringApi();
+        var enqueued = monitoring.EnqueuedJobs("default", 0, 1000);
+        var invoiceJob = enqueued.FirstOrDefault(j => j.Value.Job != null
+            && j.Value.Job.Method.Name == "SendInvoiceByEmailBackgroundJob"
+            && j.Value.Job.Args.Count > 0
+            && Equals(j.Value.Job.Args[0], hireId));
+        invoiceJob.Value.Should().NotBeNull(
+            "approve debe encolar la factura del hire tras capturar el pago (OBS-1)");
+    }
+
     // ── EC-05: approve con token ya anulado → 404 (idempotencia del token single-use).
     [Fact(DisplayName = "EC-05 · approve con token ya null → 404")]
     public async Task Approve_with_consumed_token_returns_not_found()

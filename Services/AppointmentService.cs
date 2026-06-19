@@ -3493,6 +3493,13 @@ namespace newApi.Services
                                     && t.Appointment.Status!.StatusValue == "appointment_awaiting_report")
                                  || (t.TimerType == "client_decision"
                                     && t.Appointment.SearchHire.Status.StatusValue == "awaiting_client_decision")
+                                 // ⚓ expert_confirmation: pre-estado intacto = cita aún pending_expert_confirmation
+                                 // (hire 'pending'). Espejo EXACTO del guard del handler (case "expert_confirmation",
+                                 // ProcessAppointmentTimerAsync ~3790). Cubre el caso raro de claim-then-crash entre
+                                 // el claim del timer y el fin del handler de auto-cancel por no respuesta.
+                                 || (t.TimerType == "expert_confirmation"
+                                    && t.Appointment.SearchHire.Status.StatusValue == "pending"
+                                    && t.Appointment.Status!.StatusValue == "appointment_pending_expert_confirmation")
                              ))
                     .Select(t => new { t.Id, t.TimerType, t.AppointmentId })
                     .ToListAsync();

@@ -99,6 +99,45 @@ public class SellerExpiryWatchdogTests
             "tras cancelar el PI rancio el watchdog marca el hire Failed para que admin investigue");
     }
 
+    // ── T5-R5: umbral bajado a -4.5d (Tarea 7). Un hire Authorized con CreatedAt a -5d AHORA
+    //    entra en el barrido (antes, con cutoff -6.5d, NO entraba). Demuestra el cambio de umbral.
+    [Fact(DisplayName = "T5-R5 · watchdog 7d toma un PI 'Authorized' de -5d (umbral bajado a -4.5d)")]
+    public async Task ExpiryWatchdog_includesAuthorizedAtFiveDays_afterThresholdLowered()
+    {
+        // CreatedAt 5 días atrás → entre -4.5d (nuevo cutoff) y -6.5d (antiguo): solo entra con el nuevo.
+        var (hireId, pi) = await SeedAuthorizedSellerHireAsync(DateTime.UtcNow.AddDays(-5));
+
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var maintenance = scope.ServiceProvider.GetRequiredService<IPlatformMaintenanceService>();
+            await maintenance.ProcessExpiringPaymentIntentsAsync();
+        }
+
+        // Con el umbral nuevo (-4.5d) el hire de -5d entra → su PI (requires_capture) se cancela.
+        _api.FakeStripe.Requests.Should().Contain(r => r == $"POST /v1/payment_intents/{pi}/cancel",
+            "con el umbral bajado a -4.5d, un PI 'Authorized' de -5d ya entra en el barrido (antes -6.5d no)");
+
+        await using var db = _api.CreateDbContext();
+        var hire = await db.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId);
+        hire.CaptureStatus.Should().Be("Failed");
+    }
+
+    // ── No-regresión: un hire Authorized MUY reciente (-3d, dentro del nuevo umbral -4.5d) NO se toca.
+    [Fact(DisplayName = "T5-R5-reg · watchdog NO toca un PI 'Authorized' de -3d (dentro del umbral)")]
+    public async Task ExpiryWatchdog_ignoresAuthorizedWithinThreshold()
+    {
+        var (_, pi) = await SeedAuthorizedSellerHireAsync(DateTime.UtcNow.AddDays(-3));
+
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var maintenance = scope.ServiceProvider.GetRequiredService<IPlatformMaintenanceService>();
+            await maintenance.ProcessExpiringPaymentIntentsAsync();
+        }
+
+        _api.FakeStripe.Requests.Should().NotContain(r => r.StartsWith($"POST /v1/payment_intents/{pi}/"),
+            "un hire de -3d está dentro del umbral -4.5d: no se toca todavía");
+    }
+
     // ── No-regresión: el watchdog NO toca hires ya capturados (CaptureStatus="Captured").
     [Fact(DisplayName = "T5-reg · watchdog NO toca hires 'Captured'")]
     public async Task ExpiryWatchdog_ignoresCapturedHires()

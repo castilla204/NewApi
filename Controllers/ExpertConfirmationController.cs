@@ -221,6 +221,40 @@ namespace newApi.Controllers
                     return StatusCode(500, new { message = "El pago se procesó pero hubo un problema al confirmar. Contacta con soporte." });
                 }
 
+                // 📄 OBS-1: emitir la FACTURA al CAPTURAR. Con captura diferida (modo vendedor) el
+                // webhook ya NO factura (la rama !deferCapture quedó muerta para este flujo): la captura
+                // real del pago ocurre AQUÍ, al aprobar el experto, así que la factura debe encolarse aquí.
+                // Mismo job que usaba el webhook: IInvoiceService.SendInvoiceByEmailBackgroundJob(hireId, email).
+                // Best-effort en try/catch: si el enqueue falla NO rompemos la confirmación ya commiteada
+                // (el pago está cobrado y la cita confirmada; la factura es secundaria y reintentable).
+                try
+                {
+                    var clientEmail = await _context.SearchHires.AsNoTracking()
+                        .Where(h => h.Id == hire.Id)
+                        .Select(h => h.Client != null ? h.Client.Email : null)
+                        .FirstOrDefaultAsync();
+                    if (!string.IsNullOrWhiteSpace(clientEmail))
+                    {
+                        Hangfire.BackgroundJob.Enqueue<IInvoiceService>(svc =>
+                            svc.SendInvoiceByEmailBackgroundJob(hire.Id, clientEmail));
+                    }
+                    else
+                    {
+                        await _logging.LogWarningAsync(
+                            message: "Factura no encolada al aprobar: cliente sin email",
+                            details: $"Hire {hire.Id} aprobado y capturado, pero el cliente no tiene email localizable → no se envía la factura automáticamente.",
+                            source: "ExpertConfirmationController.Approve");
+                    }
+                }
+                catch (Exception invoiceEx)
+                {
+                    // No crítico: la confirmación + captura ya están commiteadas. Solo la factura no se encoló.
+                    await _logging.LogWarningAsync(
+                        message: "Failed to enqueue invoice email job on expert approve",
+                        details: $"Hire {hire.Id} confirmado y capturado correctamente, pero el enqueue de la factura falló: {invoiceEx.Message}. La factura no se enviará automáticamente.",
+                        source: "ExpertConfirmationController.Approve");
+                }
+
                 // ⚓ Tarea 5: cancelar el timer de confirmación (el experto ya respondió → no auto-cancelar).
                 // IAppointmentService no está inyectado en este controlador → lo resolvemos por scope.
                 // Best-effort: si falla, el guard de estado del handler lo vuelve no-op (la cita ya no está

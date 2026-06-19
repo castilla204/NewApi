@@ -114,10 +114,12 @@ namespace newApi.Controllers
             if (hire.SellerBookingDeadline.HasValue && DateTime.UtcNow > hire.SellerBookingDeadline.Value)
                 return BadRequest(new { message = "El plazo para reservar la cita ha caducado." });
 
-            // El cliente fijó hasta cuántos días a futuro puede elegir el vendedor (sin margen extra).
-            var maxDays = hire.SellerBookingMaxDays ?? 14;
-            if (startUtc > DateTime.UtcNow.AddDays(maxDays))
-                return BadRequest(new { message = $"La cita debe ser dentro de los próximos {maxDays} días." });
+            // Ventana fija anclada al pago: suelo +3 días, tope +14 (la expansión a 7→14 la
+            // resuelve el endpoint /window; aquí solo defendemos el rango duro server-side).
+            if (startUtc < SellerBookingWindow.StartUtc(hire.CreatedAt))
+                return BadRequest(new { message = $"La cita debe ser al menos {SellerBookingWindow.MinLeadDays} días después de la compra." });
+            if (startUtc >= SellerBookingWindow.HardEndExclusiveUtc(hire.CreatedAt))
+                return BadRequest(new { message = $"La cita no puede ser más de {SellerBookingWindow.HardMaxDays} días después de la compra." });
 
             // El hueco debe seguir ofreciéndose por el calendario del experto.
             if (!await _availability.IsSlotBookableAsync(hire.SearchServiceId, startUtc, endUtc))

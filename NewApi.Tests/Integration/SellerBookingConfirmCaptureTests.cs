@@ -31,8 +31,9 @@ public class SellerBookingConfirmCaptureTests
 
     // Siembra un hire seller AUTORIZADO: token + experto disponible 7d/09-18 + FT ServicePayment
     // con un PaymentIntentId único + CaptureStatus="Authorized".
+    // withServicePayment=false omite la FT ServicePayment para ejercitar la rama "sin PaymentIntent".
     private async Task<(string token, int serviceId, int hireId, string pi)> SeedAuthorizedSellerHireAsync(
-        DateTime createdAtUtc)
+        DateTime createdAtUtc, bool withServicePayment = true)
     {
         await using var db = _api.CreateDbContext();
         var expertUser = await new UserBuilder().AsExpert().Verified().PersistAsync(db);
@@ -61,18 +62,21 @@ public class SellerBookingConfirmCaptureTests
 
         // FT ServicePayment: vínculo PI↔hire que usa el confirm para localizar el PaymentIntent.
         var pi = "pi_sbc_" + Guid.NewGuid().ToString("N")[..12];
-        db.FinancialTransactions.Add(new FinancialTransaction
+        if (withServicePayment)
         {
-            UserId = client.Id,
-            Amount = 100m,
-            AmountCents = 10000,
-            Currency = "EUR",
-            TransactionType = "ServicePayment",
-            RelatedEntityType = "SearchHire",
-            RelatedEntityId = hire.Id,
-            StripePaymentIntentId = pi,
-            CreatedAt = DateTime.UtcNow,
-        });
+            db.FinancialTransactions.Add(new FinancialTransaction
+            {
+                UserId = client.Id,
+                Amount = 100m,
+                AmountCents = 10000,
+                Currency = "EUR",
+                TransactionType = "ServicePayment",
+                RelatedEntityType = "SearchHire",
+                RelatedEntityId = hire.Id,
+                StripePaymentIntentId = pi,
+                CreatedAt = DateTime.UtcNow,
+            });
+        }
         await db.SaveChangesAsync();
         return (token, svc.Id, hire.Id, pi);
     }
@@ -145,6 +149,31 @@ public class SellerBookingConfirmCaptureTests
 
         var appts = await db.Appointments.AsNoTracking().Where(a => a.SearchHireId == hireId).ToListAsync();
         appts.Should().BeEmpty("no debe quedar cita si la captura falló (rollback)");
+    }
+
+    // ── Test 3: hire AUTORIZADO pero SIN FT ServicePayment (sin PaymentIntent localizable) →
+    //    500, NO se crea cita y NO se captura nada (rollback de la reserva).
+    [Fact(DisplayName = "SBC-03 · confirm sin PaymentIntent → 500, sin cita, sin captura")]
+    public async Task Confirm_without_payment_intent_rejects_and_creates_no_appointment()
+    {
+        var createdAt = DateTime.UtcNow;
+        var (token, serviceId, hireId, pi) = await SeedAuthorizedSellerHireAsync(createdAt, withServicePayment: false);
+        var slot = await FirstSlotAsync(token, createdAt);
+
+        var res = await _api.Client.PostAsJsonAsync($"/api/seller-booking/{token}/confirm", new
+        {
+            startsAtUtc = slot.StartUtc, endsAtUtc = slot.EndUtc, location = "Calle Mayor 1",
+        });
+        res.StatusCode.Should().Be((HttpStatusCode)500, await res.Content.ReadAsStringAsync());
+
+        // No se intentó capturar el PI de este hire (Requests es una cola compartida por la
+        // colección, así que filtramos por el PI único sembrado, que NUNCA se persistió como FT).
+        _api.FakeStripe.Requests.Should().NotContain(r => r == $"POST /v1/payment_intents/{pi}/capture",
+            "sin FT ServicePayment no hay PaymentIntent que capturar");
+
+        await using var db = _api.CreateDbContext();
+        var appts = await db.Appointments.AsNoTracking().Where(a => a.SearchHireId == hireId).ToListAsync();
+        appts.Should().BeEmpty("sin PaymentIntent la reserva se revierte y no queda cita");
     }
 
     private sealed record SlotDto(DateTime StartUtc, DateTime EndUtc, string StartLocal, string Timezone);

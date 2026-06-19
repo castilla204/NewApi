@@ -6110,11 +6110,15 @@ namespace newApi.Controllers
                     {
                         searchHire.SellerBookingToken = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
 
-                        // Plazo para que el vendedor reserve (default 48h). Si pasa sin cita → reembolso 100%.
-                        var deadlineHours = 48;
-                        if (metadata.TryGetValue("sellerDeadlineHours", out var dhRaw) && int.TryParse(dhRaw, out var dhVal) && dhVal > 0)
-                            deadlineHours = dhVal;
-                        searchHire.SellerBookingDeadline = DateTime.UtcNow.AddHours(deadlineHours);
+                        // Plazo FIJO para que el vendedor use el enlace (48h). Independiente de la
+                        // fecha de la cita (esa la rige SellerBookingWindow). Si pasa sin reservar → reembolso 100%.
+                        searchHire.SellerBookingDeadline = DateTime.UtcNow.AddHours(48);
+
+                        // CompletionDeadline provisional (peor caso = cita en el tope +14 + SLA del servicio).
+                        // Se recalcula al confirmar la cita real. Evita que nazca vencido.
+                        searchHire.CompletionDeadline = SellerBookingWindow
+                            .HardEndExclusiveUtc(searchHire.CreatedAt)
+                            .AddHours(searchHire.DurationInHoursSnapshot ?? 24);
                         // El email/SMS del magic link se envía DESPUÉS del CommitAsync (ver C1 FIX),
                         // para no avisar al vendedor de un hire que podría revertirse.
                     }
@@ -6210,6 +6214,9 @@ namespace newApi.Controllers
                         await transaction.RollbackAsync();
                         return;
                     }
+
+                    // Cita conocida ya en el checkout: plazo de entrega = fin de cita + SLA del servicio.
+                    searchHire.CompletionDeadline = slotEndUtc.Value.AddHours(searchHire.DurationInHoursSnapshot ?? 24);
                 }
 
                 await EnsurePaymentCapturedAsync(session.PaymentIntentId, userId, serviceId, searchHireId); // ✅ FIX: Usar searchHireId guardado

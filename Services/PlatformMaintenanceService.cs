@@ -27,6 +27,7 @@ namespace newApi.Services
         Task NotifyStalledOnboardingExpertsAsync(); // 🛡️ A2 — onboarding abandonado
         Task CheckAppointmentWatchdogHealthAsync(); // 🛡️ HEALTH — vigila que el watchdog de citas siga vivo
         Task ProcessExpiredSellerBookingsAsync(); // 🤝 Magic link vendedor: si no reserva en plazo → reembolso 100%
+        Task ReconcileCapturedSellerHiresWithoutAppointmentAsync(); // 🛡️ HUECO 1b: pago capturado sin cita persistida → reembolso 100%
     }
 
     public class PlatformMaintenanceService : IPlatformMaintenanceService
@@ -301,6 +302,161 @@ namespace newApi.Services
                 userId: null,
                 source: "PlatformMaintenanceService.EscalateStaleDisputesAsync.T4",
                 relatedEntityType: "Dispute",
+                relatedEntityId: null);
+        }
+
+        /// <summary>
+        /// 🛡️ HUECO 1b — red de seguridad (defensa en profundidad sobre ProcessExpiredSellerBookingsAsync).
+        ///
+        /// PROBLEMA
+        /// --------
+        /// En la captura diferida modo vendedor (SellerBookingController.Confirm), EnsureCapturedAsync
+        /// captura con éxito (dinero COBRADO, el PI pasa a `succeeded`) PERO el SaveChanges/Commit
+        /// POSTERIOR falla con una excepción no transitoria → rollback: la cita NO se persiste y el
+        /// hire queda con CaptureStatus="Authorized" SIN Appointment. Los datos del hueco venían en el
+        /// request y no se guardan → NO se puede recrear la cita. La resolución correcta es REEMBOLSAR
+        /// 100% al comprador.
+        ///
+        /// CRÍTICO — no romper el auto-rescate
+        /// ----------------------------------
+        /// Mientras el SellerBookingDeadline (48h) NO haya vencido, el vendedor puede reintentar el
+        /// confirm (el token sigue válido tras el rollback) y el sistema se auto-cura (PI ya succeeded
+        /// → EnsureCaptured no-op → crea la cita → commit). Por eso este job SOLO actúa DESPUÉS de que
+        /// venza la ventana de 48h (SellerBookingDeadline &lt; now): es defensa en profundidad respecto
+        /// a ProcessExpiredSellerBookingsAsync.
+        ///
+        /// DISTINCIÓN vs ProcessExpiredSellerBookingsAsync
+        /// -----------------------------------------------
+        /// Aquel job cubre "vendedor no reservó" (PI normalmente en requires_capture → N10 lo CANCELA,
+        /// 0 € de fee). Este cubre el caso patológico en el que el PI YA está `succeeded` (dinero
+        /// cobrado) pero sin cita: solo actúa si el PI está succeeded; si está requires_capture/etc.
+        /// hace SKIP (no pisa al otro job); si está canceled hace SKIP.
+        ///
+        /// IDEMPOTENCIA
+        /// ------------
+        /// (a) WHERE descarta hires que ya tienen una FT "Refund"; (b) ProcessMoneyDistributionAsync
+        /// tiene su propio guard existingRefund + idempotency key de Stripe. Doble garantía → ejecutar
+        /// el job dos veces NO genera doble reembolso.
+        ///
+        /// Batch de 100; try/catch POR hire para no abortar el lote.
+        /// </summary>
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
+        [Hangfire.AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 0, 60, 300 })]
+        public async Task ReconcileCapturedSellerHiresWithoutAppointmentAsync()
+        {
+            List<int> candidateIds;
+            try
+            {
+                var now = DateTime.UtcNow;
+                // Candidatos: modo vendedor (SellerBookingDeadline != null), ventana de 48h ya
+                // vencida (deadline < now → ya no hay auto-rescate posible), SIN cita, hire NO
+                // finalizado, y SIN FT "Refund" previa (idempotencia: no re-reembolsar).
+                candidateIds = await _context.SearchHires
+                    .Where(h => h.SellerBookingDeadline != null
+                                && h.SellerBookingDeadline < now
+                                && h.Appointment == null
+                                && (h.Status == null || !h.Status.IsFinalizationStatus)
+                                && !_context.FinancialTransactions.Any(ft =>
+                                        ft.RelatedEntityType == "SearchHire"
+                                        && ft.RelatedEntityId == h.Id
+                                        && ft.TransactionType == "Refund"))
+                    .OrderBy(h => h.SellerBookingDeadline)
+                    .Select(h => h.Id)
+                    .Take(100)
+                    .ToListAsync();
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "HUECO 1b: fallo al consultar hires seller capturados sin cita",
+                    details: ex.Message,
+                    source: "PlatformMaintenanceService.ReconcileCapturedSellerHiresWithoutAppointmentAsync");
+                return;
+            }
+
+            if (candidateIds.Count == 0) return;
+
+            var piService = new PaymentIntentService();
+            int reconciled = 0, skippedNotCaptured = 0, errors = 0;
+
+            // try/catch POR hire: un fallo en uno no aborta el lote.
+            foreach (var hireId in candidateIds)
+            {
+                try
+                {
+                    // Localizar el PaymentIntentId vía la FT ServicePayment (patrón del archivo).
+                    var ft = await _context.FinancialTransactions
+                        .AsNoTracking()
+                        .Where(t => t.RelatedEntityType == "SearchHire" && t.RelatedEntityId == hireId
+                                    && t.TransactionType == "ServicePayment")
+                        .OrderByDescending(t => t.Id)
+                        .FirstOrDefaultAsync();
+                    if (ft == null || string.IsNullOrEmpty(ft.StripePaymentIntentId)) continue;
+
+                    var pi = await piService.GetAsync(ft.StripePaymentIntentId);
+
+                    // SOLO actuar si el PI está `succeeded` (= HUECO 1b real: dinero capturado pero
+                    // sin cita). requires_capture/requires_action/etc → SKIP (lo maneja
+                    // ProcessExpiredSellerBookingsAsync; no pisar). canceled → SKIP (nada que hacer).
+                    if (pi.Status != "succeeded")
+                    {
+                        skippedNotCaptured++;
+                        continue;
+                    }
+
+                    // Reclamar: re-verificar que sigue sin cita y anular el token (mutex) si aún no
+                    // lo está, para que un confirm tardío no pueda crear la cita en paralelo.
+                    var hire = await _context.SearchHires
+                        .FirstOrDefaultAsync(h => h.Id == hireId && h.Appointment == null);
+                    if (hire == null) continue; // se creó la cita entre la query y aquí → no tocar
+                    if (hire.SellerBookingToken != null)
+                    {
+                        hire.SellerBookingToken = null;
+                        await _context.SaveChangesAsync();
+                    }
+
+                    // MISMA distribución que el job de expiración. Con el PI succeeded, la rama N10
+                    // NO cancela (no puede) → reembolsa el PI al 100% y finaliza el hire a 'cancelled'.
+                    // El statusValue DEBE empezar por "appointment_cancelled" para que se aplique el
+                    // reparto de cancelación (cliente 100, experto 0) y NO el de completado.
+                    // Idempotente por el guard existingRefund de ProcessMoneyDistributionAsync.
+                    Hangfire.BackgroundJob.Enqueue<newApi.Services.StripeRefundService>(svc =>
+                        svc.ProcessMoneyDistributionAsync(
+                            hireId,
+                            "appointment_cancelled_by_client_gt24h",
+                            "Reconciliación HUECO 1b: pago capturado sin cita persistida; reembolso 100% al comprador.",
+                            null,
+                            true));
+
+                    await _loggingService.LogCriticalAsync(
+                        message: "HUECO 1b auto-reconciliado: pago capturado sin cita → reembolso 100% al comprador",
+                        details: $"SearchHire {hireId}: PI {pi.Id} está 'succeeded' (dinero cobrado) pero el hire no tiene Appointment y la ventana de 48h del vendedor ya venció (sin auto-rescate posible). Síntoma del crash entre la captura y el commit en SellerBookingController.Confirm. Token anulado (mutex) y distribución de reembolso 100% encolada (idempotente por existingRefund).",
+                        userId: hire.ClientId,
+                        source: "PlatformMaintenanceService.ReconcileCapturedSellerHiresWithoutAppointmentAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hireId,
+                        additionalData: new { PaymentIntentId = pi.Id, hire.ClientId, hire.ExpertId });
+                    reconciled++;
+                }
+                catch (Exception exHire)
+                {
+                    errors++;
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL HUECO 1b: fallo reconciliando hire seller capturado sin cita (posible reembolso pendiente manual)",
+                        details: $"SearchHire {hireId}: {exHire.Message}. ACCIÓN: verificar si el PI está 'succeeded' y, si no hay reembolso, reembolsar 100% al comprador a mano. Se reintentará en el próximo ciclo.",
+                        userId: null,
+                        source: "PlatformMaintenanceService.ReconcileCapturedSellerHiresWithoutAppointmentAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hireId);
+                }
+            }
+
+            await _loggingService.LogInfoAsync(
+                message: $"HUECO 1b: reconciliación completada ({reconciled} reembolsos encolados, {skippedNotCaptured} omitidos (PI no capturado), {errors} errores)",
+                details: $"Total candidatos (seller, post-48h, sin cita, sin Refund, no finalizados): {candidateIds.Count}.",
+                userId: null,
+                source: "PlatformMaintenanceService.ReconcileCapturedSellerHiresWithoutAppointmentAsync",
+                relatedEntityType: "SearchHire",
                 relatedEntityId: null);
         }
 

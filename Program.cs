@@ -1992,6 +1992,15 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     "*/15 * * * *",
     n29UtcOptions);
 
+// 🛡️ HUECO 1b (red de seguridad): cada 30 min busca hires modo vendedor cuya ventana de 48h
+// ya venció (post auto-rescate), SIN cita, con el PI YA capturado (succeeded) → dinero cobrado
+// sin servicio → reembolso 100% al comprador. Defensa en profundidad sobre el job de expiración.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "seller-captured-without-appointment-reconcile",
+    svc => svc.ReconcileCapturedSellerHiresWithoutAppointmentAsync(),
+    "*/30 * * * *",
+    n29UtcOptions);
+
 // P2-5: Conciliación diaria BD ↔ Stripe a las 03:00 UTC. Detecta y reporta
 // (LogCritical → email admin) refunds/transfers que existen sólo en Stripe o
 // sólo en FinancialTransactions en las últimas 24h. NO muta nada por sí solo.

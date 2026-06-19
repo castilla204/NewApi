@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.Services;
 using NewApi.Tests.Builders;
@@ -174,6 +175,132 @@ public class SellerBookingConfirmCaptureTests
         await using var db = _api.CreateDbContext();
         var appts = await db.Appointments.AsNoTracking().Where(a => a.SearchHireId == hireId).ToListAsync();
         appts.Should().BeEmpty("sin PaymentIntent la reserva se revierte y no queda cita");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tarea 4 — POST /api/seller-booking/{token}/decline ("no puedo coordinar").
+    // El vendedor declina: cancelar la AUTORIZACIÓN del pago SIN coste (PI en
+    // requires_capture → cancel = 0 €) y devolver el 100% al comprador finalizando
+    // el hire a 'cancelled'. La devolución la hace la distribución de dinero encolada
+    // (rama N10 del RefundService); como en tests Hangfire NO procesa jobs
+    // (HANGFIRE_SERVER_DISABLED=1), simulamos el job resolviendo el StripeRefundService
+    // del DI real y llamando ProcessMoneyDistributionAsync directamente — el MISMO
+    // patrón que HttpHireFlowTests usa para los jobs de distribución.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Decline-01: hire AUTORIZADO → 200; tras la distribución encolada: PI canceled
+    //    (0 €), SIN FT "Refund" (no hubo cobro que devolver), hire finalizado a
+    //    'cancelled', SellerBookingToken=null.
+    [Fact(DisplayName = "SBD-01 · decline de hire autorizado → 200, PI cancelado (0€), sin Refund, hire cancelled")]
+    public async Task Decline_authorized_hire_cancels_authorization_no_fee_refunds_buyer_100()
+    {
+        var createdAt = DateTime.UtcNow;
+        var (token, _, hireId, pi) = await SeedAuthorizedSellerHireAsync(createdAt);
+
+        var res = await _api.Client.PostAsync($"/api/seller-booking/{token}/decline", content: null);
+        res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
+
+        // Mutex: el token se consume inmediatamente en el endpoint (no espera al job).
+        await using (var db = _api.CreateDbContext())
+        {
+            var hire = await db.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId);
+            hire.SellerBookingToken.Should().BeNull("decline anula el token de un solo uso");
+        }
+
+        // Simular el job de distribución encolado (Hangfire no corre en tests): mismo patrón
+        // y mismos argumentos que SellerBookingController.Decline encola.
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var refundService = scope.ServiceProvider
+                .GetRequiredService<newApi.Services.StripeRefundService>();
+            var ok = await refundService.ProcessMoneyDistributionAsync(
+                hireId,
+                "appointment_cancelled_by_client_gt24h",
+                "El vendedor indicó que no puede coordinar la cita: devolución sin coste al comprador.",
+                null,
+                true);
+            ok.Should().BeTrue("la distribución de una cancelación sin cobro debe completar (N10 cancela el PI)");
+        }
+
+        // N10: el PI estaba en requires_capture → se CANCELA (0 €), no se reembolsa.
+        _api.FakeStripe.Requests.Should().Contain(r => r == $"POST /v1/payment_intents/{pi}/cancel",
+            "un PI no capturado se cancela (0 €), nunca se intenta capturar");
+        _api.FakeStripe.Requests.Should().NotContain(r => r == $"POST /v1/payment_intents/{pi}/capture",
+            "declinar NUNCA cobra al comprador");
+
+        await using (var db = _api.CreateDbContext())
+        {
+            // Sin fila FinancialTransaction "Refund": no hubo cobro que devolver (cancelación pre-captura).
+            var refundFts = await db.FinancialTransactions.AsNoTracking()
+                .Where(t => t.RelatedEntityType == "SearchHire" && t.RelatedEntityId == hireId
+                            && t.TransactionType == "Refund")
+                .ToListAsync();
+            refundFts.Should().BeEmpty("cancelar un PI no capturado no genera FT Refund (no se cobró nada)");
+
+            // No se creó ninguna cita.
+            var appts = await db.Appointments.AsNoTracking().Where(a => a.SearchHireId == hireId).ToListAsync();
+            appts.Should().BeEmpty("declinar no crea cita");
+
+            // Hire finalizado a 'cancelled' (el estado gt24h es finalización y mapea a cancelled).
+            var statusValue = await db.SearchHires.AsNoTracking()
+                .Where(h => h.Id == hireId)
+                .Join(db.SystemStatuses.AsNoTracking(), h => h.StatusId, s => s.Id, (h, s) => s.StatusValue)
+                .SingleAsync();
+            statusValue.Should().Be("cancelled", "la devolución 100% al comprador finaliza el hire a 'cancelled'");
+        }
+    }
+
+    // ── Decline-02: ya hay cita reservada (Appointment != null) → 409.
+    [Fact(DisplayName = "SBD-02 · decline cuando ya hay cita → 409 Conflict")]
+    public async Task Decline_when_already_booked_returns_conflict()
+    {
+        var createdAt = DateTime.UtcNow;
+        var (token, _, hireId, _) = await SeedAuthorizedSellerHireAsync(createdAt);
+
+        // Sembrar una cita confirmada para este hire (decline debe rechazar con 409).
+        await using (var db = _api.CreateDbContext())
+        {
+            var confirmed = await db.SystemStatuses.SingleAsync(
+                s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_confirmed");
+            var hire = await db.SearchHires.SingleAsync(h => h.Id == hireId);
+            db.Appointments.Add(new Appointment
+            {
+                SearchHireId = hireId,
+                StatusId = confirmed.Id,
+                ExpertId = hire.ExpertId,
+                StartsAtUtc = createdAt.AddDays(4),
+                EndsAtUtc = createdAt.AddDays(4).AddHours(1),
+                BlocksCalendar = true,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var res = await _api.Client.PostAsync($"/api/seller-booking/{token}/decline", content: null);
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict, await res.Content.ReadAsStringAsync());
+
+        // El token NO se consume si ya había cita (no llega al mutex).
+        await using (var db = _api.CreateDbContext())
+        {
+            var hire = await db.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId);
+            hire.SellerBookingToken.Should().Be(token, "un 409 por cita existente no debe anular el token");
+        }
+    }
+
+    // ── Decline-03: idempotencia/robustez — segundo decline con el token ya anulado → NotFound.
+    [Fact(DisplayName = "SBD-03 · segundo decline con token ya anulado → 404")]
+    public async Task Decline_twice_second_call_returns_not_found()
+    {
+        var createdAt = DateTime.UtcNow;
+        var (token, _, _, _) = await SeedAuthorizedSellerHireAsync(createdAt);
+
+        var first = await _api.Client.PostAsync($"/api/seller-booking/{token}/decline", content: null);
+        first.StatusCode.Should().Be(HttpStatusCode.OK, await first.Content.ReadAsStringAsync());
+
+        // El token ya está anulado: la segunda llamada no encuentra el hire por token.
+        var second = await _api.Client.PostAsync($"/api/seller-booking/{token}/decline", content: null);
+        second.StatusCode.Should().Be(HttpStatusCode.NotFound, await second.Content.ReadAsStringAsync());
     }
 
     private sealed record SlotDto(DateTime StartUtc, DateTime EndUtc, string StartLocal, string Timezone);

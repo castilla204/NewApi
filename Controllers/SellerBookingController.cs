@@ -357,6 +357,45 @@ namespace newApi.Controllers
                 return Ok(new { ok = true });
             });
         }
+
+        // ── Declinar la cita ("no puedo coordinar") → devolución sin coste al comprador ──
+        // El vendedor pulsa "no puedo quedar". Cancelamos la AUTORIZACIÓN del pago SIN coste
+        // (PI en requires_capture → cancel = 0 €, ni la fee de Stripe) y finalizamos el hire
+        // devolviendo el 100% al comprador. MODELADO sobre el job de expiración
+        // (PlatformMaintenanceService.ProcessExpiredSellerBookingsAsync) para máxima
+        // consistencia: anular el token actúa de mutex frente al confirm y al propio job
+        // de expiración, y la finalización la hace la MISMA rama N10 de la distribución de
+        // dinero (cancela el PI si está en requires_capture, reembolsa si estuviera succeeded).
+        [HttpPost("{token}/decline")]
+        public async Task<IActionResult> Decline(string token)
+        {
+            if (!TokenLooksValid(token)) return NotFound(new { message = "Enlace no válido." });
+
+            var hire = await FindByTokenAsync(token, tracking: true);
+            if (hire == null) return NotFound(new { message = "Enlace no válido o caducado." });
+            if (hire.Appointment != null) return Conflict(new { message = "La cita ya estaba reservada." });
+
+            // Anular el token = mutex: a partir de aquí ni el confirm ni el job de expiración
+            // (ambos buscan por token) podrán crear la cita ni coexistir con esta devolución.
+            hire.SellerBookingToken = null;
+            await _context.SaveChangesAsync();
+
+            // Reembolso 100% al comprador + cancelar el hire, reusando EXACTAMENTE el patrón del
+            // job de expiración. "appointment_cancelled_by_client_gt24h" → (cliente 100, experto 0,
+            // plataforma 0); es finalización, mapea el hire a 'cancelled' y NO penaliza al experto.
+            // La rama N10 del RefundService CANCELA el PI si sigue en requires_capture (0 €, sin
+            // fee) o reembolsa si estuviera succeeded (legacy). NO pre-cancelamos el PI aquí para
+            // no romper esa lógica refund-vs-cancel.
+            Hangfire.BackgroundJob.Enqueue<global::newApi.Services.StripeRefundService>(svc =>
+                svc.ProcessMoneyDistributionAsync(
+                    hire.Id,
+                    "appointment_cancelled_by_client_gt24h",
+                    "El vendedor indicó que no puede coordinar la cita: devolución sin coste al comprador.",
+                    null,
+                    true));
+
+            return Ok(new { ok = true });
+        }
     }
 
     public class SellerConfirmDto

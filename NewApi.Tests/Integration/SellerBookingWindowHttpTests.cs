@@ -142,4 +142,35 @@ public class SellerBookingWindowHttpTests
     }
 
     private sealed record WindowDto(string FromYmd, int Days, bool WindowExtended, bool HasAvailability);
+
+    [Fact]
+    public async Task Confirm_SetsCompletionDeadlineAfterAppointmentEnd()
+    {
+        var createdAt = DateTime.UtcNow;
+        var (token, serviceId, _) = await SeedSellerHireAsync(createdAt, everyDay: true);
+
+        // Pide al backend un hueco REAL dentro de la ventana para no inventar la hora.
+        // Día +4 (suelo+1). Consulta /slots y elige el primero.
+        var probeDate = SellerBookingWindow.StartUtc(createdAt).AddDays(1).ToString("yyyy-MM-dd");
+        var slotsRes = await _api.Client.GetAsync($"/api/seller-booking/{token}/slots?date={probeDate}");
+        slotsRes.StatusCode.Should().Be(HttpStatusCode.OK);
+        var slots = await slotsRes.Content.ReadFromJsonAsync<List<SlotDto>>();
+        slots.Should().NotBeNullOrEmpty("el experto trabaja ese día dentro de la ventana");
+        var slot = slots![0];
+
+        var res = await _api.Client.PostAsJsonAsync($"/api/seller-booking/{token}/confirm", new
+        {
+            startsAtUtc = slot.StartUtc, endsAtUtc = slot.EndUtc, location = "Calle Mayor 1",
+            latitude = "40.0", longitude = "-3.7",
+        });
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await using var db = _api.CreateDbContext();
+        var hire = await db.SearchHires.AsNoTracking()
+            .SingleAsync(h => h.SearchServiceId == serviceId);
+        hire.CompletionDeadline.Should().NotBeNull();
+        hire.CompletionDeadline!.Value.Should().BeAfter(slot.EndUtc);
+    }
+
+    private sealed record SlotDto(DateTime StartUtc, DateTime EndUtc, string StartLocal, string Timezone);
 }

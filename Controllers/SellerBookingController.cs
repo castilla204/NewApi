@@ -208,6 +208,9 @@ namespace newApi.Controllers
             // Token de un solo uso: invalidar para que el enlace no sirva dos veces.
             hire.SellerBookingToken = null;
 
+            // Plazo de entrega real = fin de cita + SLA del servicio (sobrescribe el provisional).
+            hire.CompletionDeadline = endUtc.AddHours(hire.DurationInHoursSnapshot ?? 24);
+
             try
             {
                 await _context.SaveChangesAsync();

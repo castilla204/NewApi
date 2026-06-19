@@ -844,8 +844,7 @@ namespace newApi.Controllers
                             { "sellerPhone", I6_Truncate(request.SellerPhone, 30) },
                             { "sellerEmail", I6_Truncate(request.SellerEmail, 60) },
                             { "sellerListing", I6_Truncate(request.SellerListingUrl, 120) },
-                            { "sellerMaxDays", request.SellerBookingMaxDays?.ToString() ?? "" },
-                            { "sellerDeadlineHours", request.SellerBookingDeadlineHours?.ToString() ?? "" }
+                            { "sellerMaxDays", request.SellerBookingMaxDays?.ToString() ?? "" }
                         },
                         // ✅ CAPTURA MANUAL: Autoriza el pago pero no lo captura hasta validar todo en el webhook
                         // Esto evita perder comisiones si algo falla después del pago
@@ -877,7 +876,23 @@ namespace newApi.Controllers
                         parameterDto?.Latitude, parameterDto?.Longitude,
                         I6_Truncate(parameterDto?.LocationName, 100),
                         parameterDto?.Category?.ToString(), parameterDto?.ServiceTypeId?.ToString(),
-                        searchDto?.Frequency.ToString(), parameterDto?.LocationRange?.ToString()); // 🔧 FIX: frequency y locationRange también van en el body → deben discriminar la clave (si no, idempotency_error 400)
+                        searchDto?.Frequency.ToString(), parameterDto?.LocationRange?.ToString(),
+                        // 🔧 FIX: hueco/cita y modo vendedor TAMBIÉN van en el body (metadata) → deben
+                        // discriminar la clave; si no, reiniciar checkout del mismo servicio+búsqueda con
+                        // otro hueco o en modo seller reusa la clave con body distinto → idempotency_error
+                        // (400) → 500 → reserva legítima denegada. Mismo hueco+datos = misma clave (sigue
+                        // deduplicando el doble-submit del MISMO checkout).
+                        request.StartsAtUtc?.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+                        request.EndsAtUtc?.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+                        I6_Truncate(request.Location, 150),
+                        request.Latitude, request.Longitude,
+                        I6_Truncate(request.DoorNumber, 60),
+                        I6_Truncate(request.SiteDetails, 200),
+                        I6_Truncate(request.CoordinationMode, 16),
+                        I6_Truncate(request.SellerPhone, 30),
+                        I6_Truncate(request.SellerEmail, 60),
+                        I6_Truncate(request.SellerListingUrl, 120),
+                        request.SellerBookingMaxDays?.ToString()); // 🔧 FIX: frequency y locationRange también van en el body → deben discriminar la clave (si no, idempotency_error 400)
                     var session = await serviceStripe.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
 
                     await _loggingService.LogInfoAsync(
@@ -1794,7 +1809,5 @@ namespace newApi.Controllers
         public string? SellerListingUrl { get; set; }
         /// <summary>Modo seller: máximo de días a futuro que el vendedor puede elegir la cita.</summary>
         public int? SellerBookingMaxDays { get; set; }
-        /// <summary>Modo seller: horas que tiene el vendedor para reservar (default 48). Si pasa, reembolso 100%.</summary>
-        public int? SellerBookingDeadlineHours { get; set; }
     }
 }

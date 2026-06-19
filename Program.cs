@@ -1685,7 +1685,8 @@ builder.Services.AddScoped<ISupabaseRealtimeService, SupabaseRealtimeService>();
 builder.Services.AddScoped<IInAppNotificationService, InAppNotificationService>(); // 🔔 NOTIF-CENTRAL: punto único de notificaciones in-app (crear + broadcast)
 builder.Services.AddScoped<ISmsService, SmsService>(); // 📱 SMS-CENTRAL: Twilio (gated por config; no-op si faltan credenciales)
 builder.Services.AddScoped<IPhoneLookupService, PhoneLookupService>(); // 📱 clasifica móvil/fijo (Twilio Lookup + heurística ES)
-builder.Services.AddScoped<IStripeReconciliationService, StripeReconciliationService>(); // P2-5: reconciliación diaria BD↔Stripe
+// 🧹 2026-06-19: registro duplicado de IStripeReconciliationService eliminado (ya se registra arriba, ~línea 1630).
+// Eran dos AddScoped idénticos; el segundo solo sobreescribía al primero (mismo impl) → redundante, sin efecto funcional.
 builder.Services.AddScoped<IExchangeRateService, ExchangeRateService>(); // 💱 Multi-Currency Display: FX rates con cache 24h + BD snapshot
 // 🌍 Round 23: provider chain for FX rates — primary fawazahmed (covers LATAM) + fallback Frankfurter (ECB).
 builder.Services.AddHttpClient("fx-primary", c => {

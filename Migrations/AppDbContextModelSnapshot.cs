@@ -1840,6 +1840,12 @@ namespace newApi.Migrations
                     b.Property<string>("ExpertCountry")
                         .HasColumnType("text");
 
+                    b.Property<DateTime?>("ExpertConfirmationDeadline")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ExpertConfirmationToken")
+                        .HasColumnType("text");
+
                     b.Property<int?>("ExpertId")
                         .HasColumnType("integer");
 

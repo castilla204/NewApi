@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.EntityFrameworkCore;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.Services;
 using NewApi.Tests.Builders;
@@ -81,4 +82,64 @@ public class SellerBookingWindowHttpTests
 
         res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
+
+    [Fact]
+    public async Task Window_NotExtended_WhenExpertHasSlotsWithinTarget()
+    {
+        var createdAt = DateTime.UtcNow;
+        var (token, _, _) = await SeedSellerHireAsync(createdAt, everyDay: true);
+
+        var res = await _api.Client.GetAsync($"/api/seller-booking/{token}/window");
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await res.Content.ReadFromJsonAsync<WindowDto>();
+
+        body!.HasAvailability.Should().BeTrue();
+        body.WindowExtended.Should().BeFalse();
+        body.Days.Should().Be(SellerBookingWindow.TargetDays); // 5 días (+3..+7)
+    }
+
+    [Fact]
+    public async Task Window_Extended_WhenTargetEmptyButHardHasSlots()
+    {
+        var createdAt = DateTime.UtcNow;
+        var (token, serviceId, _) = await SeedSellerHireAsync(createdAt, everyDay: true);
+
+        // Cerrar con excepciones TODO el tramo objetivo (+3..+7) → sin huecos en target,
+        // pero sí en +8..+14.
+        await using (var db = _api.CreateDbContext())
+        {
+            var expert = await db.SearchServices.Include(s => s.ExpertProfile)
+                .Where(s => s.Id == serviceId).Select(s => s.ExpertProfile!).SingleAsync();
+            var floor = SellerBookingWindow.StartUtc(createdAt);
+            for (var i = 0; i < SellerBookingWindow.TargetDays; i++)
+                db.ExpertAvailabilityExceptions.Add(new ExpertAvailabilityException
+                {
+                    ExpertId = expert.Id,
+                    Date = DateOnly.FromDateTime(floor.AddDays(i)),
+                    IsWorking = false, Timezone = "Europe/Madrid",
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await (await _api.Client.GetAsync($"/api/seller-booking/{token}/window"))
+            .Content.ReadFromJsonAsync<WindowDto>();
+
+        body!.HasAvailability.Should().BeTrue();
+        body.WindowExtended.Should().BeTrue();
+        body.Days.Should().Be(SellerBookingWindow.HardDays); // 12 días (+3..+14)
+    }
+
+    [Fact]
+    public async Task Window_NoAvailability_WhenExpertHasNoRules()
+    {
+        var createdAt = DateTime.UtcNow;
+        var (token, _, _) = await SeedSellerHireAsync(createdAt, everyDay: false); // sin reglas
+
+        var body = await (await _api.Client.GetAsync($"/api/seller-booking/{token}/window"))
+            .Content.ReadFromJsonAsync<WindowDto>();
+
+        body!.HasAvailability.Should().BeFalse();
+    }
+
+    private sealed record WindowDto(string FromYmd, int Days, bool WindowExtended, bool HasAvailability);
 }

@@ -39,6 +39,14 @@ public sealed class FakeStripeServer : IDisposable
     /// <summary>Registro de requests recibidas (método + ruta) para aserciones.</summary>
     public ConcurrentQueue<string> Requests { get; } = new();
 
+    /// <summary>
+    /// Fija el estado de un PaymentIntent directamente. Permite a los tests reproducir el
+    /// HUECO 1b (captura diferida del vendedor): un PI YA capturado en Stripe (succeeded)
+    /// pero cuya cita no se persistió, sin tener que ejecutar el flujo de capture completo.
+    /// </summary>
+    public void SetPaymentIntentStatus(string paymentIntentId, string status)
+        => _piStatus[paymentIntentId] = status;
+
     public string BaseUrl { get; private set; } = null!;
 
     /// <summary>Céntimos que devuelven los PI del stub (los tests usan 110 EUR).</summary>

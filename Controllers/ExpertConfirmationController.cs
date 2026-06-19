@@ -241,17 +241,8 @@ namespace newApi.Controllers
             if (hire == null || hire.Appointment == null)
                 return NotFound(new { message = "Enlace no válido o caducado." });
 
-            // Strike SÍNCRONO al experto (penalización por rechazar la cita). ExecuteUpdate
-            // sobre la fila ExpertProfiles del experto del hire (independiente del change-tracker).
-            if (hire.ExpertId.HasValue)
-            {
-                await _context.ExpertProfiles
-                    .Where(p => p.UserId == hire.ExpertId.Value)
-                    .ExecuteUpdateAsync(s => s.SetProperty(p => p.CancellationStrikes, p => p.CancellationStrikes + 1));
-            }
-
-            // Anular el token = mutex: a partir de aquí ni el approve ni el job de expiración
-            // (ambos buscan por token) podrán confirmar la cita ni coexistir con esta devolución.
+            // Anular el token = mutex PRIMERO: a partir de aquí ni el approve ni el job de
+            // expiración (ambos buscan por token) podrán confirmar la cita ni coexistir.
             hire.ExpertConfirmationToken = null;
             try
             {
@@ -260,8 +251,18 @@ namespace newApi.Controllers
             catch (DbUpdateConcurrencyException)
             {
                 // Carrera approve-vs-reject: el approve ganó (token xmin). La cita ya quedó
-                // confirmada y capturada → NO rechazamos ni reembolsamos. 409 limpio.
+                // confirmada y capturada → NO rechazamos, NO reembolsamos y NO aplicamos strike
+                // (sería injusto: la cita SÍ se atendió). 409 limpio.
                 return Conflict(new { message = "La cita acaba de confirmarse. No se puede rechazar." });
+            }
+
+            // Strike SÍNCRONO al experto — SOLO tras ganar el mutex del token (si la carrera la
+            // gana approve, arriba devolvemos 409 sin penalizar). ExecuteUpdate sobre ExpertProfiles.
+            if (hire.ExpertId.HasValue)
+            {
+                await _context.ExpertProfiles
+                    .Where(p => p.UserId == hire.ExpertId.Value)
+                    .ExecuteUpdateAsync(s => s.SetProperty(p => p.CancellationStrikes, p => p.CancellationStrikes + 1));
             }
 
             // Reembolso 100% al comprador + cancelar el hire + cancelar el PI no capturado (0 €).

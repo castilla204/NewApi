@@ -1306,7 +1306,35 @@ namespace newApi.Services
 
                         // Si hay refund y transfer, ejecutar primero la transferencia y despu├®s el refund; si el refund falla, revertir la transferencia
                         var needsRefund = clientRefundAmount > 0 && !refundAlreadyProcessed && !hasChargeback;
-                        var needsTransfer = expertAmount > 0 && searchHire.ExpertId.HasValue && !transferAlreadyProcessed;
+                        var needsTransfer = expertAmount > 0 && searchHire.ExpertId.HasValue && !transferAlreadyProcessed && !hasChargeback;
+
+                        // 🛡️ FIX (fuga de principal): re-leer el marcador Chargeback JUSTO antes de CREAR un transfer
+                        // NUEVO al experto. Si hubo contracargo (Stripe ya devolvió el 100% al cliente y lo retiró del
+                        // balance de la plataforma) y el experto AÚN no había cobrado (transferAlreadyProcessed=false),
+                        // crear el transfer aquí = doble salida del ~95% (pérdida real). El clawback de ~l.2008 y
+                        // ReverseExpertTransferForChargebackAsync solo revierten un transfer EXISTENTE; no cubren uno nuevo.
+                        // Paralelo a FIX #2 (refund) y FIX #9 (clawback): cierra la ventana de carrera con el webhook
+                        // charge.dispute.created que pudo insertar el FT Chargeback tras la lectura inicial (~l.1291).
+                        if (needsTransfer)
+                        {
+                            var chargebackBeforeTransfer = hasChargeback
+                                || await _context.FinancialTransactions.AnyAsync(ft =>
+                                    ft.RelatedEntityType == "SearchHire" &&
+                                    ft.RelatedEntityId == searchHireId &&
+                                    ft.TransactionType == "Chargeback" &&
+                                    ft.StripePaymentIntentId == servicePayment.StripePaymentIntentId);
+                            if (chargebackBeforeTransfer)
+                            {
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Chargeback present - skipping NEW expert transfer to avoid double loss of principal",
+                                    details: $"SearchHire {searchHireId}: existe un marcador Chargeback para PaymentIntent {servicePayment.StripePaymentIntentId} y el experto aún no había cobrado (transferAlreadyProcessed=false). Stripe ya retiró el 100% del balance de la plataforma vía el contracargo; crear un transfer nuevo de {expertAmount:F2} al experto sería una SEGUNDA salida (pérdida real). Se OMITE el transfer (status {statusValue}). ACCIÓN ADMIN: reconciliar manualmente si el experto realmente debe cobrar pese al chargeback.",
+                                    userId: searchHire.ExpertId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId);
+                                needsTransfer = false;
+                            }
+                        }
 
                         // Transfer primero (si aplica)
                         if (needsTransfer)

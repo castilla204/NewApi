@@ -354,11 +354,20 @@ namespace newApi.Services
             try
             {
                 var now = DateTime.UtcNow;
+                // 🛡️ Self-healing: incluimos también hires YA reclamados (token==null) que
+                // quedaron sin reembolso — recupera el crash entre SaveChanges(token=null) y
+                // Enqueue. ProcessMoneyDistributionAsync es idempotente (advisory lock +
+                // re-verificación + refunds Stripe idempotentes), así que reencolar un hire
+                // que SÍ llegó a reembolsarse es inocuo (no hay doble refund).
                 expiredIds = await _context.SearchHires
-                    .Where(h => h.SellerBookingToken != null
-                                && h.SellerBookingDeadline != null
+                    .Where(h => h.SellerBookingDeadline != null
                                 && h.SellerBookingDeadline < now
-                                && h.Appointment == null)
+                                && h.Appointment == null
+                                && (h.SellerBookingToken != null
+                                    || !_context.FinancialTransactions.Any(ft =>
+                                            ft.RelatedEntityType == "SearchHire"
+                                            && ft.RelatedEntityId == h.Id
+                                            && ft.TransactionType == "Refund")))
                     .Select(h => h.Id)
                     .Take(200)
                     .ToListAsync();
@@ -381,10 +390,16 @@ namespace newApi.Services
                     // de aquí el confirm del vendedor (busca por token) ya no podrá crear la cita,
                     // así que no puede coexistir "cita confirmada + reembolso".
                     var hire = await _context.SearchHires
-                        .FirstOrDefaultAsync(h => h.Id == hireId && h.SellerBookingToken != null && h.Appointment == null);
+                        .FirstOrDefaultAsync(h => h.Id == hireId && h.Appointment == null);
                     if (hire == null) continue;
-                    hire.SellerBookingToken = null;
-                    await _context.SaveChangesAsync();
+                    // Anular el token actúa de mutex frente al confirm del vendedor. Si ya estaba
+                    // null (hire huérfano de un crash previo) seguimos: ProcessMoneyDistributionAsync
+                    // re-verifica e idempotentemente no duplica el reembolso.
+                    if (hire.SellerBookingToken != null)
+                    {
+                        hire.SellerBookingToken = null;
+                        await _context.SaveChangesAsync();
+                    }
 
                     // Reembolso 100% al comprador + cancelar el hire.
                     // ⚠️ CRÍTICO: el estado DEBE empezar por "appointment_cancelled" para que
@@ -430,6 +445,8 @@ namespace newApi.Services
             {
                 nearExpiry = await _context.SearchHires
                     .Where(sh => sh.CaptureStatus == "Pending" && sh.CreatedAt < cutoff)
+                    .OrderBy(sh => sh.CreatedAt) // los más próximos a expirar primero
+                    .Take(100)
                     .ToListAsync();
             }
             catch (Exception ex)
@@ -508,21 +525,24 @@ namespace newApi.Services
                         relatedEntityType: "SearchHire",
                         relatedEntityId: hire.Id);
                 }
-            }
 
-            try
-            {
-                await _context.SaveChangesAsync();
-            }
-            catch (Exception saveEx)
-            {
-                await _loggingService.LogCriticalAsync(
-                    message: "CRITICAL R5: SaveChanges failed after canceling near-expiry PIs",
-                    details: $"Cancelaciones en Stripe ya ocurrieron pero los CaptureStatus locales no se persistieron. {nearExpiry.Count} hires afectados. Error: {saveEx.Message}",
-                    userId: null,
-                    source: "PlatformMaintenanceService.ProcessExpiringPaymentIntentsAsync",
-                    relatedEntityType: "SearchHire",
-                    relatedEntityId: null);
+                // Persistir por iteración: si el SaveChanges falla, solo se pierde el reflejo de
+                // ESTE hire (no de todos). La IdempotencyKey de CancelAsync evita doble cancelación
+                // en el reintento del job.
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch (Exception saveEx)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL R5: SaveChanges failed after canceling near-expiry PI",
+                        details: $"Cancelación en Stripe ya ocurrió pero el CaptureStatus local no se persistió. SearchHire {hire.Id}. Error: {saveEx.Message}",
+                        userId: hire.ClientId,
+                        source: "PlatformMaintenanceService.ProcessExpiringPaymentIntentsAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hire.Id);
+                }
             }
         }
 

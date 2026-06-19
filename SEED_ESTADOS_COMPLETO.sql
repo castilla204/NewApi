@@ -78,6 +78,12 @@ WHERE "StatusType"='AppointmentStatus'
 INSERT INTO "StatusConfigurations" ("StatusId","CategoryId","ServiceTypeCategoryId","ClientPercentage","ExpertPercentage","PlatformPercentage","IsActive","CreatedAt","UpdatedAt")
 SELECT s."Id",NULL,NULL,v."cp",v."ep",v."pp",true,now(),now()
 FROM (VALUES
+  -- 🛡️ V8 FIX: 'pending' replica el reparto del camino feliz (0/95/5) para que el snapshot
+  -- contractual capturado en HandlePendingHireCompleted deje de grabarse NULL. Sin esta fila,
+  -- ClientPercentageSnapshot/Expert/Platform quedaban siempre null → RefundService nunca usaba
+  -- el snapshot y la protección contra cambios retroactivos de % por admin no funcionaba.
+  -- El guard isCancellationStatus en RefundService impide que esto afecte a cancelaciones.
+  ('pending',0,95,5),
   ('completed',0,95,5),
   ('cancelled',100,0,0),
   ('dispute_resolved_client',90,8,2),

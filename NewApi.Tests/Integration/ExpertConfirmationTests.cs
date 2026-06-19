@@ -224,6 +224,156 @@ public class ExpertConfirmationTests
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tarea 5 — timer "expert_confirmation": auto-cancela (sin strike) si el experto no
+    // aprueba/rechaza dentro de su ventana; se CANCELA cuando el experto responde a tiempo.
+    // El handler ProcessAppointmentTimerAsync se invoca directamente (Hangfire no corre en
+    // tests, HANGFIRE_SERVER_DISABLED=1), igual que JourneyTimerTests/HttpHireFlowTests.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Siembra una fila AppointmentTimer "expert_confirmation" activa para la cita del hire.
+    private async Task<int> SeedExpertConfirmationTimerAsync(int hireId, DateTime endTimeUtc)
+    {
+        await using var db = _api.CreateDbContext();
+        var apptId = await db.Appointments.Where(a => a.SearchHireId == hireId).Select(a => a.Id).SingleAsync();
+        var timer = new AppointmentTimer
+        {
+            AppointmentId = apptId,
+            TimerType = "expert_confirmation",
+            StartTime = DateTime.UtcNow,
+            EndTime = endTimeUtc,
+            IsExpired = false,
+            CreatedAt = DateTime.UtcNow,
+        };
+        db.AppointmentTimers.Add(timer);
+        await db.SaveChangesAsync();
+        return timer.Id;
+    }
+
+    // ── EC-T1: timer expira con la cita aún pending → auto-cancel SIN strike: cita
+    //    appointment_cancelled_by_expert_no_response, hire 'cancelled', PI cancelado (0€,
+    //    sin Refund FT), token anulado, sin strike al experto.
+    [Fact(DisplayName = "EC-T1 · timer expert_confirmation expira (pending) → no_response, hire cancelled, PI 0€, sin strike, token null")]
+    public async Task ExpertConfirmationTimer_expires_while_pending_auto_cancels_no_strike()
+    {
+        var (_, _, hireId, expertUserId, pi) = await SeedPendingExpertConfirmationAsync();
+        var timerId = await SeedExpertConfirmationTimerAsync(hireId, DateTime.UtcNow.AddSeconds(-1));
+
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var appointmentService = scope.ServiceProvider.GetRequiredService<IAppointmentService>();
+            await appointmentService.ProcessAppointmentTimerAsync(timerId);
+        }
+
+        // N10: PI en requires_capture → se CANCELA (0 €), nunca se captura.
+        _api.FakeStripe.Requests.Should().Contain(r => r == $"POST /v1/payment_intents/{pi}/cancel",
+            "el auto-cancel por no respuesta cancela el PI no capturado (0 €)");
+        _api.FakeStripe.Requests.Should().NotContain(r => r == $"POST /v1/payment_intents/{pi}/capture",
+            "el auto-cancel NUNCA cobra al comprador");
+
+        await using var db = _api.CreateDbContext();
+
+        var apptStatus = await db.Appointments.AsNoTracking().Include(a => a.Status)
+            .Where(a => a.SearchHireId == hireId).Select(a => a.Status!.StatusValue).SingleAsync();
+        apptStatus.Should().Be("appointment_cancelled_by_expert_no_response");
+
+        var hireStatus = await db.SearchHires.AsNoTracking()
+            .Where(h => h.Id == hireId)
+            .Join(db.SystemStatuses.AsNoTracking(), h => h.StatusId, s => s.Id, (h, s) => s.StatusValue)
+            .SingleAsync();
+        hireStatus.Should().Be("cancelled", "el auto-cancel finaliza el hire");
+
+        var hire = await db.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId);
+        hire.ExpertConfirmationToken.Should().BeNull("el timer anula el token de confirmación");
+
+        // SIN strike: la no respuesta no se penaliza como una cancelación activa.
+        var strikes = await db.ExpertProfiles.AsNoTracking()
+            .Where(p => p.UserId == expertUserId).Select(p => p.CancellationStrikes).SingleAsync();
+        strikes.Should().Be(0, "el auto-cancel por no respuesta NO añade strike");
+
+        // Sin FT Refund: cancelar un PI no capturado no devuelve dinero (no se cobró nada).
+        var refundFts = await db.FinancialTransactions.AsNoTracking()
+            .Where(t => t.RelatedEntityType == "SearchHire" && t.RelatedEntityId == hireId && t.TransactionType == "Refund")
+            .ToListAsync();
+        refundFts.Should().BeEmpty("cancelar un PI no capturado no genera FT Refund");
+
+        // Timer expirado.
+        var timer = await db.AppointmentTimers.AsNoTracking().SingleAsync(t => t.Id == timerId);
+        timer.IsExpired.Should().BeTrue();
+        timer.ExpiredAt.Should().NotBeNull();
+    }
+
+    // ── EC-T2: timer dispara cuando la cita YA está confirmed (el experto aprobó antes) → no-op:
+    //    no cambia estado, no cancela/captura el PI, timer queda expirado (guard de estado).
+    [Fact(DisplayName = "EC-T2 · timer expert_confirmation dispara con cita ya confirmed → no-op")]
+    public async Task ExpertConfirmationTimer_is_noop_when_already_confirmed()
+    {
+        var (_, _, hireId, _, pi) = await SeedPendingExpertConfirmationAsync();
+        var timerId = await SeedExpertConfirmationTimerAsync(hireId, DateTime.UtcNow.AddSeconds(-1));
+
+        // El experto aprobó antes: cita → appointment_confirmed.
+        await using (var db = _api.CreateDbContext())
+        {
+            var confirmed = await db.SystemStatuses.SingleAsync(
+                s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_confirmed");
+            await db.Appointments.Where(a => a.SearchHireId == hireId)
+                .ExecuteUpdateAsync(s => s.SetProperty(a => a.StatusId, confirmed.Id));
+        }
+
+        var requestsBefore = _api.FakeStripe.Requests.Count(r => r.Contains(pi));
+
+        using (var scope = _api.Factory.Services.CreateScope())
+        {
+            var appointmentService = scope.ServiceProvider.GetRequiredService<IAppointmentService>();
+            await appointmentService.ProcessAppointmentTimerAsync(timerId);
+        }
+
+        // No-op: el guard de estado salta porque la cita ya no está pending_expert_confirmation.
+        _api.FakeStripe.Requests.Count(r => r.Contains(pi)).Should().Be(requestsBefore,
+            "no debe tocar el PI: el experto ya confirmó");
+
+        await using var db2 = _api.CreateDbContext();
+        var apptStatus = await db2.Appointments.AsNoTracking().Include(a => a.Status)
+            .Where(a => a.SearchHireId == hireId).Select(a => a.Status!.StatusValue).SingleAsync();
+        apptStatus.Should().Be("appointment_confirmed", "la cita confirmada no cambia");
+
+        var timer = await db2.AppointmentTimers.AsNoTracking().SingleAsync(t => t.Id == timerId);
+        timer.IsExpired.Should().BeTrue("el timer se marca expirado aunque sea no-op (guard de estado)");
+    }
+
+    // ── EC-T3: approve → el timer expert_confirmation activo queda expirado (cancelado).
+    [Fact(DisplayName = "EC-T3 · approve cancela el timer expert_confirmation (IsExpired=true)")]
+    public async Task Approve_cancels_expert_confirmation_timer()
+    {
+        var (token, _, hireId, _, _) = await SeedPendingExpertConfirmationAsync();
+        var timerId = await SeedExpertConfirmationTimerAsync(hireId, DateTime.UtcNow.AddHours(12));
+
+        var res = await _api.Client.PostAsync($"/api/expert-confirmation/{token}/approve", content: null);
+        res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
+
+        await using var db = _api.CreateDbContext();
+        var timer = await db.AppointmentTimers.AsNoTracking().SingleAsync(t => t.Id == timerId);
+        timer.IsExpired.Should().BeTrue("approve cancela el timer de confirmación");
+        timer.ExpiredAt.Should().NotBeNull();
+        timer.HangfireJobId.Should().BeNull("se limpia la referencia al job al cancelar");
+    }
+
+    // ── EC-T4: reject → el timer expert_confirmation activo queda expirado (cancelado).
+    [Fact(DisplayName = "EC-T4 · reject cancela el timer expert_confirmation (IsExpired=true)")]
+    public async Task Reject_cancels_expert_confirmation_timer()
+    {
+        var (token, _, hireId, _, _) = await SeedPendingExpertConfirmationAsync();
+        var timerId = await SeedExpertConfirmationTimerAsync(hireId, DateTime.UtcNow.AddHours(12));
+
+        var res = await _api.Client.PostAsync($"/api/expert-confirmation/{token}/reject", content: null);
+        res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
+
+        await using var db = _api.CreateDbContext();
+        var timer = await db.AppointmentTimers.AsNoTracking().SingleAsync(t => t.Id == timerId);
+        timer.IsExpired.Should().BeTrue("reject cancela el timer de confirmación");
+        timer.ExpiredAt.Should().NotBeNull();
+    }
+
     // ── EC-05: approve con token ya anulado → 404 (idempotencia del token single-use).
     [Fact(DisplayName = "EC-05 · approve con token ya null → 404")]
     public async Task Approve_with_consumed_token_returns_not_found()

@@ -6142,6 +6142,9 @@ namespace newApi.Controllers
                     }
                 }
 
+                // ⚓ Tarea 5: cita pending_expert_confirmation creada en este bloque; la capturamos para
+                // programar su timer de confirmación TRAS el commit (cuando ya tiene Id persistido).
+                Appointment? pendingExpertAppointment = null;
                 if (slotStartUtc.HasValue && slotEndUtc.HasValue)
                 {
                     // La cita nace PENDIENTE DE CONFIRMACIÓN DEL EXPERTO (no confirmada): el pago está
@@ -6175,7 +6178,7 @@ namespace newApi.Controllers
                         && decimal.TryParse(apptLngRaw, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var apptLngVal)
                         ? apptLngVal : (decimal?)null;
 
-                    _context.Appointments.Add(new Appointment
+                    pendingExpertAppointment = new Appointment
                     {
                         SearchHireId = searchHireId,
                         StatusId = pendingExpertStatus.Id,
@@ -6196,7 +6199,8 @@ namespace newApi.Controllers
                         ProposerTimezone = expertTimezone ?? "Europe/Madrid",
                         CreatedAt = DateTime.UtcNow,
                         UpdatedAt = DateTime.UtcNow
-                    });
+                    };
+                    _context.Appointments.Add(pendingExpertAppointment);
 
                     try
                     {
@@ -6299,7 +6303,19 @@ namespace newApi.Controllers
                         catch { /* best-effort: el envío del enlace nunca debe tumbar el webhook */ }
                     }
 
-                    // ⚓ TODO Tarea 5/6: crear timer expert_confirmation + notificar al experto
+                    // ⚓ Tarea 5: programar el timer de confirmación del experto (auto-cancela sin strike
+                    // si no aprueba/rechaza dentro de ExpertConfirmationDeadline). Best-effort: si falla,
+                    // el watchdog (ProcessOverdueTimersAsync) auto-descubre la cita pendiente. NUNCA romper
+                    // el webhook (Stripe lo reintentaría) por un fallo al programar el timer.
+                    if (pendingExpertAppointment != null && pendingExpertAppointment.Id > 0)
+                    {
+                        try
+                        {
+                            await _appointmentService.CreateExpertConfirmationTimerAsync(pendingExpertAppointment.Id, searchHireId);
+                        }
+                        catch { /* best-effort: el watchdog recogerá la cita si quedó sin timer */ }
+                    }
+                    // ⚓ TODO Tarea 6: notificar al experto (nueva cita pendiente de su confirmación)
                 }
                 catch (Exception commitEx)
                 {

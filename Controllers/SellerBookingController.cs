@@ -193,7 +193,8 @@ namespace newApi.Controllers
             decimal? lat = decimal.TryParse(dto.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var latVal) ? latVal : (decimal?)null;
             decimal? lng = decimal.TryParse(dto.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var lngVal) ? lngVal : (decimal?)null;
 
-            _context.Appointments.Add(new Appointment
+            // ⚓ Tarea 5: capturar la cita para programar su timer de confirmación tras el commit.
+            var pendingExpertAppointment = new Appointment
             {
                 SearchHireId = hire.Id,
                 StatusId = pendingExpertStatus.Id,
@@ -213,7 +214,8 @@ namespace newApi.Controllers
                 ProposerTimezone = expertTimezone,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow,
-            });
+            };
+            _context.Appointments.Add(pendingExpertAppointment);
 
             // Token de un solo uso: invalidar para que el enlace no sirva dos veces.
             hire.SellerBookingToken = null;
@@ -281,7 +283,20 @@ namespace newApi.Controllers
                     return StatusCode(500, new { message = "La reserva se está procesando, contacta con soporte." });
                 }
 
-                // ⚓ TODO Tarea 5/6: crear timer + notificar al experto
+                // ⚓ Tarea 5: programar el timer de confirmación del experto (auto-cancela sin strike si no
+                // aprueba/rechaza dentro de ExpertConfirmationDeadline). IAppointmentService no está inyectado
+                // en este controlador → lo resolvemos por scope (mismo patrón que SubscriptionController con
+                // IEmailService). Best-effort: si falla, el watchdog recoge la cita pendiente sin timer.
+                if (pendingExpertAppointment.Id > 0
+                    && HttpContext?.RequestServices?.GetService(typeof(IAppointmentService)) is IAppointmentService apptSvc)
+                {
+                    try
+                    {
+                        await apptSvc.CreateExpertConfirmationTimerAsync(pendingExpertAppointment.Id, hire.Id);
+                    }
+                    catch { /* best-effort: el watchdog recogerá la cita si quedó sin timer */ }
+                }
+                // ⚓ TODO Tarea 6: notificar al experto (nueva cita pendiente de su confirmación)
 
                 return Ok(new { ok = true });
             });

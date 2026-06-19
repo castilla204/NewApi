@@ -5870,8 +5870,14 @@ namespace newApi.Controllers
                 decimal? clientPctSnapshot = null, expertPctSnapshot = null, platformPctSnapshot = null;
                 try
                 {
+                    // 🛡️ FIX (snapshot reads completed): el snapshot congela el reparto del CAMINO FELIZ,
+                    // que es el de 'completed' (0/95/5: 0% cliente, 95% experto, 5% plataforma). Antes leía
+                    // 'pending', cuya StatusConfiguration viva divergió a 100/0/0; eso grababa snapshots
+                    // invertidos y, al COMPLETAR con éxito (RefundService aplica el snapshot en finalizaciones
+                    // no-cancelación), se habría pagado 100% al cliente y 0 al experto. Leemos 'completed'
+                    // porque es el reparto que realmente se ejecuta al resolver con éxito.
                     var moneyConfigAtCreation = await _systemStatusService.GetMoneyDistributionConfigAsync(
-                        SearchHireStatus.Pending.ToStringValue(),
+                        SearchHireStatus.Completed.ToStringValue(),
                         service.CategoryId,
                         service.ServiceType?.ServiceTypeCategoryId);
                     if (moneyConfigAtCreation != null)

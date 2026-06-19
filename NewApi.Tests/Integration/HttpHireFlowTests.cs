@@ -1347,4 +1347,77 @@ public class HttpHireFlowTests
             refund.Should().NotBeNull("el no-response reembolsa el 100% al cliente — el dinero no puede perderse por un crash");
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HF-SNAPSHOT · el snapshot contractual de % capturado al crear el hire lee la
+    //   config de 'completed' (camino feliz = 0/95/5), NO la de 'pending'. Reproduce
+    //   la divergencia de prod (config 'pending' viva alterada a 100/0/0) y comprueba
+    //   que el snapshot grabado sigue siendo 0/95/5 → si el código leyera 'pending'
+    //   quedaría 100/0/0 e invertiría el reparto al completar (cliente 100%, experto 0).
+    // ─────────────────────────────────────────────────────────────────────────
+    [Fact(DisplayName = "HF-SNAPSHOT · snapshot captura el split de 'completed' (0/95/5), no el de 'pending' divergente")]
+    public async Task Snapshot_captures_completed_split_not_pending()
+    {
+        var mk = await SeedMarketplaceAsync("hfsnap");
+
+        // Lee los % originales de la config global de 'pending' para restaurarlos al final
+        // (la StatusConfiguration se siembra una sola vez por contenedor y se comparte).
+        var (origCp, origEp, origPp) = await GetGlobalSplitAsync("pending");
+        try
+        {
+            // Simula la divergencia de prod: la config viva de 'pending' pasa a 100/0/0.
+            // Si la captura leyera 'pending', grabaría este reparto invertido.
+            await SetGlobalSplitAsync("pending", 100, 0, 0);
+
+            var (response, hireId) = await PostCheckoutWebhookAsync(
+                mk, "evt_hfsnap_" + Guid.NewGuid().ToString("N"), "cs_hfsnap",
+                "pi_hfsnap_" + Guid.NewGuid().ToString("N")[..10]);
+            var body = await response.Content.ReadAsStringAsync();
+            response.StatusCode.Should().Be(HttpStatusCode.OK, $"el webhook debe crear el hire. Body: {body}");
+            hireId.Should().NotBeNull();
+
+            await using var db = _api.CreateDbContext();
+            var hire = await db.SearchHires.SingleAsync(h => h.Id == hireId!.Value);
+
+            // CLAVE: el snapshot debe reflejar el reparto de 'completed' (0/95/5), que es el
+            // que RefundService aplica al finalizar con éxito — NO el 'pending' divergente (100/0/0).
+            hire.ClientPercentageSnapshot.Should().Be(0m,
+                "el snapshot lee 'completed' (cliente 0%), no el 'pending' divergente (100%)");
+            hire.ExpertPercentageSnapshot.Should().Be(95m,
+                "el experto se queda el 95% al completar — invertir esto le pagaría 0");
+            hire.PlatformPercentageSnapshot.Should().Be(5m, "la plataforma retiene el 5%");
+        }
+        finally
+        {
+            await SetGlobalSplitAsync("pending", origCp, origEp, origPp);
+        }
+    }
+
+    /// <summary>Lee el split (%) de la StatusConfiguration GLOBAL (CategoryId NULL) de un SearchHireStatus.</summary>
+    private async Task<(decimal Cp, decimal Ep, decimal Pp)> GetGlobalSplitAsync(string statusValue)
+    {
+        await using var db = _api.CreateDbContext();
+        var cfg = await (from sc in db.StatusConfigurations
+                         join ss in db.SystemStatuses on sc.StatusId equals ss.Id
+                         where ss.StatusValue == statusValue && ss.StatusType == "SearchHireStatus"
+                               && sc.CategoryId == null && sc.ServiceTypeCategoryId == null
+                         select sc).SingleAsync();
+        return (cfg.ClientPercentage, cfg.ExpertPercentage, cfg.PlatformPercentage);
+    }
+
+    /// <summary>Sobrescribe el split (%) de la StatusConfiguration GLOBAL de un SearchHireStatus.</summary>
+    private async Task SetGlobalSplitAsync(string statusValue, decimal cp, decimal ep, decimal pp)
+    {
+        await using var db = _api.CreateDbContext();
+        var cfg = await (from sc in db.StatusConfigurations
+                         join ss in db.SystemStatuses on sc.StatusId equals ss.Id
+                         where ss.StatusValue == statusValue && ss.StatusType == "SearchHireStatus"
+                               && sc.CategoryId == null && sc.ServiceTypeCategoryId == null
+                         select sc).SingleAsync();
+        cfg.ClientPercentage = cp;
+        cfg.ExpertPercentage = ep;
+        cfg.PlatformPercentage = pp;
+        cfg.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+    }
 }

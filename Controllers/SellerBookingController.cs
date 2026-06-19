@@ -73,6 +73,11 @@ namespace newApi.Controllers
             // Plazo agotado: no servir la agenda del experto.
             if (hire.SellerBookingDeadline.HasValue && DateTime.UtcNow > hire.SellerBookingDeadline.Value)
                 return Ok(Array.Empty<object>());
+            // Defensa: no servir días fuera de la ventana [suelo, tope] anclada al pago.
+            var reqDate = DateTime.SpecifyKind(date.Date, DateTimeKind.Utc);
+            if (reqDate < SellerBookingWindow.StartUtc(hire.CreatedAt).Date
+                || reqDate >= SellerBookingWindow.HardEndExclusiveUtc(hire.CreatedAt).Date)
+                return Ok(Array.Empty<object>());
             var slots = await _availability.GetAvailableSlotsAsync(hire.SearchServiceId, date, ct);
             return Ok(slots);
         }
@@ -86,10 +91,46 @@ namespace newApi.Controllers
             if (hire.Appointment != null
                 || (hire.SellerBookingDeadline.HasValue && DateTime.UtcNow > hire.SellerBookingDeadline.Value))
                 return Ok(Array.Empty<object>());
-            var fromDate = from ?? DateTime.UtcNow.Date;
-            var n = days <= 0 ? 14 : Math.Min(days, 60); // tope para evitar escaneos caros desde un endpoint público
+            // La ventana manda: ignoramos el from/days del cliente y anclamos al pago.
+            var fromDate = SellerBookingWindow.StartUtc(hire.CreatedAt);
+            var n = days <= 0 ? SellerBookingWindow.HardDays : Math.Min(days, SellerBookingWindow.HardDays);
             var summary = await _availability.GetAvailabilitySummaryAsync(hire.SearchServiceId, fromDate, n, ct);
             return Ok(summary);
+        }
+
+        // ── Ventana de fechas efectiva (expansión progresiva objetivo→tope) ───────
+        [HttpGet("{token}/window")]
+        public async Task<IActionResult> GetWindow(string token, CancellationToken ct)
+        {
+            if (!TokenLooksValid(token)) return NotFound(new { message = "Enlace no válido." });
+            var hire = await FindByTokenAsync(token, tracking: false);
+            if (hire == null) return NotFound(new { message = "Enlace no válido o caducado." });
+
+            var fromUtc = SellerBookingWindow.StartUtc(hire.CreatedAt);
+            var fromYmd = fromUtc.ToString("yyyy-MM-dd");
+
+            // Enlace ya usado o plazo de reserva vencido: no hay ventana ofrecible.
+            if (hire.Appointment != null
+                || (hire.SellerBookingDeadline.HasValue && DateTime.UtcNow > hire.SellerBookingDeadline.Value))
+                return Ok(new { fromYmd, days = SellerBookingWindow.TargetDays, windowExtended = false, hasAvailability = false });
+
+            // 1) ¿Hay huecos dentro del objetivo (+3..+7)?
+            var target = await _availability.GetAvailabilitySummaryAsync(
+                hire.SearchServiceId, fromUtc, SellerBookingWindow.TargetDays, ct);
+            if (target.Any(d => d.FreeSlots > 0))
+                return Ok(new { fromYmd, days = SellerBookingWindow.TargetDays, windowExtended = false, hasAvailability = true });
+
+            // 2) No los hay → ampliar al tope (+3..+14).
+            var hard = await _availability.GetAvailabilitySummaryAsync(
+                hire.SearchServiceId, fromUtc, SellerBookingWindow.HardDays, ct);
+            var hasHard = hard.Any(d => d.FreeSlots > 0);
+            return Ok(new
+            {
+                fromYmd,
+                days = hasHard ? SellerBookingWindow.HardDays : SellerBookingWindow.TargetDays,
+                windowExtended = hasHard,
+                hasAvailability = hasHard,
+            });
         }
 
         // ── Confirmar la cita (crea la cita CONFIRMADA con reserva atómica) ────────

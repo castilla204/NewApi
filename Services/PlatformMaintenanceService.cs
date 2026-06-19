@@ -443,8 +443,11 @@ namespace newApi.Services
             List<DataLayer.Models.PostGresModels.SearchHire> nearExpiry;
             try
             {
+                // 🛡️ Captura diferida (modo vendedor): incluimos también "Authorized" como red de
+                // seguridad. Si el job de 48h (ProcessExpiredSellerBookingsAsync) fallara, un PI
+                // autorizado-sin-capturar >6.5d se cancela aquí antes de que Stripe lo expire a 7d.
                 nearExpiry = await _context.SearchHires
-                    .Where(sh => sh.CaptureStatus == "Pending" && sh.CreatedAt < cutoff)
+                    .Where(sh => (sh.CaptureStatus == "Pending" || sh.CaptureStatus == "Authorized") && sh.CreatedAt < cutoff)
                     .OrderBy(sh => sh.CreatedAt) // los más próximos a expirar primero
                     .Take(100)
                     .ToListAsync();

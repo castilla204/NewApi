@@ -1993,6 +1993,15 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     "*/15 * * * *",
     n29UtcOptions);
 
+// ⚓ Magic link del experto: red de seguridad del timer expert_confirmation. Cada 15 min revisa
+// citas pending_expert_confirmation cuyo plazo (ExpertConfirmationDeadline) venció sin respuesta
+// → reembolso 100% al comprador. Cubre el caso de timer Hangfire perdido (crash/storage purgado).
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "expert-confirmation-expiry-refund",
+    svc => svc.ProcessExpiredExpertConfirmationsAsync(),
+    "*/15 * * * *",
+    n29UtcOptions);
+
 // 🛡️ HUECO 1b (red de seguridad): cada 30 min busca hires modo vendedor cuya ventana de 48h
 // ya venció (post auto-rescate), SIN cita, con el PI YA capturado (succeeded) → dinero cobrado
 // sin servicio → reembolso 100% al comprador. Defensa en profundidad sobre el job de expiración.

@@ -28,6 +28,7 @@ namespace newApi.Services
         Task CheckAppointmentWatchdogHealthAsync(); // 🛡️ HEALTH — vigila que el watchdog de citas siga vivo
         Task ProcessExpiredSellerBookingsAsync(); // 🤝 Magic link vendedor: si no reserva en plazo → reembolso 100%
         Task ReconcileCapturedSellerHiresWithoutAppointmentAsync(); // 🛡️ HUECO 1b: pago capturado sin cita persistida → reembolso 100%
+        Task ProcessExpiredExpertConfirmationsAsync(); // ⚓ Magic link experto: si no confirma en plazo → reembolso 100% (red de seguridad del timer)
     }
 
     public class PlatformMaintenanceService : IPlatformMaintenanceService
@@ -586,6 +587,88 @@ namespace newApi.Services
             }
         }
 
+        // ⚓ Magic link del EXPERTO: red de seguridad del timer "expert_confirmation". El timer
+        // Hangfire (ProcessAppointmentTimerAsync) auto-cancela la cita si el experto no responde en
+        // plazo, pero si ESE job se perdió (crash entre Schedule y Save, storage purgado, etc.) la
+        // cita quedaría pending_expert_confirmation para siempre con el PI autorizado bloqueando la
+        // tarjeta del cliente. Este watchdog (cada 15 min) detecta esos hires y los reembolsa al 100%
+        // anulando el token (mutex frente a approve/reject) y encolando la distribución de dinero.
+        // CLON estructural de ProcessExpiredSellerBookingsAsync.
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
+        [Hangfire.AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 0, 60, 300 })]
+        public async Task ProcessExpiredExpertConfirmationsAsync()
+        {
+            List<int> expiredIds;
+            try
+            {
+                var now = DateTime.UtcNow;
+                // Citas aún en pending_expert_confirmation cuyo plazo (ExpertConfirmationDeadline)
+                // ya venció y siguen con token activo (sin reclamar por approve/reject ni por el timer).
+                expiredIds = await _context.SearchHires
+                    .Where(h => h.ExpertConfirmationDeadline != null
+                                && h.ExpertConfirmationDeadline < now
+                                && h.ExpertConfirmationToken != null
+                                && h.Appointment != null
+                                && h.Appointment.Status != null
+                                && h.Appointment.Status.StatusValue == "appointment_pending_expert_confirmation")
+                    .Select(h => h.Id)
+                    .Take(200)
+                    .ToListAsync();
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "ProcessExpiredExpertConfirmationsAsync: fallo al consultar confirmaciones vencidas",
+                    details: ex.Message,
+                    source: "PlatformMaintenanceService.ProcessExpiredExpertConfirmationsAsync");
+                return;
+            }
+
+            // try/catch POR hire: un fallo en uno no aborta el lote.
+            foreach (var hireId in expiredIds)
+            {
+                try
+                {
+                    // Recargar y reclamar: anular el token = mutex. A partir de aquí el approve/reject
+                    // del experto (buscan por token) ya no podrán confirmar la cita, así que no puede
+                    // coexistir "cita confirmada/capturada + reembolso".
+                    var hire = await _context.SearchHires
+                        .FirstOrDefaultAsync(h => h.Id == hireId);
+                    if (hire == null) continue;
+                    // Si el token ya es null, otro actor (approve/reject/timer) lo reclamó entre la
+                    // query y aquí → no procedemos (no duplicar la distribución).
+                    if (hire.ExpertConfirmationToken == null) continue;
+
+                    hire.ExpertConfirmationToken = null;
+                    await _context.SaveChangesAsync();
+
+                    // Reembolso 100% al comprador + cancelar el hire. Mismo motivo/razón que usa el
+                    // timer principal (case "expert_confirmation"): "appointment_cancelled_by_expert_no_response"
+                    // empieza por "appointment_cancelled" → ProcessMoneyDistributionAsync usa el reparto de
+                    // cancelación (cliente 100, experto 0) y la rama N10 cancela el PI no capturado (0 € fee).
+                    Hangfire.BackgroundJob.Enqueue<newApi.Services.StripeRefundService>(svc =>
+                        svc.ProcessMoneyDistributionAsync(
+                            hireId,
+                            "appointment_cancelled_by_expert_no_response",
+                            "Watchdog: expert confirmation deadline passed (no response).",
+                            null,
+                            true));
+                }
+                catch (Exception exHire)
+                {
+                    // Si el token se anuló pero el encolado del reembolso falló, el comprador quedaría
+                    // sin servicio y sin liberar la autorización → CRÍTICO para que el admin lo resuelva.
+                    await _loggingService.LogCriticalAsync(
+                        message: "Fallo al procesar expiración de confirmación del experto (posible reembolso pendiente manual)",
+                        details: $"SearchHire {hireId}: {exHire.Message}. ACCIÓN: verificar si el token se anuló y, si no hay reembolso, cancelar el PI / reembolsar 100% al comprador a mano.",
+                        userId: 0,
+                        source: "PlatformMaintenanceService.ProcessExpiredExpertConfirmationsAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hireId);
+                }
+            }
+        }
+
         // 🛡️ W3 FIX (Round 8 A8): DisableConcurrentExecution para evitar duplicación en HPA multi-replica
         [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 1800)]
         [Hangfire.AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 0, 60, 300 })]
@@ -595,7 +678,12 @@ namespace newApi.Services
             // a punto de expirar en Stripe (7 días). Intentamos cancelar para liberar la autorización
             // del cliente (no podemos capturar a estas alturas — si pudiéramos, el flow normal o el
             // outbox ya lo habría hecho). Marcamos CaptureStatus="Failed" para que admin investigue.
-            var cutoff = DateTime.UtcNow.AddDays(-6.5);
+            // 🛡️ R5 (bajado de -6.5d a -4.5d): la cadena de captura diferida en modo vendedor consume
+            // más ventana de los 7 días de autorización de Stripe (seller booking 36h + confirmación del
+            // experto 36h = hasta ~3 días antes incluso de poder capturar). Un cutoff de -6.5d dejaba muy
+            // poco margen para reaccionar antes de la expiración automática del PI; -4.5d adelanta la red
+            // de seguridad para liberar la autorización del cliente con holgura.
+            var cutoff = DateTime.UtcNow.AddDays(-4.5);
             List<DataLayer.Models.PostGresModels.SearchHire> nearExpiry;
             try
             {

@@ -3938,6 +3938,9 @@ namespace newApi.Services
                         break;
 
                     case "response":
+                        // 🧟 LEGACY (2026-06-19): rama del flujo antiguo de propuesta (retirado, #if false).
+                        // El timer "response" ya no se crea en el flujo Calendly, así que este case no se alcanza
+                        // en producción. Se mantiene por defensa (timers históricos) — NO BORRAR.
                         // Si el experto no responde en 24h, cancelar
                         var noResponseStatus = await _context.SystemStatuses
                             .FirstOrDefaultAsync(s => s.StatusType == "AppointmentStatus" && 
@@ -6078,8 +6081,15 @@ namespace newApi.Services
         /// Wrapper para procesar timer de respuesta del experto.
         /// Si el experto no responde en 24h, se cancela y se penaliza al experto.
         /// </summary>
+        /// <remarks>
+        /// 🧟 LEGACY / HUÉRFANO (2026-06-19): el timer "response" SOLO lo creaba el flujo antiguo de
+        /// proponer/aceptar/rechazar cita, que está retirado (#if false). Su único programador vivo estaría
+        /// en AppointmentService.cs:1022, que está DENTRO de un bloque #if false. En el flujo Calendly la cita
+        /// nace ya en appointment_confirmed, así que este timer NUNCA se crea → este método NUNCA se invoca.
+        /// NO BORRAR: lo declara IAppointmentService y podría haber jobs Hangfire históricos serializados por nombre.
+        /// </remarks>
         [AutomaticRetry(
-            Attempts = 5, 
+            Attempts = 5,
             DelaysInSeconds = new[] { 60, 300, 600, 900, 1200 },
             OnAttemptsExceeded = AttemptsExceededAction.Fail)]
         [JobDisplayName("⏰ Timer Respuesta Experto (Penaliza Experto) - Timer #{0}")]

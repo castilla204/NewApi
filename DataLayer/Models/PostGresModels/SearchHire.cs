@@ -136,6 +136,11 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// </summary>
         public DateTime? SellerBookingDeadline { get; set; }
 
+        /// <summary>Confirmación del experto: token secreto single-use del enlace /confirmar-cita/{token}. Null tras aprobar/rechazar/timeout (mutex). Generado al crear la cita en pending_expert_confirmation.</summary>
+        public string? ExpertConfirmationToken { get; set; }
+        /// <summary>Plazo del experto para aprobar = min(now + ventana[48h self / 36h seller], StartsAtUtc). Vencido sin respuesta → cancelación no_response. Nullable.</summary>
+        public DateTime? ExpertConfirmationDeadline { get; set; }
+
         /// <summary>
         /// Flag operativo: el hire requiere revisión manual del admin (p.ej. cuenta de experto
         /// rechazada o desautorizada por Stripe tras prestar el servicio). NO se considera un
